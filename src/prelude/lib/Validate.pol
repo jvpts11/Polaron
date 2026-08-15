@@ -1,0 +1,211 @@
+    public namespace Validate {
+        // RULES WRITTEN ON THE FIELD THEY ARE ABOUT.
+        //
+        // A validation rule belongs where a reader looks for it: beside the field. Every other
+        // language reaches for a framework here -- Bean Validation, FluentValidation, serde's
+        // `#[validate]` -- and each of them needs a processor, a builder DSL or a macro, because the
+        // language cannot see its own declarations at run time. Polaron can: `reflect.typeOf<T>()`
+        // gives the fields, `Field.annotations()` gives the rules written on each, and
+        // `Annotation.args()` gives what each rule was given.
+        //
+        // So the whole feature is this file. A rule is an ANNOTATION -- declared here, applied by the
+        // program -- and the checker is one walk. Adding a field with a rule on it changes what
+        // `Validator.check` reports with nothing recompiled but the type.
+        //
+        // The rules deliberately stop at what can be decided from ONE field's value, because that is
+        // what a declaration on a field can honestly express. A rule spanning two fields is a method
+        // on the class, and a `[Valid]` annotation pretending otherwise would be a DSL growing inside
+        // an annotation argument -- the thing this exists to avoid.
+
+        // Not empty, and not only spaces: the field must actually say something. For String fields.
+        public annotation NotEmpty {}
+        // Within bounds, inclusive: `[Range(min: 1, max: 10)]`. For integer fields.
+        public annotation Range { int min; int max; }
+        // At least this many characters, at most that many: `[Length(min: 3, max: 32)]`.
+        public annotation Length { int min; int max; }
+        // Looks like an address: one `@` with something either side, and a dot after it.
+        public annotation Email {}
+        // Strictly greater than zero. For integer fields.
+        public annotation Positive {}
+        // Every character matches one of the named classes: `[Chars(allow: "alnum")]` --
+        // `alnum`, `alpha`, `digit` or `lower`.
+        public annotation Chars { String allow; }
+
+        // WHAT WENT WRONG, per field. Not an exception: a form with three bad fields should report
+        // three problems, and the caller decides whether one is fatal. `Findings.ok()` is the
+        // question most callers actually ask.
+        //
+        // `Findings` and not `Report`, for the reason `Schema` is not `Shape`: the compiler resolves
+        // a collision with a user's own type correctly, and a standard library taking one of the
+        // dozen likeliest class names still makes every such program build with a warning about
+        // something its author did nothing wrong to cause.
+        public class Findings {
+            private mutable ArrayList<String> problems;
+            public constructor Findings() {
+                this.problems = new ArrayList<String>() on heap;
+            }
+            public method add(String field, String why) returns void {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.append(field);
+                sb.append(": ");
+                sb.append(why);
+                this.problems.add(sb.toString());
+            }
+            public method ok() returns boolean { return this.problems.size() == 0; }
+            public method count() returns int { return this.problems.size(); }
+            public method at(int i) returns String { return this.problems.get(i); }
+            // Every problem on one line, `field: why; field: why`. For a log, or for the message of
+            // an exception the caller chooses to throw.
+            public method summary() returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < this.problems.size(); i++) {
+                    if (i > 0) { sb.append("; "); }
+                    sb.append(this.problems.get(i));
+                }
+                return sb.toString();
+            }
+        }
+
+        public class Validator {
+            // CHECK AN OBJECT AGAINST THE RULES WRITTEN ON ITS TYPE.
+            //
+            // Generic for the same reason the serializer is: `reflect.typeOf` takes a TYPE argument,
+            // so the type is known where the call is written, and the whole walk stays compile-time
+            // with no runtime type lookup on a value.
+            public static method check<T>(T value) returns Findings {
+                Type t = reflect.typeOf<T>();
+                mutable Findings report = new Findings() on heap;
+                mutable ArrayList<Field> fs = t.fields();
+                for (mutable int i = 0; i < fs.size(); i++) {
+                    Field f = fs.get(i);
+                    mutable ArrayList<Annotation> anns = f.annotations();
+                    for (mutable int j = 0; j < anns.size(); j++) {
+                        String why = Validator.apply(anns.get(j), f, value);
+                        if (why.length() > 0) { report.add(f.name(), why); }
+                    }
+                }
+                return report;
+            }
+
+            // ONE RULE, ONE FIELD -> what is wrong with it, or "" when nothing is. Reads the field
+            // through its declared type, because a rule about text and a rule about a number are
+            // checked differently and `get` alone cannot say which it is holding.
+            //
+            // Returns the complaint rather than writing into a Findings handed in, and that is not
+            // style: assignment and argument passing are a COPY here, so a `Findings` parameter would
+            // be the caller's object duplicated, every `add` would land in the duplicate, and the
+            // caller would see a clean one with nothing said. (`Findings*` would work and would put
+            // a pointer in a signature for no reason -- this method has one thing to say.)
+            private static method apply(Annotation a, Field f, Object owner) returns String {
+                String rule = a.name();
+                String kind = f.typeName();
+                boolean isText = kind.equals("String") || kind.equals("string");
+                if (rule.equals("NotEmpty")) {
+                    if (!isText) {
+                        return "[NotEmpty] is about text, and this field is a " + kind;
+                    }
+                    String s = cast<String>(f.get(owner));
+                    if (Validator.trimmedLength(s) == 0) { return "must not be empty"; }
+                    return "";
+                }
+                if (rule.equals("Positive")) {
+                    if (isText) {
+                        return "[Positive] is about numbers, and this field is text";
+                    }
+                    if (cast<int>(f.get(owner)) <= 0) { return "must be positive"; }
+                    return "";
+                }
+                if (rule.equals("Range")) {
+                    int v = cast<int>(f.get(owner));
+                    int lo = Validator.arg(a, "min", -2147483647);
+                    int hi = Validator.arg(a, "max", 2147483647);
+                    if (v < lo || v > hi) {
+                        return $"must be between {lo} and {hi}";
+                    }
+                    return "";
+                }
+                if (rule.equals("Length")) {
+                    String s = cast<String>(f.get(owner));
+                    int n = s.length();
+                    int lo = Validator.arg(a, "min", 0);
+                    int hi = Validator.arg(a, "max", 2147483647);
+                    if (n < lo || n > hi) {
+                        return $"length must be between {lo} and {hi}";
+                    }
+                    return "";
+                }
+                if (rule.equals("Email")) {
+                    String s = cast<String>(f.get(owner));
+                    if (!Validator.looksLikeEmail(s)) { return "is not an address"; }
+                    return "";
+                }
+                if (rule.equals("Chars")) {
+                    String s = cast<String>(f.get(owner));
+                    String allow = Validator.argText(a, "allow", "alnum");
+                    if (!Validator.allChars(s, allow)) {
+                        return "may hold only " + allow + " characters";
+                    }
+                    return "";
+                }
+                // An annotation this namespace does not define is not this namespace's business:
+                // a type may carry `[Serializable]`, `[Test]` or anything the program invented.
+                return "";
+            }
+
+            // ONE ARGUMENT OF AN ANNOTATION, BY NAME. `args()` hands back what was written --
+            // `min=1,max=10` -- and this reads one key out of it. Text rather than a typed value
+            // because an annotation's arguments are constants of several types and every reader
+            // wants them one at a time; keeping the parsing here means it is Polaron and testable.
+            public static method argText(Annotation a, String key, String fallback) returns String {
+                String all = a.args();
+                mutable ArrayList<String> parts = Strings.split(all, ",");
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    String p = parts.get(i);
+                    int eq = p.indexOf("=");
+                    if (eq > 0) {
+                        String k = p.substring(0, eq);
+                        if (k.equals(key)) { return p.substring(eq + 1, p.length()); }
+                    }
+                }
+                return fallback;
+            }
+            public static method arg(Annotation a, String key, int fallback) returns int {
+                String v = Validator.argText(a, key, "");
+                if (v.length() == 0) { return fallback; }
+                return v.toInt();
+            }
+
+            // The small text predicates the rules above are written in terms of. Kept here rather
+            // than reached for from `Strings` so that a rule's meaning is readable in one file.
+            private static method trimmedLength(String s) returns int {
+                mutable int n = 0;
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c != ' ' && c != '\t' && c != '\n') { n = n + 1; }
+                }
+                return n;
+            }
+            private static method looksLikeEmail(String s) returns boolean {
+                int at = s.indexOf("@");
+                if (at <= 0 || at >= s.length() - 1) { return false; }
+                String rest = s.substring(at + 1, s.length());
+                int dot = rest.indexOf(".");
+                return dot > 0 && dot < rest.length() - 1;
+            }
+            private static method allChars(String s, String allow) returns boolean {
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    boolean digit = c >= '0' && c <= '9';
+                    boolean lower = c >= 'a' && c <= 'z';
+                    boolean upper = c >= 'A' && c <= 'Z';
+                    mutable boolean ok = false;
+                    if (allow.equals("digit")) { ok = digit; }
+                    if (allow.equals("alpha")) { ok = lower || upper; }
+                    if (allow.equals("lower")) { ok = lower; }
+                    if (allow.equals("alnum")) { ok = digit || lower || upper; }
+                    if (!ok) { return false; }
+                }
+                return true;
+            }
+        }
+    }

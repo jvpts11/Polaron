@@ -2858,6 +2858,8 @@ struct CodeGenerator::Impl {
     // The reflection Field token layout: { ptr name, ptr getFn, ptr setFn }. The accessors box/unbox
     // the field value, so get/set work through Object (spec 31). Lazily created.
     llvm::StructType* fieldTokenType();
+    // An applied annotation's arguments as text (`min=1,max=10`), for the reflection tokens.
+    std::string renderAnnotationArgs(const ast::AnnotationUse& a);
     // Builds a global array of String pointers from a list of names; returns {count, arrayPtr}.
     std::pair<llvm::Constant*, llvm::Constant*> nameArray(const std::vector<std::string>& names,
                                                           const std::string& tag) {
@@ -2871,6 +2873,47 @@ struct CodeGenerator::Impl {
                                               llvm::ConstantArray::get(arrTy, ptrs), tag);
         return {builder.getInt64(names.size()), arrG};
     }
+    // AN `ArrayList<Annotation>` FROM {count, names, args}. Written once and used by both
+    // `Method.annotations()` and `Field.annotations()`: the two differ only in which token slots the
+    // three arrays come from, and a second copy of a loop that builds tokens is how one of them ends
+    // up filling a slot the other forgot.
+    llvm::Value* emitAnnotationList(llvm::Value* count, llvm::Value* names, llvm::Value* args,
+                                    SourceLocation loc) {
+        const std::string listCls = "ArrayList$Annotation";
+        auto clsIt = classes.find(listCls);
+        auto ctorIt = functions.find(ctorSym(listCls));
+        auto addIt = functions.find(listCls + ".add");
+        if (clsIt == classes.end() || ctorIt == functions.end() || addIt == functions.end()) {
+            error("internal: ArrayList$Annotation not available for reflection", loc);
+            return nullptr;
+        }
+        llvm::Value* list = builder.CreateCall(mallocFn(), {sizeOf(clsIt->second.type)}, "annlist");
+        builder.CreateCall(ctorIt->second, {list});
+        llvm::Function* curFn = currentFn;
+        llvm::Value* iSlot = createEntryAlloca("ai", builder.getInt64Ty());
+        builder.CreateStore(builder.getInt64(0), iSlot);
+        auto* hdr = llvm::BasicBlock::Create(context, "ann.hdr", curFn);
+        auto* body = llvm::BasicBlock::Create(context, "ann.body", curFn);
+        auto* done = llvm::BasicBlock::Create(context, "ann.done", curFn);
+        builder.CreateBr(hdr);
+        builder.SetInsertPoint(hdr);
+        llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "i");
+        builder.CreateCondBr(builder.CreateICmpSLT(i, count), body, done);
+        builder.SetInsertPoint(body);
+        llvm::Value* nm = builder.CreateLoad(
+            builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), names, i), "nm");
+        llvm::Value* tok = builder.CreateCall(mallocFn(), {sizeOf(annotationTokenType())}, "ann");
+        builder.CreateStore(nm, builder.CreateStructGEP(annotationTokenType(), tok, 0));
+        llvm::Value* ag = builder.CreateLoad(
+            builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), args, i), "ag");
+        builder.CreateStore(ag, builder.CreateStructGEP(annotationTokenType(), tok, 1));
+        builder.CreateCall(addIt->second, {list, tok});
+        builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
+        builder.CreateBr(hdr);
+        builder.SetInsertPoint(done);
+        return list;
+    }
+
     // Generates a per-field accessor for reflection get/set (spec 31). The field type is known here,
     // so the getter boxes a primitive (or returns a reference) and the setter unboxes (or stores the
     // reference) with no runtime type dispatch. Returns a function pointer for the Field token.
@@ -4931,7 +4974,9 @@ struct CodeGenerator::Impl {
                     auto* contBB = llvm::BasicBlock::Create(context, "first.cont", f);
                     builder.CreateCondBr(builder.CreateICmpEQ(cur, builder.getInt32(0)), doBB, contBB);
                     builder.SetInsertPoint(doBB);
-                    builder.CreateCall(functions[ctorOf->name + ".__onFirstInstance"]);
+                    if (llvm::Function* h = needFn(clsKey(ctorOf->name) + ".__onFirstInstance")) {
+                        builder.CreateCall(h);
+                    }
                     builder.CreateBr(contBB);
                     builder.SetInsertPoint(contBB);
                 }
@@ -4955,7 +5000,10 @@ struct CodeGenerator::Impl {
                 auto* contBB = llvm::BasicBlock::Create(context, "last.cont", f);
                 builder.CreateCondBr(builder.CreateICmpEQ(dec, builder.getInt32(0)), doBB, contBB);
                 builder.SetInsertPoint(doBB);
-                builder.CreateCall(functions[dtorOf->name + ".__onLastInstanceDestroyed"]);
+                if (llvm::Function* h =
+                        needFn(clsKey(dtorOf->name) + ".__onLastInstanceDestroyed")) {
+                    builder.CreateCall(h);
+                }
                 builder.CreateBr(contBB);
                 builder.SetInsertPoint(contBB);
             }

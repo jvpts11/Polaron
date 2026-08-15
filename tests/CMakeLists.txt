@@ -3149,6 +3149,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # VALIDATION RULES WRITTEN ON THE FIELDS THEY ARE ABOUT (System.Validate): the rules are
+        # annotations, the checker is one reflective walk, and there is no processor, macro or builder
+        # DSL anywhere. Covers Field.annotations() and Annotation.args() -- a rule that carries a
+        # value (`[Range(min: 1, max: 130)]`) is unwritable without both.
+        add_test(NAME codegen_validate_annotations_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/validate_annotations.pol"
+            "-DEXPECTED=good=1 problems=0 bad=4 name: must not be empty age: must be between 1 and 130 email: is not an address score: must be positive"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

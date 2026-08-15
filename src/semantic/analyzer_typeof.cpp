@@ -2583,6 +2583,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "get" && call->args.size() == 1) {
                     return "Object";  // boxed value
                 }
+                // The annotations written ON the field, which is where a rule about a field goes.
+                if (mem->member == "annotations" && call->args.empty()) {
+                    return "ArrayList$Annotation";
+                }
                 if (mem->member == "set" && call->args.size() == 2) {
                     return "void";  // (obj, Object)
                 }
@@ -2600,6 +2604,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     typeOf(*arg);
                 }
                 if (mem->member == "name" && call->args.empty()) {
+                    return "String";
+                }
+                // WHAT THE ANNOTATION WAS GIVEN, as written: `min=1,max=10`. Without it an
+                // annotation is a marker and nothing more -- `[Range(min: 1)]` and `[Range(min: 99)]`
+                // read identically -- so no rule that carries a VALUE could be written declaratively.
+                if (mem->member == "args" && call->args.empty()) {
                     return "String";
                 }
                 if (mem->member == "equalsKey" && call->args.size() == 1) {

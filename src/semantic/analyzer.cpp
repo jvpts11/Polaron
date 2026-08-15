@@ -1520,6 +1520,20 @@ void SemanticAnalyzer::registerAnnotations(const ast::Program& program) {
                     error("redeclaration of type '" + a.name + "'", a.loc);
                     continue;
                 }
+                // AN ANNOTATION IS A DECLARED TYPE, so it has to be importable like one.
+                //
+                // It was in no registry the import validator reads, so `import System.Validate
+                // .NotEmpty;` failed with "import of unknown symbol" -- which meant an annotation
+                // could only ever be used in the file that declared it. Every library annotation in
+                // existence is therefore unusable by anybody, which is not a property anyone would
+                // have chosen; it simply never came up, because the annotations that shipped were
+                // the compiler's own (`[Test]`, `[Serializable]`) and those resolve without one.
+                // Its OWN registry, not `typeNamespace_`: an annotation and a class may share a name
+                // by design (see just above), so writing it into the type map would answer the
+                // question "where does the class `Range` live" with the annotation's namespace and
+                // break the class's import instead.
+                annotationNamespace_[a.name] = ns.name;
+                annotationBundle_[a.name] = bundle.name;
                 AnnotationInfo info;
                 info.isCompileTimeProcessor = a.isCompileTimeProcessor;
                 std::unordered_set<std::string> seen;
@@ -3948,6 +3962,24 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
             }
             bringIntoScope();
             return;
+        }
+        // AN ANNOTATION IS IMPORTED LIKE ANY OTHER DECLARATION, and it is checked first because a
+        // class of the same name may also exist -- the two are allowed to coexist, so the path the
+        // author wrote is what says which one they mean. `import System.Validate.Range;` names the
+        // annotation even though `System.Collections.Range` is a class.
+        if (auto aIt = annotationNamespace_.find(symbol); aIt != annotationNamespace_.end()) {
+            std::string annNs;
+            for (std::size_t i = 1; i + 1 < imp.path.size(); ++i) {
+                annNs += (annNs.empty() ? "" : ".") + imp.path[i];
+            }
+            const std::string annBundle =
+                annotationBundle_.count(symbol) ? annotationBundle_[symbol] : std::string();
+            if (annNs == aIt->second && (annBundle.empty() || imp.path.front() == annBundle)) {
+                bringIntoScope();
+                return;
+            }
+            // Falls through when the path does not name the annotation: it may still name a class of
+            // the same name, which the ordinary lookup below answers.
         }
         auto nsIt = typeNamespace_.find(symbol);
         if (nsIt == typeNamespace_.end()) {

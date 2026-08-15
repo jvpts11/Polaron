@@ -34,7 +34,7 @@
 # the assembled file is what a diagnostic points into.
 set(PRELUDE_ORDER
     Runtime Memory Memory.Units Errors Collections Algorithms Text Codecs Math Time
-    IO OS Net Concurrency Ipc Json Formats Compress Science Spatial Units Serialize
+    IO OS Net Concurrency Ipc Json Formats Compress Science Spatial Units Serialize Validate
     Security Events Ecs App Test)
 
 # Required -D args: PRELUDE_DIR, PRELUDE_OUT

@@ -99,9 +99,6 @@ bool CodeGenerator::generate() {
     if (impl_->debugInfo) {
         impl_->initDebugInfo();  // -g: set up the DIBuilder before any function is emitted
     }
-    if (impl_->testMode) {
-        impl_->collectTests();
-    }
     // POLARON_PHASE_TIMES=1: per-step codegen timing, same switch the front end uses.
     const bool cgTimes = std::getenv("POLARON_PHASE_TIMES") != nullptr;
     auto cgClock = std::chrono::steady_clock::now();
@@ -117,6 +114,14 @@ bool CodeGenerator::generate() {
     };
     impl_->declareClasses();
     cg("declareClasses");
+    // AFTER declareClasses, because a test's SYMBOL is its class's key and the keys are decided
+    // there. Collected before it, `clsKey` answered with the bare name for every class -- correct
+    // for all but one, and for that one the runner looked up a symbol that did not exist and
+    // silently ran no test: the suite reported "8 passed" while holding eleven.
+    if (impl_->testMode) {
+        impl_->collectTests();
+        cg("collectTests");
+    }
     impl_->collectAbstainedLabels();
     cg("collectAbstainedLabels");
     // AFTER collectAbstainedLabels, which is what fills `unimportableClasses` -- and that ordering
