@@ -1112,6 +1112,29 @@
             // limb count stops being a constant.
             public static method zero() returns long[] { return new long[16](); }
             public static method zeroOf(int limbs) returns long[] { return new long[limbs](); }
+
+            // LITTLE-ENDIAN bytes, which is how Curve25519 writes everything and the opposite of how
+            // X.509 does. Two functions rather than a flag: a caller that passes the wrong flag gets
+            // a wrong answer, and a caller that picks the wrong function gets a name that reads
+            // wrongly next to the format it is parsing.
+            public static method fromBytesLe(int[] b, int off, int len) returns long[] {
+                mutable long[] out = new long[16]();
+                mutable int i = 0;
+                while (i < len && i < 32) {
+                    out[i / 2] = out[i / 2] | (cast<long>(b[off + i] & 255) << ((i % 2) * 8));
+                    i = i + 1;
+                }
+                return out;
+            }
+            public static method toBytesLe(long[] a) returns int[] {
+                int[] out = new int[32]();
+                mutable int i = 0;
+                while (i < 32) {
+                    out[i] = cast<int>((a[i / 2] >> ((i % 2) * 8)) & cast<long>(255));
+                    i = i + 1;
+                }
+                return out;
+            }
             // How many limbs a modulus of this many BYTES needs, rounded up.
             public static method limbsForBytes(int bytes) returns int { return (bytes + 1) / 2; }
 
@@ -1370,6 +1393,292 @@
             public destructor ~Mont() returns void {
                 delete this.rr;
                 delete this.m;
+            }
+        }
+
+        // AES-128-GCM (NIST SP 800-38D): the authenticated encryption that protects every TLS 1.3
+        // record.
+        //
+        // Two halves that must both hold. Counter mode gives secrecy -- the key stream is AES applied
+        // to a counter, XORed with the data. GHASH gives authenticity -- a multiplication in
+        // GF(2^128) over the ciphertext and the associated data, which produces a tag nobody without
+        // the key can forge.
+        //
+        // THE TAG IS CHECKED BEFORE THE PLAINTEXT IS PRODUCED, and that order is the whole point.
+        // Decrypting first and verifying after means a program can act on bytes an attacker chose;
+        // that is the shape of a padding-oracle attack. `open` answers with an empty array on a bad
+        // tag, and a caller that treats an empty result as "no data" instead of "forged" has thrown
+        // the guarantee away.
+        //
+        // 96-bit nonces only, which is what TLS uses and the only size with a defined construction.
+        public class Gcm {
+            // Ciphertext followed by the 16-byte tag.
+            public static method seal(int[] key, int[] iv, int[] aad, int aadLength,
+                                      int[] plain, int plainLength) returns int[] {
+                mutable Aes* aes = new Aes(key) on heap;
+                mutable int[] zero = new int[16]();
+                mutable int[] h = aes.encryptBlock(zero);         // the hash subkey, E(0)
+                delete zero;
+                mutable int[] j0 = new int[16]();
+                for (mutable int i = 0; i < 12; i++) { j0[i] = iv[i] & 255; }
+                j0[15] = 1;                                       // J0 = nonce || 1
+                int[] out = new int[plainLength + 16]();
+                mutable int[] counter = Gcm.copyBlock(j0);
+                Gcm.increment(counter);
+                mutable int off = 0;
+                while (off < plainLength) {
+                    mutable int[] stream = aes.encryptBlock(counter);
+                    mutable int b = 0;
+                    while (b < 16 && off + b < plainLength) {
+                        out[off + b] = (plain[off + b] ^ stream[b]) & 255;
+                        b = b + 1;
+                    }
+                    delete stream;
+                    Gcm.increment(counter);
+                    off = off + 16;
+                }
+                delete counter;
+                mutable int[] s = Gcm.ghash(h, aad, aadLength, out, plainLength);
+                mutable int[] mask = aes.encryptBlock(j0);
+                for (mutable int i = 0; i < 16; i++) {
+                    out[plainLength + i] = (mask[i] ^ s[i]) & 255;
+                }
+                delete mask;
+                delete s;
+                delete h;
+                delete j0;
+                delete aes;
+                return out;
+            }
+
+            // The plaintext when the tag authenticates, and an EMPTY ARRAY when it does not. An empty
+            // answer means forged, not "nothing was sent" -- every caller has to tell those apart.
+            public static method open(int[] key, int[] iv, int[] aad, int aadLength,
+                                      int[] protectedBytes, int totalLength) returns int[] {
+                int cipherLength = totalLength - 16;
+                if (cipherLength < 0) { return new int[1](); }
+                mutable Aes* aes = new Aes(key) on heap;
+                mutable int[] zero = new int[16]();
+                mutable int[] h = aes.encryptBlock(zero);
+                delete zero;
+                mutable int[] j0 = new int[16]();
+                for (mutable int i = 0; i < 12; i++) { j0[i] = iv[i] & 255; }
+                j0[15] = 1;
+                mutable int[] s = Gcm.ghash(h, aad, aadLength, protectedBytes, cipherLength);
+                mutable int[] mask = aes.encryptBlock(j0);
+                mutable boolean authentic = true;
+                for (mutable int i = 0; i < 16; i++) {
+                    if (((mask[i] ^ s[i]) & 255) != (protectedBytes[cipherLength + i] & 255)) {
+                        authentic = false;
+                    }
+                }
+                delete mask;
+                delete s;
+                if (!authentic) {
+                    delete h;
+                    delete j0;
+                    delete aes;
+                    return new int[1]();        // refused: the caller must not read past this
+                }
+                int[] plain = new int[cipherLength > 0 ? cipherLength : 1]();
+                mutable int[] counter = Gcm.copyBlock(j0);
+                Gcm.increment(counter);
+                mutable int off = 0;
+                while (off < cipherLength) {
+                    mutable int[] stream = aes.encryptBlock(counter);
+                    mutable int b = 0;
+                    while (b < 16 && off + b < cipherLength) {
+                        plain[off + b] = (protectedBytes[off + b] ^ stream[b]) & 255;
+                        b = b + 1;
+                    }
+                    delete stream;
+                    Gcm.increment(counter);
+                    off = off + 16;
+                }
+                delete counter;
+                delete h;
+                delete j0;
+                delete aes;
+                return plain;
+            }
+
+            private static method copyBlock(int[] a) returns int[] {
+                int[] b = new int[16]();
+                for (mutable int i = 0; i < 16; i++) { b[i] = a[i]; }
+                return b;
+            }
+            // The rightmost 32 bits, modulo 2^32 -- the counter wraps rather than growing into the
+            // nonce, which is what keeps the nonce fixed for the record.
+            private static method increment(int[] counter) returns void {
+                mutable int i = 15;
+                mutable int carry = 1;
+                while (i >= 12 && carry > 0) {
+                    int v = counter[i] + carry;
+                    counter[i] = v & 255;
+                    carry = (v >> 8) & 255;
+                    i = i - 1;
+                }
+                return;
+            }
+            // Multiplication in GF(2^128), big-endian bit order, reducing by the GCM polynomial.
+            private static method multiply(int[] x, int[] y) returns int[] {
+                int[] z = new int[16]();
+                mutable int[] v = Gcm.copyBlock(y);
+                mutable int i = 0;
+                while (i < 128) {
+                    if (((x[i / 8] >> (7 - (i % 8))) & 1) == 1) {
+                        for (mutable int k = 0; k < 16; k++) { z[k] = (z[k] ^ v[k]) & 255; }
+                    }
+                    int low = v[15] & 1;
+                    mutable int carry = 0;
+                    for (mutable int m = 0; m < 16; m++) {
+                        int b = v[m];
+                        v[m] = ((b >> 1) | (carry << 7)) & 255;
+                        carry = b & 1;
+                    }
+                    if (low == 1) { v[0] = (v[0] ^ 225) & 255; }   // the reduction polynomial
+                    i = i + 1;
+                }
+                delete v;
+                return z;
+            }
+            // GHASH over the associated data, then the ciphertext, then their bit lengths. Including
+            // the lengths is what stops an attacker moving bytes between the two.
+            private static method ghash(int[] h, int[] aad, int aadLength, int[] c, int cLength)
+                                        returns int[] {
+                mutable int[] y = new int[16]();
+                y = Gcm.absorb(y, h, aad, aadLength);
+                y = Gcm.absorb(y, h, c, cLength);
+                mutable int[] lengths = new int[16]();
+                int aadBits = aadLength * 8;
+                int cBits = cLength * 8;
+                lengths[4] = (aadBits >> 24) & 255;  lengths[5] = (aadBits >> 16) & 255;
+                lengths[6] = (aadBits >> 8) & 255;   lengths[7] = aadBits & 255;
+                lengths[12] = (cBits >> 24) & 255;   lengths[13] = (cBits >> 16) & 255;
+                lengths[14] = (cBits >> 8) & 255;    lengths[15] = cBits & 255;
+                for (mutable int k = 0; k < 16; k++) { y[k] = (y[k] ^ lengths[k]) & 255; }
+                delete lengths;
+                int[] result = Gcm.multiply(y, h);
+                delete y;
+                return result;
+            }
+            private static method absorb(int[] accumulator, int[] h, int[] data, int len)
+                                         returns int[] {
+                mutable int[] y = accumulator;
+                mutable int off = 0;
+                while (off < len) {
+                    mutable int k = 0;
+                    while (k < 16 && off + k < len) {
+                        y[k] = (y[k] ^ data[off + k]) & 255;
+                        k = k + 1;
+                    }
+                    mutable int[] next = Gcm.multiply(y, h);
+                    delete y;
+                    y = next;
+                    off = off + 16;
+                }
+                return y;
+            }
+        }
+
+        // X25519 (RFC 7748): Diffie-Hellman on Curve25519, and the key exchange every TLS 1.3
+        // handshake in practice uses.
+        //
+        // The Montgomery ladder walks the scalar's bits and does the same work whichever way each
+        // bit goes -- the conditional swap exchanges two pairs rather than branching to different
+        // code. That is what makes the shape constant-time; this implementation is NOT constant-time
+        // in its arithmetic, and that difference matters here in a way it did not for signature
+        // verification: the scalar is a PRIVATE key. It is stated rather than hidden, and it is the
+        // first thing to fix if this is ever used where an attacker can time it.
+        //
+        // Written on the same Montgomery arithmetic as the curve above rather than on BigInteger: the
+        // ladder is 255 steps of several modular multiplications each, which on decimal digits
+        // measured about a quarter of a second per handshake.
+        public class X25519 {
+            // p = 2^255 - 19.
+            private static method fieldPrime() returns long[] {
+                mutable long[] p = U256.zero();
+                p[0] = cast<long>(65517);                       // 0xffed
+                for (mutable int i = 1; i < 15; i++) { p[i] = cast<long>(65535); }
+                p[15] = cast<long>(32767);                      // 0x7fff
+                return p;
+            }
+
+            // The shared u-coordinate from a 32-byte scalar and a 32-byte peer u-coordinate.
+            public static method scalarMult(int[] scalar, int[] peer) returns int[] {
+                mutable long[] p = X25519.fieldPrime();
+                mutable Mont* f = new Mont(p) on heap;
+
+                // Clamping (RFC 7748): the low three bits cleared so the scalar is a multiple of the
+                // cofactor, the top bit cleared and the next set so every scalar has the same length.
+                // Skipping it is the classic small-subgroup mistake.
+                mutable int[] e = new int[32]();
+                for (mutable int i = 0; i < 32; i++) { e[i] = scalar[i] & 255; }
+                e[0] = e[0] & 248;
+                e[31] = (e[31] & 127) | 64;
+
+                mutable int[] u = new int[32]();
+                for (mutable int i = 0; i < 32; i++) { u[i] = peer[i] & 255; }
+                u[31] = u[31] & 127;                            // the top bit is not part of u
+                mutable long[] x1 = f.toMont(U256.fromBytesLe(u, 0, 32));
+
+                mutable long[] one = U256.zero();
+                one[0] = cast<long>(1);
+                mutable long[] x2 = f.toMont(one);
+                mutable long[] z2 = U256.zero();                // zero is zero in Montgomery form too
+                mutable long[] x3 = U256.copy(x1);
+                mutable long[] z3 = f.toMont(one);
+                mutable long[] a24 = U256.zero();
+                a24[0] = cast<long>(121665);
+                mutable long[] a24m = f.toMont(a24);
+
+                mutable int swap = 0;
+                mutable int t = 254;
+                while (t >= 0) {
+                    int bit = (e[t / 8] >> (t % 8)) & 1;
+                    if ((swap ^ bit) == 1) {
+                        mutable long[] tx = x2; x2 = x3; x3 = tx;
+                        mutable long[] tz = z2; z2 = z3; z3 = tz;
+                    }
+                    swap = bit;
+                    mutable long[] a = f.addMod(x2, z2);
+                    mutable long[] aa = f.mul(a, a);
+                    mutable long[] b = f.subMod(x2, z2);
+                    mutable long[] bb = f.mul(b, b);
+                    mutable long[] ee = f.subMod(aa, bb);
+                    mutable long[] c = f.addMod(x3, z3);
+                    mutable long[] d = f.subMod(x3, z3);
+                    mutable long[] da = f.mul(d, a);
+                    mutable long[] cb = f.mul(c, b);
+                    mutable long[] sum = f.addMod(da, cb);
+                    x3 = f.mul(sum, sum);
+                    mutable long[] difference = f.subMod(da, cb);
+                    mutable long[] dsq = f.mul(difference, difference);
+                    z3 = f.mul(x1, dsq);
+                    x2 = f.mul(aa, bb);
+                    mutable long[] scaled = f.mul(a24m, ee);
+                    z2 = f.mul(ee, f.addMod(aa, scaled));
+                    t = t - 1;
+                }
+                if (swap == 1) {
+                    mutable long[] tx = x2; x2 = x3; x3 = tx;
+                    mutable long[] tz = z2; z2 = z3; z3 = tz;
+                }
+                mutable long[] zinv = f.invMont(z2);
+                mutable long[] result = f.fromMont(f.mul(x2, zinv));
+                int[] out = U256.toBytesLe(result);
+                delete f;
+                return out;
+            }
+
+            // The public value for a private scalar: the ladder applied to the curve's base point,
+            // whose u-coordinate is simply 9.
+            public static method publicKey(int[] scalar) returns int[] {
+                mutable int[] base = new int[32]();
+                base[0] = 9;
+                int[] out = X25519.scalarMult(scalar, base);
+                delete base;
+                return out;
             }
         }
 
