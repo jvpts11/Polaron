@@ -40,6 +40,10 @@ struct LocalVar {
     // allowed even on a non-mutable binding: the value is still written exactly once, which is what
     // "immutable" actually promises. Every later write is an ordinary assignment and needs `mutable`.
     bool deferredInit = false;
+    // A PARAMETER received BY VALUE whose type is a class -- so the callee holds a deep copy, and
+    // anything it changes is changed in the copy. Recorded because that is invisible at the call
+    // site and silent at run time: see the by-value mutation check.
+    bool isByValueClassParam = false;
 };
 
 // What the compiler knows about a variable AT A POINT IN THE PROGRAM, as opposed to what its declaration
@@ -606,6 +610,16 @@ private:
         // thing to cover is every field. Recorded during the ordinary walk for the same reason the
         // call graph is -- a second traversal to rediscover it would go silently out of date.
         std::set<std::string> ownFieldsTouched;
+        // The ones this body WRITES, which `ownFieldsTouched` does not separate out. A method that
+        // writes one of its own fields CHANGES its object, and that is the fact the by-value
+        // mutation check is built on: passing an object by value and then changing it changes a copy.
+        std::set<std::string> ownFieldsWritten;
+        // Callees invoked ON `this`, which `callees` cannot distinguish: it records the resolved
+        // receiver TYPE, so `r.ensure()` on a fresh local of the same class looks exactly like
+        // `this.ensure()`. That difference is the whole question here -- a method that builds a new
+        // object and fills it in changes THAT object and not its own -- and using `callees` for the
+        // fixpoint reported `BigInteger.copyMag`, which does precisely that, as a mutator.
+        std::set<std::string> selfCallees;
         // The same question for an ENUM source: which of its own constants the body named. A class
         // is closed over its fields and an enum over its constants, so this is the second row of the
         // totality table and it is the same measurement, over a different list. Recorded where the
@@ -619,6 +633,28 @@ private:
         std::vector<std::pair<std::string, SourceLocation>> unsharedState;
     };
     std::map<std::string, MethodFacts> methodFacts_;   // "Class.method" -> what it did and called
+    // A method called ON A BY-VALUE PARAMETER: where it happened, which parameter, and what was
+    // called. Collected during the walk and judged afterwards, because whether the callee CHANGES
+    // its object is a fixpoint over the call graph and is not known at the call site.
+    struct ByValueCall {
+        std::string caller;    // "Class.method" doing the call
+        std::string param;     // the parameter used as the receiver
+        std::string callee;    // "Class.method" being called on it
+        SourceLocation loc;
+    };
+    std::vector<ByValueCall> byValueCalls_;
+    // "Class.method#param" -> its declared type, so the message can spell the fix.
+    std::map<std::string, std::string> paramTypes_;
+    std::string lookupLocalType(const std::string& methodKey, const std::string& param) const;
+    // Reports every call that changes a copy the caller will never see. Run after the walk.
+    void checkByValueMutations();
+    // The field a `if (this.f == null)` arm is currently filling in, or empty. A write to THAT field
+    // inside THAT arm is lazy initialisation and not a change: the guard is the proof that the field
+    // held nothing, so filling it in cannot alter what the object already meant. Without this, every
+    // reader of a lazily-built container -- `size()`, `get()`, and so anything calling them -- came
+    // out a mutator, and the check reported an honest read as a lost write.
+    std::string lazyInitField_;
+    static std::string lazyInitGuardField(const ast::Expr& cond);
     // WHICH CLASS MENTIONS WHICH, for reachability-driven emission (see noteClassRef). Mutable
     // because it is filled from `lookupClass`, which is const and is the funnel every name
     // resolution goes through -- recording there is what keeps this complete without a second walk

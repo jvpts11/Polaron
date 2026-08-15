@@ -600,7 +600,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (!provenThen.empty()) {
             nonNull_.insert(provenThen);
         }
+        const std::string savedLazy = lazyInitField_;
+        lazyInitField_ = lazyInitGuardField(*ifs->cond);
         analyzeBlock(ifs->thenBlock);
+        lazyInitField_ = savedLazy;
         const FlowFacts afterThen = snapshotFlow();
         const bool thenExits = blockAlwaysExits(ifs->thenBlock);
 

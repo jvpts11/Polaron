@@ -1,0 +1,54 @@
+import System.IO.Console;
+program ByValueMutationWarn;
+
+// CHANGING A COPY THE CALLER WILL NEVER SEE -- the mistake this warning exists to catch, written out
+// so the check itself is tested rather than assumed.
+//
+// Assignment and argument passing are a deep COPY here: to share an object you take `T*` or `T&`.
+// So `fill(Basket b)` receives a duplicate, and everything it adds lands in the duplicate. The
+// caller's basket is exactly as it was. NOTHING FAILS -- there is no crash, no error, no leak; the
+// program runs to the end and prints a total of zero, and the reason is invisible at the call site,
+// which reads identically to the version that works.
+//
+// This is not hypothetical. Three of these were found in the standard library in one night, all
+// silent: a validation report that came back empty, a `render()` that returned "", a table that came
+// out with no rows. Each looked like a logic bug and cost an hour of bisecting output.
+//
+// `share` is the same method one character apart, and it is the fix the message names.
+//
+// Prints:
+//   byValue=0 byPointer=3
+public bundle Main {
+    public namespace App {
+        public class Basket {
+            private mutable int total;
+            public constructor Basket() { this.total = 0; }
+            public method add(int n) returns void { this.total = this.total + n; }
+            public method sum() returns int { return this.total; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Basket lost = new Basket() on stack;
+                Main.fill(lost);
+                mutable Basket kept = new Basket() on stack;
+                Main.share(&kept);
+                System.IO.Console.printf("byValue=%d byPointer=%d\n", lost.sum(), kept.sum());
+                return;
+            }
+            // Warned: `b` is a copy, so these three additions are made to the copy and thrown away
+            // when it goes out of scope.
+            private static method fill(Basket b) returns void {
+                b.add(1);
+                b.add(1);
+                b.add(1);
+            }
+            // The same thing through a pointer, which is what the caller meant.
+            private static method share(Basket* b) returns void {
+                b.add(1);
+                b.add(1);
+                b.add(1);
+            }
+        }
+    }
+}
