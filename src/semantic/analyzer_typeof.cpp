@@ -1581,6 +1581,37 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             const bool isPrintf = name == "System.IO.Console.printf";
             const bool isPrintln = name == "System.IO.Console.println";
             const bool isPrint = name == "System.IO.Console.print";
+            // THE ERROR STREAM, which the language could not write to at all -- every diagnostic
+            // went to stdout, mixed into whatever the program was for. It takes ONE String, and
+            // interpolation is how one is composed; the printf-style form is refused below with a
+            // message naming that, because the language already has a way to format and a second
+            // format parser here would be one more thing to keep in step.
+            const bool isError =
+                name == "System.IO.Console.error" || name == "System.IO.Console.errorln";
+            if (isError) {
+                checkTypeAccessible("Console", call->loc);
+                if (freestanding_ && std::string(call->loc.file) != "<prelude>") {
+                    error("Console (managed stdlib) is not available in freestanding mode; use FFI "
+                          "for I/O (spec 36.3)",
+                          call->loc);
+                }
+                if (call->args.size() > 1) {
+                    error("Console.error takes one String -- compose it with interpolation "
+                          "(`Console.errorln($\"cannot open {path}\")`) rather than a format and "
+                          "arguments",
+                          call->loc);
+                }
+                for (const auto& a : call->args) {
+                    const std::string at = typeOf(*a);
+                    const bool literal =
+                        dynamic_cast<const ast::StringLiteralExpr*>(a.get()) != nullptr ||
+                        dynamic_cast<const ast::InterpStringExpr*>(a.get()) != nullptr;
+                    if (!literal && !at.empty() && at != "String" && at != "string") {
+                        error("Console.error expects a String, got '" + at + "'", a->loc);
+                    }
+                }
+                return "void";
+            }
             if (isRead || isPrintf || isPrintln || isPrint) {
                 // The prelude's own library classes (e.g. Logger) may reference Console; their mere
                 // presence must not break a freestanding program that never uses them (unused prelude code
@@ -1887,9 +1918,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // because the codegen indexes all seven and a miscount would be a crash rather than a
             // message: (argvBlob, argc, cwd, envBlob, envCount, mergeErr, showWindow).
             if (fn == "spawnArgv") {
-                if (call->args.size() != 7) {
-                    error("Subproc.spawnArgv takes 7 arguments (argvBlob, argc, cwd, envBlob, "
-                          "envCount, mergeErr, showWindow)",
+                if (call->args.size() != 8) {
+                    error("Subproc.spawnArgv takes 8 arguments (argvBlob, argc, cwd, envBlob, "
+                          "envCount, ownEnv, mergeErr, showWindow)",
                           call->loc);
                 }
                 return "long";

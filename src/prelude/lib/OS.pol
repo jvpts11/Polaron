@@ -566,10 +566,16 @@
             }
 
             // Start it and hand back the running child, for a caller that wants to talk to it.
+            // `ownEnvironment` travels separately from the COUNT, because an empty environment and
+            // "inherit mine" are different instructions -- and passing only the count made them the
+            // same value, so `clearEnv()` handed the child everything this program had. Nothing
+            // failed; the child simply saw it all, and only a program that used the feature for real
+            // found it.
             public method start() returns Subprocess {
                 return Subprocess.fromHandle(
                     Subproc.spawnArgv(this.argvBlob(), this.arguments.size() + 1, this.dir,
                                       this.envBlob(), this.variables.size(),
+                                      this.ownEnvironment ? 1 : 0,
                                       this.combineStderr ? 1 : 0, this.visible ? 1 : 0));
             }
 

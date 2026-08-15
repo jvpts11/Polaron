@@ -2110,11 +2110,16 @@ long long __polaron_subproc_spawn(const char* cmdline) {
 // The argument-vector spawn. Same handle as above, so read/write/alive/close all work unchanged --
 // what changes is that nothing here is parsed by a shell.
 //
-// `cwd` empty means "inherit ours". `envBlob` holds `NAME=VALUE` entries, NUL-separated; when
-// `envCount` is 0 the child inherits our environment, which is what nearly every caller wants.
+// `cwd` empty means "inherit ours". `envBlob` holds `NAME=VALUE` entries, NUL-separated.
+//
+// `ownEnv` AND NOT "envCount > 0", which is how this was first written and was wrong for the same
+// reason as everything else in this area: an EMPTY environment and "inherit mine" arrived as the
+// same value, so `clearEnv()` -- whose entire purpose is running something that must not see what
+// this program was given -- silently handed over the whole environment instead. Nothing failed. The
+// child simply saw everything, and only a program that used the feature for real found it.
 long long __polaron_subproc_spawn_argv(const char* argvBlob, long long argvLen, long long argc,
                                        const char* cwd, const char* envBlob, long long envLen,
-                                       long long envCount, long long mergeErr,
+                                       long long envCount, long long ownEnv, long long mergeErr,
                                        long long showWindow) {
     std::vector<const char*> args = splitBlob(argvBlob, argvLen, static_cast<int>(argc));
     if (args.empty()) {
@@ -2127,12 +2132,20 @@ long long __polaron_subproc_spawn_argv(const char* argvBlob, long long argvLen, 
         }
         appendWindowsArg(cmdline, args[i]);
     }
-    // A doubly-NUL-terminated block, which is the shape CreateProcess wants.
+    // A doubly-NUL-terminated block, which is the shape CreateProcess wants. An EMPTY one is still a
+    // block -- just the terminator -- and that is how a child is given nothing rather than everything.
     std::string envBlock;
-    if (envCount > 0) {
+    if (ownEnv != 0) {
         std::vector<const char*> entries = splitBlob(envBlob, envLen, static_cast<int>(envCount));
         for (const char* e : entries) {
             envBlock.append(e);
+            envBlock.push_back('\0');
+        }
+        // TWO zero bytes end the block: one closing the last string, one closing the block. With
+        // entries that falls out of the loop; with NONE it does not, and a block of a single zero is
+        // malformed -- which is why `clearEnv()` on an empty environment still handed the child
+        // everything. An empty environment is `"\0\0"`, not `"\0"`.
+        if (entries.empty()) {
             envBlock.push_back('\0');
         }
         envBlock.push_back('\0');
@@ -2336,7 +2349,7 @@ long long __polaron_subproc_spawn(const char* cmdline) {
 // guarantee costs an encoding.
 long long __polaron_subproc_spawn_argv(const char* argvBlob, long long argvLen, long long argc,
                                        const char* cwd, const char* envBlob, long long envLen,
-                                       long long envCount, long long mergeErr,
+                                       long long envCount, long long ownEnv, long long mergeErr,
                                        long long showWindow) {
     static_cast<void>(showWindow);   // a Windows affordance; POSIX has no console-window concept
     std::vector<const char*> args = splitBlob(argvBlob, argvLen, static_cast<int>(argc));
@@ -2390,10 +2403,11 @@ long long __polaron_subproc_spawn_argv(const char* argvBlob, long long argvLen, 
             failure = errno;   // the directory was the caller's instruction; running elsewhere is not it
         }
         if (failure == 0) {
-            if (envCount > 0) {
+            if (ownEnv != 0) {
                 // `environ` rather than execvpe, which is a GNU extension that macOS and FreeBSD do
                 // not have -- and the failure would be a link error on the platform nobody built on.
-                // The child is single-threaded and about to exec, so replacing it here is safe.
+                // The child is single-threaded and about to exec, so replacing it here is safe. An
+                // EMPTY vector is still a replacement: the child gets nothing, which is the point.
                 extern char** environ;
                 environ = envp.data();
             }
@@ -2745,6 +2759,25 @@ long long __polaron_secure_random(void) {
     return static_cast<long long>(v);
 }
 #endif
+
+// WRITING TO THE ERROR STREAM, which the language could not do at all.
+//
+// Every diagnostic a Polaron program produced went to stdout, mixed in with whatever the program was
+// actually for -- so a tool's output could not be piped anywhere without its complaints coming along,
+// and a caller reading only stdout could not tell the two apart. It is also the stream
+// `Command.mergeStderr` exists to control, which the library could ask for and no Polaron program
+// could produce.
+//
+// Flushed on every call: a diagnostic held in a buffer when the program dies is a diagnostic that
+// never happened, and the program that dies is the one whose last words matter.
+long long __polaron_write_err(const char* data, long long len) {
+    if (data == nullptr || len <= 0) {
+        return 0;
+    }
+    const size_t n = std::fwrite(data, 1, static_cast<size_t>(len), stderr);
+    std::fflush(stderr);
+    return static_cast<long long>(n);
+}
 
 // ---- Environment variables (spec 34). ----
 
