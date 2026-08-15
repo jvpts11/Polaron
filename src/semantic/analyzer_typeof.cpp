@@ -804,11 +804,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 const std::string& pt = om->paramTypes.front();
                 // Report the name as WRITTEN. A type declared in two namespaces is rewritten to
                 // `Ns__Type` internally, and telling someone their operand does not match `A__Money`
-                // names a class they never wrote.
-                auto asWritten = [](const std::string& s) {
-                    const auto p = s.rfind("__");
-                    return p == std::string::npos ? s : s.substr(p + 2);
-                };
+                // names a class they never wrote. Through the one shared projection now: this used to
+                // be a hand-rolled `rfind("__")` here and another copy elsewhere, applied where
+                // somebody remembered -- and it also says the FULL PATH when the bare name genuinely
+                // identifies two types, which is exactly when the reader needs it.
+                auto asWritten = [this](const std::string& s) { return typeAsWritten(s); };
                 if (!pt.empty() && !isSubtype(rt, pt) && !intLiteralFits(*bin->rhs, pt)) {
                     error("the right operand of '" + op + "' is '" + asWritten(rt) + "', but '" +
                               asWritten(baseType(lt)) + "' declares `operator" + op + "(" + asWritten(pt) +

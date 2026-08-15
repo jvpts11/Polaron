@@ -109,8 +109,20 @@ target_link_libraries(polc PRIVATE polaron_core)
 # Reserve a large stack: several compiler passes (parse, sema, codegen, and LLVM's own recursion) descend
 # recursively over the whole program, so the 1 MB default overflows on big inputs (a large multi-file
 # program like the Forge IDE). 256 MB reserve keeps deep-but-bounded recursion well inside the stack.
-if(MSVC)
-    target_link_options(polc PRIVATE /STACK:268435456)
+#
+# THE FLAG FOLLOWS THE LINKER, NOT THE COMPILER, and branching on `MSVC` got that wrong. Building the
+# compiler itself with clang++ on Windows takes the `else` branch and hands `-Wl,-z,stacksize=...` to
+# lld-link, which knows no `-z` and reads the rest as a FILENAME:
+#
+#     lld-link: error: could not open 'stacksize=268435456': no such file or directory
+#
+# -- an error about a missing file, for a flag. Everything compiled; only the final link failed.
+if(WIN32)
+    if(MSVC)
+        target_link_options(polc PRIVATE /STACK:268435456)      # cl/clang-cl driver
+    else()
+        target_link_options(polc PRIVATE -Wl,/stack:268435456)  # clang++ driver over lld-link
+    endif()
 else()
     target_link_options(polc PRIVATE -Wl,-z,stacksize=268435456)
 endif()
