@@ -2256,6 +2256,67 @@ static void collectReleasedRegions(const ast::Stmt* s, std::set<std::string>& ou
     }
 }
 
+// WHAT A CLASS'S REGION FIELDS ACCEPT, READ BEFORE ANY METHOD IS ANALYZED.
+//
+// A region field is given its constraints where it is assigned -- `this.pen = itself.allocate(...)
+// .accepts({Dog})`, in the constructor -- and constructors are analyzed AFTER the methods. So every
+// method body was checked against a field region that had no constraints yet, and
+// `checkRegionAccepts` took the "declares neither accepts nor rejects, so it takes anything" path:
+// a `Pool<Dog>` accepted a `Cat` without a word. The whole promise of a typed arena -- the compiler
+// refuses the wrong type at the point it is written -- was off by an ordering.
+//
+// So the constraints are collected in their own pass over the constructors first. Statement kinds
+// with bodies are walked too, because an `accepts` written inside an `if` still types the region.
+static void collectRegionFieldConstraints(
+    const ast::Stmt* s, const std::string& cls,
+    std::unordered_map<std::string, RegionConstraints>& out);
+
+static void collectRegionFieldsInBlock(
+    const ast::Block* b, const std::string& cls,
+    std::unordered_map<std::string, RegionConstraints>& out) {
+    if (b == nullptr) {
+        return;
+    }
+    for (const ast::StmtPtr& st : b->statements) {
+        collectRegionFieldConstraints(st.get(), cls, out);
+    }
+}
+
+static void collectRegionFieldConstraints(
+    const ast::Stmt* s, const std::string& cls,
+    std::unordered_map<std::string, RegionConstraints>& out) {
+    if (s == nullptr) {
+        return;
+    }
+    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) {
+        const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(as->value.get());
+        const auto* mem = dynamic_cast<const ast::MemberExpr*>(as->target.get());
+        if (ri != nullptr && mem != nullptr) {
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                oid != nullptr && oid->name == "this") {
+                out[cls + "." + mem->member] =
+                    RegionConstraints{ri->accepts, ri->rejects};
+            }
+        }
+        return;
+    }
+    if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(s)) {
+        collectRegionFieldsInBlock(&ifs->thenBlock, cls, out);
+        if (ifs->elseBlock) {
+            collectRegionFieldsInBlock(ifs->elseBlock.get(), cls, out);
+        }
+        return;
+    }
+    if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(s)) {
+        collectRegionFieldsInBlock(&wh->body, cls, out);
+        return;
+    }
+    if (const auto* fs = dynamic_cast<const ast::ForStmt*>(s)) {
+        collectRegionFieldsInBlock(&fs->body, cls, out);
+        return;
+    }
+}
+
 // The body of a method of the class being analyzed, or null if there is no such method here (it may
 // be inherited, or the call may be `super(...)` -- both of which the caller treats conservatively).
 const ast::Block* SemanticAnalyzer::methodBodyInCurrentClass(const std::string& name) const {
@@ -2382,12 +2443,17 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
                 if (released.count(fname) > 0) {
                     continue;
                 }
+                // NAMED AS THE AUTHOR WROTE IT. `Kennel$Dog` is a generic INSTANCE the compiler
+                // made, and telling somebody to add `~Kennel$Dog()` asks for a destructor they
+                // cannot write -- the fix belongs on the template, `Kennel`. A message about code
+                // has to name the code that exists in the file.
+                const std::string shown = cls.name.substr(0, cls.name.find('$'));
                 error(dtor == nullptr
-                          ? "class '" + cls.name + "' owns the region field '" + fname +
+                          ? "class '" + shown + "' owns the region field '" + fname +
                                 "' and has no destructor, so the region is never given back -- every "
-                                "instance leaks all of it. Add `public destructor ~" + cls.name +
+                                "instance leaks all of it. Add `public destructor ~" + shown +
                                 "() returns void { release region this." + fname + "; }`"
-                          : "the destructor of '" + cls.name + "' does not release the region field '" +
+                          : "the destructor of '" + shown + "' does not release the region field '" +
                                 fname + "'. A region is memory this object owns; nothing gives it back "
                                 "on its own. Add `release region this." + fname + ";`",
                       floc);
@@ -2850,6 +2916,14 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         for (const ast::Param& p : c->params) {
                             checkTypeAccessible(typeRefStr(p.type), p.loc);
                         }
+                    }
+                }
+                // What this class's region fields accept, BEFORE any method body is checked against
+                // them: the constraints are written in the constructor, and constructors are
+                // analyzed after the methods. See collectRegionFieldConstraints.
+                for (const ast::MemberPtr& member : cls.members) {
+                    if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
+                        collectRegionFieldsInBlock(&c->body, cls.name, fieldRegionConstraints_);
                     }
                 }
                 analyzeFieldInits(cls);

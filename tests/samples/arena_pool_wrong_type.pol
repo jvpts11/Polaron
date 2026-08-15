@@ -1,0 +1,50 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program ArenaPoolWrongType;
+
+// THE OTHER HALF OF A TYPED ARENA: the refusal.
+//
+// A region declared `accepts({T})` must reject everything else, and for a region held in a FIELD it
+// rejected nothing at all -- the check ran for a region in a local and was never reached for one in
+// a field, so `accepts` on the arena of a container (the only place a container CAN keep it) meant
+// nothing. That is what makes this arena different from every other language's: not that it is fast,
+// but that putting the wrong thing in it is a compile error.
+//
+// Expected: `region 'this.pen' does not accept type 'Cat'`
+public bundle Main {
+    public namespace App {
+
+        public class Dog {
+            public mutable int n;
+            public constructor Dog() { this.n = 0; }
+        }
+
+        public class Cat {
+            public mutable int n;
+            public constructor Cat() { this.n = 0; }
+        }
+
+        public class Kennel<T> {
+            private mutable region pen;
+            public constructor Kennel() {
+                this.pen = itself.allocate(1 kilobytes).accepts({T});
+            }
+            public method sneak() returns Cat* {
+                return new Cat() in region this.pen;   // refused: this pen holds Dogs
+            }
+            public destructor ~Kennel() returns void {
+                release region this.pen;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Kennel<Dog> k = new Kennel<Dog>() on heap;
+                Cat* c = k.sneak();
+                System.IO.Console.printf("n=%d\n", c.n);
+                delete k;
+                return;
+            }
+        }
+    }
+}
