@@ -145,9 +145,19 @@ public bundle Main {
                 // follows -- says no. That gap is the reason `isSymbolicLink` exists.
                 Files.delete(target);
                 mutable boolean dangling = Files.isSymbolicLink(link) && !Files.exists(link);
+                // A link to a DIRECTORY is a separate call because Windows must be told at creation
+                // which kind it is -- it cannot look at a target that does not exist yet.
+                String dirTarget = Paths.join(root, "sym-dir");
+                String dirLink = Paths.join(root, "sym-dir-link");
+                Files.createDirectory(dirTarget);
+                Files.write(Paths.join(dirTarget, "inside.txt"), "here");
+                mutable boolean dirLinked = Files.createDirectoryLink(dirTarget, dirLink) &&
+                                            Files.read(Paths.join(dirLink, "inside.txt"))
+                                                 .equals("here");
                 System.IO.Console.printf(
-                    "symlink: permitted=1 isLink=%d target=%d follows=%d dangling=%d\n",
-                    isLink ? 1 : 0, reads ? 1 : 0, follows ? 1 : 0, dangling ? 1 : 0);
+                    "symlink: permitted=1 isLink=%d target=%d follows=%d dangling=%d dir=%d\n",
+                    isLink ? 1 : 0, reads ? 1 : 0, follows ? 1 : 0, dangling ? 1 : 0,
+                    dirLinked ? 1 : 0);
             }
 
             // The three answers a watcher exists to give, and the rule that a change is reported once.
