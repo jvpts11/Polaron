@@ -1,0 +1,99 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+import System.Concurrency.Barrier;
+import System.Concurrency.ReadWriteLock;
+import System.Concurrency.atomic;
+program BarrierRwlock;
+
+// TWO SYNCHRONISERS THE LIBRARY SHIPPED AND NOTHING EXERCISED. Found by counting: of 285 standard
+// library types, 25 were touched by no sample, and these two were the ones where being wrong costs
+// the most -- a barrier that lets a thread through early or a lock that admits a writer beside a
+// reader is a data race that appears once a week in production and never on the machine that wrote
+// it.
+//
+// The BARRIER is checked by what it makes impossible: every thread bumps `before`, waits, then reads
+// it. If the barrier holds, each of them reads the FULL count -- a thread released early would read
+// a smaller one, so `minSeen` is the assertion.
+//
+// The LOCK is checked the same way: writers increment a counter under the write lock, and a reader
+// that ever sees a half-finished pair of fields would report it.
+//
+// Prints: parties=4 minSeen=4 writes=400 consistent=1
+public bundle Main {
+    public namespace App {
+
+        public class Shared {
+            public static mutable atomic<int> before;
+            public static mutable atomic<int> minSeen;
+            public static mutable Barrier gate;
+            public static mutable ReadWriteLock lock;
+            // The pair a reader must never catch mid-update: `a` and `b` are always written together
+            // under the write lock, so `b` is always twice `a`.
+            public static mutable int a;
+            public static mutable int b;
+            public static mutable atomic<int> torn;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shared.before = new atomic<int>(0) on heap;
+                Shared.minSeen = new atomic<int>(99) on heap;
+                Shared.gate = new Barrier(4) on heap;
+                Shared.lock = new ReadWriteLock() on heap;
+                Shared.a = 0;
+                Shared.b = 0;
+                Shared.torn = new atomic<int>(0) on heap;
+
+                function<void> phase = lambda() returns void {
+                    Shared.before.add(1);
+                    Shared.gate.arrive();
+                    int seen = Shared.before.get();
+                    // The smallest count anybody saw after the barrier: 4 if it held.
+                    if (seen < Shared.minSeen.get()) { Shared.minSeen.set(seen); }
+                };
+                mutable Thread[] ts = new Thread[4]();
+                for (mutable int i = 0; i < 4; i++) {
+                    ts[i] = new Thread(phase) on heap;
+                    ts[i].start();
+                }
+                for (mutable int i = 0; i < 4; i++) { ts[i].join(); }
+                System.IO.Console.printf("parties=%d minSeen=%d\n",
+                                         Shared.before.get(), Shared.minSeen.get());
+
+                // Writers under the write lock, readers under the read lock, all at once.
+                function<void> writer = lambda() returns void {
+                    for (mutable int i = 0; i < 100; i++) {
+                        Shared.lock.writeLock();
+                        Shared.a = Shared.a + 1;
+                        Shared.b = Shared.a * 2;
+                        Shared.lock.writeUnlock();
+                    }
+                };
+                function<void> reader = lambda() returns void {
+                    for (mutable int i = 0; i < 200; i++) {
+                        Shared.lock.readLock();
+                        if (Shared.b != Shared.a * 2) { Shared.torn.add(1); }
+                        Shared.lock.readUnlock();
+                    }
+                };
+                mutable Thread[] ws = new Thread[4]();
+                for (mutable int i = 0; i < 4; i++) {
+                    ws[i] = new Thread(writer) on heap;
+                }
+                mutable Thread[] rs = new Thread[2]();
+                for (mutable int i = 0; i < 2; i++) {
+                    rs[i] = new Thread(reader) on heap;
+                }
+                for (mutable int i = 0; i < 4; i++) { ws[i].start(); }
+                for (mutable int i = 0; i < 2; i++) { rs[i].start(); }
+                for (mutable int i = 0; i < 4; i++) { ws[i].join(); }
+                for (mutable int i = 0; i < 2; i++) { rs[i].join(); }
+
+                mutable int consistent = 0;
+                if (Shared.torn.get() == 0) { consistent = 1; }
+                System.IO.Console.printf("writes=%d consistent=%d\n", Shared.a, consistent);
+                return;
+            }
+        }
+    }
+}

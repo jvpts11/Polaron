@@ -3251,6 +3251,31 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # TWO SYNCHRONISERS THE LIBRARY SHIPPED AND NOTHING EXERCISED. Found by counting: of 285
+        # standard library types, 25 were touched by no sample, and these are the two where being
+        # wrong costs the most. Both are checked by what they make IMPOSSIBLE -- a thread released
+        # early sees a smaller count, a reader that catches a half-written pair reports it -- rather
+        # than by timing, which is how a concurrency test becomes a coin toss. Ran 8x clean.
+        add_test(NAME codegen_barrier_rwlock_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/barrier_rwlock.pol"
+            "-DEXPECTED=parties=4 minSeen=4 writes=400 consistent=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # THE REST OF WHAT NOTHING RAN: zlib (round trip), Mass (two spellings of one quantity agree),
+        # the exponential distribution (CDF from 0 to 1, quantile inverts it), and a String-keyed
+        # HashMap. Properties rather than magic numbers, so the test says what is required and not
+        # merely what happened once.
+        add_test(NAME codegen_untested_corners_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/untested_corners.pol"
+            "-DEXPECTED=zlib=1 mass=1 exp=1 map=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
