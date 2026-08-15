@@ -3276,6 +3276,19 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THE VERBS THE COLLECTIONS WERE MISSING: ArrayList.sort in place (sortedBy duplicates the
+        # list), addAll/reverse/lastIndexOf, HashMap.keys()/values()/clear(). And a LIST OF BOOLEANS,
+        # which did not compile at all -- a collection requires `equalsKey` of its element type and
+        # boolean was left out of the Hashable builtins as "not a useful map key", which is true and
+        # is the wrong test.
+        add_test(NAME codegen_collection_verbs_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_verbs.pol"
+            "-DEXPECTED=sorted=1/2/3/5/8 reversed=8/5/3/2/1 last=2 all=7 keys=3 cleared=0 flags=3 firstOff=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

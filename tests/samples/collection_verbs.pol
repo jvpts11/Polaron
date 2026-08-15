@@ -1,0 +1,75 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+import System.Text.StringBuilder;
+program CollectionVerbs;
+
+// THE VERBS THE COLLECTIONS WERE MISSING.
+//
+//   * `ArrayList.sort` IN PLACE. `sortedBy` builds a second list and returns it, which is right when
+//     the original is still wanted and is a full duplication when it is not -- and "put this list in
+//     order" is the commoner of the two.
+//   * `addAll`, `reverse`, `lastIndexOf`: written by hand at every call site otherwise, and the loop
+//     is the same loop every time.
+//   * `HashMap.keys()`, `values()`, `clear()`. The map could hand back an ARRAY, which the caller
+//     then has to delete and walk into a list; and it could not be emptied without being thrown away,
+//     which is what a cache does between runs.
+//
+// And a LIST OF BOOLEANS, which did not compile at all: a collection requires `equalsKey` of its
+// element type and `boolean` was deliberately left out of the Hashable builtins on the grounds that
+// it is not a useful map key. True -- and it is the wrong test, because `indexOf(true)` on a list is
+// an ordinary question, and the error surfaced inside the standard library on a line the author of
+// the list never saw.
+//
+// Prints:
+//   sorted=1/2/3/5/8 reversed=8/5/3/2/1 last=2
+//   all=7 keys=3 cleared=0
+//   flags=3 firstOff=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> xs = new ArrayList<int>() on heap;
+                xs.add(5); xs.add(3); xs.add(8); xs.add(1); xs.add(2);
+                xs.sort(lambda(int a, int b) returns int { return a - b; });
+                System.IO.Console.printf("sorted=%s", Main.join(xs));
+                xs.reverse();
+                System.IO.Console.printf(" reversed=%s", Main.join(xs));
+                System.IO.Console.printf(" last=%d\n", xs.lastIndexOf(3));
+
+                mutable ArrayList<int> more = new ArrayList<int>() on heap;
+                more.add(13); more.add(21);
+                xs.addAll(more);
+
+                mutable HashMap<String, int> ages = new HashMap<String, int>() on heap;
+                ages.put("ada", 36);
+                ages.put("grace", 45);
+                ages.put("alan", 41);
+                mutable ArrayList<String> names = ages.keys();
+                mutable ArrayList<int> values = ages.values();
+                mutable int total = 0;
+                for (mutable int i = 0; i < values.size(); i++) { total = total + values.get(i); }
+                System.IO.Console.printf("all=%d keys=%d", xs.size(), names.size());
+                ages.clear();
+                System.IO.Console.printf(" cleared=%d\n", ages.size());
+
+                // A list of booleans, and a question about it.
+                mutable ArrayList<boolean> flags = new ArrayList<boolean>() on heap;
+                flags.add(true);
+                flags.add(false);
+                flags.add(true);
+                System.IO.Console.printf("flags=%d firstOff=%d\n", flags.size(), flags.indexOf(false));
+                return;
+            }
+
+            private static method join(ArrayList<int> xs) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < xs.size(); i++) {
+                    if (i > 0) { sb.append("/"); }
+                    sb.appendInt(xs.get(i));
+                }
+                return sb.toString();
+            }
+        }
+    }
+}
