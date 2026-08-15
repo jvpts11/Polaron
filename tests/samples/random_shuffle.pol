@@ -1,0 +1,65 @@
+import System.IO.Console;
+import System.Math.Random;
+import System.Arrays.Ints;
+import System.Arrays.Arrays;
+program RandomShuffle;
+
+// SHUFFLING AND PICKING (System.Math.Random). The generator could produce numbers and there was
+// nothing to DO with them to an array: every program that deals a hand, picks a level or randomises
+// a trial had to write Fisher-Yates by hand -- and the version people write from memory, picking
+// from the WHOLE array each time, does not produce a uniform permutation.
+//
+// The test does not assert a particular order, which would only pin this generator's seed: it
+// asserts the properties a shuffle must have. It is a PERMUTATION (same multiset, checked by
+// sorting it back), it is deterministic for a given seed (two generators seeded alike agree), and
+// it actually moved something.
+//
+// Prints: same=1 moved=1 deterministic=1 picked=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int[] a = new int[20]();
+                for (mutable int i = 0; i < 20; i++) { a[i] = i; }
+
+                mutable Random r = new Random(cast<ulong>(12345)) on heap;
+                r.shuffle<int>(a);
+
+                // Still the same twenty numbers: sort it back and compare with 0..19.
+                mutable int[] check = Arrays.copyOf<int>(a, 20);
+                Ints.sort(check);
+                mutable int same = 1;
+                for (mutable int i = 0; i < 20; i++) {
+                    if (check[i] != i) { same = 0; }
+                }
+                // ...and it is no longer in order (with 20 elements, the chance of the identity
+                // permutation is 1 in 20!, so this is a real check rather than a flaky one).
+                mutable int moved = 0;
+                if (!Ints.isSorted(a)) { moved = 1; }
+
+                // Same seed, same permutation: a deterministic generator is what makes a failing
+                // simulation reproducible.
+                mutable int[] b = new int[20]();
+                for (mutable int i = 0; i < 20; i++) { b[i] = i; }
+                mutable Random r2 = new Random(cast<ulong>(12345)) on heap;
+                r2.shuffle<int>(b);
+                mutable int deterministic = 1;
+                for (mutable int i = 0; i < 20; i++) {
+                    if (a[i] != b[i]) { deterministic = 0; }
+                }
+
+                // `pick` returns an element that is actually in the array.
+                int one = r.pick<int>(a);
+                mutable int picked = 0;
+                if (one >= 0 && one < 20) { picked = 1; }
+
+                System.IO.Console.printf("same=%d moved=%d deterministic=%d picked=%d\n",
+                                         same, moved, deterministic, picked);
+                delete check;
+                delete b;
+                delete a;
+                return;
+            }
+        }
+    }
+}

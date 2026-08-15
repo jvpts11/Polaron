@@ -3227,6 +3227,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # SHUFFLING AND PICKING: the generator could produce numbers and there was nothing to do with
+        # them to an array. Asserts the PROPERTIES a shuffle must have -- it is a permutation, it is
+        # deterministic for a seed, it moved something -- rather than a particular order, which would
+        # only pin this generator's internals.
+        add_test(NAME codegen_random_shuffle_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/random_shuffle.pol"
+            "-DEXPECTED=same=1 moved=1 deterministic=1 picked=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
