@@ -2327,33 +2327,69 @@ long long __polaron_subproc_spawn_argv(const char* argvBlob, long long argvLen, 
     }
     envp.push_back(nullptr);
 
-    int inPipe[2], outPipe[2];
+    int inPipe[2], outPipe[2], errPipe[2];
     if (pipe(inPipe) != 0) return 0;
     if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return 0; }
+    // A THIRD PIPE THAT CARRIES ONLY A FAILURE. On Windows a program that is not there makes
+    // CreateProcess fail, so the spawn answers 0 and the caller is told. On POSIX the fork succeeds
+    // and only the CHILD discovers there is nothing to exec -- it exits 127, which is also a code a
+    // real program may return, so "not found" and "ran and failed" become the same answer.
+    //
+    // The close-on-exec trick removes the guess: the child writes its errno here if exec fails, and
+    // a successful exec closes the descriptor silently. The parent's read therefore returns bytes
+    // (it failed, and why) or zero (it worked) -- and blocks until one of the two is known, which is
+    // also the synchronisation that makes the answer trustworthy.
+    if (pipe(errPipe) != 0) {
+        close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
+        return 0;
+    }
+    fcntl(errPipe[1], F_SETFD, FD_CLOEXEC);
     pid_t pid = fork();
-    if (pid < 0) { close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]); return 0; }
+    if (pid < 0) {
+        close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
+        close(errPipe[0]); close(errPipe[1]);
+        return 0;
+    }
     if (pid == 0) {
         setpgid(0, 0);   // own group, so close() reaches the whole subtree
+        close(errPipe[0]);
         dup2(inPipe[0], 0);
         dup2(outPipe[1], 1);
         if (mergeErr != 0) dup2(outPipe[1], 2);
         close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
+        int failure = 0;
         if (cwd != nullptr && cwd[0] != 0 && chdir(cwd) != 0) {
-            _exit(127);   // the directory was the caller's instruction; running elsewhere is not it
+            failure = errno;   // the directory was the caller's instruction; running elsewhere is not it
         }
-        if (envCount > 0) {
-            // `environ` rather than execvpe, which is a GNU extension that macOS and FreeBSD do not
-            // have -- and the failure would be a link error on the platform nobody built on. The
-            // child is single-threaded and about to exec, so replacing it here is safe.
-            extern char** environ;
-            environ = envp.data();
+        if (failure == 0) {
+            if (envCount > 0) {
+                // `environ` rather than execvpe, which is a GNU extension that macOS and FreeBSD do
+                // not have -- and the failure would be a link error on the platform nobody built on.
+                // The child is single-threaded and about to exec, so replacing it here is safe.
+                extern char** environ;
+                environ = envp.data();
+            }
+            execvp(argv[0], argv.data());
+            failure = errno;   // exec only returns on failure
         }
-        execvp(argv[0], argv.data());
-        _exit(127);   // exec only returns on failure -- 127 is the shell's "not found", kept for parity
+        const ssize_t wrote = write(errPipe[1], &failure, sizeof failure);
+        static_cast<void>(wrote);
+        _exit(127);   // the shell's "not found", kept for parity with what a shell would have said
     }
     static_cast<void>(setpgid(pid, pid));
     close(inPipe[0]);
     close(outPipe[1]);
+    close(errPipe[1]);   // the child holds the only writing end now
+    int childFailure = 0;
+    const ssize_t got = read(errPipe[0], &childFailure, sizeof childFailure);
+    close(errPipe[0]);
+    if (got > 0) {
+        int status = 0;
+        waitpid(pid, &status, 0);   // it is already exiting; reap it rather than leave a zombie
+        close(inPipe[1]);
+        close(outPipe[0]);
+        return 0;
+    }
     LdpSubproc* s = static_cast<LdpSubproc*>(std::malloc(sizeof(LdpSubproc)));
     s->pid = pid;
     s->fdIn = inPipe[1];

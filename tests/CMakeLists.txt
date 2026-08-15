@@ -4970,6 +4970,17 @@ if(POLARON_WITH_LLVM)
             "-DCONTAINS=exit code: ok=0 bad=3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # ...and a program that is not there answers -1 on BOTH platforms. Windows learns that from
+        # CreateProcess; POSIX forks successfully and only the child finds out, so it needs a
+        # close-on-exec pipe carrying the child's errno -- without it, "not found" and a program that
+        # genuinely returned 127 are the same answer.
+        add_test(NAME codegen_process_no_shell_missing COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/process_no_shell.pol"
+            "-DCONTAINS=missing program: exit=-1 outputLen=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # sortedBy (spec 34): order a collection by a comparator lambda, leaving the original untouched.
         add_test(NAME codegen_collection_sorted_runs COMMAND "${CMAKE_COMMAND}"
