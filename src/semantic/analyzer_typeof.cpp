@@ -2538,6 +2538,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "annotations" && call->args.empty()) {
                     return "ArrayList$Annotation";
                 }
+                // Hashable by identity, like the other tokens: a program that wires objects together
+                // keeps its types in a collection, and a type token is a global constant, so
+                // identity is equality for it.
+                if (mem->member == "equalsKey" && call->args.size() == 1) {
+                    return "boolean";
+                }
+                if (mem->member == "hash" && call->args.empty()) {
+                    return "long";
+                }
                 error("Type has no method '" + mem->member + "'", call->loc);
                 return "";
             }

@@ -1,0 +1,143 @@
+    public namespace Inject {
+        // WIRING OBJECTS TOGETHER WITHOUT A FRAMEWORK.
+        //
+        // A dependency container is normally a large piece of machinery -- Spring, Guice, .NET's
+        // ServiceCollection -- and most of that machinery exists to work around what the language
+        // cannot do: read a type's fields, learn what each one is declared as, and construct one by
+        // type at run time. Polaron does all three, so the container is a list of types and one
+        // recursive method.
+        //
+        // WHAT IT IS FOR, said plainly: a program assembled from parts that do not name each other's
+        // constructors. `Engine` says it needs a `Clock`; the program says which `Clock`; nobody
+        // passes one down through four layers of constructor to get it there.
+        //
+        // AN INJECTED FIELD IS A `nullable T*`, AND THAT IS THE HONEST TYPE. Before the container
+        // fills it the field HAS no value, and the language refuses a constructor that leaves an
+        // ordinary field unassigned -- correctly, because a new object's storage is whatever was
+        // last there. A nullable pointer is the declaration that says "absent until something
+        // supplies it", which is exactly what an injected field is, so nothing had to be weakened to
+        // make this work.
+        //
+        // CYCLES ARE NOT A PROBLEM HERE, and that falls out rather than being handled: an instance is
+        // registered BEFORE its fields are wired, so `A` needing `B` needing `A` finds `A` already
+        // present and both end up pointing at each other. Constructor injection cannot do this, which
+        // is why the containers that use it need a cycle detector and a diagnostic.
+        public annotation Inject {}
+
+        public class Services {
+            private mutable ArrayList<String> names;      // registered type name -> parallel arrays
+            private mutable ArrayList<Type> types;
+            // BUILT LAZILY, and recorded by INDEX rather than by a nullable slot: `builtAt` holds
+            // -1 until the type is first asked for, and then the position of its instance in `made`.
+            //
+            // The obvious spelling is `ArrayList<nullable Object>`, and it does not compile: the
+            // collection requires its element type to satisfy `equalsKey(T)`, and a `nullable Object`
+            // is not accepted where a non-null `Object` parameter is declared. That is the
+            // collection's rule working correctly -- a container that may hold null cannot promise
+            // its elements answer a method -- so the absence is kept beside the list instead of
+            // inside it.
+            private mutable ArrayList<int> builtAt;
+            private mutable ArrayList<Object> made;
+            private mutable ArrayList<String> unwiredFields;
+
+            public constructor Services() {
+                this.names = new ArrayList<String>() on heap;
+                this.types = new ArrayList<Type>() on heap;
+                this.builtAt = new ArrayList<int>() on heap;
+                this.made = new ArrayList<Object>() on heap;
+                this.unwiredFields = new ArrayList<String>() on heap;
+            }
+
+            // REGISTER A TYPE. One instance per registered type, built the first time it is asked
+            // for -- the default a container should have, because a service that is expensive to
+            // build and never used should not be built.
+            public method provide<T>() returns void {
+                Type t = reflect.typeOf<T>();
+                if (this.indexOf(t.name()) >= 0) { return; }   // registering twice is not an error
+                this.names.add(t.name());
+                this.types.add(t);
+                this.builtAt.add(-1);
+            }
+
+            // BUILD (OR RETURN) THE INSTANCE OF T, with everything it declares wired in.
+            public method build<T>() returns nullable Object {
+                Type t = reflect.typeOf<T>();
+                return this.resolve(t.name(), 0);
+            }
+
+            // Whether every `[Inject]` field of everything built so far found a provider. A program
+            // asks this once at startup: a container that silently leaves a field null is a null
+            // dereference three screens later, and the place to notice is where the wiring happened.
+            public method complete() returns boolean { return this.unwiredFields.size() == 0; }
+            public method unwiredCount() returns int { return this.unwiredFields.size(); }
+            public method unwiredAt(int i) returns String { return this.unwiredFields.get(i); }
+
+            // The instance for a registered type name, building it if this is the first ask. The
+            // instance is stored BEFORE its fields are wired, which is what makes a cycle resolve
+            // rather than recurse.
+            private method resolve(String name, int depth) returns nullable Object {
+                int at = this.indexOf(name);
+                if (at < 0) { return null; }
+                int have = this.builtAt.get(at);
+                if (have >= 0) { return this.made.get(have); }
+                Type t = this.types.get(at);
+                Object obj = t.instantiate();
+                this.made.add(obj);
+                this.builtAt.set(at, this.made.size() - 1);   // BEFORE wiring: see the cycle note
+                this.wire(t, obj, depth);
+                return obj;
+            }
+
+            // Fill every `[Inject]` field of `obj` from the container. A field whose type nobody
+            // provides is left null and RECORDED -- see `complete()`.
+            private method wire(Type t, Object obj, int depth) returns void {
+                if (depth > 16) { return; }   // a graph this deep is a mistake, not a design
+                mutable ArrayList<Field> fs = t.fields();
+                for (mutable int i = 0; i < fs.size(); i++) {
+                    Field f = fs.get(i);
+                    if (!Services.wants(f)) { continue; }
+                    String want = Services.bareTypeName(f.typeName());
+                    nullable Object dep = this.resolve(want, depth + 1);
+                    if (dep == null) {
+                        this.unwiredFields.add(t.name() + "." + f.name());
+                    } else {
+                        f.set(obj, dep);
+                    }
+                }
+            }
+
+            // Does this field ask to be injected? `[Inject]` is a marker the author writes, and
+            // requiring it is deliberate: a container that fills every field it recognises decides
+            // things the author did not ask it to decide.
+            private static method wants(Field f) returns boolean {
+                mutable ArrayList<Annotation> anns = f.annotations();
+                for (mutable int i = 0; i < anns.size(); i++) {
+                    if (anns.get(i).name().equals("Inject")) { return true; }
+                }
+                return false;
+            }
+
+            // `nullable Clock*` -> `Clock`: the name a type was REGISTERED under. An injected field
+            // is declared as a nullable pointer (see the note at the top), and the registry is keyed
+            // by the plain type name.
+            private static method bareTypeName(String declared) returns String {
+                mutable String s = declared;
+                if (s.length() > 9 && s.substring(0, 9).equals("nullable ")) {
+                    s = s.substring(9, s.length());
+                }
+                mutable int end = s.length();
+                for (mutable int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c == '*' || c == '&') { end = i; }
+                }
+                return s.substring(0, end);
+            }
+
+            private method indexOf(String name) returns int {
+                for (mutable int i = 0; i < this.names.size(); i++) {
+                    if (this.names.get(i).equals(name)) { return i; }
+                }
+                return -1;
+            }
+        }
+    }

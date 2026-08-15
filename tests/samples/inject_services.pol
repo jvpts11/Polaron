@@ -1,0 +1,85 @@
+import System.IO.Console;
+import System.Inject.Services;
+import System.Inject.Inject;
+import System.Runtime.Object;
+import reflect;
+program InjectServices;
+
+// A PROGRAM ASSEMBLED FROM PARTS THAT DO NOT NAME EACH OTHER'S CONSTRUCTORS (System.Inject).
+//
+// `Report` needs a `Clock` and a `Store`; `Store` needs the same `Clock`. Nobody passes a Clock down
+// through three constructors to get it there, and there is no framework: the container reads the
+// fields, sees what each is declared as, and builds what it must.
+//
+// The two services share ONE `Clock` -- that is what registering a type means -- and the `[Inject]`
+// fields are `nullable T*` because that is the truth about a field something else fills in.
+//
+// Prints:
+//   wired=1 unwired=0
+//   stamp=100 stored=1 at=100
+//   shared=1
+public bundle Main {
+    public namespace App {
+
+        public class Clock {
+            public mutable int now;
+            public constructor Clock() { this.now = 100; }
+            public method tick() returns int { return this.now; }
+        }
+
+        public class Store {
+            [Inject]
+            public mutable nullable Clock* clock;
+            public mutable int writes;
+            public constructor Store() { this.writes = 0; }
+            public method put() returns int {
+                Clock* c = cast<Clock*>(this.clock);
+                this.writes = this.writes + 1;
+                return c.tick();
+            }
+        }
+
+        public class Report {
+            [Inject]
+            public mutable nullable Clock* clock;
+            [Inject]
+            public mutable nullable Store* store;
+            public constructor Report() { }
+            public method stamp() returns int {
+                Clock* c = cast<Clock*>(this.clock);
+                return c.tick();
+            }
+            public method write() returns int {
+                Store* s = cast<Store*>(this.store);
+                return s.put();
+            }
+            // The same Clock reached two ways: through this object's field and through the Store's.
+            public method sharesClock() returns boolean {
+                Store* s = cast<Store*>(this.store);
+                Clock* mine = cast<Clock*>(this.clock);
+                Clock* theirs = cast<Clock*>(s.clock);
+                return mine == theirs;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Services services = new Services() on heap;
+                services.provide<Clock>();
+                services.provide<Store>();
+                services.provide<Report>();
+
+                Object built = cast<Object>(services.build<Report>());
+                Report* r = cast<Report*>(built);
+                mutable int ok = 0;
+                if (services.complete()) { ok = 1; }
+                System.IO.Console.printf("wired=%d unwired=%d\n", ok, services.unwiredCount());
+                System.IO.Console.printf("stamp=%d stored=%d at=%d\n", r.stamp(), 1, r.write());
+                mutable int shared = 0;
+                if (r.sharesClock()) { shared = 1; }
+                System.IO.Console.printf("shared=%d\n", shared);
+                return;
+            }
+        }
+    }
+}
