@@ -411,6 +411,13 @@ struct CodeGenerator::Impl {
     // Per bundle, what each imported simple name resolves to: "Own" -> { "Paths" -> "Own.World.Paths" }.
     // Filled in the pre-scan; read by resolveClassKey so an import decides here as it does in sema.
     std::unordered_map<std::string, std::unordered_map<std::string, std::string>> bundleImportKey;
+    // WHICH CLASS MENTIONS WHICH, from the analyzer (see SemanticAnalyzer::noteClassRef), and the
+    // closure computed from it: the classes whose bodies this program can actually reach.
+    std::map<std::string, std::set<std::string>> classRefs_;
+    std::set<std::string> demandOwners_;   // never pruned: a `demand` is settled at build time
+    std::set<std::string> reachableClasses_;
+    bool reachabilityOn_ = false;   // false = emit everything, as before
+    void computeReachableClasses();
     // `newtype Name = Underlying;` (spec 24): a distinct type that shares the underlying's
     // representation, so codegen lowers it exactly like the underlying type.
     std::unordered_map<std::string, std::string> newtypes_;

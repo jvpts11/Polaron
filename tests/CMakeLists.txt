@@ -3301,6 +3301,34 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # EMITTING ONLY WHAT THE PROGRAM CAN REACH, checked against the answer that already exists.
+        #
+        # `emitFunctions` used to build a body for every method of every class -- all ~320 of the
+        # standard library -- and GlobalDCE then deleted what nothing reached: on hello_world, 323
+        # classes emitted for TWO surviving functions, which is 143 of its 330 ms spent producing IR
+        # to throw away. Now the reachable set is computed first, from edges the analyzer records
+        # where it already resolves each name.
+        #
+        # The risk of that is a missed edge, which is a symbol that is not there -- and it is testable,
+        # because LLVM's GlobalDCE computes the true answer on the IR. So each of these compiles one
+        # program twice, with the pass on and off, and requires the two FINAL modules to name exactly
+        # the same things. DCE runs either way, so an over-approximation still lands on the identical
+        # result and a hole lands on a smaller one.
+        #
+        # One sample per KIND OF ROOT, because that is where the holes were: an ordinary program, a
+        # polymorphic one (vtables reference bodies), literal suffixes (`64 kilobytes` builds a
+        # ByteSize through a constructor nobody calls), reflection (a Type token takes every method's
+        # address), unimport (the code table anchors by name), the test runner, and a freestanding
+        # program (whose `heap class` is called by generated code alone).
+        foreach(_reach hello_world shapes regions reflect_typeof unimport collection_matrix
+                       inject_services string_freestanding)
+            add_test(NAME reachability_matches_dce_${_reach} COMMAND "${CMAKE_COMMAND}"
+                "-DPOLC=$<TARGET_FILE:polc>"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${_reach}.pol"
+                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/reachability_oracle.cmake")
+        endforeach()
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

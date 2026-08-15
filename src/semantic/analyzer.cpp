@@ -153,10 +153,33 @@ const ClassInfo* SemanticAnalyzer::lookupClass(const std::string& name) const {
     // set is populated only by a program that declares a name the library also declares, or the same
     // name in two of its own namespaces.
     if (!sharedNames_.empty() && sharedNames_.count(name) > 0) {
+        noteClassRef(name);
         return lookupShared(name);
     }
     auto it = classes_.find(name);
+    if (it != classes_.end()) {
+        noteClassRef(name);
+    }
     return it == classes_.end() ? nullptr : &it->second;
+}
+
+// WHICH CLASS MENTIONS WHICH, recorded where the analyzer ALREADY resolves a name.
+//
+// Codegen emits a body for every method of every class -- including the three hundred in the standard
+// library -- and LLVM's GlobalDCE then deletes what nothing reaches: measured on hello_world, 323
+// classes are emitted and two functions survive. To emit only what is reachable, codegen needs to
+// know what reaches what, and the honest way to get that is the way the interrupt call graph already
+// does it: record it WHILE THE ORDINARY WALK HAPPENS.
+//
+// A hand-written visitor over seventy AST node types has one failure mode -- a node nobody remembered
+// -- and here it is not silent but it is late: a missing edge is a symbol that is not there, found at
+// link time. Recording at the funnel every name resolution passes through means anything the compiler
+// can typecheck, this can follow.
+void SemanticAnalyzer::noteClassRef(const std::string& name) const {
+    if (owningClassForRefs_.empty() || name == owningClassForRefs_) {
+        return;
+    }
+    classRefs_[owningClassForRefs_].insert(name);
 }
 
 // WHICH ONE IS MEANT HERE. This is what replaces the renaming pass: instead of rewriting the program
@@ -2888,6 +2911,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 currentClass_ = cls.name;  // keep accurate for checkTypeAccessible's mono exemption
                 currentClassDecl_ = &cls;  // so a delegating call can be followed into its own body
                 enclosingClass_ = cls.name;  // active from here so field inits resolve unqualified calls too
+                owningClassForRefs_ = cls.name;  // what this class's code drags in (see noteClassRef)
                 // Member signature types must also be visible from this namespace -- except for
                 // monomorphized generic instances (name contains '$'), whose members reference the
                 // type arguments by simple name; those were already checked at the template and the

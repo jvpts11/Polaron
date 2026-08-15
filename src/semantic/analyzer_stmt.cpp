@@ -18,6 +18,18 @@ using namespace semutil;   // NOLINT(google-build-using-namespace): as in analyz
 
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* sa = dynamic_cast<const ast::DemandStmt*>(&stmt)) {
+        // A DEMAND IS NOT CODE THAT RUNS -- it is a check the BUILD performs, and it has to fire
+        // whether or not anything calls the method holding it. `sizeof_budget_bad.pol` is exactly
+        // that case, and says so: "in a method of the type, and nothing calls it. It must fail the
+        // build anyway... an assertion that cannot fire is worse than no assertion, because it reads
+        // as protection."
+        //
+        // A size-bearing condition is settled by the code generator (only it knows the target's
+        // layout), so the class holding one must be emitted even when nothing reaches it. Recorded
+        // here, where the analyzer already has the demand in its hand.
+        if (!owningClassForRefs_.empty()) {
+            demandOwners_.insert(owningClassForRefs_);
+        }
         long long v;
         if (!evalConstInt(*sa->condition, v, &constInts_, &comptimeMethods_, &constDoubles_,
                           &enums_)) {

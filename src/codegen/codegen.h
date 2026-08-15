@@ -68,6 +68,13 @@ public:
     // class always gets a vtable, its calls are never devirtualized, and its vtable is writable -- without
     // which a replacement would be installed where nothing ever reads it. Call before generate().
     void setPatchedClasses(const std::set<std::string>& classes);
+    // WHICH CLASS MENTIONS WHICH, from the analyzer. With it, only the bodies a program can reach are
+    // emitted; without it every body is emitted and GlobalDCE deletes the rest, which on hello_world
+    // means 323 classes emitted for two surviving functions.
+    void setClassReferences(const std::map<std::string, std::set<std::string>>& refs);
+    // Classes carrying a build-time assertion: never pruned, because a `demand` fires whether or not
+    // anything calls the method holding it.
+    void setDemandOwners(const std::set<std::string>& owners);
 
     // Seeds the global vtable slot numbering from depended-on bundles (their vtableSlotNames), so a
     // virtual call on an imported object hits the slot its baked-in vtable uses. Call before generate().

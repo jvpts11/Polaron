@@ -978,6 +978,164 @@ void CodeGenerator::Impl::emitBenchmarks(llvm::Function* mainFn) {
     }
 }
 
+// WHICH CLASSES THIS PROGRAM CAN REACH.
+//
+// `emitFunctions` builds a body for every method of every class, and GlobalDCE then deletes what
+// nothing reaches. Measured on hello_world: 323 classes emitted, TWO functions surviving -- so nearly
+// all of the 143 ms this phase costs is spent producing IR that is thrown away one pass later, and
+// the cost is proportional to the size of the standard library rather than to what the program uses.
+//
+// This computes the same answer BEFORE the cost is paid. The edges come from the analyzer, recorded
+// where it already resolved each name (SemanticAnalyzer::noteClassRef) rather than from a second walk
+// over the AST that would go quietly out of date. The roots are everything that can start a chain:
+//
+//   * the entry point's class
+//   * every class with a lifecycle hook -- `onClassLoad` runs at startup whether anything calls it
+//     or not, and its body may name anything
+//   * every class holding a static field or namespace constant, whose initializer runs at startup
+//   * in test mode, every class with a [Test] or [Benchmark] method and their fixtures
+//   * classes named by `unimport`/`reimport`, whose code table anchors them by name at run time
+//   * classes whose vtable slots are rewritten by name (spec 32.8)
+//   * every class of an IMPORTED or LIBRARY bundle, whose consumers this compilation cannot see
+//
+// It is an OVER-approximation on purpose: an edge recorded that need not be costs one emitted body,
+// and an edge missed costs a symbol that is not there. `tests/reachability_oracle.cmake` pins that
+// the final module is identical either way, which is the only honest way to know.
+void CodeGenerator::Impl::computeReachableClasses() {
+    reachableClasses_.clear();
+    std::vector<std::string> work;
+    auto root = [&](const std::string& c) {
+        if (!c.empty() && reachableClasses_.insert(c).second) {
+            work.push_back(c);
+        }
+    };
+    // A class name as the ANALYZER spells it and as CODEGEN keys it are the same string for every
+    // unique name, and differ for a shared one (codegen carries the path). Seed both spellings so a
+    // collision cannot lose an edge.
+    auto rootBoth = [&](const std::string& c) {
+        root(c);
+        const std::size_t dot = c.rfind('.');
+        if (dot != std::string::npos) {
+            root(c.substr(dot + 1));
+        }
+    };
+    // The entry point, as `bundle.namespace.Class.method` -- so its class is everything before the
+    // last dot, and `rootBoth` seeds the bare name beside the path.
+    if (const std::size_t dot = entry.qualifiedName.rfind('.'); dot != std::string::npos) {
+        rootBoth(entry.qualifiedName.substr(0, dot));
+    }
+    // WHAT THE COMPILER ITSELF NAMES, which no program mentions and every program needs.
+    //
+    // `Object` is attached to every class implicitly, so its methods sit in every vtable; and the
+    // runtime faults the compiler emits -- a division by zero, a bounds check, a null dereference,
+    // a bad cast -- construct and throw these exceptions from code that no source file wrote. They
+    // are reached by the generated program even in a source file that says nothing but `return`.
+    //
+    // Same category as the `languageIntrinsic` list the monomorphizer keeps, and for the same
+    // reason: a name the compiler synthesises appears in no user's code and reaches no analysis.
+    for (const char* c : {"Object", "Exception", "ArithmeticException", "DivideByZeroException",
+                          "NullReferenceException", "ClassCastException", "OverflowException",
+                          "UnimportedTypeException", "BundleNotLoadedException",
+                          "BundleAbiMismatchException"}) {
+        rootBoth(c);
+    }
+    for (const ast::Bundle& bundle : program.bundles) {
+        // A library exports its public API to code this compilation never sees, and an imported
+        // bundle's classes are reached from outside too. Neither can be pruned from here.
+        const bool exported = libraryMode || bundle.isImported || bundle.isDynamic;
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                if (exported) {
+                    root(cls.name);
+                    continue;
+                }
+                if (cls.onClassLoad || cls.onFirstInstance || cls.onLastInstanceDestroyed ||
+                    cls.onClassUnload) {
+                    root(cls.name);
+                    continue;
+                }
+                // `heap class X` (spec 36): bare metal has no libc, so codegen's own allocator calls
+                // land HERE -- generated code naming a class no source file calls.
+                if (cls.isHeap) {
+                    root(cls.name);
+                    continue;
+                }
+                // A class owning a `comptime literal` suffix: `64 kilobytes` builds a ByteSize
+                // through its constructor, and the suffix is not a method call the analyzer resolves,
+                // so nothing recorded the edge.
+                bool ownsLiteral = false;
+                for (const ast::MemberPtr& m : cls.members) {
+                    if (dynamic_cast<const ast::LiteralDecl*>(m.get()) != nullptr) {
+                        ownsLiteral = true;
+                    }
+                }
+                if (ownsLiteral) {
+                    root(cls.name);
+                    continue;
+                }
+                for (const ast::MemberPtr& m : cls.members) {
+                    const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get());
+                    if (f != nullptr && f->isStatic && f->init) {
+                        root(cls.name);   // its initializer runs at startup
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // A class holding a `demand`: the assertion is settled while the program is BUILT, so it has to
+    // be reached even when nothing calls the method around it -- which is precisely the case
+    // `sizeof_budget_bad.pol` was written for. An assertion that cannot fire is worse than no
+    // assertion, because it reads as protection.
+    for (const std::string& c : demandOwners_) {
+        rootBoth(c);
+    }
+    for (const std::string& c : unimportableClasses) {
+        rootBoth(c);
+    }
+    for (const std::string& c : countedClasses) {
+        rootBoth(c);
+    }
+    for (const std::string& c : patchedClasses_) {
+        rootBoth(c);
+    }
+    if (testMode) {
+        for (const TestCase& t : testMethods) {
+            rootBoth(t.cls);
+        }
+        for (const auto& [cls, hooks] : testHooks_) {
+            (void)hooks;
+            rootBoth(cls);
+        }
+        for (const BenchCase& b : benchMethods) {
+            const std::size_t dot = b.sym.rfind('.');
+            if (dot != std::string::npos) {
+                rootBoth(b.sym.substr(0, dot));
+            }
+        }
+    }
+    // The closure. Both spellings again on the way out, for the same reason as on the way in.
+    while (!work.empty()) {
+        const std::string cur = work.back();
+        work.pop_back();
+        // A class drags in what it INHERITS FROM, whether or not its code mentions the name: the
+        // base's methods fill the derived vtable's slots, and a constructor chains into the base's.
+        if (auto cit = classes.find(clsKey(cur)); cit != classes.end()) {
+            rootBoth(cit->second.superclass);
+            for (const std::string& iface : cit->second.interfaces) {
+                rootBoth(iface);
+            }
+        }
+        auto it = classRefs_.find(cur);
+        if (it == classRefs_.end()) {
+            continue;
+        }
+        for (const std::string& next : it->second) {
+            rootBoth(next);
+        }
+    }
+}
+
 void CodeGenerator::Impl::emitFunctions() {
     for (const ast::Bundle& bundle : program.bundles) {
         if (bundle.isImported) {
@@ -987,6 +1145,12 @@ void CodeGenerator::Impl::emitFunctions() {
             currentNamespace = ns.name;
             currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
+                // Nothing this program can reach names this class: its bodies would be emitted and
+                // then deleted by GlobalDCE. See computeReachableClasses.
+                if (reachabilityOn_ && reachableClasses_.count(cls.name) == 0 &&
+                    reachableClasses_.count(bundle.name + "." + ns.name + "." + cls.name) == 0) {
+                    continue;
+                }
                 bool hasCtor = false;
                 enclosingClass_ = cls.name;
                 // Announce WHICH class this is, by key: the walk knows, and a body reached from a
