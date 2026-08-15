@@ -2921,9 +2921,24 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                 // What this class's region fields accept, BEFORE any method body is checked against
                 // them: the constraints are written in the constructor, and constructors are
                 // analyzed after the methods. See collectRegionFieldConstraints.
+                //
+                // Only for a class that HAS a region field, which is a handful in any program and
+                // none at all in most. The walk is cheap per class and there are three hundred of
+                // them in the standard library alone, and a pass that runs over everything to serve
+                // a rare declaration is how a compiler gets slower one feature at a time.
+                bool ownsRegion = false;
                 for (const ast::MemberPtr& member : cls.members) {
-                    if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
-                        collectRegionFieldsInBlock(&c->body, cls.name, fieldRegionConstraints_);
+                    if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get())) {
+                        if (typeRefStr(f->type) == "region") {
+                            ownsRegion = true;
+                        }
+                    }
+                }
+                if (ownsRegion) {
+                    for (const ast::MemberPtr& member : cls.members) {
+                        if (const auto* c = dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
+                            collectRegionFieldsInBlock(&c->body, cls.name, fieldRegionConstraints_);
+                        }
                     }
                 }
                 analyzeFieldInits(cls);
