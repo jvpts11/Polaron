@@ -1357,6 +1357,8 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
 #ifdef POLARON_WITH_LLVM
     polaron::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
     codegen.setPatchedClasses(sema.patchedClasses());  // spec 32.8: they need a writable vtable
+    codegen.setClassReferences(sema.classReferences());  // emit only what the program can reach
+    codegen.setDemandOwners(sema.demandOwners());        // ...except a build-time assertion
     // The same source map the rich diagnostics read, so a contract that fails at RUNTIME can quote
     // the clause the way an error quotes the offending line. The two now say the same kind of thing
     // in the same shape, which is the point: a contract is a diagnostic that happens later.

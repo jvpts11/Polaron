@@ -1408,6 +1408,18 @@ void CodeGenerator::Impl::emitVtables() {
         if (l.imported) {
             continue;  // the bundle baked its own vtable; we dispatch via the object
         }
+        // A CLASS NOTHING REACHES GETS NO VTABLE EITHER, and this is not an optimisation but the
+        // other half of not emitting its bodies: a vtable is a table of pointers TO those bodies, so
+        // emitting one for a class whose methods were skipped asks the linker for symbols that do
+        // not exist. It surfaced exactly that way -- `undefined symbol: IpcError.message,
+        // referenced by .rdata`, the .rdata being the table.
+        //
+        // Nothing is lost: an unreached class cannot be instantiated, so no object can carry this
+        // pointer, and GlobalDCE deleted the table in the old build for the same reason.
+        if (reachabilityOn_ && reachableClasses_.count(name) == 0 &&
+            reachableClasses_.count(simpleOf(name)) == 0) {
+            continue;
+        }
         std::vector<llvm::Constant*> entries;
         for (const std::string& slot : l.vtslots) {
             const std::string impl = vtableImpl(name, slot);

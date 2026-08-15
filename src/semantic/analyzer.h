@@ -213,6 +213,13 @@ public:
     const std::vector<SemaError>& errors() const { return errors_; }
     const std::vector<SemaError>& warnings() const { return warnings_; }  // non-fatal diagnostics
     const EntryPoint& entryPoint() const { return entry_; }
+    // WHICH CLASS MENTIONS WHICH -- handed to codegen so it can emit only the bodies a program can
+    // reach, instead of emitting all of them and letting GlobalDCE delete the rest. Collected during
+    // the ordinary walk; see noteClassRef.
+    const std::map<std::string, std::set<std::string>>& classReferences() const { return classRefs_; }
+    // Classes whose code must be generated whatever else is pruned, because it carries a build-time
+    // assertion the code generator has to settle.
+    const std::set<std::string>& demandOwners() const { return demandOwners_; }
 
 private:
     void error(std::string message, SourceLocation loc);
@@ -332,6 +339,8 @@ private:
                        const std::vector<bool>& namedOnly, const std::string& desc);
     std::string flattenCallee(const ast::Expr& expr) const;
     const ClassInfo* lookupClass(const std::string& name) const;
+    // Records that the class currently being analyzed mentions `name`; see the note at the definition.
+    void noteClassRef(const std::string& name) const;
     // Candidate names for a "did you mean?" suggestion on a name error. namesInScope: everything usable
     // as a bare identifier right here (locals, namespace constants, the current enum's constants).
     // fieldNames: every field of a class, walking its superclasses.
@@ -610,6 +619,18 @@ private:
         std::vector<std::pair<std::string, SourceLocation>> unsharedState;
     };
     std::map<std::string, MethodFacts> methodFacts_;   // "Class.method" -> what it did and called
+    // WHICH CLASS MENTIONS WHICH, for reachability-driven emission (see noteClassRef). Mutable
+    // because it is filled from `lookupClass`, which is const and is the funnel every name
+    // resolution goes through -- recording there is what keeps this complete without a second walk
+    // over the AST that would go quietly out of date.
+    mutable std::map<std::string, std::set<std::string>> classRefs_;
+    // Classes holding a `demand` -- a compile-time assertion, which must be settled whether or not
+    // anything calls the method around it. See the note at the demand statement.
+    std::set<std::string> demandOwners_;
+    // The class whose members are being analyzed, for the above. Distinct from `currentClass_`
+    // (cleared inside a static method) and from `enclosingClass_` (which a lambda body inherits):
+    // this one answers "whose code is this, for the purpose of what it drags in".
+    std::string owningClassForRefs_;
     std::string currentMethodKey_;                     // "Class.method" being analyzed, "" outside one
     // The trap parameter's name while an interrupt body is being analyzed ("" otherwise). Writing
     // through it must be refused -- see the assignment check for the measurement that decided it.

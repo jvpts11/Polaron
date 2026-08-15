@@ -78,6 +78,14 @@ void CodeGenerator::setPatchedClasses(const std::set<std::string>& classes) {
     impl_->patchedClasses_ = classes;
 }
 
+void CodeGenerator::setClassReferences(const std::map<std::string, std::set<std::string>>& refs) {
+    impl_->classRefs_ = refs;
+}
+
+void CodeGenerator::setDemandOwners(const std::set<std::string>& owners) {
+    impl_->demandOwners_ = owners;
+}
+
 void CodeGenerator::seedVtableSlots(const std::vector<std::string>& slotNames) {
     impl_->seededSlots = slotNames;
 }
@@ -142,6 +150,17 @@ bool CodeGenerator::generate() {
     cg("emitStaticFields");
     impl_->declareFunctions();
     cg("declareFunctions");
+    // WHAT THIS PROGRAM CAN REACH, before the bodies are built rather than after. Off with
+    // POLARON_NO_REACHABILITY=1, which is what the oracle test compares against: with the switch on
+    // and off the FINAL module must name exactly the same functions, since GlobalDCE runs either way.
+    //
+    // Declarations are still made for everything (2 ms, and harmless): a missed edge is then an
+    // undefined symbol at link, which every end-to-end test catches, rather than a crash mid-emit.
+    impl_->reachabilityOn_ = std::getenv("POLARON_NO_REACHABILITY") == nullptr;
+    if (impl_->reachabilityOn_) {
+        impl_->computeReachableClasses();
+        cg("reachability");
+    }
     // The address table anchors every function, so only emit it when the program actually uses
     // unimport/reimport (spec 30); otherwise it would defeat dead-code elimination below.
     // unimportableClasses was filled by collectAbstainedLabels() above.
