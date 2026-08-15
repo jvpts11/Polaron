@@ -1902,6 +1902,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 return "int";
             }
+            // ...with a deadline in milliseconds; -2 when it runs out with the child still running.
+            if (fn == "waitFor") {
+                if (call->args.size() != 2) {
+                    error("Subproc.waitFor takes a handle and a timeout in milliseconds", call->loc);
+                }
+                return "int";
+            }
             if (fn == "writeStr") {
                 return "int";
             }
@@ -1959,7 +1966,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // handle is one: an integer that is only ever handed back cannot be dereferenced by
             // accident, and the language has no type for a foreign pointer it should be keeping.
             if (fn == "open" || fn == "readInto" || fn == "writeFrom" || fn == "seek" ||
-                fn == "tell" || fn == "flush" || fn == "close" || fn == "atEnd") {
+                fn == "tell" || fn == "flush" || fn == "close" || fn == "atEnd" ||
+                fn == "lock" || fn == "unlock") {
                 checkTypeAccessible("File", call->loc);
                 for (const auto& a : call->args) {
                     typeOf(*a);
@@ -1968,6 +1976,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (fn == "open" || fn == "readInto" || fn == "writeFrom") { want = 3u; }
                 if (fn == "seek") { want = 3u; }
                 if (fn == "open") { want = 2u; }
+                // lock(handle, exclusive, wait): held on the open handle, and released by the
+                // operating system if the process dies -- which a lock FILE cannot promise.
+                if (fn == "lock") { want = 3u; }
                 if (call->args.size() != want) {
                     error("File." + fn + " takes " + std::to_string(want) + " argument(s)", call->loc);
                 }

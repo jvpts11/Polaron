@@ -34,6 +34,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/file.h>      // flock: keeping two programs off one file
 #include <sys/statvfs.h>   // statvfs: free/total bytes on the volume holding a path
 #include <sys/time.h>      // utimes: set a file's modification time to now (`touch`)
 #include <sys/types.h>
@@ -2192,6 +2193,32 @@ long long __polaron_subproc_wait(long long h) {
     return static_cast<long long>(static_cast<int>(code));
 }
 
+// ...and the same with a DEADLINE, answering -2 when the time runs out with the child still running.
+//
+// Without this, a parent that waits is a parent that a hung child hangs. That is not a rare case: it
+// is what a tool that prompts for input does when nobody is there to type, and what a program stuck
+// in a retry loop does forever. A build, a test runner and a language server all need to be able to
+// give up -- and the ONLY reason -2 is a separate answer from -1 is that "it is still going" and "I
+// could not find out" call for different things: one waits longer or kills, the other reports.
+long long __polaron_subproc_wait_for(long long h, long long millis) {
+    if (h == 0) {
+        return -1;
+    }
+    LdpSubproc* s = reinterpret_cast<LdpSubproc*>(static_cast<std::intptr_t>(h));
+    const DWORD r = WaitForSingleObject(s->proc, static_cast<DWORD>(millis < 0 ? 0 : millis));
+    if (r == WAIT_TIMEOUT) {
+        return -2;
+    }
+    if (r != WAIT_OBJECT_0) {
+        return -1;
+    }
+    DWORD code = 0;
+    if (!GetExitCodeProcess(s->proc, &code)) {
+        return -1;
+    }
+    return static_cast<long long>(static_cast<int>(code));
+}
+
 long long __polaron_subproc_write(long long h, const char* data, long long len) {
     if (h == 0) {
         return -1;
@@ -2409,6 +2436,35 @@ long long __polaron_subproc_wait(long long h) {
     if (WIFEXITED(status)) return static_cast<long long>(WEXITSTATUS(status));
     if (WIFSIGNALED(status)) return static_cast<long long>(128 + WTERMSIG(status));
     return -1;
+}
+
+// ...with a deadline; -2 when it runs out with the child still going. See the Windows half for why
+// that is a distinct answer from -1.
+//
+// Polled rather than signalled: `waitpid` has no timeout, and the alternatives (SIGCHLD with
+// sigtimedwait, or pidfd on new Linux only) each take over signal handling or a facility the other
+// systems do not have -- for a wait that is measured in whole seconds, a millisecond poll costs
+// nothing anybody can observe and works identically everywhere.
+long long __polaron_subproc_wait_for(long long h, long long millis) {
+    if (h == 0) return -1;
+    LdpSubproc* s = reinterpret_cast<LdpSubproc*>(static_cast<std::intptr_t>(h));
+    long long left = millis < 0 ? 0 : millis;
+    for (;;) {
+        int status = 0;
+        const pid_t r = waitpid(s->pid, &status, WNOHANG);
+        if (r < 0) return -1;
+        if (r > 0) {
+            if (WIFEXITED(status)) return static_cast<long long>(WEXITSTATUS(status));
+            if (WIFSIGNALED(status)) return static_cast<long long>(128 + WTERMSIG(status));
+            return -1;
+        }
+        if (left <= 0) return -2;
+        struct timespec ts;
+        ts.tv_sec = 0;
+        ts.tv_nsec = 1000000L;   // one millisecond
+        nanosleep(&ts, nullptr);
+        left = left - 1;
+    }
 }
 
 long long __polaron_subproc_write(long long h, const char* data, long long len) {
@@ -3113,6 +3169,95 @@ int __polaron_file_delete(const char* path) { return remove(path) == 0 ? 1 : 0; 
 //
 // Modes are the C ones, and deliberately so -- "rb"/"wb"/"ab"/"r+b" name themselves, and inventing an
 // enum here would mean maintaining a translation table whose only content is those four strings.
+// REPLACING A FILE WITHOUT EVER HAVING HALF OF IT ON DISK.
+//
+// `write` truncates and then fills. A crash, a full disk or a kill between those two leaves the file
+// EMPTY or half-written -- and it is the caller's save file, config or index that is gone. The fix is
+// as old as filesystems: write a temporary beside it and RENAME, because a rename either happened or
+// did not. Every editor and database does this; almost no program that writes a config does.
+//
+// POSIX `rename` gives that within a filesystem. Windows needs to be asked for it: MoveFileExA with
+// REPLACE_EXISTING, and WRITE_THROUGH so the change is on the disk rather than in a cache when the
+// call returns.
+int __polaron_file_replace(const char* from, const char* to) {
+#ifdef _WIN32
+    return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 1 : 0;
+#else
+    return rename(from, to) == 0 ? 1 : 0;
+#endif
+}
+
+// KEEPING TWO PROGRAMS OFF ONE FILE.
+//
+// A lock on an open file, held until it is unlocked or the file is closed -- and released by the
+// operating system if the process dies, which is what makes it safe where a lock FILE is not: a
+// crashed program leaves a stale lock file behind forever, and every program that has ever used one
+// has grown a "is this lock stale?" guess that is sometimes wrong.
+//
+// `wait` chooses between blocking until it is free and answering 0 immediately. Both are wanted:
+// a build waits, a "am I already running?" check must not.
+int __polaron_file_lock(long long h, int exclusive, int wait) {
+    if (h == 0) {
+        return 0;
+    }
+    std::FILE* f = reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h));
+#ifdef _WIN32
+    HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(f)));
+    if (handle == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    DWORD flags = 0;
+    if (exclusive != 0) { flags |= LOCKFILE_EXCLUSIVE_LOCK; }
+    if (wait == 0) { flags |= LOCKFILE_FAIL_IMMEDIATELY; }
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    // The whole file, however long it becomes: a range that covers every possible offset.
+    return LockFileEx(handle, flags, 0, 0xFFFFFFFF, 0xFFFFFFFF, &ov) ? 1 : 0;
+#else
+    int op = exclusive != 0 ? LOCK_EX : LOCK_SH;
+    if (wait == 0) { op |= LOCK_NB; }
+    return flock(fileno(f), op) == 0 ? 1 : 0;
+#endif
+}
+
+int __polaron_file_unlock(long long h) {
+    if (h == 0) {
+        return 0;
+    }
+    std::FILE* f = reinterpret_cast<std::FILE*>(static_cast<std::uintptr_t>(h));
+#ifdef _WIN32
+    HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(f)));
+    if (handle == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    return UnlockFileEx(handle, 0, 0xFFFFFFFF, 0xFFFFFFFF, &ov) ? 1 : 0;
+#else
+    return flock(fileno(f), LOCK_UN) == 0 ? 1 : 0;
+#endif
+}
+
+// WHICH INSTRUCTION SET THIS IS -- a different question from which operating system, and one a
+// program branching on SIMD width, calling convention or a downloaded binary's name has to ask.
+char* __polaron_cpu_arch(long long* outLen) {
+#if defined(__x86_64__) || defined(_M_X64)
+    return polaronStrOut(std::string("x86_64"), outLen);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return polaronStrOut(std::string("arm64"), outLen);
+#elif defined(__i386__) || defined(_M_IX86)
+    return polaronStrOut(std::string("x86"), outLen);
+#elif defined(__arm__) || defined(_M_ARM)
+    return polaronStrOut(std::string("arm"), outLen);
+#elif defined(__riscv) && __riscv_xlen == 64
+    return polaronStrOut(std::string("riscv64"), outLen);
+#elif defined(__wasm__)
+    return polaronStrOut(std::string("wasm"), outLen);
+#else
+    return polaronStrOut(std::string("unknown"), outLen);
+#endif
+}
+
 long long __polaron_fopen(const char* path, const char* mode) {
     std::FILE* f = std::fopen(path, mode);
     return f == nullptr ? 0 : static_cast<long long>(reinterpret_cast<std::uintptr_t>(f));

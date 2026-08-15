@@ -4916,6 +4916,59 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THE SIX THINGS A PROGRAM NEEDS FROM A FILESYSTEM THAT NOTHING ELSE HERE PROVIDES.
+        #   replace -- a plain write TRUNCATES and then fills, so a crash between the two leaves the
+        #              caller's save file empty. `replace` writes beside it and renames, and leaves
+        #              no `.new` behind when it is done.
+        #   move    -- `rename` cannot cross a volume and simply FAILS there, so a program ignoring
+        #              the boolean has lost the file. `move` falls back to copy-then-delete.
+        #   lock    -- held on the open HANDLE, so the operating system releases it if the process
+        #              dies. The second holder must be REFUSED: a lock granted twice is not a lock.
+        #   lines   -- read without loading the file, and with the `\r` of a Windows ending dropped,
+        #              which is the commonest reason a comparison that looks right fails.
+        #   child   -- feeding stdin (which `run` could not do at all) and giving up on a child that
+        #              never finishes. The first version of that timeout drained the output BEFORE it
+        #              started counting, so a hung child -- which holds its stdout open -- blocked the
+        #              read and the deadline was never reached. This test is what found it.
+        add_test(NAME codegen_file_replace_atomic COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_durability.pol"
+            "-DCONTAINS=replace: contentKept=1 noLeftovers=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_move COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_durability.pol"
+            "-DCONTAINS=move: arrived=1 sourceGone=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_lock COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_durability.pol"
+            "-DCONTAINS=lock: taken=1 secondRefused=1 afterUnlock=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_line_reader COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_durability.pol"
+            "-DCONTAINS=lines: count=3 second=beta noTrailingCR=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_process_input_and_timeout COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_durability.pol"
+            "-DCONTAINS=child: fedInput=1 timedOut=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # A child that spins forever is started here on purpose, so a hang in this group means the
+        # deadline stopped working rather than a slow machine.
+        set_tests_properties(codegen_process_input_and_timeout PROPERTIES TIMEOUT 120)
+
         # WHAT A FILE RECORDS, WHAT ITS BYTES ARE, WHAT A LINK POINTS AT, AND WHAT CHANGED.
         #   metadata -- the read-only switch, `touch`, and whether a CREATION time is recorded at
         #               all. `st_ctime` is not it: that is the status-change time, and answering

@@ -67,6 +67,8 @@ inline constexpr SysIntrinsic kSysIntrinsics[] = {
     // answered: `exists` follows, so a link pointing at nothing reports "not there".
     {"System.IO.__isLink",        "__polaron_is_symlink",    'i', true},
     {"System.IO.__readLink",      "__polaron_readlink",      's', true},
+    // ---- Which instruction set this is, which is a different question from which operating system.
+    {"System.OS.__cpuArch",       "__polaron_cpu_arch",      's', false},
 };
 
 // The two-argument ones, which do not fit the shape above: (String, String) or (String, int).
@@ -86,6 +88,9 @@ inline constexpr SysIntrinsic2 kSysIntrinsics2[] = {
     {"System.IO.__hardLink",     "__polaron_hardlink",          'i', false, -1},
     {"System.IO.__symLink",      "__polaron_symlink",           'i', false, 0},
     {"System.IO.__symLinkDir",   "__polaron_symlink",           'i', false, 1},
+    // A rename that REPLACES, which is how a file is written without ever having half of it on
+    // disk: write a temporary beside it, then swap. A rename either happened or it did not.
+    {"System.IO.__replaceFile",  "__polaron_file_replace",      'i', false, -1},
 };
 
 inline const SysIntrinsic2* findSysIntrinsic2(const std::string& name) {

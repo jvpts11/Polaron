@@ -1,0 +1,159 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.Paths;
+import System.IO.FileStream;
+import System.IO.LineReader;
+import System.IO.TempDirectory;
+import System.OS.Command;
+import System.OS.Machine;
+import System.OS.ProcessResult;
+import System.OS.Subprocess;
+import System.OS.Workspace;
+import System.Collections.ArrayList;
+import System.Text.StringBuilder;
+program FileDurability;
+
+// THE SIX THINGS A PROGRAM NEEDS FROM A FILESYSTEM THAT NOTHING ABOVE PROVIDED.
+//
+// REPLACING A FILE ATOMICALLY. A plain write TRUNCATES and then fills. A crash, a full disk or a
+// kill between those two leaves the file empty or half-written, and it is the caller's save file,
+// config or index that is gone. `replace` writes a temporary beside it and renames, because a rename
+// either happened or it did not. Beside it, in the SAME directory, and that matters: a temporary in
+// the system scratch directory is usually on another volume, where the rename degrades to a copy --
+// the very thing being avoided.
+//
+// MOVING ACROSS A VOLUME. `rename` cannot, and on both platforms it simply FAILS -- so a program
+// that ignores the boolean has lost the file it was moving. `move` falls back to copy-then-delete,
+// as every `mv` does.
+//
+// LOCKING. Held on the OPEN HANDLE and released by the operating system if the process dies -- the
+// whole difference from a lock FILE, whose stale remains outlive the crash and make every reader
+// guess. `tryLock` must answer immediately, because "am I already running?" cannot wait.
+//
+// READING WITHOUT LOADING. `readLines` reads the whole file and then splits it: a two gigabyte log
+// costs two gigabytes and then two gigabytes again in pieces. A LineReader holds one buffer whatever
+// the file's size -- the difference between a program that runs and one the allocator kills.
+//
+// FEEDING A CHILD ITS INPUT, and GIVING UP ON ONE. Piping INTO a program is half of what a pipeline
+// is for and `run` could not do it at all; and a parent that waits without a deadline is a parent
+// that a hung child hangs.
+//
+// Prints:
+//   replace: contentKept=1 noLeftovers=1
+//   move: arrived=1 sourceGone=1
+//   lock: taken=1 secondRefused=1 afterUnlock=1
+//   lines: count=3 second=beta noTrailingCR=1
+//   child: fedInput=1 timedOut=1
+//   machine: arch64=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                if (args.length() > 0) {
+                    Main.child(args);
+                    return;
+                }
+                using (TempDirectory work = new TempDirectory("polaron-dur") on stack) {
+                    Main.replacing(work.path());
+                    Main.moving(work.path());
+                    Main.locking(work.path());
+                    Main.lines(work.path());
+                }
+                Main.children();
+                System.IO.Console.printf("machine: arch64=%d\n", Machine.is64Bit() ? 1 : 0);
+                return;
+            }
+
+            // `echo` reads its stdin and prints it back with a marker; `hang` never finishes.
+            private static method child(string[] args) returns void {
+                if (args[0].equals("hang")) {
+                    mutable long spin = cast<long>(0);
+                    while (true) { spin = spin + cast<long>(1); }
+                }
+                mutable StringBuilder all = new StringBuilder() on heap;
+                mutable String line = System.IO.Console.read();
+                while (line.length() > 0) {
+                    all.append(line);
+                    line = System.IO.Console.read();
+                }
+                System.IO.Console.print("got:".concat(all.toString()));
+                return;
+            }
+
+            private static method replacing(String root) returns void {
+                String path = Paths.join(root, "config.txt");
+                Files.write(path, "first");
+                Files.replace(path, "second");
+                // The content swapped, and no `.new` temporary was left behind -- a replace that
+                // litters is one whose next run picks up somebody else's leftovers.
+                mutable boolean kept = Files.read(path).equals("second");
+                mutable int leftovers = 0;
+                mutable ArrayList<String> here = Files.listDir(root);
+                for (mutable int i = 0; i < here.size(); i++) {
+                    if (here.get(i).endsWith(".new")) { leftovers = leftovers + 1; }
+                }
+                delete here;
+                System.IO.Console.printf("replace: contentKept=%d noLeftovers=%d\n",
+                                         kept ? 1 : 0, leftovers == 0 ? 1 : 0);
+            }
+
+            private static method moving(String root) returns void {
+                String from = Paths.join(root, "from.txt");
+                String to = Paths.join(root, "to.txt");
+                Files.write(from, "travelling");
+                Files.move(from, to);
+                System.IO.Console.printf("move: arrived=%d sourceGone=%d\n",
+                                         Files.read(to).equals("travelling") ? 1 : 0,
+                                         Files.exists(from) ? 0 : 1);
+            }
+
+            // Two handles on one file: the second must be refused while the first holds it, and
+            // allowed once it lets go. That refusal is the whole feature -- a lock that is granted
+            // twice is not a lock.
+            private static method locking(String root) returns void {
+                String path = Paths.join(root, "locked.txt");
+                Files.write(path, "x");
+                mutable FileStream first = FileStream.open(path, "r+b");
+                mutable FileStream second = FileStream.open(path, "r+b");
+                mutable boolean taken = first.tryLock();
+                mutable boolean refused = !second.tryLock();
+                first.unlock();
+                mutable boolean after = second.tryLock();
+                second.unlock();
+                second.close();
+                first.close();
+                System.IO.Console.printf("lock: taken=%d secondRefused=%d afterUnlock=%d\n",
+                                         taken ? 1 : 0, refused ? 1 : 0, after ? 1 : 0);
+            }
+
+            // Three lines written with Windows endings, read on whatever this is: a trailing `\r`
+            // left on each is the commonest reason a comparison that looks right fails.
+            private static method lines(String root) returns void {
+                String path = Paths.join(root, "log.txt");
+                Files.write(path, "alpha\r\nbeta\r\ngamma\r\n");
+                mutable LineReader* reader = new LineReader(path) on heap;
+                mutable ArrayList<String> got = new ArrayList<String>() on heap;
+                while (reader.hasNext()) { got.add(reader.next()); }
+                mutable boolean clean = got.size() > 1 && got.get(1).equals("beta");
+                System.IO.Console.printf("lines: count=%d second=%s noTrailingCR=%d\n",
+                                         got.size(), got.size() > 1 ? got.get(1) : "",
+                                         clean ? 1 : 0);
+                delete got;
+                delete reader;
+            }
+
+            private static method children() returns void {
+                // Piping INTO a program: the child reads its stdin and prints it back.
+                ProcessResult fed = new Command(Workspace.executable()) on heap
+                    .arg("echo").input("hello\n").run();
+                // ...and giving up on one that never finishes. Without a deadline this line would
+                // never return.
+                ProcessResult stuck = new Command(Workspace.executable()) on heap
+                    .arg("hang").timeout(300).run();
+                System.IO.Console.printf("child: fedInput=%d timedOut=%d\n",
+                                         fed.output.indexOf("hello") >= 0 ? 1 : 0,
+                                         Subprocess.timedOut(stuck.exitCode) ? 1 : 0);
+            }
+        }
+    }
+}
