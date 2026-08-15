@@ -1964,6 +1964,11 @@ struct CodeGenerator::Impl {
 
     // Type name of an expression. Assumes a valid AST (semantic analysis ran).
     std::string typeName(const ast::Expr& expr);  // out of line in codegen_types.cpp
+    std::string typeNameUncached(const ast::Expr& expr);   // the body; typeName memoises around it
+    // Live only for the duration of one top-level typeName question -- see the note there. Without
+    // it a chain of method calls costs 2^depth, because several branches ask a child's type twice.
+    std::unordered_map<const ast::Expr*, std::string> typeNameMemo_;
+    int typeNameDepth_ = 0;
 
     llvm::FunctionCallee printf();
 

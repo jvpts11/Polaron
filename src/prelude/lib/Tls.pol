@@ -1,0 +1,951 @@
+    public namespace Net.Tls {
+        // TRANSPORT LAYER SECURITY, and the reason it lives in the standard library rather than
+        // beside it.
+        //
+        // The library already ships `HttpClient`. There are two coherent places to draw the line --
+        // both the client and the transport inside (Go, Python, Java, C#), or both outside (C++,
+        // Rust, whose standard libraries stop at sockets) -- and shipping the client WITHOUT the
+        // transport is neither. It produced exactly what that position always produces: a request to
+        // an `https://` URL answered with a synthetic response rather than a connection or a failure.
+        //
+        // Three things settle it here. The toolchain bootstraps on this -- if TLS were a package,
+        // fetching the first package would need the package that cannot be fetched yet. The
+        // primitives are already inside: AES, SHA-256, HMAC and a secure random live in
+        // System.Security, so keeping the dangerous parts in and the assembly out is an arbitrary
+        // line. And the usual objection -- that everybody pays for what few use -- does not apply to
+        // this compiler: emission is reachability-driven, so a program that never opens a socket
+        // emits none of this.
+        //
+        // ENCRYPTION IS NOT AUTHENTICATION, and that distinction is the whole design of what follows.
+        // A handshake that agrees a key with whoever answered the socket protects against somebody
+        // listening and not at all against somebody answering in the server's place -- while looking
+        // identical to the caller. So the public way in validates, always; the certificate chain, the
+        // dates and the hostname are checked before a single byte of application data moves, and the
+        // way to skip that has a name that says what it costs.
+
+        // ---- DER: the tag-length-value encoding every X.509 structure is written in. ------------
+        //
+        // Promoted out of the certificate reader because a chain, an extension and a signature
+        // algorithm are all navigated the same way, and three copies of "how long is this field"
+        // is how one of them ends up disagreeing with the others.
+        public class Der {
+            // Bytes the length field occupies beyond the first (0 for the short form).
+            public static method lengthExtra(int[] d, int off) returns int {
+                int first = d[off + 1] & 255;
+                if (first < 128) { return 0; }
+                return first & 127;
+            }
+            // The content length of the value at `off`.
+            public static method contentLength(int[] d, int off) returns int {
+                int first = d[off + 1] & 255;
+                if (first < 128) { return first; }
+                int n = first & 127;
+                mutable int len = 0;
+                mutable int i = 0;
+                while (i < n) {
+                    len = (len << 8) | (d[off + 2 + i] & 255);
+                    i = i + 1;
+                }
+                return len;
+            }
+            // Where the content starts, past the tag and the length.
+            public static method contentOffset(int[] d, int off) returns int {
+                return off + 2 + Der.lengthExtra(d, off);
+            }
+            // Where the next value at the same level starts.
+            public static method nextOffset(int[] d, int off) returns int {
+                return Der.contentOffset(d, off) + Der.contentLength(d, off);
+            }
+            // Total bytes the value at `off` occupies, tag and length included -- which is what a
+            // signature is computed over, so it has to be exact.
+            public static method totalLength(int[] d, int off) returns int {
+                return 2 + Der.lengthExtra(d, off) + Der.contentLength(d, off);
+            }
+            public static method tag(int[] d, int off) returns int {
+                return d[off] & 255;
+            }
+            // Whether the bytes at `off` are exactly this object identifier's encoding. OIDs are how
+            // DER names an algorithm or an extension, and comparing them by bytes is both the
+            // simplest way and the only one that cannot mis-parse.
+            public static method oidEquals(int[] d, int off, int[] oid, int oidLen) returns boolean {
+                if (Der.tag(d, off) != 6) { return false; }
+                if (Der.contentLength(d, off) != oidLen) { return false; }
+                int c = Der.contentOffset(d, off);
+                mutable int i = 0;
+                while (i < oidLen) {
+                    if ((d[c + i] & 255) != (oid[i] & 255)) { return false; }
+                    i = i + 1;
+                }
+                return true;
+            }
+            // The bytes of a value, copied out -- for a signature, a modulus or a key.
+            public static method copy(int[] d, int from, int len) returns int[] {
+                int[] out = new int[len > 0 ? len : 1]();
+                mutable int i = 0;
+                while (i < len) {
+                    out[i] = d[from + i] & 255;
+                    i = i + 1;
+                }
+                return out;
+            }
+
+            // PROVING THE STRUCTURE BEFORE READING IT, which is the only safe order.
+            //
+            // Every length above is a number the DER itself supplied, and a certificate arrives from
+            // whoever answered the socket. A reader that indexes wherever the length field points can
+            // be walked off the end of the buffer by the bytes it is reading -- which is what happened
+            // here the first time, caught by the bounds check as `index = 686, length = 48`. That is a
+            // clean stop rather than corruption, and it is still the wrong answer: a malformed
+            // certificate must be REFUSED, not kill the program that received it.
+            //
+            // So the whole tree is walked once, checking that every tag, every length field and every
+            // content run lies inside the buffer, before a single accessor reads anything. After this
+            // returns true the offsets are known good and the rest can index freely.
+            //
+            // The depth bound is part of it: nesting is what an attacker controls for free, and a
+            // recursive descent with no floor turns a hundred bytes into a stack overflow.
+            public static method wellFormed(int[] d, int len, int off, int end, int depth)
+                                            returns boolean {
+                if (depth <= 0) { return false; }
+                mutable int at = off;
+                while (at < end) {
+                    if (at + 2 > len || at + 2 > end) { return false; }   // room for a tag and a length
+                    int first = d[at + 1] & 255;
+                    mutable int extra = 0;
+                    if (first >= 128) {
+                        extra = first & 127;
+                        if (extra == 0 || extra > 4) { return false; }    // indefinite, or absurdly wide
+                        if (at + 2 + extra > len) { return false; }
+                    }
+                    mutable int contentLen = first;
+                    if (extra > 0) {
+                        contentLen = 0;
+                        mutable int i = 0;
+                        while (i < extra) {
+                            contentLen = (contentLen << 8) | (d[at + 2 + i] & 255);
+                            i = i + 1;
+                        }
+                        if (contentLen < 0) { return false; }             // a length that overflowed
+                    }
+                    int content = at + 2 + extra;
+                    if (content > len || contentLen > len - content) { return false; }
+                    int after = content + contentLen;
+                    if (after > end) { return false; }
+                    // A constructed value (bit 0x20) holds more values; a primitive one holds bytes.
+                    if (((d[at] & 255) & 32) != 0) {
+                        if (!Der.wellFormed(d, len, content, after, depth - 1)) { return false; }
+                    }
+                    at = after;
+                }
+                return at == end;
+            }
+        }
+
+        // The object identifiers this library recognises, as byte arrays because that is how they
+        // appear on the wire. Built once and handed out, rather than re-created at every comparison.
+        public class Oid {
+            // 1.2.840.113549.1.1.11 -- sha256WithRSAEncryption
+            public static method sha256Rsa() returns int[] {
+                int[] o = new int[9]();
+                o[0] = 42; o[1] = 134; o[2] = 72; o[3] = 134; o[4] = 247;
+                o[5] = 13; o[6] = 1; o[7] = 1; o[8] = 11;
+                return o;
+            }
+            // 1.2.840.113549.1.1.10 -- RSASSA-PSS
+            public static method rsaPss() returns int[] {
+                int[] o = new int[9]();
+                o[0] = 42; o[1] = 134; o[2] = 72; o[3] = 134; o[4] = 247;
+                o[5] = 13; o[6] = 1; o[7] = 1; o[8] = 10;
+                return o;
+            }
+            // 1.2.840.10045.4.3.2 -- ecdsa-with-SHA256
+            public static method ecdsaSha256() returns int[] {
+                int[] o = new int[8]();
+                o[0] = 42; o[1] = 134; o[2] = 72; o[3] = 206; o[4] = 61;
+                o[5] = 4; o[6] = 3; o[7] = 2;
+                return o;
+            }
+            // 1.2.840.113549.1.1.1 -- rsaEncryption (a public key, not a signature)
+            public static method rsaKey() returns int[] {
+                int[] o = new int[9]();
+                o[0] = 42; o[1] = 134; o[2] = 72; o[3] = 134; o[4] = 247;
+                o[5] = 13; o[6] = 1; o[7] = 1; o[8] = 1;
+                return o;
+            }
+            // 1.2.840.10045.2.1 -- id-ecPublicKey
+            public static method ecKey() returns int[] {
+                int[] o = new int[7]();
+                o[0] = 42; o[1] = 134; o[2] = 72; o[3] = 206; o[4] = 61;
+                o[5] = 2; o[6] = 1;
+                return o;
+            }
+            // 2.5.29.17 -- subjectAltName
+            public static method subjectAltName() returns int[] {
+                int[] o = new int[3]();
+                o[0] = 85; o[1] = 29; o[2] = 17;
+                return o;
+            }
+            // 2.5.29.19 -- basicConstraints
+            public static method basicConstraints() returns int[] {
+                int[] o = new int[3]();
+                o[0] = 85; o[1] = 29; o[2] = 19;
+                return o;
+            }
+            // 2.5.4.3 -- commonName
+            public static method commonName() returns int[] {
+                int[] o = new int[3]();
+                o[0] = 85; o[1] = 4; o[2] = 3;
+                return o;
+            }
+        }
+
+        // An RSA public key: the big-endian modulus and the public exponent, which is small enough
+        // for an int.
+        public class RsaPublicKey {
+            public mutable int[] modulus;
+            public mutable int modLength;
+            public mutable int exponent;
+            public constructor RsaPublicKey(int[] modulus, int modLength, int exponent) {
+                this.modulus = modulus;
+                this.modLength = modLength;
+                this.exponent = exponent;
+            }
+            public destructor ~RsaPublicKey() returns void {
+                delete this.modulus;
+            }
+        }
+
+        // WHAT THE SERVER SAID IT IS -- a parsed X.509 certificate.
+        //
+        // The reader this replaces pulled out the public key and nothing else, which is enough to
+        // check a signature and not enough to know WHOSE signature it is. Everything a client has to
+        // ask before trusting a key is here: who issued it, who it is for, when it is valid, whether
+        // it may sign other certificates, which names it covers, and the exact bytes its issuer
+        // signed.
+        //
+        // Parsed once in the constructor. The DER stays -- a signature is computed over the bytes as
+        // they arrived, so re-encoding what was parsed would be both slower and wrong.
+        public class Certificate {
+            private mutable int[] der;
+            private mutable int derLength;
+            private mutable boolean wellFormed;
+            // Offsets into `der`, all discovered once.
+            private mutable int tbsOffset;        // the signed body, tag included
+            private mutable int tbsTotal;
+            private mutable int issuerOffset;
+            private mutable int subjectOffset;
+            private mutable int validityOffset;
+            private mutable int spkiOffset;
+            private mutable int extensionsOffset;   // -1 when absent
+            private mutable int sigAlgOffset;
+            private mutable int sigValueOffset;
+
+            public constructor Certificate(int[] der, int length) {
+                this.der = der;
+                this.derLength = length;
+                this.wellFormed = false;
+                this.tbsOffset = 0;
+                this.tbsTotal = 0;
+                this.issuerOffset = 0;
+                this.subjectOffset = 0;
+                this.validityOffset = 0;
+                this.spkiOffset = 0;
+                this.extensionsOffset = 0 - 1;
+                this.sigAlgOffset = 0;
+                this.sigValueOffset = 0;
+                this.parse();
+            }
+
+            // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
+            private method parse() returns void {
+                if (this.derLength < 8 || Der.tag(this.der, 0) != 48) { return; }
+                // THE WHOLE TREE IS PROVEN TO FIT BEFORE ANYTHING IS READ. Everything below indexes
+                // by offsets the DER supplied, and the DER came from whoever answered the socket --
+                // so it is checked once, here, and refused as a whole rather than trusted a field at
+                // a time. 32 is far more nesting than a certificate has and far less than a stack
+                // can take.
+                int outer = Der.totalLength(this.der, 0);
+                if (outer <= 0 || outer > this.derLength) { return; }   // it must fit what arrived
+                if (!Der.wellFormed(this.der, this.derLength, 0, outer, 32)) { return; }
+                this.tbsOffset = Der.contentOffset(this.der, 0);
+                if (Der.tag(this.der, this.tbsOffset) != 48) { return; }
+                this.tbsTotal = Der.totalLength(this.der, this.tbsOffset);
+                this.sigAlgOffset = Der.nextOffset(this.der, this.tbsOffset);
+                this.sigValueOffset = Der.nextOffset(this.der, this.sigAlgOffset);
+
+                mutable int off = Der.contentOffset(this.der, this.tbsOffset);
+                // [0] EXPLICIT version, optional -- present on every certificate anybody issues now,
+                // absent on a v1 one, so it is tested rather than assumed.
+                if (Der.tag(this.der, off) == 160) { off = Der.nextOffset(this.der, off); }
+                off = Der.nextOffset(this.der, off);      // serialNumber
+                off = Der.nextOffset(this.der, off);      // signature (repeated inside the body)
+                this.issuerOffset = off;
+                off = Der.nextOffset(this.der, off);
+                this.validityOffset = off;
+                off = Der.nextOffset(this.der, off);
+                this.subjectOffset = off;
+                off = Der.nextOffset(this.der, off);
+                this.spkiOffset = off;
+                off = Der.nextOffset(this.der, off);
+
+                // The optional trailing fields, of which only [3] extensions matters here.
+                int tbsEnd = this.tbsOffset + this.tbsTotal;
+                while (off + 1 < tbsEnd) {
+                    int t = Der.tag(this.der, off);
+                    if (t == 163) {
+                        this.extensionsOffset = Der.contentOffset(this.der, off);
+                        off = tbsEnd;
+                    } else if (t == 161 || t == 162) {
+                        off = Der.nextOffset(this.der, off);
+                    } else {
+                        off = tbsEnd;
+                    }
+                }
+                this.wellFormed = true;
+                return;
+            }
+
+            // False when the bytes are not a certificate this reader understands. Every accessor
+            // below answers emptily in that case, and the validator refuses -- a certificate that
+            // could not be read is not a certificate that checks out.
+            public method isWellFormed() returns boolean { return this.wellFormed; }
+
+            // The exact bytes the issuer signed: tbsCertificate, tag and length included.
+            public method signedBody() returns int[] {
+                return Der.copy(this.der, this.tbsOffset, this.tbsTotal);
+            }
+            public method signedBodyLength() returns int { return this.tbsTotal; }
+
+            // The signature over that body, with the BIT STRING's unused-bits byte dropped.
+            public method signature() returns int[] {
+                int c = Der.contentOffset(this.der, this.sigValueOffset);
+                int n = Der.contentLength(this.der, this.sigValueOffset);
+                return Der.copy(this.der, c + 1, n - 1);
+            }
+            public method signatureLength() returns int {
+                return Der.contentLength(this.der, this.sigValueOffset) - 1;
+            }
+
+            // Which algorithm signed it: 1 = RSA PKCS#1 v1.5 with SHA-256, 2 = RSA-PSS,
+            // 3 = ECDSA with SHA-256, 0 = something this library does not verify.
+            public method signatureAlgorithm() returns int {
+                int algOid = Der.contentOffset(this.der, this.sigAlgOffset);
+                mutable int[] rsa = Oid.sha256Rsa();
+                mutable int[] pss = Oid.rsaPss();
+                mutable int[] ec = Oid.ecdsaSha256();
+                mutable int which = 0;
+                if (Der.oidEquals(this.der, algOid, rsa, 9)) { which = 1; }
+                else if (Der.oidEquals(this.der, algOid, pss, 9)) { which = 2; }
+                else if (Der.oidEquals(this.der, algOid, ec, 8)) { which = 3; }
+                delete ec;
+                delete pss;
+                delete rsa;
+                return which;
+            }
+
+            // The RSA public key, or null when the certificate carries an elliptic-curve one --
+            // which the caller has to handle rather than be handed a zero key that verifies nothing.
+            public method rsaPublicKey() returns nullable RsaPublicKey* {
+                int algSeq = Der.contentOffset(this.der, this.spkiOffset);
+                int algOid = Der.contentOffset(this.der, algSeq);
+                mutable int[] want = Oid.rsaKey();
+                boolean isRsa = Der.oidEquals(this.der, algOid, want, 9);
+                delete want;
+                if (!isRsa) { return null; }
+
+                int bitString = Der.nextOffset(this.der, algSeq);
+                int rsaSeq = Der.contentOffset(this.der, bitString) + 1;   // past the unused-bits byte
+                int modInt = Der.contentOffset(this.der, rsaSeq);
+                mutable int mOff = Der.contentOffset(this.der, modInt);
+                mutable int mLen = Der.contentLength(this.der, modInt);
+                if ((this.der[mOff] & 255) == 0) {         // the sign-preserving leading zero
+                    mOff = mOff + 1;
+                    mLen = mLen - 1;
+                }
+                int[] modulus = Der.copy(this.der, mOff, mLen);
+                int expInt = Der.nextOffset(this.der, modInt);
+                int eOff = Der.contentOffset(this.der, expInt);
+                int eLen = Der.contentLength(this.der, expInt);
+                mutable int e = 0;
+                mutable int j = 0;
+                while (j < eLen) {
+                    e = (e << 8) | (this.der[eOff + j] & 255);
+                    j = j + 1;
+                }
+                return new RsaPublicKey(modulus, mLen, e) on heap;
+            }
+
+            // The uncompressed elliptic-curve point, or an empty array for an RSA certificate.
+            // 65 bytes for P-256: 0x04 then x then y.
+            public method ecPublicKey() returns int[] {
+                int algSeq = Der.contentOffset(this.der, this.spkiOffset);
+                int algOid = Der.contentOffset(this.der, algSeq);
+                mutable int[] want = Oid.ecKey();
+                boolean isEc = Der.oidEquals(this.der, algOid, want, 7);
+                delete want;
+                if (!isEc) { return new int[1](); }
+                int bitString = Der.nextOffset(this.der, algSeq);
+                int c = Der.contentOffset(this.der, bitString) + 1;
+                int n = Der.contentLength(this.der, bitString) - 1;
+                return Der.copy(this.der, c, n);
+            }
+
+            // ---- Validity. Both bounds, as instants, so the comparison is arithmetic. ----
+            public method notBefore() returns long {
+                return this.timeAt(Der.contentOffset(this.der, this.validityOffset));
+            }
+            public method notAfter() returns long {
+                int first = Der.contentOffset(this.der, this.validityOffset);
+                return this.timeAt(Der.nextOffset(this.der, first));
+            }
+            // UTCTime is "YYMMDDHHMMSSZ" and GeneralizedTime is "YYYYMMDDHHMMSSZ" -- the two-digit
+            // year pivots at 50, by RFC 5280. A certificate written for 2049 and one written for
+            // 1950 are the same six digits, and the pivot is the only thing that separates them.
+            private method timeAt(int off) returns long {
+                int t = Der.tag(this.der, off);
+                int c = Der.contentOffset(this.der, off);
+                mutable int i = c;
+                mutable int year = 0;
+                if (t == 24) {                                  // GeneralizedTime
+                    year = this.number(i, 4);
+                    i = i + 4;
+                } else {                                        // UTCTime
+                    int yy = this.number(i, 2);
+                    year = yy >= 50 ? 1900 + yy : 2000 + yy;
+                    i = i + 2;
+                }
+                int month = this.number(i, 2);
+                int day = this.number(i + 2, 2);
+                int hour = this.number(i + 4, 2);
+                int minute = this.number(i + 6, 2);
+                int second = this.number(i + 8, 2);
+                mutable Instant at = Instant.ofUtc(year, month, day, hour, minute, second);
+                long secs = at.toEpochSeconds();
+                delete at;
+                return secs;
+            }
+            private method number(int off, int digits) returns int {
+                mutable int v = 0;
+                mutable int i = 0;
+                while (i < digits) {
+                    v = v * 10 + ((this.der[off + i] & 255) - 48);
+                    i = i + 1;
+                }
+                return v;
+            }
+
+            // ---- Extensions. ----
+
+            // May this certificate sign others? A leaf that says yes to this is a leaf that could
+            // issue certificates for anybody, which is why a chain checks it at every step above the
+            // end entity. Absent means no, by RFC 5280.
+            public method isCertificateAuthority() returns boolean {
+                int ext = this.extension(Oid.basicConstraints(), 3);
+                if (ext < 0) { return false; }
+                // BasicConstraints ::= SEQUENCE { cA BOOLEAN DEFAULT FALSE, ... }
+                if (Der.tag(this.der, ext) != 48) { return false; }
+                int inner = Der.contentOffset(this.der, ext);
+                if (Der.contentLength(this.der, ext) == 0) { return false; }
+                if (Der.tag(this.der, inner) != 1) { return false; }      // no cA field -> FALSE
+                return (this.der[Der.contentOffset(this.der, inner)] & 255) != 0;
+            }
+
+            // Every dNSName the certificate covers. This -- not the common name -- is what a client
+            // matches a hostname against: the common name has been deprecated for that since 2000
+            // and browsers stopped reading it years ago, so a certificate whose only name is in the
+            // subject covers nothing.
+            public method dnsNames() returns ArrayList<String> {
+                mutable ArrayList<String> names = new ArrayList<String>() on heap;
+                int ext = this.extension(Oid.subjectAltName(), 3);
+                if (ext < 0) { return names; }
+                if (Der.tag(this.der, ext) != 48) { return names; }
+                int end = ext + Der.totalLength(this.der, ext);
+                mutable int off = Der.contentOffset(this.der, ext);
+                while (off + 1 < end) {
+                    if (Der.tag(this.der, off) == 130) {        // [2] IMPLICIT dNSName
+                        int c = Der.contentOffset(this.der, off);
+                        int n = Der.contentLength(this.der, off);
+                        mutable StringBuilder name = new StringBuilder() on heap;
+                        mutable int i = 0;
+                        while (i < n) {
+                            name.appendChar(cast<char>(this.der[c + i] & 255));
+                            i = i + 1;
+                        }
+                        names.add(name.toString());
+                    }
+                    off = Der.nextOffset(this.der, off);
+                }
+                return names;
+            }
+
+            // Where an extension's value starts, or -1 when the certificate does not carry it.
+            // Extension ::= SEQUENCE { extnID OID, critical BOOLEAN DEFAULT FALSE, extnValue OCTET STRING }
+            private method extension(int[] oid, int oidLen) returns int {
+                if (this.extensionsOffset < 0) {
+                    delete oid;
+                    return 0 - 1;
+                }
+                int seq = this.extensionsOffset;
+                if (Der.tag(this.der, seq) != 48) {
+                    delete oid;
+                    return 0 - 1;
+                }
+                int end = seq + Der.totalLength(this.der, seq);
+                mutable int off = Der.contentOffset(this.der, seq);
+                mutable int found = 0 - 1;
+                while (off + 1 < end && found < 0) {
+                    int inner = Der.contentOffset(this.der, off);
+                    if (Der.oidEquals(this.der, inner, oid, oidLen)) {
+                        mutable int v = Der.nextOffset(this.der, inner);
+                        if (Der.tag(this.der, v) == 1) { v = Der.nextOffset(this.der, v); }  // critical
+                        found = Der.contentOffset(this.der, v);      // inside the OCTET STRING
+                    }
+                    off = Der.nextOffset(this.der, off);
+                }
+                delete oid;
+                return found;
+            }
+
+            // ---- Identity, for chain building. ----
+
+            // The issuer and subject as raw DER. A chain links when one certificate's issuer field
+            // is byte-for-byte the next one's subject field -- comparing the DECODED names instead
+            // is where implementations disagree about encodings and let the wrong certificate in.
+            public method issuerBytes() returns int[] {
+                return Der.copy(this.der, this.issuerOffset,
+                                Der.totalLength(this.der, this.issuerOffset));
+            }
+            public method subjectBytes() returns int[] {
+                return Der.copy(this.der, this.subjectOffset,
+                                Der.totalLength(this.der, this.subjectOffset));
+            }
+            public method issuerLength() returns int {
+                return Der.totalLength(this.der, this.issuerOffset);
+            }
+            public method subjectLength() returns int {
+                return Der.totalLength(this.der, this.subjectOffset);
+            }
+            // Was this issued by that one? Byte equality of the two names, as above.
+            public method isIssuedBy(Certificate* issuer) returns boolean {
+                if (this.issuerLength() != issuer.subjectLength()) { return false; }
+                mutable int[] mine = this.issuerBytes();
+                mutable int[] theirs = issuer.subjectBytes();
+                mutable boolean same = true;
+                mutable int i = 0;
+                while (i < this.issuerLength()) {
+                    if ((mine[i] & 255) != (theirs[i] & 255)) { same = false; }
+                    i = i + 1;
+                }
+                delete theirs;
+                delete mine;
+                return same;
+            }
+            // Self-issued: what a root looks like, and the point at which a chain walk stops.
+            //
+            // Compared field to field rather than by calling `isIssuedBy(&this)`: `this` is already
+            // the reference to the object, so `&this` is the address of the slot HOLDING it -- a
+            // pointer to a pointer, whose fields read as whatever the pointer's bytes happen to say.
+            // Here that came out as a length of hundreds of millions and an allocation that never
+            // returned.
+            public method isSelfIssued() returns boolean {
+                if (this.issuerLength() != this.subjectLength()) { return false; }
+                mutable int[] issuer = this.issuerBytes();
+                mutable int[] subject = this.subjectBytes();
+                mutable boolean same = true;
+                mutable int i = 0;
+                int n = this.issuerLength();
+                while (i < n) {
+                    if ((issuer[i] & 255) != (subject[i] & 255)) { same = false; }
+                    i = i + 1;
+                }
+                delete subject;
+                delete issuer;
+                return same;
+            }
+
+            // The subject's common name, for a message a person reads. NOT for matching a
+            // hostname -- see dnsNames.
+            public method subjectCommonName() returns String {
+                return this.commonNameIn(this.subjectOffset);
+            }
+            public method issuerCommonName() returns String {
+                return this.commonNameIn(this.issuerOffset);
+            }
+            // Name ::= SEQUENCE OF SET OF SEQUENCE { type OID, value }
+            private method commonNameIn(int nameOff) returns String {
+                if (Der.tag(this.der, nameOff) != 48) { return ""; }
+                int end = nameOff + Der.totalLength(this.der, nameOff);
+                mutable int rdn = Der.contentOffset(this.der, nameOff);
+                mutable int[] cn = Oid.commonName();
+                mutable String found = "";
+                while (rdn + 1 < end && found.length() == 0) {
+                    mutable int pair = Der.contentOffset(this.der, rdn);      // into the SET
+                    int pairEnd = rdn + Der.totalLength(this.der, rdn);
+                    while (pair + 1 < pairEnd && found.length() == 0) {
+                        int typeOff = Der.contentOffset(this.der, pair);
+                        if (Der.oidEquals(this.der, typeOff, cn, 3)) {
+                            int valOff = Der.nextOffset(this.der, typeOff);
+                            int c = Der.contentOffset(this.der, valOff);
+                            int n = Der.contentLength(this.der, valOff);
+                            mutable StringBuilder text = new StringBuilder() on heap;
+                            mutable int i = 0;
+                            while (i < n) {
+                                text.appendChar(cast<char>(this.der[c + i] & 255));
+                                i = i + 1;
+                            }
+                            found = text.toString();
+                        }
+                        pair = Der.nextOffset(this.der, pair);
+                    }
+                    rdn = Der.nextOffset(this.der, rdn);
+                }
+                delete cn;
+                return found;
+            }
+
+            // A certificate as it is written down rather than as it travels: PEM is the DER in
+            // base64 between two marker lines, and it is how every trust store, every configuration
+            // file and every export button hands one over. Whitespace and the markers are dropped,
+            // and anything before the first marker or after the last is ignored -- a bundle file
+            // carries dozens of these separated by commentary.
+            public static method fromPem(String pem) returns Certificate* {
+                mutable StringBuilder body = new StringBuilder() on heap;
+                mutable ArrayList<String> lines = Strings.split(pem, "\n");
+                mutable boolean inside = false;
+                mutable int i = 0;
+                while (i < lines.size()) {
+                    String line = lines.get(i).trim();
+                    if (line.startsWith("-----BEGIN")) {
+                        inside = true;
+                    } else if (line.startsWith("-----END")) {
+                        inside = false;
+                    } else if (inside) {
+                        body.append(line);
+                    }
+                    i = i + 1;
+                }
+                delete lines;
+                String raw = Base64.decode(body.toString());
+                int[] der = new int[raw.length() > 0 ? raw.length() : 1]();
+                mutable int j = 0;
+                while (j < raw.length()) {
+                    der[j] = cast<int>(raw.charAt(j)) & 255;
+                    j = j + 1;
+                }
+                return new Certificate(der, raw.length()) on heap;
+            }
+
+            public destructor ~Certificate() returns void {
+                delete this.der;
+            }
+        }
+
+        // RSA PKCS#1 v1.5 signature verification (RFC 8017) -- what almost every certificate in a
+        // chain is signed with. Big-endian buffers throughout; the modular exponentiation rides the
+        // standard library's BigInteger, and the public exponent is small (65537 as a rule), so
+        // square-and-multiply over its bits is cheap.
+        public class Rsa {
+            // Is `sig` a valid signature over the SHA-256 `hash` under (modulus, e)?
+            public static method verifySha256(int[] sig, int sigLength, int[] modulus, int modLength,
+                                              int e, int[] hash) returns boolean {
+                BigInteger n = Rsa.fromBigEndian(modulus, modLength);
+                BigInteger s = Rsa.fromBigEndian(sig, sigLength);
+                BigInteger m = Rsa.modPow(s, e, n);
+                int[] encoded = Rsa.toBigEndian(m, modLength);
+                boolean ok = Rsa.checkPkcs1Sha256(encoded, modLength, hash);
+                delete encoded;
+                return ok;
+            }
+
+            private static method fromBigEndian(int[] bytes, int length) returns BigInteger {
+                BigInteger base = new BigInteger(cast<long>(256)) on heap;
+                mutable BigInteger acc = new BigInteger(cast<long>(0)) on heap;
+                mutable int i = 0;
+                while (i < length) {
+                    BigInteger digit = new BigInteger(cast<long>(bytes[i] & 255)) on heap;
+                    acc = acc.multiply(base).add(digit);
+                    i = i + 1;
+                }
+                return acc;
+            }
+
+            private static method toBigEndian(BigInteger a, int k) returns int[] {
+                BigInteger base = new BigInteger(cast<long>(256)) on heap;
+                mutable BigInteger v = a;
+                int[] out = new int[k]();
+                mutable int i = k - 1;
+                while (i >= 0) {
+                    out[i] = v.remainder(base).toString().toInt();
+                    v = v.divide(base);
+                    i = i - 1;
+                }
+                return out;
+            }
+
+            private static method modPow(BigInteger base, int e, BigInteger mod) returns BigInteger {
+                mutable BigInteger result = new BigInteger(cast<long>(1)) on heap;
+                mutable BigInteger b = base.remainder(mod);
+                mutable int bit = 30;
+                while (bit >= 0) {
+                    result = result.multiply(result).remainder(mod);
+                    if (((e >> bit) & 1) == 1) {
+                        result = result.multiply(b).remainder(mod);
+                    }
+                    bit = bit - 1;
+                }
+                return result;
+            }
+
+            // The recovered block must be 0x00 0x01, at least eight 0xFF bytes, 0x00, the SHA-256
+            // DigestInfo, then the hash. Every one of those is checked: a verifier that only compares
+            // the trailing hash accepts a forged signature with anything at all in the padding, which
+            // is the Bleichenbacher forgery.
+            private static method checkPkcs1Sha256(int[] em, int k, int[] hash) returns boolean {
+                if ((em[0] & 255) != 0 || (em[1] & 255) != 1) { return false; }
+                mutable int i = 2;
+                while (i < k && (em[i] & 255) == 255) { i = i + 1; }
+                if (i >= k || (em[i] & 255) != 0) { return false; }
+                if ((i - 2) < 8) { return false; }
+                i = i + 1;
+
+                int[] prefix = new int[19]();
+                prefix[0] = 48;   prefix[1] = 49;  prefix[2] = 48;  prefix[3] = 13;  prefix[4] = 6;
+                prefix[5] = 9;    prefix[6] = 96;  prefix[7] = 134; prefix[8] = 72;  prefix[9] = 1;
+                prefix[10] = 101; prefix[11] = 3;  prefix[12] = 4;  prefix[13] = 2;  prefix[14] = 1;
+                prefix[15] = 5;   prefix[16] = 0;  prefix[17] = 4;  prefix[18] = 32;
+
+                if (i + 19 + 32 != k) {
+                    delete prefix;
+                    return false;
+                }
+                mutable boolean ok = true;
+                mutable int j = 0;
+                while (j < 19) {
+                    if ((em[i + j] & 255) != prefix[j]) { ok = false; }
+                    j = j + 1;
+                }
+                delete prefix;
+                mutable int h = 0;
+                while (h < 32) {
+                    if ((em[i + 19 + h] & 255) != (hash[h] & 255)) { ok = false; }
+                    h = h + 1;
+                }
+                return ok;
+            }
+        }
+
+        // WHY A CERTIFICATE WAS REFUSED, thrown rather than returned.
+        //
+        // A boolean can be dropped on the floor without anybody noticing, and a validation result
+        // that is dropped is the same program as one that never validated. The failure is not the
+        // caller's intention -- their intention was to talk to a server -- so it is not something to
+        // hand back for them to remember to inspect. It stops.
+        public class CertificateException extends Exception {
+            private mutable String detail;
+            public constructor CertificateException(String detail) { this.detail = detail; }
+            public override method message() returns String {
+                return "certificate refused: ".concat(this.detail);
+            }
+        }
+
+        // THE CERTIFICATES THIS PROGRAM IS WILLING TO START FROM.
+        //
+        // A chain proves that each certificate was signed by the one above it, and proves nothing at
+        // all on its own -- a chain forged from top to bottom is just as self-consistent. What makes
+        // it mean something is ending at a key that was trusted for other reasons, and that is what
+        // a trust store holds.
+        //
+        // The roots come from the operating system, which already curates and updates them. That is
+        // not delegating the protocol: a root certificate is DATA. Shipping our own bundle inside the
+        // compiler would mean a list that goes stale between releases and a revocation nobody acts on.
+        // A program may also supply its own -- for a private authority, or for a test.
+        public class TrustStore {
+            private mutable ArrayList<Certificate*> roots;
+
+            public constructor TrustStore() {
+                this.roots = new ArrayList<Certificate*>() on heap;
+            }
+            public method add(Certificate* root) returns void {
+                this.roots.add(root);
+                return;
+            }
+            public method count() returns int { return this.roots.size(); }
+
+            // The root that issued `cert`, or null when this store does not vouch for it.
+            public method issuerOf(Certificate* cert) returns nullable Certificate* {
+                mutable int i = 0;
+                while (i < this.roots.size()) {
+                    Certificate* root = this.roots.get(i);
+                    if (cert.isIssuedBy(root)) { return root; }
+                    i = i + 1;
+                }
+                return null;
+            }
+            public destructor ~TrustStore() returns void {
+                delete this.roots;
+            }
+        }
+
+        // CHECKING THE CHAIN, THE DATES AND THE NAME -- in that order, and refusing at the first
+        // thing that does not hold.
+        //
+        // Three separate questions that a single "is this certificate valid?" runs together, and all
+        // three have to be answered:
+        //   - was each certificate signed by the next, up to a key we already trusted?
+        //   - is every certificate in that path valid TODAY?
+        //   - does the leaf cover the host we asked for?
+        //
+        // A client that checks the signature and not the name accepts any valid certificate for any
+        // host -- and anybody can buy a valid certificate for a domain they own. That was the
+        // commonest TLS bug in the field for a decade, and it is why the name is checked here rather
+        // than left as something the caller may add.
+        public class CertificateValidator {
+            // Refuses by throwing, naming what failed. `chain` is leaf first, as TLS sends it.
+            public static method check(ArrayList<Certificate*> chain, String host,
+                                       TrustStore* trusted, long nowSeconds)
+                                       throws(CertificateException) returns void {
+                if (chain.size() == 0) {
+                    throw new CertificateException("the server sent no certificate") on heap;
+                }
+                Certificate* leaf = chain.get(0);
+                if (!leaf.isWellFormed()) {
+                    throw new CertificateException("the certificate could not be read") on heap;
+                }
+                if (!CertificateValidator.covers(leaf, host)) {
+                    throw new CertificateException(
+                        "it is not for '".concat(host).concat("' -- it covers ")
+                            .concat(CertificateValidator.namesOf(leaf))) on heap;
+                }
+                CertificateValidator.checkDates(leaf, nowSeconds, "the server's certificate");
+
+                // Walk up. Each step must be signed by the next, and each signer must be allowed to
+                // sign -- a leaf that signs another leaf is a leaf that could issue for anybody.
+                mutable int i = 0;
+                mutable boolean reachedTrust = false;
+                while (i < chain.size() && !reachedTrust) {
+                    Certificate* current = chain.get(i);
+                    mutable nullable Certificate* issuer = null;
+                    if (i + 1 < chain.size() && current.isIssuedBy(chain.get(i + 1))) {
+                        issuer = chain.get(i + 1);
+                    } else {
+                        issuer = trusted.issuerOf(current);
+                        if (issuer != null) { reachedTrust = true; }
+                    }
+                    if (issuer == null) {
+                        throw new CertificateException(
+                            "the chain stops at '".concat(current.issuerCommonName())
+                                .concat("', which is not one this program trusts")) on heap;
+                    }
+                    Certificate* signer = cast<Certificate*>(issuer);
+                    if (!signer.isCertificateAuthority()) {
+                        throw new CertificateException(
+                            "'".concat(signer.subjectCommonName())
+                                .concat("' signed another certificate and is not allowed to")) on heap;
+                    }
+                    CertificateValidator.checkDates(signer, nowSeconds,
+                        "the issuer '".concat(signer.subjectCommonName()).concat("'"));
+                    if (!CertificateValidator.signedBy(current, signer)) {
+                        throw new CertificateException(
+                            "'".concat(current.subjectCommonName())
+                                .concat("' does not carry a valid signature from '")
+                                .concat(signer.subjectCommonName()).concat("'")) on heap;
+                    }
+                    i = i + 1;
+                }
+                if (!reachedTrust) {
+                    throw new CertificateException(
+                        "the chain never reaches a certificate this program trusts") on heap;
+                }
+                return;
+            }
+
+            private static method checkDates(Certificate* cert, long nowSeconds, String who)
+                                             throws(CertificateException) returns void {
+                if (nowSeconds < cert.notBefore()) {
+                    throw new CertificateException(who.concat(" is not valid yet")) on heap;
+                }
+                if (nowSeconds > cert.notAfter()) {
+                    throw new CertificateException(who.concat(" has expired")) on heap;
+                }
+                return;
+            }
+
+            // Does the issuer's key verify the signature over the signed body? Only algorithms this
+            // library can actually check answer true -- an unknown one is refused rather than waved
+            // through, because "I could not check it" and "it checks out" must not be the same answer.
+            public static method signedBy(Certificate* cert, Certificate* issuer) returns boolean {
+                int alg = cert.signatureAlgorithm();
+                if (alg != 1) { return false; }        // PSS and ECDSA arrive with their own verifiers
+                mutable nullable RsaPublicKey* key = issuer.rsaPublicKey();
+                if (key == null) { return false; }
+                RsaPublicKey* rsa = cast<RsaPublicKey*>(key);
+                mutable int[] body = cert.signedBody();
+                mutable int[] hash = Sha256.digestRaw(body, cert.signedBodyLength());
+                mutable int[] sig = cert.signature();
+                boolean ok = Rsa.verifySha256(sig, cert.signatureLength(),
+                                              rsa.modulus, rsa.modLength, rsa.exponent, hash);
+                delete sig;
+                delete hash;
+                delete body;
+                delete rsa;
+                return ok;
+            }
+
+            // RFC 6125 hostname matching, against the subject alternative names and nothing else.
+            // The common name has not been valid for this since browsers stopped reading it, and a
+            // client that falls back to it accepts certificates the issuing rules never checked.
+            public static method covers(Certificate* cert, String host) returns boolean {
+                mutable ArrayList<String> names = cert.dnsNames();
+                mutable boolean hit = false;
+                mutable int i = 0;
+                while (i < names.size()) {
+                    if (CertificateValidator.nameMatches(names.get(i), host)) { hit = true; }
+                    i = i + 1;
+                }
+                delete names;
+                return hit;
+            }
+
+            // A wildcard sits in the LEFTMOST label only, replaces exactly one label, and never
+            // matches the bare domain: `*.example.com` covers `api.example.com` and neither
+            // `example.com` nor `a.b.example.com`. Everything else is an exact, case-insensitive
+            // comparison.
+            public static method nameMatches(String pattern, String host) returns boolean {
+                String p = pattern.toLower();
+                String h = host.toLower();
+                if (!p.startsWith("*.")) { return p.equals(h); }
+                String suffix = p.substring(1, p.length());        // ".example.com"
+                if (!h.endsWith(suffix)) { return false; }
+                // What the wildcard stood for must be exactly one label: non-empty, and no dot.
+                int cut = h.length() - suffix.length();
+                if (cut <= 0) { return false; }                    // the bare domain
+                mutable int i = 0;
+                while (i < cut) {
+                    if (h.charAt(i) == '.') { return false; }
+                    i = i + 1;
+                }
+                return true;
+            }
+
+            // For the refusal message: what the certificate actually covers, so a reader can see the
+            // mismatch instead of being told there is one.
+            private static method namesOf(Certificate* cert) returns String {
+                mutable ArrayList<String> names = cert.dnsNames();
+                if (names.size() == 0) {
+                    delete names;
+                    return "no host names at all";
+                }
+                mutable StringBuilder out = new StringBuilder() on heap;
+                mutable int i = 0;
+                while (i < names.size() && i < 4) {
+                    if (i > 0) { out.append(", "); }
+                    out.append(names.get(i));
+                    i = i + 1;
+                }
+                if (names.size() > 4) { out.append(", and more"); }
+                delete names;
+                return out.toString();
+            }
+        }
+    }
+

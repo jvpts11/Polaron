@@ -2,7 +2,34 @@
 
 namespace polaron {
 
+// ONE ANSWER PER SUBEXPRESSION PER QUESTION, which is what stops this being exponential.
+//
+// Several branches below need the type of a child more than once -- a call asks for its callee's
+// type and then, separately, whether its receiver is a `mat4`. Each of those recurses into the same
+// child, so a chain `a.concat(b).concat(c)...` costs 2^depth: measured before this, a return of
+// eight chained concats compiled in 482 ms, fourteen took 27 SECONDS, and eighteen never finished.
+// The same shape was fixed once already for binary expressions; fixing it there and not here is why
+// it came back through a different node type.
+//
+// The memo lasts for ONE top-level query and is dropped when it returns. That is deliberate rather
+// than thrifty: the answer depends on `locals`, which changes as the emitter moves between functions
+// and scopes, so a cache that outlived the question would eventually answer an old one.
 std::string CodeGenerator::Impl::typeName(const ast::Expr& expr) {
+    ++typeNameDepth_;
+    auto hit = typeNameMemo_.find(&expr);
+    if (hit != typeNameMemo_.end()) {
+        --typeNameDepth_;
+        return hit->second;
+    }
+    const std::string answer = typeNameUncached(expr);
+    typeNameMemo_[&expr] = answer;
+    if (--typeNameDepth_ == 0) {
+        typeNameMemo_.clear();
+    }
+    return answer;
+}
+
+std::string CodeGenerator::Impl::typeNameUncached(const ast::Expr& expr) {
     if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
         const std::int64_t v = parseIntLiteral(n->text);
         if (ast::intLiteralNeeds64(n->text)) {

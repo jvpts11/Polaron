@@ -46,7 +46,33 @@
             public static method ofEpochMillis(long ms) returns Instant {
                 return new Instant(ms) on heap;
             }
+            // A MOMENT NAMED BY THE CALENDAR, which there was no way to express: `Instant` could be
+            // read from the clock or from a millisecond count, and `Date` held a year, a month and a
+            // day with no way back to either. So "the instant of 2026-08-15 14:30:00 UTC" -- what a
+            // certificate's validity, a log line's timestamp and a scheduled job all are -- had to be
+            // arrived at by formatting a string and parsing it again.
+            //
+            // The conversion is the civil-from-days algorithm run backwards: shift the year so that
+            // March starts it (which puts the leap day last and removes every special case), count
+            // whole 400-year eras, and add the day-of-era. Correct for any year the type can hold,
+            // with no table and no loop.
+            public static method ofUtc(int year, int month, int day,
+                                       int hour, int minute, int second) returns Instant {
+                mutable int y = year;
+                if (month <= 2) { y = y - 1; }
+                int era = (y >= 0 ? y : y - 399) / 400;
+                int yoe = y - era * 400;                                   // [0, 399]
+                int mp = month + (month > 2 ? 0 - 3 : 9);                  // March = 0
+                int doy = (153 * mp + 2) / 5 + day - 1;                    // [0, 365]
+                int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;           // [0, 146096]
+                long days = cast<long>(era) * cast<long>(146097) + cast<long>(doe) -
+                            cast<long>(719468);                            // 1970-01-01 is day 0
+                long secs = days * cast<long>(86400) + cast<long>(hour) * cast<long>(3600) +
+                            cast<long>(minute) * cast<long>(60) + cast<long>(second);
+                return new Instant(secs * cast<long>(1000)) on heap;
+            }
             public method toEpochMillis() returns long { return this.epochMs; }
+            public method toEpochSeconds() returns long { return this.epochMs / cast<long>(1000); }
             public method isBefore(Instant other) returns boolean {
                 return this.epochMs < other.toEpochMillis();
             }
