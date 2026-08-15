@@ -4958,6 +4958,25 @@ if(POLARON_WITH_LLVM)
             "-DCONTAINS=lines: count=3 second=beta noTrailingCR=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # A LineReader IS an Iterator<String>, so a routine written over the interface counts the
+        # lines of a file without knowing it is one -- which is the point of having the interface.
+        add_test(NAME codegen_file_line_iterator COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_durability.pol"
+            "-DCONTAINS=iterator: counted=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # How big a tree is before copying it, and what is FREE right now -- a different number from
+        # what the machine has, and the one to size a cache against. Sizing against the total is how
+        # a program that behaves on an idle machine takes a busy one down.
+        add_test(NAME codegen_machine_sizes COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_durability.pol"
+            "-DCONTAINS=sizes: treeBytes>0=1 freeMemory>0=1 lessThanTotal=1 uptime>0=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         add_test(NAME codegen_process_input_and_timeout COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"

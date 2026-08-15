@@ -10,6 +10,7 @@ import System.OS.ProcessResult;
 import System.OS.Subprocess;
 import System.OS.Workspace;
 import System.Collections.ArrayList;
+import System.Collections.Iterator;
 import System.Text.StringBuilder;
 program FileDurability;
 
@@ -43,6 +44,8 @@ program FileDurability;
 //   move: arrived=1 sourceGone=1
 //   lock: taken=1 secondRefused=1 afterUnlock=1
 //   lines: count=3 second=beta noTrailingCR=1
+//   iterator: counted=3
+//   sizes: treeBytes>0=1 freeMemory>0=1 lessThanTotal=1 uptime>0=1
 //   child: fedInput=1 timedOut=1
 //   machine: arch64=1
 public bundle Main {
@@ -58,6 +61,7 @@ public bundle Main {
                     Main.moving(work.path());
                     Main.locking(work.path());
                     Main.lines(work.path());
+                    Main.sizes(work.path());
                 }
                 Main.children();
                 System.IO.Console.printf("machine: arch64=%d\n", Machine.is64Bit() ? 1 : 0);
@@ -140,6 +144,32 @@ public bundle Main {
                                          clean ? 1 : 0);
                 delete got;
                 delete reader;
+
+                // ...and the same reader handed to something that does not know it is a file. A
+                // LineReader IS an Iterator<String>, so a routine written over the interface counts
+                // the lines of a two gigabyte log exactly as it counts three from a list.
+                mutable LineReader* again = new LineReader(path) on heap;
+                System.IO.Console.printf("iterator: counted=%d\n", Main.countOf(again));
+                delete again;
+            }
+            // Knows nothing about files -- only that it was handed something with hasNext/next.
+            private static method countOf(Iterator<String> source) returns int {
+                mutable int n = 0;
+                while (source.hasNext()) {
+                    source.next();
+                    n = n + 1;
+                }
+                return n;
+            }
+
+            // How big a tree is before copying it, and what the machine has left to hold it.
+            private static method sizes(String root) returns void {
+                System.IO.Console.printf(
+                    "sizes: treeBytes>0=%d freeMemory>0=%d lessThanTotal=%d uptime>0=%d\n",
+                    Files.directorySize(root) > cast<long>(0) ? 1 : 0,
+                    Machine.availableMemory() > cast<long>(0) ? 1 : 0,
+                    Machine.availableMemory() <= Machine.memory() ? 1 : 0,
+                    Machine.uptime() > cast<long>(0) ? 1 : 0);
             }
 
             private static method children() returns void {

@@ -2962,6 +2962,55 @@ long long __polaron_machine_memory(void) {
     return -1;
 #endif
 }
+// HOW MUCH MEMORY IS FREE RIGHT NOW, which is a different question from how much the machine has --
+// and it is the one a program sizing a cache, a buffer pool or a batch actually needs. Sizing
+// against TOTAL is how a program that behaves on an idle machine takes the whole box down on a busy
+// one. -1 when the system will not say.
+long long __polaron_machine_available_memory(void) {
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) {
+        return -1;
+    }
+    return static_cast<long long>(ms.ullAvailPhys);
+#elif defined(_SC_AVPHYS_PAGES) && defined(_SC_PAGESIZE)
+    const long pages = sysconf(_SC_AVPHYS_PAGES);
+    const long ps = sysconf(_SC_PAGESIZE);
+    if (pages < 0 || ps < 0) {
+        return -1;
+    }
+    return static_cast<long long>(pages) * static_cast<long long>(ps);
+#else
+    return -1;
+#endif
+}
+
+// How long this machine has been up, in seconds; -1 when it cannot be determined. What a monitor
+// reports, and what a program comparing its own age against the machine's uses to tell "restarted
+// with the box" from "restarted on its own".
+long long __polaron_uptime(void) {
+#ifdef _WIN32
+    return static_cast<long long>(GetTickCount64() / 1000ULL);
+#elif defined(CLOCK_BOOTTIME)
+    struct timespec ts;
+    if (clock_gettime(CLOCK_BOOTTIME, &ts) != 0) {
+        return -1;
+    }
+    return static_cast<long long>(ts.tv_sec);
+#elif defined(CLOCK_MONOTONIC)
+    // Not identical -- CLOCK_MONOTONIC does not count time spent suspended on the systems that
+    // separate the two -- and it is the closest thing the rest of them have.
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return -1;
+    }
+    return static_cast<long long>(ts.tv_sec);
+#else
+    return -1;
+#endif
+}
+
 long long __polaron_page_size(void) {
 #ifdef _WIN32
     SYSTEM_INFO si;
