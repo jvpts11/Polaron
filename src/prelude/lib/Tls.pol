@@ -739,10 +739,7 @@
             // function that accepts almost anything.
             public static method verifyPssSha256(int[] sig, int sigLength, int[] modulus,
                                                  int modLength, int e, int[] hash) returns boolean {
-                BigInteger n = Rsa.fromBigEndian(modulus, modLength);
-                BigInteger s = Rsa.fromBigEndian(sig, sigLength);
-                BigInteger m = Rsa.modPow(s, e, n);
-                mutable int[] em = Rsa.toBigEndian(m, modLength);
+                mutable int[] em = Rsa.recover(sig, sigLength, modulus, modLength, e);
                 int emLen = modLength;
                 int hLen = 32;
                 int sLen = 32;                                  // salt length = hash length
@@ -828,13 +825,57 @@
             // selects the digest -- 32, 48 or 64 for SHA-256, SHA-384 and SHA-512.
             public static method verifyPkcs1(int[] sig, int sigLength, int[] modulus, int modLength,
                                              int e, int[] hash, int hashLength) returns boolean {
-                BigInteger n = Rsa.fromBigEndian(modulus, modLength);
-                BigInteger s = Rsa.fromBigEndian(sig, sigLength);
-                BigInteger m = Rsa.modPow(s, e, n);
-                int[] encoded = Rsa.toBigEndian(m, modLength);
+                mutable int[] encoded = Rsa.recover(sig, sigLength, modulus, modLength, e);
                 boolean ok = Rsa.checkPkcs1(encoded, modLength, hash, hashLength);
                 delete encoded;
                 return ok;
+            }
+
+            // s^e mod n, as big-endian bytes of exactly `modLength` -- the operation both padding
+            // schemes start from.
+            //
+            // ON THE LIMB ARITHMETIC AND NOT ON BigInteger. That type keeps one DECIMAL DIGIT per
+            // slot, which makes a 2048-bit modular exponentiation cost 2.3 seconds -- measured
+            // against a real trust store, where the two or three verifications of a single handshake
+            // would have taken most of ten seconds. The same Montgomery code the curve uses answers
+            // this in milliseconds; only the limb count differs.
+            private static method recover(int[] sig, int sigLength, int[] modulus, int modLength,
+                                          int e) returns int[] {
+                int limbs = U256.limbsForBytes(modLength);
+                mutable long[] n = Rsa.toLimbs(modulus, modLength, limbs);
+                mutable long[] s = Rsa.toLimbs(sig, sigLength, limbs);
+                mutable Mont* f = new Mont(n) on heap;
+                mutable long[] m = f.powSmall(s, e);
+                int[] out = Rsa.fromLimbs(m, modLength);
+                delete m;
+                delete f;
+                delete s;
+                delete n;
+                return out;
+            }
+            private static method toLimbs(int[] be, int len, int limbs) returns long[] {
+                mutable long[] out = U256.zeroOf(limbs);
+                mutable int i = 0;
+                while (i < len) {
+                    int value = be[len - 1 - i] & 255;
+                    int limb = i / 2;
+                    if (limb < limbs) {
+                        out[limb] = out[limb] | (cast<long>(value) << ((i % 2) * 8));
+                    }
+                    i = i + 1;
+                }
+                return out;
+            }
+            private static method fromLimbs(long[] a, int bytes) returns int[] {
+                int[] out = new int[bytes]();
+                mutable int i = 0;
+                while (i < bytes) {
+                    int limb = i / 2;
+                    long v = limb < a.length() ? a[limb] : cast<long>(0);
+                    out[bytes - 1 - i] = cast<int>((v >> ((i % 2) * 8)) & cast<long>(255));
+                    i = i + 1;
+                }
+                return out;
             }
             // The SHA-256 case by name, which is what most callers mean.
             public static method verifySha256(int[] sig, int sigLength, int[] modulus, int modLength,
@@ -947,7 +988,16 @@
         // times the limb operations and buys arithmetic that cannot overflow into nonsense, which for
         // code nobody can eyeball is the right trade.
         public class U256 {
+            // THE SIZE COMES FROM THE ARRAY, not from the name. This started as 256-bit-only, which
+            // was right for a curve and wrong for everything else: RSA needs 2048 bits, and routing
+            // that through the standard library's decimal BigInteger cost 2.3 SECONDS per signature
+            // -- measured against a real trust store, where a handshake's two or three verifications
+            // would have taken most of ten seconds. The same Montgomery code answers both once the
+            // limb count stops being a constant.
             public static method zero() returns long[] { return new long[16](); }
+            public static method zeroOf(int limbs) returns long[] { return new long[limbs](); }
+            // How many limbs a modulus of this many BYTES needs, rounded up.
+            public static method limbsForBytes(int bytes) returns int { return (bytes + 1) / 2; }
 
             // 64 hex characters, big-endian -- how every curve constant is published.
             public static method fromHex(String hex) returns long[] {
@@ -996,12 +1046,12 @@
             }
 
             public static method copy(long[] a) returns long[] {
-                mutable long[] out = new long[16]();
-                for (mutable int i = 0; i < 16; i++) { out[i] = a[i]; }
+                mutable long[] out = new long[a.length()]();
+                for (mutable int i = 0; i < a.length(); i++) { out[i] = a[i]; }
                 return out;
             }
             public static method isZero(long[] a) returns boolean {
-                for (mutable int i = 0; i < 16; i++) {
+                for (mutable int i = 0; i < a.length(); i++) {
                     if (a[i] != cast<long>(0)) { return false; }
                 }
                 return true;
@@ -1009,7 +1059,7 @@
             // -1, 0 or 1. Compared from the top down, which is the only order that terminates early
             // on the common case.
             public static method compare(long[] a, long[] b) returns int {
-                for (mutable int i = 15; i >= 0; i--) {
+                for (mutable int i = a.length() - 1; i >= 0; i--) {
                     if (a[i] < b[i]) { return 0 - 1; }
                     if (a[i] > b[i]) { return 1; }
                 }
@@ -1017,13 +1067,13 @@
             }
             // `at` and not `index`, which is reserved.
             public static method bit(long[] a, int at) returns int {
-                if (at < 0 || at >= 256) { return 0; }
+                if (at < 0 || at >= a.length() * 16) { return 0; }
                 return cast<int>((a[at / 16] >> (at % 16)) & cast<long>(1));
             }
             // a += b, answering the carry out of the top limb.
             public static method addInto(long[] a, long[] b) returns long {
                 mutable long carry = cast<long>(0);
-                for (mutable int i = 0; i < 16; i++) {
+                for (mutable int i = 0; i < a.length(); i++) {
                     long sum = a[i] + b[i] + carry;
                     a[i] = sum & cast<long>(65535);
                     carry = sum >> 16;
@@ -1033,7 +1083,7 @@
             // a -= b, answering the borrow.
             public static method subInto(long[] a, long[] b) returns long {
                 mutable long borrow = cast<long>(0);
-                for (mutable int i = 0; i < 16; i++) {
+                for (mutable int i = 0; i < a.length(); i++) {
                     long diff = a[i] - b[i] - borrow;
                     if (diff < cast<long>(0)) {
                         a[i] = diff + cast<long>(65536);
@@ -1077,10 +1127,12 @@
                 this.n0 = (cast<long>(65536) - inv) & cast<long>(65535);
                 // R^2 mod m, by doubling 1 five hundred and twelve times with a conditional subtract.
                 // Doubling avoids needing a division to get here, which is the thing being avoided.
-                mutable long[] acc = U256.zero();
+                mutable long[] acc = U256.zeroOf(this.m.length());
                 acc[0] = cast<long>(1);
                 mutable int d = 0;
-                while (d < 512) {
+                // R = 2^(16*limbs), so R² needs twice that many doublings.
+                int doublings = this.m.length() * 32;
+                while (d < doublings) {
                     mutable long carry = U256.addInto(acc, acc);
                     if (carry != cast<long>(0) || U256.compare(acc, this.m) >= 0) {
                         U256.subInto(acc, this.m);
@@ -1093,36 +1145,37 @@
             // The Montgomery product: (a * b) / R mod m. Separated operand scanning -- the full
             // 32-limb product first, then one reduction pass per limb.
             public method mul(long[] a, long[] b) returns long[] {
-                mutable long[] t = new long[34]();
-                for (mutable int i = 0; i < 16; i++) {
+                int n = this.m.length();
+                mutable long[] t = new long[2 * n + 2]();
+                for (mutable int i = 0; i < n; i++) {
                     mutable long carry = cast<long>(0);
-                    for (mutable int j = 0; j < 16; j++) {
+                    for (mutable int j = 0; j < n; j++) {
                         long sum = t[i + j] + a[j] * b[i] + carry;
                         t[i + j] = sum & cast<long>(65535);
                         carry = sum >> 16;
                     }
-                    t[i + 16] = t[i + 16] + carry;
+                    t[i + n] = t[i + n] + carry;
                 }
-                for (mutable int i = 0; i < 16; i++) {
+                for (mutable int i = 0; i < n; i++) {
                     long factor = (t[i] * this.n0) & cast<long>(65535);
                     mutable long carry = cast<long>(0);
-                    for (mutable int j = 0; j < 16; j++) {
+                    for (mutable int j = 0; j < n; j++) {
                         long sum = t[i + j] + factor * this.m[j] + carry;
                         t[i + j] = sum & cast<long>(65535);
                         carry = sum >> 16;
                     }
-                    mutable int k = i + 16;
-                    while (carry != cast<long>(0) && k < 34) {
+                    mutable int k = i + n;
+                    while (carry != cast<long>(0) && k < 2 * n + 2) {
                         long sum = t[k] + carry;
                         t[k] = sum & cast<long>(65535);
                         carry = sum >> 16;
                         k = k + 1;
                     }
                 }
-                mutable long[] out = U256.zero();
-                for (mutable int i = 0; i < 16; i++) { out[i] = t[i + 16]; }
+                mutable long[] out = U256.zeroOf(n);
+                for (mutable int i = 0; i < n; i++) { out[i] = t[i + n]; }
                 // One conditional subtract: the result is below 2m, never below m by construction.
-                if (t[32] != cast<long>(0) || U256.compare(out, this.m) >= 0) {
+                if (t[2 * n] != cast<long>(0) || U256.compare(out, this.m) >= 0) {
                     U256.subInto(out, this.m);
                 }
                 delete t;
@@ -1131,11 +1184,33 @@
 
             public method toMont(long[] a) returns long[] { return this.mul(a, this.rr); }
             public method fromMont(long[] a) returns long[] {
-                mutable long[] one = U256.zero();
+                mutable long[] one = U256.zeroOf(this.m.length());
                 one[0] = cast<long>(1);
                 long[] r = this.mul(a, one);
                 delete one;
                 return r;
+            }
+            // Modular exponentiation with a small public exponent, in one call: a^e mod m, entering
+            // and leaving Montgomery form here so callers never see it. This is what makes an RSA
+            // verification cost milliseconds instead of the 2.3 SECONDS the decimal BigInteger took.
+            public method powSmall(long[] a, int e) returns long[] {
+                mutable long[] result = this.toMont(Mont.oneOf(this.m.length()));
+                mutable long[] base = this.toMont(a);
+                mutable int bit = 30;
+                while (bit >= 0) {
+                    result = this.mul(result, result);
+                    if (((e >> bit) & 1) == 1) { result = this.mul(result, base); }
+                    bit = bit - 1;
+                }
+                delete base;
+                long[] out = this.fromMont(result);
+                delete result;
+                return out;
+            }
+            private static method oneOf(int limbs) returns long[] {
+                mutable long[] one = U256.zeroOf(limbs);
+                one[0] = cast<long>(1);
+                return one;
             }
             public method addMod(long[] a, long[] b) returns long[] {
                 mutable long[] out = U256.copy(a);
@@ -1159,13 +1234,14 @@
             // this stays correct if it is ever reused where that matters.
             public method invMont(long[] aMont) returns long[] {
                 mutable long[] e = U256.copy(this.m);
-                mutable long[] two = U256.zero();
+                mutable long[] two = U256.zeroOf(this.m.length());
                 two[0] = cast<long>(2);
                 U256.subInto(e, two);
-                mutable long[] result = this.toMont(Mont.oneRaw());
+                mutable long[] result = this.toMont(Mont.oneOf(this.m.length()));
                 mutable long[] base = U256.copy(aMont);
                 mutable int i = 0;
-                while (i < 256) {
+                int bits = this.m.length() * 16;
+                while (i < bits) {
                     if (U256.bit(e, i) == 1) { result = this.mul(result, base); }
                     base = this.mul(base, base);
                     i = i + 1;
@@ -1174,11 +1250,6 @@
                 delete e;
                 delete base;
                 return result;
-            }
-            private static method oneRaw() returns long[] {
-                mutable long[] one = U256.zero();
-                one[0] = cast<long>(1);
-                return one;
             }
             public destructor ~Mont() returns void {
                 delete this.rr;

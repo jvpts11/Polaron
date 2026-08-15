@@ -50,11 +50,12 @@ public bundle Main {
                 mutable int cannot = 0;
                 mutable ArrayList<Certificate*> roots = system.certificates();
                 mutable int i = 0;
-                // Twelve is a sample, not the whole store, and only because each RSA verification is
-                // real modular exponentiation. MEASURED ACROSS THE WHOLE STORE ONCE: 30 checked, 30
-                // verified, 36 unsupported -- and 29 of those 36 are SHA-1, MD5 or MD2 roots, which
-                // a modern client must refuse, so they are not a gap. The genuine gap is P-384.
-                while (i < roots.size() && checked < 12) {
+                // THE WHOLE STORE, every root the machine holds. That is only affordable because the
+                // arithmetic is purpose-built: through the standard library's decimal BigInteger the
+                // same scan took 69 seconds, twelve roots alone took 28, and it now finishes in
+                // under a second. A test that could only afford a sample was a test that could be
+                // passing by luck of ordering.
+                while (i < roots.size()) {
                     Certificate* root = roots.get(i);
                     if (root.isSelfIssued()) {
                         // "Cannot check" and "does not check out" are counted apart, because they
