@@ -1,0 +1,63 @@
+import System.IO.Console;
+program GenericPtrTemplateMethod;
+
+// A CONCRETE METHOD OF A GENERIC BASE CALLING ITS OWN ABSTRACT METHOD -- the template-method shape --
+// over a type argument that is a POINTER.
+//
+// It did not compile. A generic instantiated over a pointer is named `Box$Node*`, and that trailing
+// `*` is part of the CLASS NAME rather than a pointer to it; the virtual-dispatch decision stripped
+// it with `baseType`, which is right for `Dog*` and wrong here, and landed on `Box$Node` -- no class
+// at all. The call then fell through to the direct path, where an abstract method has no body, and
+// the error read `unknown method 'full' on 'Box$Node*'` against a base method that does nothing but
+// call its own abstract one.
+//
+// Found by adding `isNone()` to `Option<T>`: the standard library's own sum type could not answer a
+// question in terms of its own abstract method, for any T that was a pointer.
+//
+// Prints: int: full=1 empty=0 / ptr: full=1 empty=0 / hollow: full=0 empty=1
+public bundle Main {
+    public namespace App {
+
+        public class Node {
+            public mutable int v;
+            public constructor Node() { this.v = 0; }
+        }
+
+        public abstract class Box<T> {
+            public abstract method full() returns boolean;
+            // The whole point: written once here, answered by whichever variant this is.
+            public method empty() returns boolean { return !this.full(); }
+        }
+        public class Filled<T> extends Box<T> {
+            public final T item;
+            public constructor Filled(T item) { this.item = item; }
+            public override method full() returns boolean { return true; }
+        }
+        public class Hollow<T> extends Box<T> {
+            public constructor Hollow() { }
+            public override method full() returns boolean { return false; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Filled<int>* a = new Filled<int>(1) on heap;
+                System.IO.Console.printf("int: full=%d empty=%d\n",
+                                         a.full() ? 1 : 0, a.empty() ? 1 : 0);
+
+                Node* n = new Node() on heap;
+                Filled<Node*>* b = new Filled<Node*>(n) on heap;
+                System.IO.Console.printf("ptr: full=%d empty=%d\n",
+                                         b.full() ? 1 : 0, b.empty() ? 1 : 0);
+
+                Hollow<Node*>* c = new Hollow<Node*>() on heap;
+                System.IO.Console.printf("hollow: full=%d empty=%d\n",
+                                         c.full() ? 1 : 0, c.empty() ? 1 : 0);
+                delete c;
+                delete b;
+                delete n;
+                delete a;
+                return;
+            }
+        }
+    }
+}
