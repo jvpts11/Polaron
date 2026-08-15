@@ -2646,6 +2646,19 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # PARALLEL ALGORITHMS. Thread, Mutex, Channel and atomic were all here -- every primitive and
+        # not one algorithm -- so every program that wanted a loop across the machine wrote the pool
+        # itself, and got the chunk arithmetic wrong in the same place: the last one. The answers are
+        # checked against closed forms, so a dropped or double-counted chunk fails the test, and the
+        # two edges a hand-written pool trips on (nothing to do, one item) are asserted too.
+        add_test(NAME codegen_parallel_algorithms_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/parallel_algorithms.pol"
+            "-DEXPECTED=width=1 sum=4999950000 mapped=9999900000 empty=0 one=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # REAL DEFLATE. `Huffman`, `Lz77` and `Rle` were already here as hand-written pieces, and not
         # one of them can read a byte any other program wrote -- nothing could open a `.gz`, decode
         # `Content-Encoding: gzip`, or look inside a PNG. Checks the round-trip, that it is genuinely

@@ -81,7 +81,15 @@ endif()
 # 10 807 lines of "C++" -- where none of this project's own tooling could see it. Generating it keeps
 # the self-contained binary and gives the source back its file.
 set(POLARON_PRELUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/prelude")
-file(GLOB POLARON_PRELUDE_PARTS "${POLARON_PRELUDE_DIR}/lib/*.pol")
+# CONFIGURE_DEPENDS, and it is not optional here. A plain GLOB is evaluated once, at configure time,
+# so a subject file added afterwards is in no dependency list -- and the consequence is worse than
+# "the new file is ignored": every later EDIT to that file is invisible too, because the build has no
+# record that it exists. The standard library then silently keeps compiling from the last generated
+# header, and the compiler runs against a version of its own library that is no longer on disk.
+#
+# Measured the hard way twice while adding subjects: a fix to a brand-new .pol changed nothing, twice,
+# and the second time the generated header still held the text the source no longer had.
+file(GLOB POLARON_PRELUDE_PARTS CONFIGURE_DEPENDS "${POLARON_PRELUDE_DIR}/lib/*.pol")
 set(POLARON_PRELUDE_HDR "${CMAKE_BINARY_DIR}/generated/prelude_source.h")
 add_custom_command(
     OUTPUT "${POLARON_PRELUDE_HDR}"
