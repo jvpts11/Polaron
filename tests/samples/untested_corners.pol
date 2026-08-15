@@ -1,0 +1,75 @@
+import System.IO.Console;
+import System.Compress.Zlib;
+import System.Units.Mass;
+import System.Units.kilograms;
+import System.Units.grams;
+import System.Science.Exponential;
+import System.Collections.HashMap;
+program UntestedCorners;
+
+// THREE THINGS THE LIBRARY SHIPPED AND NOTHING RAN. Found by counting rather than by guessing: of
+// 285 standard library types, 25 were touched by no sample, and once the internal helpers and the
+// cross-program IPC pieces are set aside these are what remained.
+//
+// Each is tested by a property rather than by a magic number:
+//
+//   * ZLIB by a ROUND TRIP -- compress then decompress gives back exactly what went in. A codec is
+//     the one thing where a round trip is the whole specification.
+//   * MASS by CONVERSION AGREEMENT -- the same quantity written two ways is one quantity, which is
+//     the entire point of a unit type.
+//   * EXPONENTIAL by the two facts every distribution must satisfy: its CDF runs from 0 to 1, and
+//     its quantile is the inverse of its CDF.
+//
+// Prints: zlib=1 mass=1 exp=1 map=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A round trip through zlib, over data with enough repetition to be worth deflating.
+                mutable int[] data = new int[300]();
+                for (mutable int i = 0; i < 300; i++) { data[i] = 65 + (i % 7); }
+                mutable int[] packed = Zlib.compress(data, 300);
+                mutable int[] back = Zlib.decompress(packed, packed.length());
+                mutable int zlib = 1;
+                if (back.length() != 300) { zlib = 0; }
+                for (mutable int i = 0; i < 300; i++) {
+                    if (i < back.length() && back[i] != data[i]) { zlib = 0; }
+                }
+
+                // One and a half kilograms, written two ways.
+                Mass heavy = 2 kilograms;
+                Mass same = 2000 grams;
+                mutable int mass = 1;
+                if (heavy.asGrams() != 2000) { mass = 0; }
+                if (same.asKilograms() != 2) { mass = 0; }
+                if (heavy.asMilligrams() != same.asMilligrams()) { mass = 0; }
+
+                // The exponential distribution: CDF from 0 towards 1, and quantile inverts it.
+                mutable int exp = 1;
+                if (Exponential.cdf(0.0, 1.5) != 0.0) { exp = 0; }
+                if (Exponential.cdf(100.0, 1.5) < 0.999) { exp = 0; }
+                double q = Exponential.quantile(0.5, 1.5);
+                double roundTrip = Exponential.cdf(q, 1.5);
+                if (roundTrip < 0.499 || roundTrip > 0.501) { exp = 0; }
+
+                // While here: HashMap over a String key, the commonest map in any program.
+                mutable HashMap<String, int> ages = new HashMap<String, int>() on heap;
+                ages.put("ada", 36);
+                ages.put("grace", 45);
+                ages.put("ada", 37);            // replaces, does not duplicate
+                mutable int map = 1;
+                if (ages.size() != 2) { map = 0; }
+                if (ages.get("ada") != 37) { map = 0; }
+                if (ages.getOrDefault("nobody", -1) != -1) { map = 0; }
+                if (!ages.remove("grace")) { map = 0; }
+                if (ages.containsKey("grace")) { map = 0; }
+
+                System.IO.Console.printf("zlib=%d mass=%d exp=%d map=%d\n", zlib, mass, exp, map);
+                delete back;
+                delete packed;
+                delete data;
+                return;
+            }
+        }
+    }
+}
