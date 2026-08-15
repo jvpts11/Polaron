@@ -875,6 +875,13 @@ struct CodeGenerator::Impl {
     llvm::Value* variantEncode(llvm::Value* v);
     // Reverse of variantEncode: recover the payload as `ty` (truncate / bitcast / inttoptr).
     llvm::Value* variantDecode(llvm::Value* payload, llvm::Type* ty);
+    // A RECEIVER FOR A METHOD CALLED ON THE VALUE FORM of Option/Result. The value is a
+    // { tag, payload } pair and not an object, so `opt.isSome()` used to load a POINTER out of the
+    // tag slot and dispatch through it -- address 1, an access violation on the most ordinary use of
+    // the library there is (`list.find(...).isSome()`). This builds the case object the tag names, on
+    // the stack, with its vtable and its payload field, so the existing virtual dispatch works
+    // unchanged. Null when `sumKey` is not a value sum.
+    llvm::Value* valueSumReceiver(const ast::Expr& subject, const std::string& sumKey);
 
     // Resolve a `newtype` name (spec 24) to its underlying representation type, recursively. Other
     // types pass through unchanged. Used where the physical representation matters (casts, coercion)

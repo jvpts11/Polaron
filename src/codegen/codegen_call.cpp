@@ -1,4 +1,5 @@
 #include "codegen/codegen_impl.h"
+#include "semantic/sys_intrinsics.h"   // the OS questions, shared with the analyzer
 
 namespace polaron {
 
@@ -366,6 +367,46 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {}, false);
         return builder.CreateCall(module.getOrInsertFunction("__polaron_machine_threads", ft), {},
                                   "machine.threads");
+    }
+    // ...and the rest of what the operating system knows: where the program is, who it is running
+    // as, what the machine has, how much room is left. Table-driven from semantic/sys_intrinsics.h,
+    // which the analyzer reads too -- sixteen near-identical blocks written by hand is how one of
+    // them ends up calling its neighbour's runtime symbol.
+    if (const sysint::SysIntrinsic* si = sysint::findSysIntrinsic(name); si != nullptr) {
+        llvm::Type* p = builder.getPtrTy();
+        llvm::Value* arg = nullptr;
+        if (si->takesPath) {
+            arg = emitExpr(*call.args[0]);
+            if (arg == nullptr) {
+                return nullptr;
+            }
+        }
+        if (si->result == 's') {
+            // (const char* path?, long long* outLen) -> char*, wrapped as an owned String.
+            llvm::Value* lenSlot = createEntryAlloca("sys.len", builder.getInt64Ty());
+            std::vector<llvm::Type*> params;
+            std::vector<llvm::Value*> args;
+            if (si->takesPath) {
+                params.push_back(p);
+                args.push_back(stringData(arg));
+            }
+            params.push_back(p);
+            args.push_back(lenSlot);
+            llvm::FunctionType* ft = llvm::FunctionType::get(p, params, false);
+            llvm::Value* buf =
+                builder.CreateCall(module.getOrInsertFunction(si->symbol, ft), args);
+            return ownedStr(emitStringFromParts(
+                builder.CreateLoad(builder.getInt64Ty(), lenSlot, "sys.n"), buf));
+        }
+        llvm::Type* ret = si->result == 'l' ? builder.getInt64Ty() : builder.getInt32Ty();
+        std::vector<llvm::Type*> params;
+        std::vector<llvm::Value*> args;
+        if (si->takesPath) {
+            params.push_back(p);
+            args.push_back(stringData(arg));
+        }
+        llvm::FunctionType* ft = llvm::FunctionType::get(ret, params, false);
+        return builder.CreateCall(module.getOrInsertFunction(si->symbol, ft), args, "sys.r");
     }
     // Mutex lock builtins (used by System.Concurrency.Mutex) -> runtime CRITICAL_SECTION.
     if (name == "System.Concurrency.__lockCreate") {
@@ -2527,7 +2568,13 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
             const int slot = slotIndex(st, mem->member);
             const ast::MethodDecl* mdecl = findMethodDecl(st, mem->member);
             if (slot >= 0 && mdecl != nullptr) {
-                llvm::Value* recv = emitObjectPtr(*mem->object);
+                // The value form of Option/Result is a { tag, payload } pair rather than an object,
+                // so the receiver has to be BUILT from the tag before anything can be dispatched on
+                // it -- see valueSumReceiver. Without this the tag was loaded as a pointer.
+                llvm::Value* recv = valueSumReceiver(*mem->object, st);
+                if (recv == nullptr) {
+                    recv = emitObjectPtr(*mem->object);
+                }
                 if (recv == nullptr) {
                     return nullptr;
                 }

@@ -1,0 +1,28 @@
+import System.IO.Console;
+import System.Errors.Option;
+program OptionBoxedIntoValueBad;
+
+// THE TWO REPRESENTATIONS OF Option/Result MUST NOT BE MIXED, and the compiler used to let them be.
+//
+// Written plain, `Option<T>` is a { tag, payload } VALUE built by `Some(x)`. Written with a `*` it
+// is the boxed class, built by `new Some<T>(x) on heap`. `Some` extends `Option`, so the CLASS
+// relation says the conversion is fine while the representations disagree -- and the compiler took
+// the class's word for it.
+//
+// What that compiled to: a POINTER stored into a variant slot, and `match` reading the tag out of
+// that pointer's low four bytes. Measured before the fix, `match` on this answered 0 for a Some(7):
+// no error, no crash, wrong answer. Returning one the same way produced IR that failed the module
+// verifier instead -- the compiler admitting it could not do what it had just accepted.
+//
+// The `*` on the target is the whole difference, so the message names both spellings.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Option<int> bad = new Some<int>(7) on heap;
+                System.IO.Console.printf("%d\n", bad.isSome() ? 1 : 0);
+                return;
+            }
+        }
+    }
+}

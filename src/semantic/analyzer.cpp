@@ -211,6 +211,21 @@ const ClassInfo* SemanticAnalyzer::lookupShared(const std::string& name) const {
             }
         }
     }
+    // THE STANDARD LIBRARY MEANS ITS OWN TYPES, and this is asked BEFORE any import is consulted.
+    // It is one body of code that imports nothing, so an unqualified name inside it can only be
+    // System's -- and the import rule below, reading the author's imports, once answered otherwise:
+    // a program that declared and imported its own `Paths` redirected the LIBRARY's `Paths` to it.
+    // The root of that was an import context the prelude should never have had, and is fixed where
+    // it is built; stating the rule here as well is what makes it not depend on that staying fixed.
+    if (currentBundle_ == "System") {
+        for (std::uint32_t id : shared->second) {
+            if (types_[id].bundle == "System") {
+                if (const ClassInfo* c = entryFor(types_[id])) {
+                    return c;
+                }
+            }
+        }
+    }
     // AN IMPORT THAT NAMES THE PATH SETTLES IT. Checked before anything else that could guess,
     // because writing `import System.Units.Angle;` is the author saying which one, and no preference
     // of ours should outrank that.
@@ -230,20 +245,10 @@ const ClassInfo* SemanticAnalyzer::lookupShared(const std::string& name) const {
             }
         }
     }
-    // THE STANDARD LIBRARY MEANS ITS OWN TYPES. It is one body of code that never imports itself, so
-    // an unqualified `Scanner` inside it can only be System's -- and without this the prelude's own
-    // `Scanner` lost its fields the moment a user declared one, reported as `no such field 'src'`
-    // against a class the author had not touched. The renaming pass carries the same exception, for
-    // the same reason, and the two must agree.
-    if (currentBundle_ == "System") {
-        for (std::uint32_t id : shared->second) {
-            if (types_[id].bundle == "System") {
-                if (const ClassInfo* c = entryFor(types_[id])) {
-                    return c;
-                }
-            }
-        }
-    }
+    // (The standard-library rule that used to sit here is above, ahead of the import check -- see the
+    // note there. Without it the prelude's own `Scanner` lost its fields the moment a user declared
+    // one, reported as `no such field 'src'` against a class the author had not touched. The
+    // renaming pass carries the same exception, for the same reason, and the two must agree.)
     // WHAT CANNOT BE PROVEN IS NOT GUESSED.
     //
     // Neither yours nor imported: two types answer to this name and nothing here says which. Picking
@@ -471,6 +476,59 @@ std::string SemanticAnalyzer::addressHint(const std::string& from, const std::st
     return ". An address is not an integer that happens to be that wide -- storing one in a "
            "number loses the fact that it points at something. Write 'cast<" + to +
            ">(...)' if that is what you mean";
+}
+
+// A BOXED SUM CASE DOES NOT FLOW INTO THE VALUE FORM.
+//
+// `Option<T>` and `Result<T,E>` have two representations (spec 21): written plain they are a
+// { tag, payload } VALUE, built by `Some(x)`; written with a `*` they are the boxed class, built by
+// `new Some<T>(x) on heap`. `Some` extends `Option`, so the CLASS relation says yes while the
+// representations disagree, and the compiler used to take the class's word for it:
+// `Option<int> v = new Some<int>(7) on heap;` stored a POINTER into a variant slot, and `match` then
+// read the tag out of that pointer's low four bytes. Measured: it answered 0 for a Some(7). No
+// error, no crash, wrong answer. Returning one the same way produced IR that failed the module
+// verifier -- the compiler admitting it could not do what it had just accepted.
+//
+// NOT INSIDE isSubtype, which was tried and is wrong twice over: `match` asks the membership
+// question (`case Some(int n)` on an `Option<int>` subject) and would start refusing every arm, and
+// the boxed target `Option<int>*` strips its own star before recursing, so the guard fired on the
+// form it exists to allow. Subtyping and representation are different questions; this is the second.
+// It belongs where a value CONVERTS -- assignment, initialisation, return, argument -- and each of
+// those sites pairs it with sumFormHint so the refusal and its explanation share one predicate.
+bool SemanticAnalyzer::isBoxedSumMismatch(const std::string& sub, const std::string& super) {
+    return isValueSumForm(super) && isSumCaseClass(sub);
+}
+
+// `Option$T` / `Result$T$E` written plain -- the value form. A `*` or `&` makes it the boxed class
+// instead, and a `nullable` wrapper is not this shape at all.
+bool SemanticAnalyzer::isValueSumForm(const std::string& t) {
+    if (t.find('*') != std::string::npos || t.find('&') != std::string::npos) {
+        return false;
+    }
+    return t.rfind("Option$", 0) == 0 || t.rfind("Result$", 0) == 0;
+}
+
+// One of the four case classes of those two sums, as an object rather than a value.
+bool SemanticAnalyzer::isSumCaseClass(const std::string& t) {
+    if (t.find('*') != std::string::npos || t.find('&') != std::string::npos) {
+        return false;
+    }
+    return t.rfind("Some$", 0) == 0 || t.rfind("None$", 0) == 0 || t.rfind("Ok$", 0) == 0 ||
+           t.rfind("Err$", 0) == 0;
+}
+
+// The sentence that turns "cannot assign" into an instruction, appended by the sites that report a
+// failed conversion. Empty unless this is the value/boxed mix-up above -- which is worth naming,
+// because both spellings are legal Polaron and only the target says which one is meant.
+std::string SemanticAnalyzer::sumFormHint(const std::string& sub, const std::string& super) {
+    if (!isBoxedSumMismatch(sub, super)) {
+        return "";
+    }
+    const std::string ctor = sub.substr(0, sub.find('$'));
+    return " ('" + super.substr(0, super.find('$')) +
+           "' plain is the value form: build it with '" + ctor +
+           "(...)' and no 'new'. To keep the boxed object, declare the target as '" +
+           super.substr(0, super.find('$')) + "<...>*')";
 }
 
 bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& super, int depth) const {
@@ -2871,8 +2929,17 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
         currentBundle_ = bundle.name;  // for the stdlib-cohesion visibility check
         currentImports_.clear();
         currentImportPaths_.clear();
+        // THE STANDARD LIBRARY DOES NOT INHERIT YOUR IMPORTS. `program.imports` is the WHOLE
+        // program's, and applying it while walking the prelude handed the library the author's
+        // choices: a program declaring `Own.World.Paths` and importing it made `Paths` inside the
+        // STANDARD LIBRARY mean the author's class, because "an import that names the path settles
+        // it" fired on an import the prelude never wrote. It surfaced as `class 'Paths' has no
+        // method 'dirname'` pointing into <prelude>, at a line the author had never seen -- and it
+        // took a stdlib class calling another stdlib class by a shadowable name to find it. The
+        // library is one body of code that imports nothing: every name in it is its own.
+        const bool inheritsImports = !bundle.isPrelude;
         for (const ast::ImportDecl& imp : program.imports) {
-            if (!imp.path.empty()) {
+            if (inheritsImports && !imp.path.empty()) {
                 currentImports_.insert(imp.path.back());
                 // AND THE WHOLE PATH, because the last segment is not the answer when two types
                 // answer to it. `import System.Units.Angle;` beside a `System.Math.Angle` says
@@ -4311,8 +4378,9 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
         currentBundle_ = bundle.name;  // for the stdlib-cohesion visibility check
         currentImports_.clear();
         currentImportPaths_.clear();
+        const bool inheritsImports = !bundle.isPrelude;   // see the note in the walk above
         for (const ast::ImportDecl& imp : program.imports) {
-            if (!imp.path.empty()) {
+            if (inheritsImports && !imp.path.empty()) {
                 currentImports_.insert(imp.path.back());
                 // AND THE WHOLE PATH, because the last segment is not the answer when two types
                 // answer to it. `import System.Units.Angle;` beside a `System.Math.Angle` says
@@ -4649,9 +4717,11 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         if (!valueType.empty() && valueType != "null" && !isNullableType(valueType)) {
             nonNull_.insert(id->name);
         }
-        if (!valueType.empty() && !isSubtype(valueType, var->type) && !fits(var->type)) {
+        if (!valueType.empty() &&
+            (!isSubtype(valueType, var->type) || isBoxedSumMismatch(valueType, var->type)) &&
+            !fits(var->type)) {
             error("cannot assign a value of type '" + valueType + "' to variable '" + id->name +
-                      "' of type '" + var->type + "'",
+                      "' of type '" + var->type + "'" + sumFormHint(valueType, var->type),
                   loc);
         }
         return;
@@ -4672,9 +4742,12 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                               "' (declare it 'mutable')",
                           loc);
                 }
-                if (!valueType.empty() && !isSubtype(valueType, f->type) && !fits(f->type)) {
+                if (!valueType.empty() &&
+                    (!isSubtype(valueType, f->type) || isBoxedSumMismatch(valueType, f->type)) &&
+                    !fits(f->type)) {
                     error("cannot assign a value of type '" + valueType + "' to static field '" +
-                              mem->member + "' of type '" + f->type + "'",
+                              mem->member + "' of type '" + f->type + "'" +
+                              sumFormHint(valueType, f->type),
                           loc);
                 }
                 return;
@@ -4737,9 +4810,11 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             // A computed property with a custom setter (spec 8.4): `obj.prop = v` routes to prop$set.
             if (findMethod(objType, mem->member + "$set") != nullptr) {
                 if (const MethodInfo* getter = findMethod(objType, mem->member);
-                    getter != nullptr && !valueType.empty() && !isSubtype(valueType, getter->returnType)) {
+                    getter != nullptr && !valueType.empty() &&
+                    (!isSubtype(valueType, getter->returnType) ||
+                     isBoxedSumMismatch(valueType, getter->returnType))) {
                     error("cannot assign a value of type '" + valueType + "' to property '" +
-                              mem->member + "'",
+                              mem->member + "'" + sumFormHint(valueType, getter->returnType),
                           loc);
                 }
                 return;
@@ -4757,7 +4832,9 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             error("cannot assign to immutable field '" + mem->member + "' (declare it 'mutable')",
                   loc);
         }
-        if (!valueType.empty() && !isSubtype(valueType, f->type) && !fits(f->type)) {
+        if (!valueType.empty() &&
+            (!isSubtype(valueType, f->type) || isBoxedSumMismatch(valueType, f->type)) &&
+            !fits(f->type)) {
             // Say WHY, not just that. A null (or nullable) value reaching a non-nullable field is the
             // commonest version of this error and the one whose remedy the generic wording gets wrong:
             // you cannot cast null into a non-nullable type, you declare the field `nullable`.
@@ -4770,7 +4847,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                       loc);
             } else {
                 error("cannot assign a value of type '" + valueType + "' to field '" + mem->member +
-                          "' of type '" + f->type + "'",
+                          "' of type '" + f->type + "'" + sumFormHint(valueType, f->type),
                       loc);
             }
         }
@@ -4804,9 +4881,10 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
             return;
         }
         const std::string et = isRefType(at) ? baseType(at) : elementOf(at);  // p[i] = v on a T*
-        if (!valueType.empty() && !et.empty() && !isSubtype(valueType, et)) {
+        if (!valueType.empty() && !et.empty() &&
+            (!isSubtype(valueType, et) || isBoxedSumMismatch(valueType, et))) {
             error("cannot assign a value of type '" + valueType +
-                      "' to an array element of type '" + et + "'",
+                      "' to an array element of type '" + et + "'" + sumFormHint(valueType, et),
                   loc);
         }
         return;
@@ -4821,10 +4899,11 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         }
         const std::string pointee =
             (pt.empty() || pt.back() != '*') ? std::string() : pt.substr(0, pt.size() - 1);
-        if (!valueType.empty() && !pointee.empty() && !isSubtype(valueType, pointee) &&
+        if (!valueType.empty() && !pointee.empty() &&
+            (!isSubtype(valueType, pointee) || isBoxedSumMismatch(valueType, pointee)) &&
             !fits(pointee)) {
             error("cannot assign a value of type '" + valueType + "' through a '" + pt +
-                      "' pointer to '" + pointee + "'",
+                      "' pointer to '" + pointee + "'" + sumFormHint(valueType, pointee),
                   loc);
         }
         return;
@@ -5432,9 +5511,9 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
                                          "result, a cleverer condition), so state the check with 'cast<" +
                                          pt + ">(...)', which is verified at runtime")),
                   args[i]->loc);
-        } else if (!isSubtype(at, pt)) {
+        } else if (!isSubtype(at, pt) || isBoxedSumMismatch(at, pt)) {
             error("argument " + std::to_string(i + 1) + " to " + desc + " has type '" + at +
-                      "' but the parameter type is '" + pt + "'",
+                      "' but the parameter type is '" + pt + "'" + sumFormHint(at, pt),
                   args[i]->loc);
         }
         // spec 19.2: passing an object that owns a `unique` field BY VALUE would copy it and alias the

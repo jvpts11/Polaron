@@ -34,6 +34,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>   // statvfs: free/total bytes on the volume holding a path
 #include <sys/types.h>
 #include <sys/un.h>        // AF_UNIX (cross-program IPC transport, spec 2.8)
 #include <sys/wait.h>      // waitpid (subprocess liveness/teardown)
@@ -62,6 +63,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <string>   // building the OS answers below; the buffer handed to Polaron is __polaron_malloc'd
 #include <vector>
 #ifdef _WIN32
 #include <intrin.h>  // _InterlockedExchangeAdd64 for the allocation profiler's lock-free counters
@@ -2420,6 +2422,23 @@ long long __polaron_secure_random(void) {
 #endif
 
 // ---- Environment variables (spec 34). ----
+
+// A std::string handed over to a Polaron String: allocated where a String expects, NUL-terminated so
+// the C side can also read it, and length reported separately so an embedded NUL survives the trip.
+// Written once because the alternative -- each answer growing its own buffer by hand -- is how two of
+// them came to use the wrong allocator.
+static char* polaronStrOut(const std::string& s, long long* outLen) {
+    char* buf = static_cast<char*>(__polaron_malloc(s.size() + 1));
+    if (buf == nullptr) {
+        *outLen = 0;
+        return buf;
+    }
+    memcpy(buf, s.data(), s.size());
+    buf[s.size()] = 0;
+    *outLen = static_cast<long long>(s.size());
+    return buf;
+}
+
 char* __polaron_env_get(const char* name, long long* outLen) {
     const char* v = getenv(name);
     if (v == nullptr) {
@@ -2439,6 +2458,249 @@ int __polaron_env_set(const char* name, const char* value) {
     return _putenv_s(name, value) == 0 ? 1 : 0;
 #else
     return setenv(name, value, 1) == 0 ? 1 : 0;
+#endif
+}
+// ABSENT IS NOT EMPTY, and until this existed the two were the same value: `env_get` answers "" for a
+// variable that is not set AND for one set to "", so a program could not tell a missing configuration
+// from a deliberately blank one. Nothing fails; the program runs with a default it was never told to
+// use. The same shape as reading a file that is not there and getting "" back -- and the reason the
+// library above this now answers with an Option.
+int __polaron_env_has(const char* name) { return getenv(name) != nullptr ? 1 : 0; }
+int __polaron_env_unset(const char* name) {
+#ifdef _WIN32
+    return _putenv_s(name, "") == 0 ? 1 : 0;   // the Windows spelling of "remove": set it to nothing
+#else
+    return unsetenv(name) == 0 ? 1 : 0;
+#endif
+}
+// The whole environment, one `NAME=VALUE` per line. What a program needs to pass its own environment
+// on to a child, or to print what it was actually given rather than what it thinks it was.
+char* __polaron_env_all(long long* outLen) {
+    std::string all;
+    // `_environ` and not GetEnvironmentStrings: the CRT's copy is the one `getenv` and `_putenv_s`
+    // read and write, so a variable this program just set is in it. The Win32 block is the process
+    // environment, which the CRT does not write back to -- so `set` then `all` would not agree.
+    // It is also the same shape as POSIX's `environ`, which needs no freeing.
+#ifdef _WIN32
+    char** env = _environ;
+#else
+    extern char** environ;
+    char** env = environ;
+#endif
+    for (char** e = env; e != nullptr && *e != nullptr; ++e) {
+        all.append(*e);
+        all.push_back('\n');
+    }
+    return polaronStrOut(all, outLen);
+}
+
+// ---- WHERE THE PROGRAM IS, AND WHAT IT IS RUNNING ON (spec 34). ----
+//
+// A program that cannot ask where it is has to be told, which means every one of them grows a
+// configuration file whose first entry is a path somebody typed. These are the questions an operating
+// system already knows the answer to.
+
+// The working directory. Empty on failure rather than a partial path, by the rule the executable path
+// follows: half an answer is worse than none, because it looks like an answer.
+char* __polaron_cwd(long long* outLen) {
+#ifdef _WIN32
+    DWORD n = GetCurrentDirectoryA(0, nullptr);   // asked for the size first: paths exceed MAX_PATH
+    if (n == 0) {
+        return polaronStrOut(std::string(), outLen);
+    }
+    std::string s(n, '\0');
+    DWORD got = GetCurrentDirectoryA(n, &s[0]);
+    s.resize(got);
+    return polaronStrOut(s, outLen);
+#else
+    std::string s(4096, '\0');
+    if (getcwd(&s[0], s.size()) == nullptr) {
+        return polaronStrOut(std::string(), outLen);
+    }
+    s.resize(strlen(s.c_str()));
+    return polaronStrOut(s, outLen);
+#endif
+}
+int __polaron_chdir(const char* path) {
+#ifdef _WIN32
+    return SetCurrentDirectoryA(path) ? 1 : 0;
+#else
+    return chdir(path) == 0 ? 1 : 0;
+#endif
+}
+// The directory for scratch files. Every platform names it differently and every program that guesses
+// gets it wrong somewhere: /tmp does not exist on Windows and TEMP is not set on a POSIX daemon.
+char* __polaron_temp_dir(long long* outLen) {
+#ifdef _WIN32
+    char buf[MAX_PATH + 1];
+    DWORD n = GetTempPathA(sizeof(buf), buf);
+    std::string s(buf, n);
+    while (!s.empty() && (s.back() == '\\' || s.back() == '/')) {   // no trailing separator, so join works
+        s.pop_back();
+    }
+    return polaronStrOut(s, outLen);
+#else
+    const char* t = getenv("TMPDIR");
+    return polaronStrOut(std::string(t != nullptr && t[0] != 0 ? t : "/tmp"), outLen);
+#endif
+}
+char* __polaron_home_dir(long long* outLen) {
+#ifdef _WIN32
+    const char* p = getenv("USERPROFILE");
+    if (p != nullptr && p[0] != 0) {
+        return polaronStrOut(std::string(p), outLen);
+    }
+    const char* drive = getenv("HOMEDRIVE");
+    const char* rest = getenv("HOMEPATH");
+    if (drive != nullptr && rest != nullptr) {
+        return polaronStrOut(std::string(drive) + rest, outLen);
+    }
+    return polaronStrOut(std::string(), outLen);
+#else
+    const char* h = getenv("HOME");
+    return polaronStrOut(std::string(h != nullptr ? h : ""), outLen);
+#endif
+}
+char* __polaron_hostname(long long* outLen) {
+#ifdef _WIN32
+    char buf[256];
+    DWORD n = sizeof(buf);
+    if (!GetComputerNameA(buf, &n)) {
+        return polaronStrOut(std::string(), outLen);
+    }
+    return polaronStrOut(std::string(buf, n), outLen);
+#else
+    char buf[256];
+    if (gethostname(buf, sizeof(buf)) != 0) {
+        return polaronStrOut(std::string(), outLen);
+    }
+    buf[sizeof(buf) - 1] = 0;
+    return polaronStrOut(std::string(buf), outLen);
+#endif
+}
+char* __polaron_username(long long* outLen) {
+#ifdef _WIN32
+    // USERNAME and not GetUserNameA: that one lives in advapi32, and linking it would put advapi32
+    // on the link line of EVERY Polaron program for a question most of them never ask. The variable
+    // is set by the same login that GetUserNameA would report, and reading it costs nothing.
+    const char* u = getenv("USERNAME");
+    return polaronStrOut(std::string(u != nullptr ? u : ""), outLen);
+#else
+    const char* u = getenv("USER");
+    if (u == nullptr || u[0] == 0) {
+        u = getenv("LOGNAME");
+    }
+    return polaronStrOut(std::string(u != nullptr ? u : ""), outLen);
+#endif
+}
+// The family name, not the version: "windows", "linux", "macos", "freebsd". A program branching on
+// this wants to know which shape the world has, and a version string invites parsing that will be
+// wrong on the next release.
+char* __polaron_os_name(long long* outLen) {
+#if defined(_WIN32)
+    return polaronStrOut(std::string("windows"), outLen);
+#elif defined(__APPLE__)
+    return polaronStrOut(std::string("macos"), outLen);
+#elif defined(__FreeBSD__)
+    return polaronStrOut(std::string("freebsd"), outLen);
+#elif defined(__linux__)
+    return polaronStrOut(std::string("linux"), outLen);
+#else
+    return polaronStrOut(std::string("unknown"), outLen);
+#endif
+}
+long long __polaron_pid(void) {
+#ifdef _WIN32
+    return static_cast<long long>(GetCurrentProcessId());
+#else
+    return static_cast<long long>(getpid());
+#endif
+}
+// Physical memory, in bytes; -1 when the system will not say. A program sizing a cache against it must
+// be able to tell "the machine has none" from "I could not find out".
+long long __polaron_machine_memory(void) {
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) {
+        return -1;
+    }
+    return static_cast<long long>(ms.ullTotalPhys);
+#elif defined(_SC_PHYS_PAGES) && defined(_SC_PAGESIZE)
+    const long pages = sysconf(_SC_PHYS_PAGES);
+    const long ps = sysconf(_SC_PAGESIZE);
+    if (pages < 0 || ps < 0) {
+        return -1;
+    }
+    return static_cast<long long>(pages) * static_cast<long long>(ps);
+#else
+    return -1;
+#endif
+}
+long long __polaron_page_size(void) {
+#ifdef _WIN32
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return static_cast<long long>(si.dwPageSize);
+#else
+    const long ps = sysconf(_SC_PAGESIZE);
+    return ps < 0 ? -1 : static_cast<long long>(ps);
+#endif
+}
+// Free and total bytes on the volume holding `path`; -1 when it cannot be determined. Free rather
+// than "available to this user" is deliberate on POSIX -- `f_bavail` is what a non-root program can
+// actually use, and reporting the larger `f_bfree` would promise space a write cannot have.
+long long __polaron_disk_free(const char* path) {
+#ifdef _WIN32
+    ULARGE_INTEGER avail, total, free_;
+    if (!GetDiskFreeSpaceExA(path, &avail, &total, &free_)) {
+        return -1;
+    }
+    return static_cast<long long>(avail.QuadPart);
+#else
+    struct statvfs st;
+    if (statvfs(path, &st) != 0) {
+        return -1;
+    }
+    return static_cast<long long>(st.f_bavail) * static_cast<long long>(st.f_frsize);
+#endif
+}
+long long __polaron_disk_total(const char* path) {
+#ifdef _WIN32
+    ULARGE_INTEGER avail, total, free_;
+    if (!GetDiskFreeSpaceExA(path, &avail, &total, &free_)) {
+        return -1;
+    }
+    return static_cast<long long>(total.QuadPart);
+#else
+    struct statvfs st;
+    if (statvfs(path, &st) != 0) {
+        return -1;
+    }
+    return static_cast<long long>(st.f_blocks) * static_cast<long long>(st.f_frsize);
+#endif
+}
+// A path with every `.`, `..` and relative prefix resolved, as the operating system resolves it.
+// Empty when the path cannot be resolved -- which on POSIX includes "it does not exist", because
+// realpath refuses to guess about a component it cannot see.
+char* __polaron_path_absolute(const char* path, long long* outLen) {
+#ifdef _WIN32
+    DWORD n = GetFullPathNameA(path, 0, nullptr, nullptr);
+    if (n == 0) {
+        return polaronStrOut(std::string(), outLen);
+    }
+    std::string s(n, '\0');
+    DWORD got = GetFullPathNameA(path, n, &s[0], nullptr);
+    s.resize(got);
+    return polaronStrOut(s, outLen);
+#else
+    char* r = realpath(path, nullptr);
+    if (r == nullptr) {
+        return polaronStrOut(std::string(), outLen);
+    }
+    std::string s(r);
+    std::free(r);   // realpath's own block, freed with its own allocator
+    return polaronStrOut(s, outLen);
 #endif
 }
 // The running program's own path (spec 34): Windows via GetModuleFileNameA, POSIX via
@@ -2465,8 +2727,10 @@ char* __polaron_executable_path(void) {
     // file without a murmur and would have behaved that way, which is exactly the kind of hole a
     // second operating system exists to find.
     size_t cap = 4096;
-    char* buf = static_cast<char*>(std::malloc(cap));
-    if (buf == nullptr) { char* e = static_cast<char*>(std::malloc(1)); if (e) e[0] = 0; return e; }
+    // __polaron_malloc, as in the Windows branch above: the caller wraps this in a String, and a
+    // String frees through __polaron_free, which reads a header this block would not have.
+    char* buf = static_cast<char*>(__polaron_malloc(cap));
+    if (buf == nullptr) { char* e = static_cast<char*>(__polaron_malloc(1)); if (e) e[0] = 0; return e; }
 #if defined(__APPLE__)
     // Mach-O: the loader knows, and answers with the required size if the buffer is too small.
     std::uint32_t sz = static_cast<std::uint32_t>(cap);
@@ -2677,7 +2941,13 @@ char* __polaron_dir_list(const char* path, long long* outLen) {
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
     size_t cap = 256, len = 0;
-    char* buf = static_cast<char*>(std::malloc(cap));
+    // __polaron_malloc AND NOT std::malloc: this block becomes a Polaron String, and a String frees
+    // its bytes through __polaron_free, which reads the sixteen-byte header in FRONT of the payload.
+    // In front of a libc block those bytes belong to somebody else -- very often the tail of a freed
+    // Polaron block, stamped POLARON_FREED, so the double-free guard fires on a program that has not
+    // double freed anything. This was found once already, in File.readAll, and fixed there; listDir
+    // was the same call one function over and was left behind.
+    char* buf = static_cast<char*>(__polaron_malloc(cap));
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) {
@@ -2688,7 +2958,7 @@ char* __polaron_dir_list(const char* path, long long* outLen) {
                 while (len + nl + 2 > cap) {
                     cap *= 2;
                 }
-                buf = static_cast<char*>(std::realloc(buf, cap));
+                buf = static_cast<char*>(__polaron_realloc(buf, cap));
             }
             memcpy(buf + len, fd.cFileName, nl);
             len += nl;
@@ -2717,13 +2987,13 @@ long long __polaron_file_size(const char* path) {
 char* __polaron_dir_list(const char* path, long long* outLen) {
     DIR* d = opendir(path);
     size_t cap = 256, len = 0;
-    char* buf = static_cast<char*>(std::malloc(cap));
+    char* buf = static_cast<char*>(__polaron_malloc(cap));   // see the Windows branch: this becomes a String
     if (d != nullptr) {
         struct dirent* e;
         while ((e = readdir(d)) != nullptr) {
             if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
             size_t nl = strlen(e->d_name);
-            if (len + nl + 2 > cap) { while (len + nl + 2 > cap) cap *= 2; buf = static_cast<char*>(std::realloc(buf, cap)); }
+            if (len + nl + 2 > cap) { while (len + nl + 2 > cap) cap *= 2; buf = static_cast<char*>(__polaron_realloc(buf, cap)); }
             memcpy(buf + len, e->d_name, nl);
             len += nl;
             buf[len++] = '\n';

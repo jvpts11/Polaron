@@ -367,6 +367,12 @@ private:
     // True if `sub` is `super` or transitively extends/implements it. `depth`
     // bounds the recursion so a malformed (cyclic) type graph can't overflow.
     bool isSubtype(const std::string& sub, const std::string& super, int depth = 0) const;
+    // Option/Result carry two representations, and only the `*` on the target tells them apart.
+    // See the note in isSubtype: mixing them compiled, and answered wrongly.
+    static bool isBoxedSumMismatch(const std::string& sub, const std::string& super);
+    static bool isValueSumForm(const std::string& t);
+    static bool isSumCaseClass(const std::string& t);
+    static std::string sumFormHint(const std::string& sub, const std::string& super);
     // True if the class participates in a hierarchy (abstract/interface, has a super/
     // interface, or is extended/implemented elsewhere) -- so it carries a vtable and
     // can be matched by dynamic type in a catch.

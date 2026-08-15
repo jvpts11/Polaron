@@ -281,10 +281,12 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 }
             }
         }
-        if (!vd->isVar && !initType.empty() && !isSubtype(initType, declType) &&
+        if (!vd->isVar && !initType.empty() &&
+            (!isSubtype(initType, declType) || isBoxedSumMismatch(initType, declType)) &&
             !intLiteralFits(*vd->init, declType)) {
             error("cannot initialize variable '" + vd->name + "' of type '" + declType +
-                      "' with a value of type '" + initType + "'" + addressHint(initType, declType),
+                      "' with a value of type '" + initType + "'" + addressHint(initType, declType) +
+                      sumFormHint(initType, declType),
                   vd->loc);
         }
         if (lookupLocal(vd->name) != nullptr && deleted_.count(vd->name) == 0) {
@@ -828,7 +830,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                                              currentReturnType_ + ">(...)', which is verified at runtime")),
                       rs->loc);
             } else if (!vt.empty() && !currentReturnType_.empty() && vt != "null" &&
-                       currentReturnType_ != "void" && !isSubtype(vt, currentReturnType_) &&
+                       currentReturnType_ != "void" &&
+                       (!isSubtype(vt, currentReturnType_) ||
+                        isBoxedSumMismatch(vt, currentReturnType_)) &&
                        !intLiteralFits(*rs->value, currentReturnType_)) {
                 // TYPE of the returned value (Polaron-0303). Only nullability was checked here, so
                 // `return someDog;` from a method `returns Cat` produced valid IR and reinterpreted the
@@ -839,7 +843,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 // relation and `intLiteralFits` so an untyped literal still adapts to the declared type
                 // (`return 0;` from a method returning `byte` stays legal, exactly as `byte b = 0;` is).
                 error("cannot return a value of type '" + vt + "' from a method returning '" +
-                          currentReturnType_ + "'",
+                          currentReturnType_ + "'" + sumFormHint(vt, currentReturnType_),
                       rs->loc);
             }
             // region-binder ESCAPE BY RETURN (§8). The gap this analysis was named for and did not

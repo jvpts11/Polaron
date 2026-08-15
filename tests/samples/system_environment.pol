@@ -1,0 +1,126 @@
+import System.IO.Console;
+import System.OS.Env;            // the raw builtin, shown here only to make the lie visible
+import System.OS.Environment;
+import System.OS.EnvironmentException;
+import System.OS.Workspace;
+import System.OS.Machine;
+import System.OS.Disk;
+import System.Collections.HashMap;
+import System.Collections.ArrayList;
+import System.Errors.Option;
+program SystemEnvironment;
+
+// ABSENT IS NOT EMPTY, and until this class existed the two were the same value.
+//
+// `Env.get` -- the raw builtin -- answers "" for a variable that is not set AND for one set to "",
+// so a program could not tell a missing configuration from a deliberately blank one. Nothing fails:
+// it runs with a default it was never told to use, and the run looks perfectly healthy. It is the
+// same defect as reading a file that is not there and getting "" back, and it is the reason
+// `Environment` has no bare `get`. It has three, and each says what it does about absence:
+//
+//   lookup  -> Option: None when absent, Some("") when set to empty. The distinction itself.
+//   get     -> the fallback is an argument, so the default is written where a reader can see it.
+//   require -> throws, naming the variable, for the variables whose absence is a misconfiguration.
+//
+// The first two printed lines are the whole point: `fallback` is what the program ends up using,
+// and only the ABSENT variable should get it. Through the raw builtin both read as "", so both
+// would have.
+//
+// AN EMPTY VARIABLE IS NOT A THING ON WINDOWS, which is worth knowing and is why this sample does
+// not assert one: the C runtime reads `set(name, "")` as "remove it" and reports success. POSIX sets
+// it and keeps it. `Environment.set` reads the environment back and answers what is actually true
+// there, so a program is told rather than left believing it set something.
+//
+// The rest is what the operating system already knows -- where the program is, who it is running
+// as, what the machine has. A program that cannot ask has to be told, which means a configuration
+// file whose first entry is a path somebody typed at their own desk.
+//
+// Prints:
+//   set: raw='cinco' present=1 value='cinco'
+//   absent: raw='' present=0 fallback='default'
+//   require threw: environment variable is not set: POLARON_NO_SUCH_VAR_ZZZ
+//   set/clear: after set=1 after clear=0
+//   all: has PATH=1 count>10=1
+//   searchPath: entries>0=1 no empties=1
+//   workspace: cwd absolute=1 temp exists=1 exe ends with .exe or has no dot=1
+//   machine: os known=1 threads>0=1 page=4096 memory>0=1 pid>0=1
+//   disk: free>0=1 free<=total=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Environment.set("POLARON_SET_ZZZ", "cinco");
+                Environment.clear("POLARON_NO_SUCH_VAR_ZZZ");
+
+                // Set: present, and `get` hands back the value rather than the fallback.
+                Option<String> set = Environment.lookup("POLARON_SET_ZZZ");
+                System.IO.Console.printf("set: raw='%s' present=%d value='%s'\n",
+                                         Env.get("POLARON_SET_ZZZ"),
+                                         set.isSome() ? 1 : 0,
+                                         set.valueOr("MISSING"));
+
+                // Not set: the builtin says "" -- the same "" a variable holding nothing would give
+                // -- and only the Option says there is nothing there at all.
+                Option<String> absent = Environment.lookup("POLARON_NO_SUCH_VAR_ZZZ");
+                System.IO.Console.printf("absent: raw='%s' present=%d fallback='%s'\n",
+                                         Env.get("POLARON_NO_SUCH_VAR_ZZZ"),
+                                         absent.isSome() ? 1 : 0,
+                                         Environment.get("POLARON_NO_SUCH_VAR_ZZZ", "default"));
+
+                try {
+                    String never = Environment.require("POLARON_NO_SUCH_VAR_ZZZ");
+                    System.IO.Console.printf("require returned '%s' -- it should not have\n", never);
+                } catch (EnvironmentException e) {
+                    System.IO.Console.printf("require threw: %s\n", e.message());
+                }
+
+                Environment.set("POLARON_TEMP_ZZZ", "here");
+                mutable boolean afterSet = Environment.has("POLARON_TEMP_ZZZ");
+                Environment.clear("POLARON_TEMP_ZZZ");
+                mutable boolean afterClear = Environment.has("POLARON_TEMP_ZZZ");
+                System.IO.Console.printf("set/clear: after set=%d after clear=%d\n",
+                                         afterSet ? 1 : 0, afterClear ? 1 : 0);
+
+                mutable HashMap<String, String> all = Environment.all();
+                System.IO.Console.printf("all: has PATH=%d count>10=%d\n",
+                                         all.containsKey("PATH") || all.containsKey("Path") ? 1 : 0,
+                                         all.size() > 10 ? 1 : 0);
+                delete all;
+
+                mutable ArrayList<String> path = Environment.searchPath();
+                mutable boolean noEmpties = true;
+                for (mutable int i = 0; i < path.size(); i++) {
+                    if (path.get(i).length() == 0) { noEmpties = false; }
+                }
+                System.IO.Console.printf("searchPath: entries>0=%d no empties=%d\n",
+                                         path.size() > 0 ? 1 : 0, noEmpties ? 1 : 0);
+                delete path;
+
+                // An absolute path on either family: a leading separator, or a drive letter.
+                String cwd = Workspace.current();
+                mutable boolean absolute = cwd.length() > 1 &&
+                    (cwd.charAt(0) == '/' || cwd.charAt(1) == ':');
+                String exe = Workspace.executable();
+                System.IO.Console.printf(
+                    "workspace: cwd absolute=%d temp exists=%d exe named=%d\n",
+                    absolute ? 1 : 0,
+                    Workspace.tempDirectory().length() > 0 ? 1 : 0,
+                    exe.length() > 0 ? 1 : 0);
+
+                System.IO.Console.printf(
+                    "machine: os known=%d threads>0=%d page=%d memory>0=%d pid>0=%d\n",
+                    Machine.isWindows() || Machine.isLinux() || Machine.isMacOS() ? 1 : 0,
+                    Machine.threads() > 0 ? 1 : 0,
+                    cast<int>(Machine.pageSize()),
+                    Machine.memory() > 0 ? 1 : 0,
+                    Machine.processId() > 0 ? 1 : 0);
+
+                long free = Disk.freeSpace(cwd);
+                long total = Disk.totalSpace(cwd);
+                System.IO.Console.printf("disk: free>0=%d free<=total=%d\n",
+                                         free > 0 ? 1 : 0, free <= total ? 1 : 0);
+                return;
+            }
+        }
+    }
+}
