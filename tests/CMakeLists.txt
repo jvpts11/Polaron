@@ -3192,6 +3192,17 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # TWO OBJECTS, FIELD BY FIELD (System.Compare): equal, and if not, WHERE. Also pins that the
+        # language's own deep copy and the reflective walk agree -- `Player c = a;` IS the clone, which
+        # is why there is no reflective deepClone beside these.
+        add_test(NAME codegen_compare_objects_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/compare_objects.pol"
+            "-DEXPECTED=same=1 copy=1 changes=2 name: Ada vs Grace score: 41 vs 42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

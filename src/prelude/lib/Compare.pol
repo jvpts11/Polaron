@@ -1,0 +1,99 @@
+    public namespace Compare {
+        // TWO OBJECTS, FIELD BY FIELD -- are they the same, and if not, WHERE.
+        //
+        // The third thing the reflective walk buys, after serialization and validation, and the one
+        // that saves the most time in practice: a test that fails with `score: 41 vs 42` says what
+        // is wrong, and one that fails with `expected object to equal object` sends the reader to a
+        // debugger.
+        //
+        // NO REFLECTIVE CLONE HERE, deliberately. Every language that has this trio has `deepClone`
+        // beside them, and it exists because assignment in those languages copies a REFERENCE.
+        // Polaron's assignment is already a deep copy -- `Player b = a;` is the clone, checked by the
+        // type system and free of the reflection -- so a reflective one would be slower, weaker and
+        // a second way to do something the language does properly.
+        public class Objects {
+            // Field-by-field equality. Compares what each field is DECLARED as: an int against an
+            // int, a String's contents against a String's contents. Fields whose type is another
+            // object are compared by IDENTITY, which is stated rather than hidden -- see `diff`.
+            public static method equal<T>(T a, T b) returns boolean {
+                Type t = reflect.typeOf<T>();
+                mutable ArrayList<Field> fs = t.fields();
+                for (mutable int i = 0; i < fs.size(); i++) {
+                    if (!Objects.sameField(fs.get(i), a, b)) { return false; }
+                }
+                return true;
+            }
+
+            // WHERE they differ, as `field: left vs right`, one line per field. Empty when they are
+            // equal, so `diff(a, b).size() == 0` and `equal(a, b)` answer the same question -- one
+            // for a condition, one for a message.
+            public static method diff<T>(T a, T b) returns ArrayList<String> {
+                Type t = reflect.typeOf<T>();
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                mutable ArrayList<Field> fs = t.fields();
+                for (mutable int i = 0; i < fs.size(); i++) {
+                    Field f = fs.get(i);
+                    if (Objects.sameField(f, a, b)) { continue; }
+                    mutable StringBuilder sb = new StringBuilder() on heap;
+                    sb.append(f.name());
+                    sb.append(": ");
+                    sb.append(Objects.show(f, a));
+                    sb.append(" vs ");
+                    sb.append(Objects.show(f, b));
+                    out.add(sb.toString());
+                }
+                return out;
+            }
+
+            // One field of two objects, by its declared type. An object-typed field compares by
+            // identity: going deeper would need `typeOf` on a value, which the language does not
+            // have, and comparing two unrelated objects by their bytes is how a "deep equals" starts
+            // returning answers nobody can explain.
+            private static method sameField(Field f, Object x, Object y) returns boolean {
+                String kind = f.typeName();
+                if (kind.equals("String") || kind.equals("string")) {
+                    String l = cast<String>(f.get(x));
+                    String r = cast<String>(f.get(y));
+                    return l.equals(r);
+                }
+                if (kind.equals("double") || kind.equals("float")) {
+                    return cast<double>(f.get(x)) == cast<double>(f.get(y));
+                }
+                if (kind.equals("long")) {
+                    return cast<long>(f.get(x)) == cast<long>(f.get(y));
+                }
+                if (kind.equals("int") || kind.equals("short") || kind.equals("byte") ||
+                    kind.equals("boolean") || kind.equals("char")) {
+                    return cast<int>(f.get(x)) == cast<int>(f.get(y));
+                }
+                return cast<long>(f.get(x)) == cast<long>(f.get(y));   // identity, for a reference
+            }
+
+            // A field's value as text, for the message. An object-typed field shows its type name:
+            // the difference is that they are not the same object, and printing an address would be
+            // a number that changes between runs.
+            private static method show(Field f, Object o) returns String {
+                String kind = f.typeName();
+                if (kind.equals("String") || kind.equals("string")) {
+                    return cast<String>(f.get(o));
+                }
+                if (kind.equals("double") || kind.equals("float")) {
+                    double d = cast<double>(f.get(o));
+                    return $"{d}";
+                }
+                if (kind.equals("long")) {
+                    long v = cast<long>(f.get(o));
+                    return $"{v}";
+                }
+                if (kind.equals("boolean")) {
+                    return cast<int>(f.get(o)) != 0 ? "true" : "false";
+                }
+                if (kind.equals("int") || kind.equals("short") || kind.equals("byte") ||
+                    kind.equals("char")) {
+                    int v = cast<int>(f.get(o));
+                    return $"{v}";
+                }
+                return "<" + kind + ">";
+            }
+        }
+    }

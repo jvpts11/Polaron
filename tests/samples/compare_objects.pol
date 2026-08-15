@@ -1,0 +1,61 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Compare.Objects;
+import reflect;
+program CompareObjects;
+
+// TWO OBJECTS, FIELD BY FIELD (System.Compare): are they the same, and if not, WHERE. A test that
+// fails with `score: 41 vs 42` says what is wrong; one that fails with "objects are not equal" sends
+// the reader to a debugger.
+//
+// There is no reflective `deepClone` beside these, and that is deliberate: assignment in Polaron is
+// ALREADY a deep copy, so `Player c = a;` is the clone -- checked by the type system, with no
+// reflection involved.
+//
+// Prints:
+//   same=1 copy=1
+//   changes=2
+//   name: Ada vs Grace
+//   score: 41 vs 42
+public bundle Main {
+    public namespace App {
+
+        public class Player {
+            public mutable String name;
+            public mutable int score;
+            public mutable boolean active;
+            public constructor Player(String name, int score, boolean active) {
+                this.name = name;
+                this.score = score;
+                this.active = active;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Player a = new Player("Ada", 41, true) on heap;
+                Player b = new Player("Ada", 41, true) on heap;
+                Player c = new Player("Grace", 42, true) on heap;
+
+                mutable int same = 0;
+                if (Objects.equal<Player>(a, b)) { same = 1; }
+
+                // The language's own deep copy, compared with the reflective walk: they agree.
+                Player copy = a;
+                mutable int copied = 0;
+                if (Objects.equal<Player>(a, copy)) { copied = 1; }
+                System.IO.Console.printf("same=%d copy=%d\n", same, copied);
+
+                mutable ArrayList<String> changes = Objects.diff<Player>(a, c);
+                System.IO.Console.printf("changes=%d\n", changes.size());
+                for (mutable int i = 0; i < changes.size(); i++) {
+                    System.IO.Console.println(changes.get(i));
+                }
+                delete c;
+                delete b;
+                delete a;
+                return;
+            }
+        }
+    }
+}
