@@ -4915,6 +4915,17 @@ if(POLARON_WITH_LLVM)
             "-DCONTAINS=glob: shallow=1 deep=2 exact=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # The matcher on its own, because `glob` only ever hands it paths a walk produced -- and
+        # every corner of a pattern language is somewhere a walk never goes. Ten rules: `*` stops at
+        # a separator and `**` does not, `?` is exactly one and also stops, a pattern must match the
+        # WHOLE name, and a separator in a pattern matches either kind.
+        add_test(NAME codegen_file_control_patterns COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_control.pol"
+            "-DCONTAINS=patterns: 10 of 10"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # A REAL TOOL over the whole filesystem/process surface, written to find out whether it is
         # actually finished -- a directory-syncing program of the kind everybody writes eventually.
@@ -4952,6 +4963,59 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tree_sync.pol"
             "-DCONTAINS=hook: argumentIntact=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # THE REST OF THE SURFACE. After the two tools, the question "which call in this area does no
+        # sample touch?" was asked of the samples rather than of memory, and thirteen came back.
+        # They are here. A method nothing calls is a method whose first caller is a user -- and all
+        # three defects the tools found were in code that had been written, read and believed.
+        add_test(NAME codegen_system_surface_paths COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_surface.pol"
+            "-DCONTAINS=paths: sepIsOne=1 pieces=3 pathSepMatches=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_system_surface_times COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_surface.pol"
+            "-DCONTAINS=times: accessedKnown=1 usedAddsUp=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # `moveTo` changes the process's working directory, so the sample puts it back -- and this
+        # checks that it went AND returned.
+        add_test(NAME codegen_system_surface_places COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_surface.pol"
+            "-DCONTAINS=places: exeDirHoldsExe=1 homeExists=1 movedAndBack=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # A SHARED lock is held by two readers at once; an exclusive one would refuse the second.
+        # That distinction is invisible unless two holders try together.
+        add_test(NAME codegen_system_surface_shared_lock COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_surface.pol"
+            "-DCONTAINS=shared: twoReadersAtOnce=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_system_surface_command COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_surface.pol"
+            "-DCONTAINS=command: argAllPassed=1 windowFlagHarmless=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # Both ends of the range: the most negative long is the one input with no positive
+        # counterpart, so a naive negate overflows on exactly it.
+        add_test(NAME codegen_string_builder_long COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_surface.pol"
+            "-DCONTAINS=builder: longRoundTrip=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

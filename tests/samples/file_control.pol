@@ -38,6 +38,7 @@ program FileControl;
 //   temp: inside=1 gone after scope=1
 //   paths: normalize=a/d abs=1 stem=report.tar ext=dir/report.md rel=sub/two.pol
 //   glob: shallow=1 deep=2 exact=1
+//   patterns: 10 of 10
 public bundle Main {
     public namespace App {
         public class Main {
@@ -137,7 +138,29 @@ public bundle Main {
                 delete exact;
                 delete deep;
                 delete shallow;
+                Main.patternCorners();
                 return;
+            }
+
+            // THE MATCHER ON ITS OWN, because `glob` only ever hands it the paths a walk produced --
+            // and every corner of a pattern language is somewhere a walk never goes. Each line is a
+            // rule: `*` stops at a separator and `**` does not, `?` is exactly one character and
+            // also stops, a pattern must match the WHOLE name rather than a prefix, and a separator
+            // in a pattern matches either kind so one pattern works on both platforms.
+            private static method patternCorners() returns void {
+                mutable int right = 0;
+                mutable int total = 0;
+                total = total + 1; if (Files.matches("*.pol", "a.pol")) { right = right + 1; }
+                total = total + 1; if (!Files.matches("*.pol", "sub/a.pol")) { right = right + 1; }
+                total = total + 1; if (Files.matches("**.pol", "sub/deep/a.pol")) { right = right + 1; }
+                total = total + 1; if (Files.matches("a?.txt", "ab.txt")) { right = right + 1; }
+                total = total + 1; if (!Files.matches("a?.txt", "abc.txt")) { right = right + 1; }
+                total = total + 1; if (!Files.matches("a?.txt", "a/.txt")) { right = right + 1; }
+                total = total + 1; if (!Files.matches("abc", "abcd")) { right = right + 1; }
+                total = total + 1; if (Files.matches("sub/*.txt", "sub\\one.txt")) { right = right + 1; }
+                total = total + 1; if (Files.matches("*", "anything")) { right = right + 1; }
+                total = total + 1; if (!Files.matches("", "x")) { right = right + 1; }
+                System.IO.Console.printf("patterns: %d of %d\n", right, total);
             }
         }
     }

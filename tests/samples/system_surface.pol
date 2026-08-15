@@ -1,0 +1,161 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.Paths;
+import System.IO.FileStream;
+import System.IO.TempDirectory;
+import System.OS.Command;
+import System.OS.Disk;
+import System.OS.Environment;
+import System.OS.Machine;
+import System.OS.ProcessResult;
+import System.OS.Workspace;
+import System.Collections.ArrayList;
+import System.Text.StringBuilder;
+program SystemSurface;
+
+// THE REST OF THE SURFACE, exercised by a program rather than declared and left alone.
+//
+// The two tools before this one covered what a real task does. This one covers what they happened
+// not to reach -- measured by asking which of the calls in this area no sample touched, rather than
+// by remembering. Thirteen came back, and they are here.
+//
+// That is worth doing as its own step: a method nothing calls is a method whose first caller is a
+// user, and the three defects found by the two tools were all in code that had been written, read
+// and believed. `Console.errorln` did not exist at all; `clearEnv` did the opposite of its name.
+//
+// Prints:
+//   paths: sepIsOne=1 pieces=3 pathSepMatches=1
+//   times: accessedKnown=1 usedAddsUp=1
+//   places: exeDirHoldsExe=1 homeExists=1 movedAndBack=1
+//   shared: twoReadersAtOnce=1
+//   command: argAllPassed=1 windowFlagHarmless=1
+//   builder: longRoundTrip=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                if (args.length() > 0) {
+                    // The child half: print every argument, one per line.
+                    mutable StringBuilder out = new StringBuilder() on heap;
+                    for (mutable int i = 0; i < args.length(); i++) {
+                        out.append(args[i]);
+                        out.append("\n");
+                    }
+                    System.IO.Console.print(out.toString());
+                    return;
+                }
+                using (TempDirectory work = new TempDirectory("polaron-surface") on stack) {
+                    Main.paths();
+                    Main.times(work.path());
+                    Main.places(work.path());
+                    Main.sharedLock(work.path());
+                }
+                Main.commandForms();
+                Main.builder();
+                return;
+            }
+
+            private static method paths() returns void {
+                // The separator to WRITE with -- reading either kind is always right, writing the
+                // wrong one produces a path that works until a person looks at it.
+                String sep = Paths.separator();
+                mutable ArrayList<String> pieces = Paths.split("a/b\\c");
+                // The PATH separator is a different character from the path one, and mixing them up
+                // is a search path that silently finds nothing.
+                mutable boolean pathSep = Environment.pathSeparator().equals(
+                    Machine.isWindows() ? ";" : ":");
+                System.IO.Console.printf("paths: sepIsOne=%d pieces=%d pathSepMatches=%d\n",
+                                         sep.length() == 1 ? 1 : 0, pieces.size(),
+                                         pathSep ? 1 : 0);
+                delete pieces;
+            }
+
+            private static method times(String root) returns void {
+                String path = Paths.join(root, "read-me.txt");
+                Files.write(path, "content");
+                Files.read(path);
+                // Access time is recorded on every system here, though many mount with `relatime`
+                // or `noatime` -- so it may be stale BY DESIGN, which is different from wrong.
+                mutable boolean accessed = Files.accessedAt(path) > cast<long>(0);
+                // used + free = total, give or take what another program did in between -- checked
+                // as an identity rather than a value, because the value changes every second.
+                long total = Disk.totalSpace(root);
+                long free = Disk.freeSpace(root);
+                mutable boolean addsUp = Disk.usedSpace(root) == total - free;
+                System.IO.Console.printf("times: accessedKnown=%d usedAddsUp=%d\n",
+                                         accessed ? 1 : 0, addsUp ? 1 : 0);
+            }
+
+            private static method places(String root) returns void {
+                // A tool that has to find what was installed beside it asks this, not the current
+                // directory -- which is wherever the user happened to be standing.
+                mutable boolean exeDir = Files.exists(
+                    Paths.join(Workspace.executableDirectory(),
+                               Paths.basename(Workspace.executable())));
+                mutable boolean home = Files.isDirectory(Workspace.homeDirectory());
+                // Changing the working directory and putting it back: global state, so the test
+                // restores it rather than leaving the rest of the program somewhere else.
+                String was = Workspace.current();
+                Workspace.moveTo(root);
+                mutable boolean moved = Paths.absolute(Workspace.current())
+                                            .equals(Paths.absolute(root));
+                Workspace.moveTo(was);
+                mutable boolean back = Workspace.current().equals(was);
+                System.IO.Console.printf("places: exeDirHoldsExe=%d homeExists=%d movedAndBack=%d\n",
+                                         exeDir ? 1 : 0, home ? 1 : 0,
+                                         moved && back ? 1 : 0);
+            }
+
+            // A SHARED lock lets many readers hold it at once; an exclusive one would not. That is
+            // the whole distinction, and it is invisible unless two holders try together.
+            private static method sharedLock(String root) returns void {
+                String path = Paths.join(root, "shared.txt");
+                Files.write(path, "x");
+                mutable FileStream first = FileStream.open(path, "rb");
+                mutable FileStream second = FileStream.open(path, "rb");
+                mutable boolean both = first.lockShared() && second.lockShared();
+                second.unlock();
+                first.unlock();
+                second.close();
+                first.close();
+                System.IO.Console.printf("shared: twoReadersAtOnce=%d\n", both ? 1 : 0);
+            }
+
+            private static method commandForms() returns void {
+                // A whole list of arguments at once, which is what a caller building them in a loop
+                // has -- and the shape `arg` one at a time makes awkward.
+                mutable ArrayList<String> parts = new ArrayList<String>() on heap;
+                parts.add("one");
+                parts.add("two with spaces");
+                ProcessResult listed = new Command(Workspace.executable()) on heap
+                    .argAll(parts).timeout(10000).run();
+                mutable boolean passed = listed.output.indexOf("two with spaces") >= 0;
+                delete parts;
+                // The console-window flag is a Windows affordance and a no-op elsewhere. What is
+                // checked is that asking for it does not break the spawn -- a flag that quietly
+                // stops a child from starting is worse than one that does nothing.
+                ProcessResult shown = new Command(Workspace.executable()) on heap
+                    .arg("visible").showWindow().timeout(10000).run();
+                System.IO.Console.printf("command: argAllPassed=%d windowFlagHarmless=%d\n",
+                                         passed ? 1 : 0,
+                                         shown.output.indexOf("visible") >= 0 ? 1 : 0);
+            }
+
+            // A file size, a byte count and a timestamp are all longs, and putting one in a builder
+            // used to mean `append(value.toString())` -- an allocation and two copies for at most
+            // twenty digits. Both ends of the range, because the most negative long is the one input
+            // that has no positive counterpart and so overflows a naive negate.
+            private static method builder() returns void {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendLong(cast<long>(0));
+                sb.append(" ");
+                sb.appendLong(cast<long>(0) - cast<long>(9223372036854775807) - cast<long>(1));
+                sb.append(" ");
+                sb.appendLong(cast<long>(9223372036854775807));
+                mutable boolean ok = sb.toString()
+                    .equals("0 -9223372036854775808 9223372036854775807");
+                System.IO.Console.printf("builder: longRoundTrip=%d\n", ok ? 1 : 0);
+            }
+        }
+    }
+}
