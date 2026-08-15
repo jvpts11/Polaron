@@ -1,0 +1,88 @@
+import System.IO.Console;
+import System.Net.Tls.Hkdf;
+import System.Net.Tls.KeySchedule;
+import System.Security.Sha256;
+import System.Security.Sha384;
+import System.Security.Sha512;
+import System.Security.Hmac;
+program TlsPrimitives;
+
+// THE PRIMITIVES EVERY KEY IN A TLS CONNECTION IS DERIVED FROM, against the published vectors.
+//
+// These are checked against FIPS 180-4 and RFC 5869 rather than against each other, and the reason
+// is the same one that applies to the signature verifiers: a hash tested against our own second
+// implementation is a hash tested against our own misunderstanding. Published vectors are the only
+// witness that is not ours.
+//
+// WHY SHA-384 AND SHA-512 EXIST AT ALL HERE. Counted on this machine's trust store, of 68 roots: 19
+// are signed with SHA-256, TWELVE with SHA-384 and one with SHA-512. A client that can only compute
+// SHA-256 cannot follow a chain to a third of the authorities the machine trusts — and since the
+// honest response to a signature it cannot check is to refuse the connection, the gap would show up
+// as sites that simply do not work.
+//
+// The multi-block case matters separately: SHA-512 pads to a 128-byte boundary and writes the length
+// in the last 16 bytes, so a message of exactly 112 bytes is the one that lands on the awkward edge.
+//
+// Prints:
+//   sha512: abc=1 empty=1 multiblock=1
+//   sha384: abc=1
+//   hmac: rfc4231=1
+//   hkdf: prk=1 okm=1
+//   keyschedule: earlySecret=1 keyIsSixteen=1 ivIsTwelve=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            private static method bytesOf(String hex) returns int[] {
+                int[] out = new int[hex.length() / 2]();
+                for (mutable int i = 0; i < out.length(); i++) {
+                    out[i] = Main.nyb(hex.charAt(i * 2)) * 16 + Main.nyb(hex.charAt(i * 2 + 1));
+                }
+                return out;
+            }
+            private static method nyb(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - 48; }
+                return cast<int>(c) - 87;
+            }
+
+            public static method main(string[] args) returns void {
+                // FIPS 180-4.
+                String longMsg = "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmno"
+                    .concat("ijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu");
+                System.IO.Console.printf("sha512: abc=%d empty=%d multiblock=%d\n",
+                    Sha512.digest("abc").equals("ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f") ? 1 : 0,
+                    Sha512.digest("").equals("cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e") ? 1 : 0,
+                    Sha512.digest(longMsg).equals("8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909") ? 1 : 0);
+                System.IO.Console.printf("sha384: abc=%d\n",
+                    Sha384.digest("abc").equals("cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7") ? 1 : 0);
+
+                // RFC 4231 test case 1, over raw bytes rather than text.
+                mutable int[] key = Main.bytesOf("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
+                mutable int[] msg = Main.bytesOf("4869205468657265");            // "Hi There"
+                mutable int[] mac = Hmac.sha256Raw(key, 20, msg, 8);
+                System.IO.Console.printf("hmac: rfc4231=%d\n",
+                    Sha256.toHex(mac, 32).equals("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7") ? 1 : 0);
+
+                // RFC 5869 test case 1.
+                mutable int[] ikm = Main.bytesOf("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b");
+                mutable int[] salt = Main.bytesOf("000102030405060708090a0b0c");
+                mutable int[] info = Main.bytesOf("f0f1f2f3f4f5f6f7f8f9");
+                mutable int[] prk = Hkdf.extract(salt, 13, ikm, 22);
+                mutable int[] okm = Hkdf.expand(prk, 32, info, 10, 42);
+                System.IO.Console.printf("hkdf: prk=%d okm=%d\n",
+                    Sha256.toHex(prk, 32).equals("077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5") ? 1 : 0,
+                    Sha256.toHex(okm, 42).equals("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865") ? 1 : 0);
+
+                // The TLS 1.3 schedule's starting point, and that the derived record keys are the
+                // sizes AES-128-GCM needs — a key of the wrong length is a connection that fails
+                // after the handshake looked fine.
+                mutable int[] early = KeySchedule.earlySecret();
+                mutable int[] k = KeySchedule.trafficKey(early, 32);
+                mutable int[] iv = KeySchedule.trafficIv(early, 32);
+                System.IO.Console.printf("keyschedule: earlySecret=%d keyIsSixteen=%d ivIsTwelve=%d\n",
+                    Sha256.toHex(early, 32).equals("33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a") ? 1 : 0,
+                    k.length() == 16 ? 1 : 0, iv.length() == 12 ? 1 : 0);
+                return;
+            }
+        }
+    }
+}

@@ -4961,6 +4961,39 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THE PRIMITIVES EVERY KEY IN A TLS CONNECTION IS DERIVED FROM, against published vectors --
+        # FIPS 180-4, RFC 4231 and RFC 5869 — rather than against a second implementation of ours,
+        # which would only test our own understanding twice.
+        #
+        # SHA-384 and SHA-512 were missing from the library entirely, and that was not cosmetic: of
+        # this machine's 68 root certificates, twelve are signed with SHA-384 and one with SHA-512. A
+        # client that cannot compute them cannot follow a chain to a third of the authorities the
+        # machine trusts, and the honest response to a signature it cannot check is to refuse — so the
+        # hole would have surfaced as sites that simply do not work.
+        add_test(NAME codegen_tls_primitives COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tls_primitives.pol"
+            "-DCONTAINS=sha512: abc=1 empty=1 multiblock=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_tls_hkdf COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tls_primitives.pol"
+            "-DCONTAINS=hkdf: prk=1 okm=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # The early secret is the published starting point of the TLS 1.3 schedule; matching it means
+        # extract, expand and the label construction all agree with the specification at once.
+        add_test(NAME codegen_tls_key_schedule COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tls_primitives.pol"
+            "-DCONTAINS=keyschedule: earlySecret=1 keyIsSixteen=1 ivIsTwelve=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # THE CERTIFICATES THIS MACHINE ALREADY TRUSTS, and a chain checked all the way to one.
         #
         # A root is its own issuer, so every root carries a signature by its own key: verifying a
