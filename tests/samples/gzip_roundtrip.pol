@@ -1,0 +1,70 @@
+import System.IO.Console;
+import System.Compress.Gzip;
+import System.Compress.Deflate;
+import System.Compress.Inflate;
+import System.Compress.ByteArray;
+import System.Compress.Crc32;
+import System.Text.StringBuilder;
+program GzipRoundtrip;
+
+// REAL DEFLATE, WHICH THE LIBRARY DID NOT HAVE.
+//
+// `Huffman`, `Lz77` and `Rle` were already here as hand-written pieces, and not one of them can read
+// a byte any other program wrote. Nothing could open a `.gz`, decode `Content-Encoding: gzip`, or
+// look inside a PNG -- the three places compression actually turns up.
+//
+// What this pins down:
+//   - deflate/inflate round-trips, and the compressed form is genuinely smaller
+//   - a back-reference may OVERLAP its own output (`abababab...` from one two-byte match), which is
+//     the trick the format is built on and the thing a memcpy-shaped implementation gets wrong
+//   - the gzip container: magic, deflate body, CRC-32 and length, all checked on the way back
+//   - a corrupted trailer is REFUSED rather than returning something shaped like the data
+//
+// Prints: same=1 smaller=1 overlap=1 gz=1 crc=1 corrupt=0
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Long enough, and repetitive enough, that matching has something to find.
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < 40; i++) {
+                    sb.append("the quick brown fox jumps over the lazy dog. ");
+                }
+                String text = sb.toString();
+
+                mutable int[] raw = ByteArray.of(text);
+                mutable int[] packed = Deflate.bytes(raw, text.length());
+                String back = Inflate.text(packed, packed.length());
+                System.IO.Console.printf("same=%d smaller=%d ",
+                                         back.equals(text),
+                                         packed.length() < text.length());
+
+                // A match whose length exceeds its distance: "ab" repeated, which deflate encodes as
+                // two literals and then a single long copy from two bytes back. The copy reads bytes
+                // it is writing as it goes.
+                mutable StringBuilder ab = new StringBuilder() on heap;
+                for (mutable int i = 0; i < 100; i++) { ab.append("ab"); }
+                String rep = ab.toString();
+                mutable int[] rawRep = ByteArray.of(rep);
+                mutable int[] packedRep = Deflate.bytes(rawRep, rep.length());
+                String backRep = Inflate.text(packedRep, packedRep.length());
+                System.IO.Console.printf("overlap=%d ", backRep.equals(rep));
+
+                // The container, end to end.
+                mutable int[] gz = Gzip.compressText(text);
+                String ungz = Gzip.decompressText(gz, gz.length());
+                System.IO.Console.printf("gz=%d crc=%d ",
+                                         ungz.equals(text), Gzip.looksLikeGzip(gz, gz.length()));
+
+                // And a trailer that does not match must not come back as data. Flip one byte of the
+                // stored CRC: the bytes still inflate, and the answer is still refused.
+                gz[gz.length() - 5] = gz[gz.length() - 5] ^ 255;
+                String bad = Gzip.decompressText(gz, gz.length());
+                System.IO.Console.printf("corrupt=%d\n", bad.length());
+
+                delete raw; delete packed; delete rawRep; delete packedRep; delete gz;
+                return;
+            }
+        }
+    }
+}

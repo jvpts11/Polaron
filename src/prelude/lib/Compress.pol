@@ -1,0 +1,737 @@
+    public namespace Compress {
+        // CRC-32 (RFC 1952), which gzip's trailer is and which `Crc` did not have -- it carries
+        // CRC-16/XMODEM only. Table-free: the table is 1 KiB of state to own and the loop is eight
+        // shifts, which is not the part of decompression anyone waits for.
+        //
+        // The polynomial is 0xEDB88320, the bit-reversed 0x04C11DB7, because CRC-32 is defined over
+        // bit-reversed data -- writing the unreversed constant and shifting the other way is the
+        // classic way to get a checksum that is wrong on every input but self-consistent.
+        public class Crc32 {
+            public static method ofBytes(int[] data, int count) returns long {
+                mutable long crc = 4294967295;                 // 0xFFFFFFFF
+                for (mutable int i = 0; i < count; i++) {
+                    crc = crc ^ cast<long>(data[i] & 255);
+                    for (mutable int b = 0; b < 8; b++) {
+                        if ((crc & cast<long>(1)) != cast<long>(0)) {
+                            crc = (crc >> 1) ^ cast<long>(3988292384);   // 0xEDB88320
+                        } else {
+                            crc = crc >> 1;
+                        }
+                    }
+                }
+                return crc ^ 4294967295;
+            }
+            public static method ofString(String s) returns long {
+                mutable int[] b = ByteArray.of(s);
+                long c = Crc32.ofBytes(b, s.length());
+                delete b;
+                return c;
+            }
+        }
+
+        // Bytes as `int[]`, one byte per element, which is what BitReader already takes and what the
+        // rest of this namespace speaks. A `String` in Polaron is a byte sequence with a length, so
+        // the two convert without a copy of meaning -- only of storage.
+        // `ByteArray` and not `Bytes`: `bytes` is a `comptime literal` suffix in System.Memory.Units
+        // (`64 kilobytes`), and a class named `Bytes` beside it did not resolve at a use site -- the
+        // compiler reported `use of undeclared variable 'Bytes'` on a class that was imported and
+        // present. Whether that collision is a compiler defect is worth asking separately; the name
+        // here is clearer either way, and a standard library is the wrong place to stand on principle
+        // about a name.
+        public class ByteArray {
+            public static method of(String s) returns int[] {
+                mutable int[] out = new int[s.length()]();
+                for (mutable int i = 0; i < s.length(); i++) {
+                    out[i] = cast<int>(s.charAt(i)) & 255;
+                }
+                return out;
+            }
+            // `text` and not `toString`: a STATIC method named `toString` is not reachable, because
+            // `toString` is the universal instance method every object has, so `ByteArray.toString(a, b)`
+            // is read as a member access on a variable named `ByteArray` -- and the diagnostic then
+            // says the CLASS is an undeclared variable, which sends the reader looking in the wrong
+            // place entirely. Worth knowing before naming a static after any of Object's methods.
+            public static method text(int[] data, int count) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < count; i++) {
+                    sb.appendChar(cast<char>(data[i] & 255));
+                }
+                return sb.toString();
+            }
+        }
+
+        // A GROWABLE BYTE SINK. `ArrayList<int>` would do, but decompression appends one byte at a
+        // time in its inner loop and an int[] doubling behind a bounds check is what that loop can
+        // afford. It is also what lets the LZ77 back-reference copy read from the output it is still
+        // writing, which is the whole trick of the format: a match may overlap its own destination.
+        public class ByteSink {
+            private mutable int[] buf;
+            private mutable int n;
+            public constructor ByteSink() {
+                this.buf = new int[256]();
+                this.n = 0;
+            }
+            public method size() returns int { return this.n; }
+            public method at(int i) returns int { return this.buf[i]; }
+            public method add(int b) returns void {
+                if (this.n == this.buf.length()) { this.grow(); }
+                this.buf[this.n] = b & 255;
+                this.n = this.n + 1;
+                return;
+            }
+            // The back-reference. `distance` is how far behind the write head to start, `count` how
+            // many bytes -- and count MAY EXCEED distance, which is the format saying "repeat what you
+            // just wrote". Copying byte by byte through `add` is not a slow spelling of memcpy here:
+            // it is the only spelling that is correct, because each byte read may be one this loop
+            // wrote a moment ago.
+            public method repeatFrom(int distance, int count) returns boolean {
+                if (distance <= 0 || distance > this.n) { return false; }
+                mutable int src = this.n - distance;
+                for (mutable int i = 0; i < count; i++) {
+                    this.add(this.buf[src + i]);
+                }
+                return true;
+            }
+            private method grow() returns void {
+                mutable int[] bigger = new int[this.buf.length() * 2]();
+                for (mutable int i = 0; i < this.n; i++) { bigger[i] = this.buf[i]; }
+                delete this.buf;
+                this.buf = bigger;
+                return;
+            }
+            public method toBytes() returns int[] {
+                mutable int[] out = new int[this.n]();
+                for (mutable int i = 0; i < this.n; i++) { out[i] = this.buf[i]; }
+                return out;
+            }
+            public method toText() returns String { return ByteArray.text(this.buf, this.n); }
+            public destructor ~ByteSink() returns void { delete this.buf; return; }
+        }
+
+        // DEFLATE PACKS BITS FROM THE LEAST SIGNIFICANT END, which is why `BitReader` next door cannot
+        // be used: it reads most-significant-first, and both orders are correct for something.
+        //
+        // Worse, the format uses BOTH. Ordinary fields -- the block header, the extra bits of a length
+        // or a distance -- are least-significant-first. A HUFFMAN CODE is most-significant-first,
+        // because that is the order that makes a prefix code decodable one bit at a time. Getting this
+        // backwards produces a decoder that works on the empty input and on nothing else, so it is
+        // stated here rather than discovered again.
+        internal class BitStream {
+            private mutable int[] data;
+            private mutable int len;
+            private mutable int pos;      // byte index
+            private mutable int bit;      // 0..7, from the least significant end
+            public constructor BitStream(int[] data, int len) {
+                this.data = data;
+                this.len = len;
+                this.pos = 0;
+                this.bit = 0;
+            }
+            public method atEnd() returns boolean { return this.pos >= this.len; }
+            public method readBit() returns int {
+                if (this.pos >= this.len) { return 0; }
+                int v = (this.data[this.pos] >> this.bit) & 1;
+                this.bit = this.bit + 1;
+                if (this.bit == 8) { this.bit = 0; this.pos = this.pos + 1; }
+                return v;
+            }
+            // Least-significant-first: the first bit read is bit 0 of the result.
+            public method readBits(int count) returns int {
+                mutable int v = 0;
+                for (mutable int i = 0; i < count; i++) {
+                    v = v | (this.readBit() << i);
+                }
+                return v;
+            }
+            // To the next byte boundary -- what a stored block requires before its length field.
+            public method alignToByte() returns void {
+                if (this.bit != 0) { this.bit = 0; this.pos = this.pos + 1; }
+                return;
+            }
+            public method bytePosition() returns int { return this.pos; }
+            public method byteAt(int i) returns int { return this.data[i]; }
+            public method skipBytes(int n) returns void { this.pos = this.pos + n; return; }
+        }
+
+        // A CANONICAL HUFFMAN DECODER, built from code LENGTHS alone.
+        //
+        // That is the whole reason DEFLATE's dynamic blocks are small: the encoder never ships a tree,
+        // only how many bits each symbol takes, and both sides rebuild the same codes from that by one
+        // rule -- shorter codes first, and within a length, by symbol number. So this needs no tree
+        // nodes and no pointers: a count of codes per length, and the symbols sorted into that order.
+        internal class HuffTable {
+            private mutable int[] counts;    // how many codes of each length, 0..15
+            private mutable int[] symbols;   // symbols ordered by (length, symbol)
+            private mutable int nsym;
+
+            public constructor HuffTable(int[] lengths, int count) {
+                this.counts = new int[16]();
+                this.symbols = new int[count]();
+                this.nsym = count;
+                for (mutable int i = 0; i < count; i++) {
+                    this.counts[lengths[i]] = this.counts[lengths[i]] + 1;
+                }
+                this.counts[0] = 0;                       // a zero length means "not used"
+                mutable int[] offsets = new int[16]();
+                mutable int acc = 0;
+                for (mutable int l = 1; l < 16; l++) {
+                    offsets[l] = acc;
+                    acc = acc + this.counts[l];
+                }
+                for (mutable int i = 0; i < count; i++) {
+                    if (lengths[i] != 0) {
+                        this.symbols[offsets[lengths[i]]] = i;
+                        offsets[lengths[i]] = offsets[lengths[i]] + 1;
+                    }
+                }
+                delete offsets;
+            }
+            // One bit at a time, most-significant-first -- the order a prefix code is written in.
+            // `code` accumulates the bits seen; `first` is the smallest code of the current length and
+            // `base` where its symbols start, so the test is a range check rather than a search.
+            // Returns -1 when the bits do not spell any code, which is a corrupt stream rather than a
+            // reason to walk off the end of the symbol table.
+            //
+            // (`base` and not `index`: `index` is reserved, and the parser says so at the declaration
+            // rather than letting it read as a variable somewhere else.)
+            public method decode(BitStream* bits) returns int {
+                mutable int code = 0;
+                mutable int first = 0;
+                mutable int base = 0;
+                for (mutable int len = 1; len < 16; len++) {
+                    code = code | bits.readBit();
+                    int count = this.counts[len];
+                    if (code - first < count) { return this.symbols[base + (code - first)]; }
+                    base = base + count;
+                    first = (first + count) << 1;
+                    code = code << 1;
+                }
+                return -1;
+            }
+            public destructor ~HuffTable() returns void {
+                delete this.counts;
+                delete this.symbols;
+                return;
+            }
+        }
+
+        // DEFLATE decompression (RFC 1951): stored, fixed-Huffman and dynamic-Huffman blocks.
+        //
+        // This is the half that matters most, because it is what reads what everything else produced:
+        // a `.gz` from a web server, a PNG's pixel data, a zip entry, an npm tarball. `Huffman`, `Lz77`
+        // and `Rle` already existed here as hand-written pieces, and none of them can read a single
+        // byte any other program wrote.
+        public class Inflate {
+            public static method bytes(int[] data, int len) returns int[] {
+                mutable ByteSink* out = new ByteSink() on heap;
+                Inflate.into(data, len, out);
+                int[] r = out.toBytes();
+                delete out;
+                return r;
+            }
+            public static method text(int[] data, int len) returns String {
+                mutable ByteSink* out = new ByteSink() on heap;
+                Inflate.into(data, len, out);
+                String s = out.toText();
+                delete out;
+                return s;
+            }
+
+            internal static method into(int[] data, int len, ByteSink* out) returns boolean {
+                mutable BitStream* bits = new BitStream(data, len) on heap;
+                mutable boolean ok = true;
+                mutable boolean last = false;
+                while (!last && ok && !bits.atEnd()) {
+                    last = bits.readBit() == 1;
+                    int kind = bits.readBits(2);
+                    if (kind == 0) { ok = Inflate.stored(bits, out); }
+                    else {
+                        if (kind == 1) { ok = Inflate.fixed(bits, out); }
+                        else {
+                            if (kind == 2) { ok = Inflate.dynamic(bits, out); }
+                            else { ok = false; }        // 3 is reserved: a corrupt stream
+                        }
+                    }
+                }
+                delete bits;
+                return ok;
+            }
+
+            // An uncompressed block: align, then LEN and its one's complement, then the bytes. The
+            // complement is checked because it is the only integrity the format offers here, and a
+            // stream that fails it is not merely unlucky -- it is not a deflate stream.
+            private static method stored(BitStream* bits, ByteSink* out) returns boolean {
+                bits.alignToByte();
+                int p = bits.bytePosition();
+                int lenLo = bits.byteAt(p);
+                int lenHi = bits.byteAt(p + 1);
+                int nLo = bits.byteAt(p + 2);
+                int nHi = bits.byteAt(p + 3);
+                int n = lenLo | (lenHi << 8);
+                int inv = nLo | (nHi << 8);
+                if ((n ^ 65535) != inv) { return false; }
+                bits.skipBytes(4);
+                int start = bits.bytePosition();
+                for (mutable int i = 0; i < n; i++) { out.add(bits.byteAt(start + i)); }
+                bits.skipBytes(n);
+                return true;
+            }
+
+            // The fixed code tables, which both sides know by heart (RFC 1951 3.2.6). Rebuilt each
+            // time rather than cached in a static: a static would be program-lifetime state for two
+            // arrays that cost a few hundred writes, and the language's own rule is not to own state
+            // that is cheaper to recompute.
+            private static method fixed(BitStream* bits, ByteSink* out) returns boolean {
+                mutable int[] litLen = new int[288]();
+                for (mutable int i = 0; i < 144; i++) { litLen[i] = 8; }
+                for (mutable int i = 144; i < 256; i++) { litLen[i] = 9; }
+                for (mutable int i = 256; i < 280; i++) { litLen[i] = 7; }
+                for (mutable int i = 280; i < 288; i++) { litLen[i] = 8; }
+                mutable int[] distLen = new int[30]();
+                for (mutable int i = 0; i < 30; i++) { distLen[i] = 5; }
+                mutable HuffTable* lit = new HuffTable(litLen, 288) on heap;
+                mutable HuffTable* dist = new HuffTable(distLen, 30) on heap;
+                boolean ok = Inflate.block(bits, out, lit, dist);
+                delete lit;
+                delete dist;
+                delete litLen;
+                delete distLen;
+                return ok;
+            }
+
+            // A dynamic block ships its two code tables as code lengths -- themselves Huffman-coded by
+            // a third, tiny table whose lengths arrive in a fixed, deliberately odd order (16, 17, 18,
+            // 0, 8, 7, 9, ...). The order is not arbitrary: it puts the lengths most likely to be zero
+            // last, so the count can stop early.
+            private static method dynamic(BitStream* bits, ByteSink* out) returns boolean {
+                int hlit = bits.readBits(5) + 257;
+                int hdist = bits.readBits(5) + 1;
+                int hclen = bits.readBits(4) + 4;
+                mutable int[] order = new int[19]();
+                order[0] = 16; order[1] = 17; order[2] = 18; order[3] = 0; order[4] = 8;
+                order[5] = 7;  order[6] = 9;  order[7] = 6;  order[8] = 10; order[9] = 5;
+                order[10] = 11; order[11] = 4; order[12] = 12; order[13] = 3; order[14] = 13;
+                order[15] = 2; order[16] = 14; order[17] = 1; order[18] = 15;
+                mutable int[] clen = new int[19]();
+                for (mutable int i = 0; i < hclen; i++) { clen[order[i]] = bits.readBits(3); }
+                mutable HuffTable* code = new HuffTable(clen, 19) on heap;
+
+                // The two tables are decoded as ONE run and split afterwards, because a repeat may
+                // straddle the boundary between them -- which is legal, and is the detail a decoder
+                // written table-at-a-time gets wrong on real files only.
+                int total = hlit + hdist;
+                mutable int[] lengths = new int[total]();
+                mutable int i = 0;
+                mutable boolean ok = true;
+                while (i < total && ok) {
+                    int sym = code.decode(bits);
+                    if (sym < 0) { ok = false; }
+                    else {
+                        if (sym < 16) { lengths[i] = sym; i = i + 1; }
+                        else {
+                            if (sym == 16) {
+                                // Repeat the PREVIOUS length 3..6 times; illegal as the first symbol.
+                                if (i == 0) { ok = false; }
+                                else {
+                                    int prev = lengths[i - 1];
+                                    int rep = 3 + bits.readBits(2);
+                                    for (mutable int k = 0; k < rep && i < total; k++) {
+                                        lengths[i] = prev;
+                                        i = i + 1;
+                                    }
+                                }
+                            } else {
+                                int rep = sym == 17 ? 3 + bits.readBits(3) : 11 + bits.readBits(7);
+                                for (mutable int k = 0; k < rep && i < total; k++) {
+                                    lengths[i] = 0;
+                                    i = i + 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                delete code;
+                delete clen;
+                delete order;
+                if (!ok) { delete lengths; return false; }
+
+                mutable int[] litLen = new int[hlit]();
+                for (mutable int k = 0; k < hlit; k++) { litLen[k] = lengths[k]; }
+                mutable int[] distLen = new int[hdist]();
+                for (mutable int k = 0; k < hdist; k++) { distLen[k] = lengths[hlit + k]; }
+                mutable HuffTable* lit = new HuffTable(litLen, hlit) on heap;
+                mutable HuffTable* dist = new HuffTable(distLen, hdist) on heap;
+                boolean r = Inflate.block(bits, out, lit, dist);
+                delete lit;
+                delete dist;
+                delete litLen;
+                delete distLen;
+                delete lengths;
+                return r;
+            }
+
+            // The symbol loop, shared by fixed and dynamic blocks: a literal is a byte, 256 ends the
+            // block, and anything above is a length that is followed by a distance.
+            private static method block(BitStream* bits, ByteSink* out, HuffTable* lit,
+                                        HuffTable* dist) returns boolean {
+                mutable boolean running = true;
+                while (running) {
+                    int sym = lit.decode(bits);
+                    if (sym < 0) { return false; }
+                    if (sym < 256) { out.add(sym); continue; }
+                    if (sym == 256) { running = false; continue; }
+                    if (sym > 285) { return false; }
+                    int li = sym - 257;
+                    int length = Inflate.lengthBase(li) + bits.readBits(Inflate.lengthExtra(li));
+                    int dsym = dist.decode(bits);
+                    if (dsym < 0 || dsym > 29) { return false; }
+                    int distance = Inflate.distBase(dsym) + bits.readBits(Inflate.distExtra(dsym));
+                    if (!out.repeatFrom(distance, length)) { return false; }
+                }
+                return true;
+            }
+
+            // RFC 1951 3.2.5, as arithmetic rather than as four tables. The bases are not a formula --
+            // they are a table, and pretending otherwise is how an off-by-one gets in -- so they are
+            // written out, and only the extra-bit COUNT is computed, where it genuinely is a formula.
+            internal static method lengthBase(int i) returns int {
+                mutable int[] t = new int[29]();
+                t[0]=3; t[1]=4; t[2]=5; t[3]=6; t[4]=7; t[5]=8; t[6]=9; t[7]=10;
+                t[8]=11; t[9]=13; t[10]=15; t[11]=17; t[12]=19; t[13]=23; t[14]=27; t[15]=31;
+                t[16]=35; t[17]=43; t[18]=51; t[19]=59; t[20]=67; t[21]=83; t[22]=99; t[23]=115;
+                t[24]=131; t[25]=163; t[26]=195; t[27]=227; t[28]=258;
+                int v = t[i];
+                delete t;
+                return v;
+            }
+            internal static method lengthExtra(int i) returns int {
+                if (i < 8) { return 0; }
+                if (i == 28) { return 0; }          // 258 is exact, and the one break in the pattern
+                return (i - 4) / 4;
+            }
+            internal static method distBase(int i) returns int {
+                mutable int[] t = new int[30]();
+                t[0]=1; t[1]=2; t[2]=3; t[3]=4; t[4]=5; t[5]=7; t[6]=9; t[7]=13;
+                t[8]=17; t[9]=25; t[10]=33; t[11]=49; t[12]=65; t[13]=97; t[14]=129; t[15]=193;
+                t[16]=257; t[17]=385; t[18]=513; t[19]=769; t[20]=1025; t[21]=1537; t[22]=2049;
+                t[23]=3073; t[24]=4097; t[25]=6145; t[26]=8193; t[27]=12289; t[28]=16385; t[29]=24577;
+                int v = t[i];
+                delete t;
+                return v;
+            }
+            internal static method distExtra(int i) returns int {
+                if (i < 2) { return 0; }
+                return (i - 2) / 2;
+            }
+        }
+
+        // The writing end of the same bit order. Kept next to the reader so the two orders stay one
+        // decision: ordinary fields go out least-significant-first, a Huffman code most-significant.
+        internal class BitPacker {
+            private mutable ByteSink* out;
+            private mutable int cur;
+            private mutable int nbits;
+            public constructor BitPacker() {
+                this.out = new ByteSink() on heap;
+                this.cur = 0;
+                this.nbits = 0;
+            }
+            public method writeBit(int b) returns void {
+                this.cur = this.cur | ((b & 1) << this.nbits);
+                this.nbits = this.nbits + 1;
+                if (this.nbits == 8) {
+                    this.out.add(this.cur);
+                    this.cur = 0;
+                    this.nbits = 0;
+                }
+                return;
+            }
+            public method writeBits(int value, int count) returns void {
+                for (mutable int i = 0; i < count; i++) { this.writeBit((value >> i) & 1); }
+                return;
+            }
+            // A Huffman code goes out MOST significant bit first, which is the opposite of everything
+            // else here and is what makes the code decodable one bit at a time.
+            public method writeCode(int code, int count) returns void {
+                for (mutable int i = count - 1; i >= 0; i--) { this.writeBit((code >> i) & 1); }
+                return;
+            }
+            public method flush() returns void {
+                if (this.nbits > 0) { this.out.add(this.cur); this.cur = 0; this.nbits = 0; }
+                return;
+            }
+            public method toBytes() returns int[] { return this.out.toBytes(); }
+            public method size() returns int { return this.out.size(); }
+            public destructor ~BitPacker() returns void { delete this.out; return; }
+        }
+
+        // DEFLATE compression (RFC 1951), fixed-Huffman blocks with LZ77 matching.
+        //
+        // Fixed rather than dynamic, and that is a choice with a reason rather than a corner cut. A
+        // dynamic block spends its header shipping two code tables, which pays only once there is
+        // enough data for a better-fitted code to earn back that header; the fixed tables cost nothing
+        // to send and cost a few percent of ratio. What matters far more is that this is REAL deflate:
+        // any zlib, any browser, any `gunzip` reads it. A stored-block "compressor" would also be
+        // valid, and would compress nothing.
+        //
+        // The match search is a hash chain over three-byte prefixes -- the same shape zlib uses --
+        // bounded so that a pathological input costs time proportional to its length rather than to
+        // its length squared.
+        // The numbers, once, so the loops below read as intent rather than as arithmetic:
+        //   window     32768   how far back a match may point -- the format's own limit
+        //   min match       3   below this a match costs more bits than the literals it replaces
+        //   max match     258   the largest length the code table can name
+        //   hash size   16384   buckets for the three-byte prefix index
+        //   max chain     128   how far down a bucket to look before settling for what we have,
+        //                       which is what keeps a pathological input linear rather than quadratic
+        public class Deflate {
+
+            public static method bytes(int[] data, int len) returns int[] {
+                mutable BitPacker* w = new BitPacker() on heap;
+                Deflate.encode(data, len, w, true);
+                w.flush();
+                int[] r = w.toBytes();
+                delete w;
+                return r;
+            }
+            public static method text(String s) returns int[] {
+                mutable int[] b = ByteArray.of(s);
+                int[] r = Deflate.bytes(b, s.length());
+                delete b;
+                return r;
+            }
+
+            internal static method encode(int[] data, int len, BitPacker* w, boolean last) returns void {
+                w.writeBit(last ? 1 : 0);
+                w.writeBits(1, 2);                       // 01 = fixed Huffman
+
+                mutable int[] head = new int[16384]();
+                for (mutable int i = 0; i < 16384; i++) { head[i] = -1; }
+                mutable int room = len;
+                if (room < 1) { room = 1; }
+                mutable int[] prev = new int[room]();
+                for (mutable int i = 0; i < len; i++) { prev[i] = -1; }
+
+                mutable int at = 0;
+                while (at < len) {
+                    mutable int bestLen = 0;
+                    mutable int bestDist = 0;
+                    if (at + 3 <= len) {
+                        int h = Deflate.hashAt(data, at);
+                        mutable int cand = head[h];
+                        mutable int tries = 0;
+                        while (cand >= 0 && tries < 128) {
+                            int dist = at - cand;
+                            if (dist <= 0 || dist > 32768) { cand = -1; continue; }
+                            mutable int l = 0;
+                            while (l < 258 && at + l < len && data[cand + l] == data[at + l]) {
+                                l = l + 1;
+                            }
+                            if (l > bestLen) { bestLen = l; bestDist = dist; }
+                            if (bestLen >= 258) { cand = -1; continue; }
+                            cand = prev[cand];
+                            tries = tries + 1;
+                        }
+                    }
+                    if (bestLen >= 3) {
+                        Deflate.emitMatch(w, bestLen, bestDist);
+                        for (mutable int k = 0; k < bestLen; k++) {
+                            if (at + k + 3 <= len) {
+                                int h2 = Deflate.hashAt(data, at + k);
+                                prev[at + k] = head[h2];
+                                head[h2] = at + k;
+                            }
+                        }
+                        at = at + bestLen;
+                    } else {
+                        Deflate.emitLiteral(w, data[at]);
+                        if (at + 3 <= len) {
+                            int h2 = Deflate.hashAt(data, at);
+                            prev[at] = head[h2];
+                            head[h2] = at;
+                        }
+                        at = at + 1;
+                    }
+                }
+                Deflate.emitLiteral(w, 256);             // end of block
+                delete head;
+                delete prev;
+                return;
+            }
+
+            private static method hashAt(int[] data, int i) returns int {
+                return ((data[i] << 10) ^ (data[i + 1] << 5) ^ data[i + 2]) & 16383;
+            }
+
+            // The fixed literal/length code, straight from RFC 1951 3.2.6: 0..143 are eight bits
+            // starting at 0x30, 144..255 are nine starting at 0x190, 256..279 are seven starting at 0,
+            // and 280..287 are eight starting at 0xC0. Written as four ranges because that is what the
+            // specification is -- deriving it would be shorter and unreadable.
+            internal static method emitLiteral(BitPacker* w, int sym) returns void {
+                if (sym < 144) { w.writeCode(48 + sym, 8); return; }
+                if (sym < 256) { w.writeCode(400 + (sym - 144), 9); return; }
+                if (sym < 280) { w.writeCode(sym - 256, 7); return; }
+                w.writeCode(192 + (sym - 280), 8);
+                return;
+            }
+
+            private static method emitMatch(BitPacker* w, int length, int distance) returns void {
+                // The length symbol is the largest whose base does not exceed `length`; the remainder
+                // rides in that symbol's extra bits.
+                mutable int li = 28;
+                while (li > 0 && Inflate.lengthBase(li) > length) { li = li - 1; }
+                Deflate.emitLiteral(w, 257 + li);
+                w.writeBits(length - Inflate.lengthBase(li), Inflate.lengthExtra(li));
+                mutable int di = 29;
+                while (di > 0 && Inflate.distBase(di) > distance) { di = di - 1; }
+                w.writeCode(di, 5);                      // distances are a flat five-bit code
+                w.writeBits(distance - Inflate.distBase(di), Inflate.distExtra(di));
+                return;
+            }
+        }
+
+        // GZIP (RFC 1952): a ten-byte header, a deflate stream, then CRC-32 and the uncompressed size,
+        // both little-endian. This is the container `.gz` files and `Content-Encoding: gzip` use, and
+        // the reason the whole slice exists -- deflate alone reads nothing off a disk or a wire.
+        public class Gzip {
+            public static method compress(int[] data, int len) returns int[] {
+                mutable ByteSink* out = new ByteSink() on heap;
+                out.add(31); out.add(139);        // magic 1f 8b
+                out.add(8);                       // CM = deflate
+                out.add(0);                       // FLG: no name, no extra, no comment
+                out.add(0); out.add(0); out.add(0); out.add(0);   // MTIME 0 = not stated
+                out.add(0);                       // XFL
+                out.add(255);                     // OS = unknown, which is true and portable
+                mutable int[] body = Deflate.bytes(data, len);
+                for (mutable int i = 0; i < body.length(); i++) { out.add(body[i]); }
+                delete body;
+                long crc = Crc32.ofBytes(data, len);
+                Gzip.putLE32(out, crc);
+                Gzip.putLE32(out, cast<long>(len));
+                int[] r = out.toBytes();
+                delete out;
+                return r;
+            }
+            public static method compressText(String s) returns int[] {
+                mutable int[] b = ByteArray.of(s);
+                int[] r = Gzip.compress(b, s.length());
+                delete b;
+                return r;
+            }
+
+            // Decompression checks the trailer, and that is not ceremony: a CRC that does not match is
+            // the difference between "here is your data" and "here is something shaped like it".
+            public static method decompress(int[] data, int len) returns int[] {
+                mutable ByteSink* out = new ByteSink() on heap;
+                if (!Gzip.into(data, len, out)) { delete out; return new int[0](); }
+                int[] r = out.toBytes();
+                delete out;
+                return r;
+            }
+            public static method decompressText(int[] data, int len) returns String {
+                mutable ByteSink* out = new ByteSink() on heap;
+                if (!Gzip.into(data, len, out)) { delete out; return ""; }
+                String s = out.toText();
+                delete out;
+                return s;
+            }
+            // Whether the bytes even claim to be gzip. Asked separately because a caller handed an
+            // arbitrary download wants to know before it starts.
+            public static method looksLikeGzip(int[] data, int len) returns boolean {
+                return len >= 18 && data[0] == 31 && data[1] == 139 && data[2] == 8;
+            }
+
+            private static method into(int[] data, int len, ByteSink* out) returns boolean {
+                if (!Gzip.looksLikeGzip(data, len)) { return false; }
+                int flg = data[3];
+                mutable int at = 10;
+                if ((flg & 4) != 0) {                     // FEXTRA: a length-prefixed block
+                    int xlen = data[at] | (data[at + 1] << 8);
+                    at = at + 2 + xlen;
+                }
+                if ((flg & 8) != 0) {                     // FNAME: NUL-terminated
+                    while (at < len && data[at] != 0) { at = at + 1; }
+                    at = at + 1;
+                }
+                if ((flg & 16) != 0) {                    // FCOMMENT
+                    while (at < len && data[at] != 0) { at = at + 1; }
+                    at = at + 1;
+                }
+                if ((flg & 2) != 0) { at = at + 2; }      // FHCRC
+                // The deflate stream runs to the eight-byte trailer.
+                int bodyLen = len - 8 - at;
+                if (bodyLen <= 0) { return false; }
+                mutable int[] body = new int[bodyLen]();
+                for (mutable int i = 0; i < bodyLen; i++) { body[i] = data[at + i]; }
+                boolean ok = Inflate.into(body, bodyLen, out);
+                delete body;
+                if (!ok) { return false; }
+                long want = Gzip.getLE32(data, len - 8);
+                long size = Gzip.getLE32(data, len - 4);
+                if (cast<long>(out.size()) != size) { return false; }
+                mutable int[] got = out.toBytes();
+                long have = Crc32.ofBytes(got, out.size());
+                delete got;
+                return have == want;
+            }
+
+            private static method putLE32(ByteSink* out, long v) returns void {
+                out.add(cast<int>(v & cast<long>(255)));
+                out.add(cast<int>((v >> 8) & cast<long>(255)));
+                out.add(cast<int>((v >> 16) & cast<long>(255)));
+                out.add(cast<int>((v >> 24) & cast<long>(255)));
+                return;
+            }
+            private static method getLE32(int[] d, int at) returns long {
+                return cast<long>(d[at]) | (cast<long>(d[at + 1]) << 8) |
+                       (cast<long>(d[at + 2]) << 16) | (cast<long>(d[at + 3]) << 24);
+            }
+        }
+
+        // ZLIB (RFC 1950): two header bytes and an Adler-32 trailer around the same deflate stream.
+        // This is what a PNG's IDAT holds and what most library APIs mean by "compress", so it is
+        // worth the twenty lines even though gzip is the one a file carries.
+        public class Zlib {
+            public static method compress(int[] data, int len) returns int[] {
+                mutable ByteSink* out = new ByteSink() on heap;
+                out.add(120);                     // CMF: deflate, 32 KiB window
+                out.add(1);                       // FLG chosen so (CMF*256+FLG) % 31 == 0
+                mutable int[] body = Deflate.bytes(data, len);
+                for (mutable int i = 0; i < body.length(); i++) { out.add(body[i]); }
+                delete body;
+                long a = Zlib.adler(data, len);
+                out.add(cast<int>((a >> 24) & cast<long>(255)));   // big-endian, unlike gzip's
+                out.add(cast<int>((a >> 16) & cast<long>(255)));
+                out.add(cast<int>((a >> 8) & cast<long>(255)));
+                out.add(cast<int>(a & cast<long>(255)));
+                int[] r = out.toBytes();
+                delete out;
+                return r;
+            }
+            public static method decompress(int[] data, int len) returns int[] {
+                if (len < 6) { return new int[0](); }
+                int bodyLen = len - 6;
+                mutable int[] body = new int[bodyLen]();
+                for (mutable int i = 0; i < bodyLen; i++) { body[i] = data[2 + i]; }
+                mutable ByteSink* out = new ByteSink() on heap;
+                boolean ok = Inflate.into(body, bodyLen, out);
+                delete body;
+                if (!ok) { delete out; return new int[0](); }
+                int[] r = out.toBytes();
+                delete out;
+                return r;
+            }
+            // Adler-32 over bytes. `Adler32` next door takes a String; this takes the byte array the
+            // rest of the namespace speaks, and they agree by construction because a String is bytes.
+            private static method adler(int[] data, int len) returns long {
+                mutable long a = 1;
+                mutable long b = 0;
+                long mod = 65521;
+                for (mutable int i = 0; i < len; i++) {
+                    a = (a + cast<long>(data[i] & 255)) % mod;
+                    b = (b + a) % mod;
+                }
+                return (b << 16) | a;
+            }
+        }
+    }

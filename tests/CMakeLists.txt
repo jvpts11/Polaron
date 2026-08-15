@@ -2646,6 +2646,19 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # REAL DEFLATE. `Huffman`, `Lz77` and `Rle` were already here as hand-written pieces, and not
+        # one of them can read a byte any other program wrote -- nothing could open a `.gz`, decode
+        # `Content-Encoding: gzip`, or look inside a PNG. Checks the round-trip, that it is genuinely
+        # smaller, that a back-reference may OVERLAP its own output (the trick the format rests on),
+        # the gzip container, and that a corrupted trailer is refused rather than returned as data.
+        add_test(NAME codegen_gzip_roundtrip_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/gzip_roundtrip.pol"
+            "-DEXPECTED=same=1 smaller=1 overlap=1 gz=1 crc=1 corrupt=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # THREE FORMATS THE LANGUAGE COULD NOT READ. JSON, CSV, INI and Properties existed; TOML, YAML
         # and XML did not, which is most of the configuration in the world. TOML and YAML parse into
         # `Json` -- they are two more syntaxes for the same tree, so they share the document model and
