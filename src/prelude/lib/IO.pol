@@ -595,6 +595,19 @@
                 if (base.endsWith("/")) { return base.concat(name); }
                 return base.concat("/").concat(name);
             }
+            // ANY NUMBER OF SEGMENTS, which `join` cannot take: Polaron has no method overloading
+            // and no variadic parameters outside `extern`, so joining three parts meant nesting two
+            // calls -- and the first real tool written against this library hit that in its fourth
+            // line. Empty segments are skipped, so a list with a gap in it does not produce a path
+            // with a double separator in it.
+            public static method joinAll(ArrayList<String> parts) returns String {
+                mutable String out = "";
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    if (parts.get(i).length() == 0) { continue; }
+                    out = out.length() == 0 ? parts.get(i) : Paths.join(out, parts.get(i));
+                }
+                return out;
+            }
             public static method basename(String path) returns String {
                 int cut = Paths.lastSep(path);
                 return cut < 0 ? path : path.substring(cut + 1, path.length());

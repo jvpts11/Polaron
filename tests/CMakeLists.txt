@@ -4916,6 +4916,45 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A REAL TOOL over the whole filesystem/process surface, written to find out whether it is
+        # actually finished -- a directory-syncing program of the kind everybody writes eventually.
+        # Stricter than a checklist, because a checklist only asks about the calls somebody already
+        # thought of: this one found `Paths.joinAll` missing in its fourth line (Polaron has no
+        # overloading and no variadic parameters, so `join` taking two segments meant nesting).
+        #
+        # The second sync copying NOTHING is the claim that matters: a tool that copies everything
+        # every time cannot be used on a large tree, and the size+mtime comparison that decides is
+        # the one `isNewerThan` exists for. The hook proves an argument holding a space and an `&`
+        # reaches another program whole.
+        add_test(NAME codegen_tree_sync_incremental COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tree_sync.pol"
+            "-DCONTAINS=second: copied=0 skipped=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_tree_sync_changed_only COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tree_sync.pol"
+            "-DCONTAINS=changed: copied=1 skipped=2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_tree_sync_manifest COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tree_sync.pol"
+            "-DCONTAINS=manifest: lines=3 firstIsRelative=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_tree_sync_hook COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tree_sync.pol"
+            "-DCONTAINS=hook: argumentIntact=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # THE SIX THINGS A PROGRAM NEEDS FROM A FILESYSTEM THAT NOTHING ELSE HERE PROVIDES.
         #   replace -- a plain write TRUNCATES and then fills, so a crash between the two leaves the
         #              caller's save file empty. `replace` writes beside it and renames, and leaves
