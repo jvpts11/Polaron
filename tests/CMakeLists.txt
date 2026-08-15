@@ -3368,6 +3368,19 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THE THIRD OF THE RESILIENCE TRIO (System.App.Retry): a breaker says when to stop calling and
+        # a bucket how often, and neither says what to do about the call that just failed. Pins the two
+        # things the hand-written version gets wrong -- backoff with no CAP (an hour by the twelfth
+        # attempt) and capping AFTER multiplying (a long wraps and the delay comes back small, checked
+        # at attempt 40).
+        add_test(NAME codegen_retry_backoff_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/retry_backoff.pol"
+            "-DEXPECTED=curve=100/200/400/800/1600/2000/2000 far=2000 attempts: allow=1 left=3 -> allow=0 left=0 reset=3 jitter: none=800 half=600 full=404 with breaker: tries=2 state=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

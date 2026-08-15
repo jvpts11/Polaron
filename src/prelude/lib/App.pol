@@ -1,4 +1,71 @@
     public namespace App {
+        // THE THIRD OF THE RESILIENCE TRIO, and the one everybody writes by hand. A circuit breaker
+        // says when to STOP calling something that is failing and a token bucket says how OFTEN to
+        // call it; neither says what to do about the single call that just failed, which is the
+        // commonest question of the three.
+        //
+        // Exponential backoff with a CAP, in integers: doubling without a ceiling reaches an hour by
+        // the twelfth attempt, and a program that meant "keep trying" has silently stopped trying.
+        //
+        // NO RANDOMNESS INSIDE, on purpose, and it is the same rule as the time here -- both would
+        // make a program's behaviour unrepeatable, which is exactly what you cannot afford in the
+        // code that runs when something is already going wrong. Jitter matters (without it, everything
+        // that failed together retries together), so it is offered as `delayJittered`, with the roll
+        // supplied by the caller from its own generator.
+        public class Retry {
+            private mutable int made;         // attempts made so far
+            private mutable int limit;
+            private mutable long baseMs;
+            private mutable int factor;
+            private mutable long capMs;
+
+            public constructor Retry(int maxAttempts, long baseMs, int factor, long capMs) {
+                this.made = 0;
+                this.limit = maxAttempts;
+                this.baseMs = baseMs;
+                this.factor = factor;
+                this.capMs = capMs;
+            }
+            // Is there another attempt to be had? Asked BEFORE trying, so a `maxAttempts` of 3 means
+            // three calls and not four.
+            public method allow() returns boolean { return this.made < this.limit; }
+            public method recordFailure() returns void { this.made = this.made + 1; }
+            public method recordSuccess() returns void { this.made = 0; }
+            public method attemptsMade() returns int { return this.made; }
+            public method attemptsLeft() returns int {
+                int left = this.limit - this.made;
+                if (left < 0) { return 0; }
+                return left;
+            }
+            // How long to wait before the NEXT attempt, capped.
+            public method delay() returns long {
+                return Retry.backoff(this.baseMs, this.factor, this.made, this.capMs);
+            }
+            // ...with up to `percent` shaved off, by a roll of 0..99 the caller provides. Shaved and
+            // not added, so the cap is still a cap.
+            public method delayJittered(int percent, int roll) returns long {
+                long d = this.delay();
+                if (percent <= 0) { return d; }
+                mutable int p = percent;
+                if (p > 100) { p = 100; }
+                mutable int r = roll % 100;
+                if (r < 0) { r = 0 - r; }
+                long cut = d * cast<long>(p) * cast<long>(r) / cast<long>(10000);
+                return d - cut;
+            }
+            // The curve on its own, for a caller that keeps no state: base * factor^attempt, capped.
+            // Multiplied step by step and checked against the cap each time, so a long run cannot
+            // overflow its way back to a small number.
+            public static method backoff(long baseMs, int factor, int attempt, long capMs) returns long {
+                mutable long d = baseMs;
+                for (mutable int i = 0; i < attempt; i++) {
+                    if (d >= capMs) { return capMs; }
+                    d = d * cast<long>(factor);
+                }
+                if (d > capMs) { return capMs; }
+                return d;
+            }
+        }
         // Circuit breaker (spec 34): trips to open after threshold consecutive failures and rejects calls
         // until a cooldown passes, then allows one trial (half-open); a success closes it again, a failure
         // reopens it. Time is passed in explicitly (milliseconds) so behavior is deterministic and testable.
