@@ -1,0 +1,236 @@
+    public namespace Arrays {
+        // WHAT WAS MISSING FROM THE MIDDLE OF THE LIBRARY: there was no way to sort a raw array.
+        //
+        // 305 types, and `ArrayList.sortedBy` was the only sort in any of them -- so a program
+        // holding an `int[]`, which is the type the language gives you for a fixed run of numbers,
+        // had to build an ArrayList to put them in order and take them back out. Everything here is
+        // the ordinary array vocabulary: sort, search, fill, reverse, copy, compare.
+        //
+        // ONE GENERIC METHOD PER OPERATION, taking a comparator, because Polaron has no overloading:
+        // `sort(int[])` and `sort(String[])` cannot share a name. That turns out to be the better
+        // design anyway -- one implementation, every element type, and the ordering is stated at the
+        // call site rather than assumed. The `Ints` helpers beside them exist because writing
+        // `lambda(int a, int b) returns int { return a - b; }` to sort numbers is ceremony.
+        //
+        // IN PLACE, and the methods that reorder say so in their names' absence of a return value:
+        // an array is a fixed run of storage, and returning a sorted copy would allocate a second
+        // one every time somebody sorts.
+        public class Arrays {
+            // QUICKSORT WITH AN INSERTION TAIL: quicksort's partitioning for the large spans,
+            // insertion sort under sixteen elements where its constant factor wins. Median-of-three
+            // pivot, so an already-sorted array -- the input people actually pass -- does not hit the
+            // quadratic case.
+            public static method sort<T>(T[] a, function<int, T, T> compare) returns void {
+                Arrays.sortRange<T>(a, 0, a.length() - 1, compare);
+            }
+
+            public static method sortRange<T>(T[] a, int lo, int hi, function<int, T, T> compare) returns void {
+                if (hi - lo < 16) {
+                    Arrays.insertion<T>(a, lo, hi, compare);
+                    return;
+                }
+                int mid = lo + (hi - lo) / 2;
+                // Median of three, put at `lo` so the partition below reads it there.
+                if (compare(a[mid], a[lo]) < 0) { Arrays.swap<T>(a, lo, mid); }
+                if (compare(a[hi], a[lo]) < 0) { Arrays.swap<T>(a, lo, hi); }
+                if (compare(a[hi], a[mid]) < 0) { Arrays.swap<T>(a, mid, hi); }
+                Arrays.swap<T>(a, lo, mid);
+                T pivot = a[lo];
+                mutable int i = lo + 1;
+                mutable int j = hi;
+                while (i <= j) {
+                    while (i <= j && compare(a[i], pivot) <= 0) { i = i + 1; }
+                    while (i <= j && compare(a[j], pivot) > 0) { j = j - 1; }
+                    if (i < j) { Arrays.swap<T>(a, i, j); }
+                }
+                Arrays.swap<T>(a, lo, j);
+                Arrays.sortRange<T>(a, lo, j - 1, compare);
+                Arrays.sortRange<T>(a, j + 1, hi, compare);
+            }
+
+            private static method insertion<T>(T[] a, int lo, int hi, function<int, T, T> compare) returns void {
+                for (mutable int i = lo + 1; i <= hi; i++) {
+                    T key = a[i];
+                    mutable int j = i - 1;
+                    while (j >= lo && compare(a[j], key) > 0) {
+                        a[j + 1] = a[j];
+                        j = j - 1;
+                    }
+                    a[j + 1] = key;
+                }
+            }
+
+            public static method swap<T>(T[] a, int i, int j) returns void {
+                T t = a[i];
+                a[i] = a[j];
+                a[j] = t;
+            }
+
+            // The index of `key`, or -1. The array must already be sorted by the same comparator --
+            // which is a precondition rather than a check, because verifying it would cost more than
+            // the search.
+            public static method binarySearch<T>(T[] a, T key, function<int, T, T> compare) returns int {
+                mutable int lo = 0;
+                mutable int hi = a.length() - 1;
+                while (lo <= hi) {
+                    int mid = lo + (hi - lo) / 2;
+                    int c = compare(a[mid], key);
+                    if (c == 0) { return mid; }
+                    if (c < 0) { lo = mid + 1; } else { hi = mid - 1; }
+                }
+                return -1;
+            }
+
+            // The first index whose element compares equal, by a linear scan. For an array that is
+            // NOT sorted, which is most of them.
+            public static method indexOf<T>(T[] a, T key, function<int, T, T> compare) returns int {
+                for (mutable int i = 0; i < a.length(); i++) {
+                    if (compare(a[i], key) == 0) { return i; }
+                }
+                return -1;
+            }
+
+            public static method contains<T>(T[] a, T key, function<int, T, T> compare) returns boolean {
+                return Arrays.indexOf<T>(a, key, compare) >= 0;
+            }
+
+            public static method fill<T>(T[] a, T value) returns void {
+                for (mutable int i = 0; i < a.length(); i++) { a[i] = value; }
+            }
+
+            public static method reverse<T>(T[] a) returns void {
+                mutable int i = 0;
+                mutable int j = a.length() - 1;
+                while (i < j) {
+                    Arrays.swap<T>(a, i, j);
+                    i = i + 1;
+                    j = j - 1;
+                }
+            }
+
+            // A new array of `n` elements holding this one's first `n` (or all of them, padded with
+            // whatever `new T[n]()` starts as, when `n` is larger).
+            public static method copyOf<T>(T[] a, int n) returns T[] {
+                mutable T[] out = new T[n]();
+                mutable int limit = a.length();
+                if (n < limit) { limit = n; }
+                for (mutable int i = 0; i < limit; i++) { out[i] = a[i]; }
+                return out;
+            }
+
+            public static method copyRange<T>(T[] a, int from, int to) returns T[] {
+                mutable int n = to - from;
+                if (n < 0) { n = 0; }
+                mutable T[] out = new T[n]();
+                for (mutable int i = 0; i < n; i++) { out[i] = a[from + i]; }
+                return out;
+            }
+
+            public static method equal<T>(T[] a, T[] b, function<int, T, T> compare) returns boolean {
+                if (a.length() != b.length()) { return false; }
+                for (mutable int i = 0; i < a.length(); i++) {
+                    if (compare(a[i], b[i]) != 0) { return false; }
+                }
+                return true;
+            }
+        }
+
+        // THE NUMBERS, WITHOUT THE COMPARATOR. Sorting integers is the commonest thing anybody does
+        // to an array, and `lambda(int a, int b) returns int { return a - b; }` at every call site is
+        // noise for an order nobody disagrees about. These are the same algorithms with `<` inlined.
+        public class Ints {
+            public static method sort(int[] a) returns void {
+                Ints.sortRange(a, 0, a.length() - 1);
+            }
+            private static method sortRange(int[] a, int lo, int hi) returns void {
+                if (hi - lo < 16) {
+                    for (mutable int i = lo + 1; i <= hi; i++) {
+                        int key = a[i];
+                        mutable int j = i - 1;
+                        while (j >= lo && a[j] > key) {
+                            a[j + 1] = a[j];
+                            j = j - 1;
+                        }
+                        a[j + 1] = key;
+                    }
+                    return;
+                }
+                int mid = lo + (hi - lo) / 2;
+                if (a[mid] < a[lo]) { Ints.swap(a, lo, mid); }
+                if (a[hi] < a[lo]) { Ints.swap(a, lo, hi); }
+                if (a[hi] < a[mid]) { Ints.swap(a, mid, hi); }
+                Ints.swap(a, lo, mid);
+                int pivot = a[lo];
+                mutable int i = lo + 1;
+                mutable int j = hi;
+                while (i <= j) {
+                    while (i <= j && a[i] <= pivot) { i = i + 1; }
+                    while (i <= j && a[j] > pivot) { j = j - 1; }
+                    if (i < j) { Ints.swap(a, i, j); }
+                }
+                Ints.swap(a, lo, j);
+                Ints.sortRange(a, lo, j - 1);
+                Ints.sortRange(a, j + 1, hi);
+            }
+            public static method swap(int[] a, int i, int j) returns void {
+                int t = a[i];
+                a[i] = a[j];
+                a[j] = t;
+            }
+            public static method binarySearch(int[] a, int key) returns int {
+                mutable int lo = 0;
+                mutable int hi = a.length() - 1;
+                while (lo <= hi) {
+                    int mid = lo + (hi - lo) / 2;
+                    if (a[mid] == key) { return mid; }
+                    if (a[mid] < key) { lo = mid + 1; } else { hi = mid - 1; }
+                }
+                return -1;
+            }
+            public static method sum(int[] a) returns long {
+                mutable long total = 0;
+                for (mutable int i = 0; i < a.length(); i++) { total = total + a[i]; }
+                return total;
+            }
+            public static method min(int[] a) returns int {
+                mutable int best = a[0];
+                for (mutable int i = 1; i < a.length(); i++) {
+                    if (a[i] < best) { best = a[i]; }
+                }
+                return best;
+            }
+            public static method max(int[] a) returns int {
+                mutable int best = a[0];
+                for (mutable int i = 1; i < a.length(); i++) {
+                    if (a[i] > best) { best = a[i]; }
+                }
+                return best;
+            }
+            public static method fill(int[] a, int v) returns void {
+                for (mutable int i = 0; i < a.length(); i++) { a[i] = v; }
+            }
+            public static method reverse(int[] a) returns void {
+                mutable int i = 0;
+                mutable int j = a.length() - 1;
+                while (i < j) {
+                    Ints.swap(a, i, j);
+                    i = i + 1;
+                    j = j - 1;
+                }
+            }
+            public static method indexOf(int[] a, int v) returns int {
+                for (mutable int i = 0; i < a.length(); i++) {
+                    if (a[i] == v) { return i; }
+                }
+                return -1;
+            }
+            // Is it already in order? Cheap, and the one thing worth asserting before a binary
+            // search -- which is silently wrong on an unsorted array rather than slow.
+            public static method isSorted(int[] a) returns boolean {
+                for (mutable int i = 1; i < a.length(); i++) {
+                    if (a[i] < a[i - 1]) { return false; }
+                }
+                return true;
+            }
+        }
+    }

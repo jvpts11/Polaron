@@ -1,0 +1,64 @@
+import System.IO.Console;
+import System.Arrays.Arrays;
+import System.Arrays.Ints;
+import System.Text.StringBuilder;
+program ArraysSort;
+
+// SORTING A RAW ARRAY (System.Arrays). Until now the only sort in the library was
+// `ArrayList.sortedBy`, so a program holding an `int[]` -- the type the language gives you for a
+// fixed run of numbers -- had to build an ArrayList to put them in order and take them back out.
+//
+// One generic method per operation with a comparator, because Polaron has no overloading and
+// `sort(int[])` and `sort(String[])` cannot share a name; the `Ints` helpers beside them for the
+// order nobody disagrees about.
+//
+// Prints:
+//   ints=0123456789 sorted=1 found=4 missing=-1
+//   sum=45 min=0 max=9
+//   words=apple/banana/cherry/date
+//   desc=9876543210
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Ten numbers, deliberately out of order and including both ends.
+                mutable int[] xs = new int[10]();
+                xs[0] = 5; xs[1] = 3; xs[2] = 9; xs[3] = 0; xs[4] = 7;
+                xs[5] = 1; xs[6] = 8; xs[7] = 2; xs[8] = 6; xs[9] = 4;
+                Ints.sort(xs);
+                mutable StringBuilder line = new StringBuilder() on heap;
+                for (mutable int i = 0; i < xs.length(); i++) {
+                    line.append($"{xs[i]}");
+                }
+                mutable int ordered = 0;
+                if (Ints.isSorted(xs)) { ordered = 1; }
+                System.IO.Console.printf("ints=%s sorted=%d found=%d missing=%d\n",
+                                         line.toString(), ordered,
+                                         Ints.binarySearch(xs, 4), Ints.binarySearch(xs, 42));
+                System.IO.Console.printf("sum=%d min=%d max=%d\n",
+                                         cast<int>(Ints.sum(xs)), Ints.min(xs), Ints.max(xs));
+
+                // The generic form, over Strings, with the ordering stated at the call site.
+                mutable String[] words = new String[4]();
+                words[0] = "cherry"; words[1] = "apple"; words[2] = "date"; words[3] = "banana";
+                Arrays.sort<String>(words, lambda(String a, String b) returns int { return a.compareTo(b); });
+                mutable StringBuilder joined = new StringBuilder() on heap;
+                for (mutable int i = 0; i < words.length(); i++) {
+                    if (i > 0) { joined.append("/"); }
+                    joined.append(words[i]);
+                }
+                System.IO.Console.printf("words=%s\n", joined.toString());
+
+                // ...and the same numbers the other way round, which is what a comparator is for.
+                Arrays.sort<int>(xs, lambda(int a, int b) returns int { return b - a; });
+                mutable StringBuilder desc = new StringBuilder() on heap;
+                for (mutable int i = 0; i < xs.length(); i++) {
+                    desc.append($"{xs[i]}");
+                }
+                System.IO.Console.printf("desc=%s\n", desc.toString());
+                delete xs;
+                return;
+            }
+        }
+    }
+}
