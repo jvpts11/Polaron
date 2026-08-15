@@ -282,6 +282,78 @@ llvm::Value* CodeGenerator::Impl::variantDecode(llvm::Value* payload, llvm::Type
     return builder.CreateZExtOrTrunc(payload, ty, "var.dec.i");
 }
 
+// A METHOD CALLED ON THE VALUE FORM OF Option/Result.
+//
+// `Option<T>` written plain is a { tag, payload } VALUE, not an object -- and a method call assumed
+// an object. `opt.isSome()` loaded a pointer out of the tag slot and dispatched through it: address
+// 1, an access violation. It hit the most ordinary use of the library there is,
+// `list.find(...).isSome()`, and every one of isSome/isNone/valueOr/errorOr/isOk/isErr/present with
+// it -- all of them added, and none of them ever exercised outside `match`, which reads the tag
+// itself and so never noticed.
+//
+// The tag names the case exactly, so the object can be built rather than found: an alloca of the
+// case class, its vtable stored, and the payload decoded into whichever field that case carries
+// (`value` for Some/Ok, `error` for Err; None carries none). Both branches join on a phi, and the
+// caller's existing virtual dispatch then runs against a real object -- so an inherited method like
+// `Option.isNone`, whose body calls `this.isSome()`, dispatches correctly too.
+llvm::Value* CodeGenerator::Impl::valueSumReceiver(const ast::Expr& subject,
+                                                   const std::string& sumKey) {
+    const bool isResult = sumKey.rfind("Result$", 0) == 0;
+    const bool isOption = sumKey.rfind("Option$", 0) == 0;
+    if (!isResult && !isOption) {
+        return nullptr;
+    }
+    // `Option$T` -> `Some$T` / `None$T`; `Result$T$E` -> `Ok$T$E` / `Err$T$E`.
+    const std::string tail = sumKey.substr(sumKey.find('$'));
+    const std::string okKey = (isResult ? "Ok" : "Some") + tail;
+    const std::string elseKey = (isResult ? "Err" : "None") + tail;
+    auto okIt = classes.find(okKey);
+    auto elseIt = classes.find(elseKey);
+    if (okIt == classes.end() || elseIt == classes.end()) {
+        return nullptr;   // never instantiated: leave the caller's existing path to report it
+    }
+    llvm::Value* subj = emitExpr(subject);
+    if (subj == nullptr || !subj->getType()->isStructTy()) {
+        return nullptr;
+    }
+    llvm::Value* tag = builder.CreateExtractValue(subj, {0u}, "vs.tag");
+    llvm::Value* payload = builder.CreateExtractValue(subj, {1u}, "vs.pl");
+
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* okBB = llvm::BasicBlock::Create(context, "vs.ok", fn);
+    llvm::BasicBlock* elseBB = llvm::BasicBlock::Create(context, "vs.else", fn);
+    llvm::BasicBlock* contBB = llvm::BasicBlock::Create(context, "vs.cont", fn);
+    builder.CreateCondBr(builder.CreateICmpEQ(tag, builder.getInt32(0), "vs.is0"), okBB, elseBB);
+
+    // One case object, filled in from the payload. `field` is the name that case carries, if any.
+    auto build = [&](llvm::BasicBlock* bb, const ClassLayout& cl, const std::string& key,
+                     const char* field) {
+        builder.SetInsertPoint(bb);
+        llvm::Value* obj = createEntryAlloca(key + ".vs", cl.type);
+        if (cl.hasVtable && cl.vtable != nullptr) {
+            builder.CreateStore(cl.vtable, builder.CreateStructGEP(cl.type, obj, 0, "vs.vt"));
+        }
+        auto fi = cl.fieldIndex.find(field);
+        auto ft = cl.fieldType.find(field);
+        if (fi != cl.fieldIndex.end() && ft != cl.fieldType.end()) {
+            builder.CreateStore(variantDecode(payload, llvmType(ft->second)),
+                                builder.CreateStructGEP(cl.type, obj, fi->second, "vs.f"));
+        }
+        builder.CreateBr(contBB);
+        return obj;
+    };
+    llvm::Value* okObj = build(okBB, okIt->second, okKey, "value");
+    llvm::BasicBlock* okEnd = builder.GetInsertBlock();
+    llvm::Value* elseObj = build(elseBB, elseIt->second, elseKey, isResult ? "error" : "value");
+    llvm::BasicBlock* elseEnd = builder.GetInsertBlock();
+
+    builder.SetInsertPoint(contBB);
+    llvm::PHINode* recv = builder.CreatePHI(builder.getPtrTy(), 2, "vs.recv");
+    recv->addIncoming(okObj, okEnd);
+    recv->addIncoming(elseObj, elseEnd);
+    return recv;
+}
+
 std::string CodeGenerator::Impl::repType(const std::string& t) {
     auto it = newtypes_.find(t);
     return it == newtypes_.end() ? t : repType(it->second);

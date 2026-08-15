@@ -718,6 +718,15 @@ set_tests_properties(sema_rejects_no_entry PROPERTIES
 # every use resolved to the last one, leaving the first as storage never written and never read. The
 # method case has been rejected for a long time; the field case was simply missing, and agents-exe
 # carried a dead duplicate `int[] best` for weeks with nothing noticing.
+# Option/Result have two representations and only the `*` tells them apart. Mixing them compiled: a
+# pointer went into a variant slot and `match` read the tag out of it -- measured, `match` answered 0
+# for a Some(7). No error, no crash, wrong answer. The message has to name both spellings, because
+# both are legal Polaron and the target is what chooses.
+add_test(NAME sema_rejects_boxed_sum_into_value
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/option_boxed_into_value_bad.pol")
+set_tests_properties(sema_rejects_boxed_sum_into_value PROPERTIES
+    PASS_REGULAR_EXPRESSION "'Option' plain is the value form: build it with 'Some\\(...\\)' and no 'new'")
+
 add_test(NAME sema_rejects_duplicate_field
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/duplicate_field_bad.pol")
 set_tests_properties(sema_rejects_duplicate_field PROPERTIES
@@ -1020,6 +1029,40 @@ add_test(NAME codegen_env_vars_runs COMMAND "${CMAKE_COMMAND}"
     "-DCLANG=${POLARON_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/env_vars.pol"
     "-DCONTAINS=v=hello42 missing_len=0"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# ...and the distinction the raw builtin cannot make: a variable that is NOT SET reads "" through
+# Env.get, exactly like one set to "". A program could not tell a missing configuration from a blank
+# one, and nothing failed -- it ran with a default nobody chose. The two lines checked here are the
+# same two variables seen both ways: raw='' for both, present=1 for one and 0 for the other.
+add_test(NAME codegen_system_environment_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_environment.pol"
+    "-DCONTAINS=set: raw='cinco' present=1 value='cinco'"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+add_test(NAME codegen_system_environment_absent COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_environment.pol"
+    "-DCONTAINS=absent: raw='' present=0 fallback='default'"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+# The machine answering for itself, and `require` refusing to invent a value.
+add_test(NAME codegen_system_environment_machine COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_environment.pol"
+    "-DCONTAINS=machine: os known=1 threads>0=1 page=4096 memory>0=1 pid>0=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+add_test(NAME codegen_system_environment_require COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/system_environment.pol"
+    "-DCONTAINS=require threw: environment variable is not set: POLARON_NO_SUCH_VAR_ZZZ"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -4802,6 +4845,33 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_search.pol"
             "-DCONTAINS=find=30 min=10 max=50 none=-1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ...and CALLING A METHOD on what those return, which crashed. The value form is a
+        # { tag, payload } pair, so `find(...).isSome()` loaded a pointer out of the tag and
+        # dispatched through address 1. Every method on Option/Result was affected and none was ever
+        # exercised outside `match`, which reads the tag itself. Three lines, so a failure says which
+        # of the three shapes broke: a present value, an absent one, and Result's two sides.
+        add_test(NAME codegen_option_value_methods_hit COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/option_value_methods.pol"
+            "-DCONTAINS=hit: isSome=1 isNone=0 valueOr=4 present=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_option_value_methods_miss COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/option_value_methods.pol"
+            "-DCONTAINS=miss: isSome=0 isNone=1 valueOr=-7 present=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_option_value_methods_result COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/option_value_methods.pol"
+            "-DCONTAINS=result: okIs=1 okValue=3 errIs=1 errValue=-2"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

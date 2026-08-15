@@ -4,6 +4,7 @@
 
 #include "semantic/asmcheck.h"
 #include "semantic/comptime.h"
+#include "semantic/sys_intrinsics.h"
 
 #include <algorithm>
 #include <functional>
@@ -1550,6 +1551,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             return "int";
         }
+        // The rest of what the operating system knows -- one table, shared with the codegen so the
+        // arity checked here and the call built there cannot drift. See semantic/sys_intrinsics.h.
+        if (const sysint::SysIntrinsic* si = sysint::findSysIntrinsic(name); si != nullptr) {
+            const size_t want = si->takesPath ? 1u : 0u;
+            if (call->args.size() != want) {
+                error(std::string(si->name).substr(std::string(si->name).rfind('.') + 1) +
+                          (want == 1 ? " takes one String" : " takes nothing"),
+                      call->loc);
+            }
+            return sysint::sysIntrinsicType(*si);
+        }
         // Console I/O (spec 4): System.IO.Console.{printf,println,print,readInt}. The pre-F10
         // names (System.IO.printf/println/readInt, bare Console.*) are kept as aliases until the
         // samples are migrated. Requires `import System.IO.Console;`.
@@ -2790,6 +2802,18 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // One edge of the call graph the interrupt check walks, recorded where the analyzer has
             // just done the hard part: `objType` is the RESOLVED receiver type, so a field, a
             // local, a parameter and a static receiver all arrive here already answered.
+            // A METHOD ON THE VALUE FORM OF Option/Result NEEDS BOTH CASES. The value is a
+            // { tag, payload } pair, so the codegen builds the case object the tag names before it
+            // can dispatch (see valueSumReceiver) -- and nothing else in the program mentions
+            // `Some$T` or `None$T` as a class, so reachability dropped them and their vtables with
+            // them. Recording the edge here is what keeps them: the receiver type is already
+            // resolved at this point, which is the hard part.
+            if (isValueSumForm(objType)) {
+                const std::string tail = objType.substr(objType.find('$'));
+                const bool isResult = objType.rfind("Result$", 0) == 0;
+                noteClassRef((isResult ? "Ok" : "Some") + tail);
+                noteClassRef((isResult ? "Err" : "None") + tail);
+            }
             if (MethodFacts* mf = facts()) {
                 mf->callees.insert(objType + "." + mem->member);
                 if (const auto* sid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());

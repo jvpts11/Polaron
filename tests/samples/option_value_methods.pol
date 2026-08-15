@@ -1,0 +1,57 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Errors.Option;
+import System.Errors.Result;
+program OptionValueMethods;
+
+// CALLING A METHOD ON THE VALUE FORM OF Option/Result.
+//
+// `Option<T>` written plain is a { tag, payload } VALUE, not an object -- and a method call assumed
+// an object. `opt.isSome()` loaded a POINTER out of the tag slot and dispatched through it: address
+// 1, an access violation. It hit the most ordinary use of the library there is, and every one of
+// isSome / isNone / valueOr / errorOr / isOk / isErr / present with it.
+//
+// All of those were added and none of them was ever exercised outside `match` -- which reads the tag
+// itself and so never touched the broken path. A whole row of methods, declared, documented, and
+// dead. That is what a test written from the type's own surface finds and a test written from the
+// samples does not.
+//
+// `isNone` is the sharp one: it is INHERITED from the abstract base and its body calls
+// `this.isSome()`, a virtual self-call. So the receiver the compiler builds from the tag cannot be a
+// convenient half-object -- it needs its vtable, or the inherited method dispatches into nothing.
+//
+// `present` is the other one: it takes a lambda, so the built receiver has to survive being passed
+// arguments as well as being dispatched on.
+//
+// Prints:
+//   hit: isSome=1 isNone=0 valueOr=4 present=1
+//   miss: isSome=0 isNone=1 valueOr=-7 present=0
+//   result: okIs=1 okValue=3 errIs=1 errValue=-2
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> xs = new ArrayList<int>() on heap;
+                xs.add(4);
+
+                Option<int> hit = xs.find(lambda(int v) returns boolean { return v == 4; });
+                System.IO.Console.printf("hit: isSome=%d isNone=%d valueOr=%d present=%d\n",
+                    hit.isSome() ? 1 : 0, hit.isNone() ? 1 : 0, hit.valueOr(0 - 7),
+                    hit.present(lambda(int v) returns boolean { return v > 0; }) ? 1 : 0);
+
+                Option<int> miss = xs.find(lambda(int v) returns boolean { return v == 9; });
+                System.IO.Console.printf("miss: isSome=%d isNone=%d valueOr=%d present=%d\n",
+                    miss.isSome() ? 1 : 0, miss.isNone() ? 1 : 0, miss.valueOr(0 - 7),
+                    miss.present(lambda(int v) returns boolean { return v > 0; }) ? 1 : 0);
+
+                Result<int, int> ok = Ok(3);
+                Result<int, int> bad = Err(0 - 2);
+                System.IO.Console.printf("result: okIs=%d okValue=%d errIs=%d errValue=%d\n",
+                    ok.isOk() ? 1 : 0, ok.valueOr(0), bad.isErr() ? 1 : 0, bad.errorOr(0));
+
+                delete xs;
+                return;
+            }
+        }
+    }
+}

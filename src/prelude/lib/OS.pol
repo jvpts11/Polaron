@@ -37,6 +37,198 @@
             public static method threads() returns int {
                 return System.OS.__machineThreads();
             }
+            // Physical memory in bytes, or -1 when the system will not say. A program sizing a cache
+            // against it must be able to tell "the machine has none" from "I could not find out" --
+            // returning 0 for both is how a cache ends up sized at zero on the one platform that
+            // refuses to answer.
+            public static method memory() returns long {
+                return System.OS.__machineMemory();
+            }
+            // The granularity every mapping and every guard page is rounded to. A program that
+            // allocates by page has to ask, because it is 4 KiB on x86 and 16 KiB on Apple silicon,
+            // and a constant compiled in at somebody's desk is wrong on half the machines.
+            public static method pageSize() returns long {
+                return System.OS.__pageSize();
+            }
+            // "windows", "linux", "macos", "freebsd" -- the family, not the version. A program
+            // branching on this wants to know which shape the world has; a version string invites
+            // parsing that the next release breaks.
+            public static method os() returns String {
+                return System.OS.__osName();
+            }
+            public static method isWindows() returns boolean { return Machine.os().equals("windows"); }
+            public static method isLinux() returns boolean { return Machine.os().equals("linux"); }
+            public static method isMacOS() returns boolean { return Machine.os().equals("macos"); }
+            // Empty when the host will not say, which is the honest answer for a container with no
+            // name rather than a guess.
+            public static method hostname() returns String {
+                return System.OS.__hostname();
+            }
+            public static method user() returns String {
+                return System.OS.__username();
+            }
+            // This program's own process id -- what it puts in a lock file, or hands to a supervisor.
+            public static method processId() returns long {
+                return System.OS.__pid();
+            }
+        }
+
+        // THE ENVIRONMENT, AND THE DIFFERENCE BETWEEN ABSENT AND EMPTY.
+        //
+        // The `Env` builtin answers "" for a variable that is not set AND for one set to "", so a
+        // program could not tell a missing configuration from a deliberately blank one. Nothing
+        // fails: it runs with a default it was never told to use, and the run looks healthy. It is
+        // the same shape as reading a file that is not there and getting "" back -- the defect that
+        // makes every printed number look right while the answer is wrong.
+        //
+        // So this class does not have a bare `get`. It has three, and each says what it does about
+        // absence: `lookup` hands back an Option, `get` takes the fallback as an argument, and
+        // `require` throws. A caller has to have decided.
+        public class Environment {
+            // Absent is None; set-to-empty is Some(""). The distinction the builtin cannot make.
+            public static method lookup(String name) returns Option<String> {
+                if (System.OS.__envHas(name) == 0) {
+                    return None();
+                }
+                return Some(Env.get(name));
+            }
+            // The value, or this one. The common case, with the default written where a reader can
+            // see it rather than buried in whatever "" flowed into.
+            public static method get(String name, String fallback) returns String {
+                if (System.OS.__envHas(name) == 0) {
+                    return fallback;
+                }
+                return Env.get(name);
+            }
+            // For a variable whose absence is a misconfiguration -- which is most of them. Failing
+            // here, naming the variable, beats failing four screens later with a default nobody
+            // chose.
+            public static method require(String name) throws(EnvironmentException) returns String {
+                if (System.OS.__envHas(name) == 0) {
+                    throw new EnvironmentException(name) on heap;
+                }
+                return Env.get(name);
+            }
+            public static method has(String name) returns boolean {
+                return System.OS.__envHas(name) != 0;
+            }
+            // Answers whether the variable IS SET AFTERWARDS, which is not the same as whether the
+            // call was accepted -- and on one platform they differ. Windows has no way to hold an
+            // empty environment variable that `getenv` can see: the C runtime reads `set(name, "")`
+            // as "remove it", and reports success for having done so. POSIX sets it to empty and
+            // keeps it. Rather than paper over the difference or let it pass silently, the answer is
+            // read back from the environment: on Windows `set(name, "")` returns false, because it
+            // did not do what it was asked.
+            public static method set(String name, String value) returns boolean {
+                if (!Env.set(name, value)) {
+                    return false;
+                }
+                return Environment.has(name);
+            }
+            // Remove it, so `has` answers false afterwards -- not set it to "", which is a different
+            // state and the whole reason this class exists.
+            public static method clear(String name) returns boolean {
+                return System.OS.__envUnset(name) != 0;
+            }
+            // Everything, as a map. What a program prints when it wants to show what it was actually
+            // given rather than what it believes it was given.
+            public static method all() returns HashMap<String, String> {
+                mutable HashMap<String, String> map = new HashMap<String, String>() on heap;
+                mutable ArrayList<String> lines = Strings.split(System.OS.__envAll(), "\n");
+                for (mutable int i = 0; i < lines.size(); i++) {
+                    String line = lines.get(i);
+                    int eq = line.indexOf("=");
+                    if (eq > 0) {
+                        map.put(line.substring(0, eq), line.substring(eq + 1, line.length()));
+                    }
+                }
+                delete lines;
+                return map;
+            }
+            // `;` on Windows, `:` everywhere else. A program joining a search path by hand gets this
+            // wrong on the other platform, and the failure is a path that silently finds nothing.
+            public static method pathSeparator() returns String {
+                return Machine.isWindows() ? ";" : ":";
+            }
+            // PATH, already split. Empty pieces are dropped: a trailing separator is common and an
+            // empty entry means "the current directory" on Windows, which is a security hazard
+            // nobody asked for.
+            public static method searchPath() returns ArrayList<String> {
+                mutable ArrayList<String> parts =
+                    Strings.split(Environment.get("PATH", ""), Environment.pathSeparator());
+                mutable ArrayList<String> kept = new ArrayList<String>() on heap;
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    if (parts.get(i).length() > 0) { kept.add(parts.get(i)); }
+                }
+                delete parts;
+                return kept;
+            }
+        }
+
+        // Thrown by `Environment.require`, naming the variable. A misconfiguration reported where it
+        // is discovered, rather than four screens later as a default nobody chose.
+        public class EnvironmentException extends Exception {
+            private mutable String name;
+            public constructor EnvironmentException(String name) { this.name = name; }
+            public override method message() returns String {
+                return "environment variable is not set: ".concat(this.name);
+            }
+        }
+
+        // WHERE THE PROGRAM IS RUNNING, AND THE PLACES IT MAY WRITE.
+        //
+        // A program that cannot ask where it is has to be told, which means it grows a configuration
+        // file whose first entry is a path somebody typed at their own desk. These are questions the
+        // operating system already knows the answer to.
+        public class Workspace {
+            // The working directory -- what every relative path in the program is relative to.
+            public static method current() returns String {
+                return System.OS.__cwd();
+            }
+            // Change it, and say whether it took. False rather than a trap: a directory that has
+            // been removed underneath the program is an ordinary thing to discover.
+            public static method moveTo(String path) returns boolean {
+                return System.OS.__chdir(path) != 0;
+            }
+            // The directory for scratch files. Every platform names it differently and a program
+            // that hardcodes one is broken on the other: /tmp does not exist on Windows, and TEMP is
+            // not set for a POSIX daemon.
+            public static method tempDirectory() returns String {
+                return System.OS.__tempDir();
+            }
+            // The user's home. Empty when the host will not say.
+            public static method homeDirectory() returns String {
+                return System.OS.__homeDir();
+            }
+            // This program's own file on disk -- for a tool that has to find the things installed
+            // beside it, which is every tool with a data directory.
+            public static method executable() returns String {
+                return Env.executablePath();
+            }
+            public static method executableDirectory() returns String {
+                return Paths.dirname(Env.executablePath());
+            }
+        }
+
+        // HOW MUCH ROOM IS LEFT, on the volume holding a given path. A program about to write a
+        // large file can ask first, instead of discovering the answer half way through with the
+        // output already unusable.
+        public class Disk {
+            // Bytes this program may actually use -- not the volume's total free space, which on a
+            // POSIX filesystem includes the reserve only root may touch. -1 when it cannot be
+            // determined.
+            public static method freeSpace(String path) returns long {
+                return System.OS.__diskFree(path);
+            }
+            public static method totalSpace(String path) returns long {
+                return System.OS.__diskTotal(path);
+            }
+            public static method usedSpace(String path) returns long {
+                long total = Disk.totalSpace(path);
+                long free = Disk.freeSpace(path);
+                if (total < 0 || free < 0) { return 0 - 1; }
+                return total - free;
+            }
         }
 
         // A PROGRAM CAN FAIL ON PURPOSE.
