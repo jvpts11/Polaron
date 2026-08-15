@@ -1,0 +1,63 @@
+import System.IO.Console;
+import System.Text.StringBuilder;
+program DeepCallChain;
+
+// A CHAIN OF METHOD CALLS COMPILES IN LINEAR TIME, and this test is a stopwatch rather than a
+// comparison: it asserts almost nothing about the output and everything about how long it takes to
+// produce it. The CTest entry carries a timeout, and a regression shows up as that timeout rather
+// than as a wrong answer.
+//
+// WHAT WENT WRONG. The codegen's `typeName` answers "what type is this expression". For a call
+// `a.concat(b)` it needs two different things about the receiver -- the callee's type, and
+// separately whether the receiver is a `mat4` -- and each of those recursed into `a`. Two full
+// derivations per level is 2^depth: measured, eight links compiled in 481 ms, fourteen took 24
+// SECONDS, and eighteen never finished.
+//
+// It hid well. The ANALYSER is linear over the same expression, so `--check` was flat and pointed
+// away from the front end. The emitted IR is linear too, so nothing downstream showed it. And the
+// expression emitters are entered only a few dozen times -- the doubling was in a pure QUERY that
+// produces no code, which is why counting emissions found nothing.
+//
+// WHY IT MATTERS BEYOND THIS FILE. Any chained call is this shape, and a fluent builder is the
+// commonest one anybody writes: `b.append(x).append(y).append(z)...`. Past about fifteen links it
+// stopped compiling at all. The certificate that started this is written as a chain of `concat`,
+// which is simply how a PEM block is spelled in source.
+//
+// The same defect was fixed once before for binary expressions -- and fixed AT THAT NODE TYPE, so it
+// came back through a different one. The fix now memoises the answer for the duration of one
+// question, which is a property of the mechanism rather than of any node.
+//
+// Prints:
+//   chain: 24 links, length=24
+//   fluent: length=31
+public bundle Main {
+    public namespace App {
+        public class Main {
+            // Twenty-four links. Eighteen was already past the point of no return before the fix.
+            private static method chained() returns String {
+                return "".concat("a").concat("b").concat("c").concat("d").concat("e").concat("f")
+                         .concat("g").concat("h").concat("i").concat("j").concat("k").concat("l")
+                         .concat("m").concat("n").concat("o").concat("p").concat("q").concat("r")
+                         .concat("s").concat("t").concat("u").concat("v").concat("w").concat("x");
+            }
+
+            // The shape people actually write: a fluent builder. Same doubling, same cure.
+            private static method built() returns String {
+                mutable StringBuilder b = new StringBuilder() on heap;
+                b.append("1").append("2").append("3").append("4").append("5")
+                 .append("6").append("7").append("8").append("9").append("10")
+                 .append("11").append("12").append("13").append("14").append("15")
+                 .append("16").append("17").append("18").append("19").append("20");
+                return b.toString();
+            }
+
+            public static method main(string[] args) returns void {
+                String c = Main.chained();
+                System.IO.Console.printf("chain: 24 links, length=%d\n", c.length());
+                String f = Main.built();
+                System.IO.Console.printf("fluent: length=%d\n", f.length());
+                return;
+            }
+        }
+    }
+}
