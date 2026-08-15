@@ -3289,6 +3289,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # EVERY COLLECTION OVER EVERY ELEMENT TYPE. Written as a probe, kept as a test: it found three
+        # holes with nothing in common on the surface and everything underneath -- a collection asks
+        # `equalsKey` (a map also `hash`) of its element type, and boolean, char and double could not
+        # answer, so `ArrayList<boolean>`, `HashMap<char,int>` and `ArrayList<double>` did not compile.
+        add_test(NAME codegen_collection_matrix_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_matrix.pol"
+            "-DEXPECTED=counts=21 chars=2 doubles=1 bools=1 front=first"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

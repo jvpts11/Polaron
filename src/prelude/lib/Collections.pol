@@ -703,6 +703,17 @@
                 else { this.tail.next = node; this.tail = node; }
                 this.count = this.count + 1;
             }
+            // At the FRONT, in constant time -- which is the one thing a linked list can do that an
+            // ArrayList cannot, and it was the one thing missing: `add` appends, `removeFirst` takes
+            // from the head, and there was no way to put one there. A queue built on this could only
+            // ever be a queue.
+            public method addFirst(T item) returns void {
+                LinkedNode<T>* node = new LinkedNode<T>(item) in region this.nodes;
+                node.next = this.head;
+                this.head = node;
+                if (this.tail == null) { this.tail = node; }
+                this.count = this.count + 1;
+            }
             public method get(int i) returns T {
                 mutable nullable LinkedNode<T>* cur = this.head;
                 for (mutable int j = 0; j < i; j++) { cur = cur.next; }

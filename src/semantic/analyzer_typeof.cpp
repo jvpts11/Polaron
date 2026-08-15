@@ -2436,7 +2436,11 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // The error surfaced inside the standard library, at `this.data[i].equalsKey(item)`, on
             // a line the author of the list never saw. Usefulness as a key is the caller's judgement;
             // whether the list compiles is not.
-            if (objType == "boolean") {
+            // `char` for the same reason and with a better claim than either: counting how often
+            // each character appears is the first program anybody writes over text, and
+            // `HashMap<char, int>` did not compile -- `char` had no `hash`, reported from inside the
+            // library at `key.hash() & mask`. It is an integer-shaped value; it hashes as one.
+            if (objType == "char" || objType == "boolean") {
                 for (const auto& arg : call->args) {
                     typeOf(*arg);
                 }
@@ -2451,6 +2455,29 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 if (mem->member == "compareTo" && call->args.size() == 1) {
                     return "int";   // false < true, the only order there is
+                }
+            }
+            // FLOATING-POINT TOO, which is the last of this family: `ArrayList<double>` -- a list of
+            // measurements, which is most of what a numeric program holds -- did not compile,
+            // reported from inside the standard library at `this.data[i].equalsKey(item)`. The
+            // collections ask this of their element type and there is no reason a double cannot
+            // answer: equality is `==`, order is `<`, and the hash is the bit pattern.
+            //
+            // A double is a poor HASH key (0.1 + 0.2 is not 0.3, and nobody should look one up in a
+            // map), and that is the caller's judgement to make. Refusing the LIST because the MAP
+            // would be unwise is the compiler deciding something it was not asked to decide.
+            if (isFloatType(objType)) {
+                for (const auto& arg : call->args) {
+                    typeOf(*arg);
+                }
+                if (mem->member == "hash" && call->args.empty()) {
+                    return "long";
+                }
+                if (mem->member == "equalsKey" && call->args.size() == 1) {
+                    return "boolean";
+                }
+                if (mem->member == "compareTo" && call->args.size() == 1) {
+                    return "int";
                 }
             }
             // Integer types satisfy Hashable<T>/Comparable<T> via builtins, so they can be used as
