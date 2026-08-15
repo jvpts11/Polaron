@@ -1647,8 +1647,13 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         }
         // Reflection tokens (Method/Field/Annotation) satisfy Hashable by identity, so they can
         // live in a collection: equalsKey is pointer equality and hash is the pointer value.
+        // `Type` is in the list for the same reason the other three are: a program that WIRES
+        // objects together holds types in a collection -- a registry is `HashMap<String, Type>` or
+        // `ArrayList<Type>` -- and without this, putting one in an ArrayList failed inside the
+        // standard library, at `this.data[i].equalsKey(item)`, with `Type has no method 'equalsKey'`.
+        // A type token is a global constant, so identity IS equality for it.
         if (const std::string ot = typeName(*mem->object);
-            (ot == "Method" || ot == "Field" || ot == "Annotation") &&
+            (ot == "Method" || ot == "Field" || ot == "Annotation" || ot == "Type") &&
             (mem->member == "equalsKey" || mem->member == "hash")) {
             llvm::Value* a = emitExpr(*mem->object);
             if (a == nullptr) {

@@ -3161,6 +3161,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A PROGRAM ASSEMBLED FROM PARTS THAT DO NOT NAME EACH OTHER'S CONSTRUCTORS (System.Inject):
+        # the container reads a type's fields, sees what each is declared as, and builds what it must.
+        # Registered types are shared, so `Report` and `Store` get the SAME Clock -- which is what the
+        # last line checks, because a container that quietly builds two is a different program.
+        add_test(NAME codegen_inject_services_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/inject_services.pol"
+            "-DEXPECTED=wired=1 unwired=0 stamp=100 stored=1 at=100 shared=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
