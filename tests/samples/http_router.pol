@@ -1,0 +1,70 @@
+import System.IO.Console;
+import System.Net.ServerRequest;
+import System.Net.ServerResponse;
+import System.Net.Router;
+import System.Json.Json;
+program HttpRouter;
+
+// THE SERVER SIDE OF HTTP (System.Net), which was the half that was missing: `HttpRequest` builds a
+// request and `HttpResponse` reads one -- both the CLIENT's view -- and a server had only
+// `ServerSocket.accept()`, which hands back a socket and leaves every byte after that to the program.
+//
+// No socket is opened here, and that is the point: the parsing, the routing and the writing are
+// separate from the I/O, so they can be tested by handing them text. A server that can only be tested
+// by being run is a server nobody tests.
+//
+// Prints:
+//   parsed: verb=GET path=/users/42 q=1 host=example.com
+//   routed: 200 {"id":42,"full":"1"}
+//   missing: 404 not found
+//   wrong verb: 405 method not allowed
+//   raw: HTTP/1.1 201 Created | len=7
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A request as it arrives on the wire, with `\r\n` and a body after a blank line.
+                String wire = "GET /users/42?full=1 HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n";
+                mutable ServerRequest req = ServerRequest.parse(wire);
+                System.IO.Console.printf("parsed: verb=%s path=%s q=%s host=%s\n",
+                                         req.verb(), req.path(), req.query("full"),
+                                         req.header("host"));   // asked in any case
+
+                mutable Router router = new Router() on heap;
+                router.get("/users/{id}", lambda(ServerRequest* r) returns ServerResponse* {
+                    mutable Json body = Json.object();
+                    body.put("id", Json.ofNum(cast<long>(r.param("id").toInt())));
+                    body.put("full", Json.ofStr(r.query("full")));
+                    return ServerResponse.json(body.toString());
+                });
+                router.post("/users", lambda(ServerRequest* r) returns ServerResponse* {
+                    return ServerResponse.of(201, "created");
+                });
+
+                mutable ServerResponse res = router.dispatch(req);
+                System.IO.Console.printf("routed: %d %s\n", res.status(), res.body());
+
+                // Nothing at that path at all.
+                mutable ServerRequest gone = ServerRequest.parse("GET /nowhere HTTP/1.1\r\n\r\n");
+                mutable ServerResponse r404 = router.dispatch(gone);
+                System.IO.Console.printf("missing: %d %s\n", r404.status(), r404.body());
+
+                // The path exists, the verb does not -- which is a different answer, and telling them
+                // apart is most of what makes an API debuggable.
+                mutable ServerRequest wrong = ServerRequest.parse("DELETE /users/42 HTTP/1.1\r\n\r\n");
+                mutable ServerResponse r405 = router.dispatch(wrong);
+                System.IO.Console.printf("wrong verb: %d %s\n", r405.status(), r405.body());
+
+                // And the bytes that go back out. Content-Length is written from the body, never
+                // trusted from a header: a wrong length is a hang at the other end.
+                mutable ServerRequest made = ServerRequest.parse("POST /users HTTP/1.1\r\n\r\n");
+                mutable ServerResponse created = router.dispatch(made);
+                String raw = created.toRaw();
+                int firstLine = raw.indexOf("\r\n");
+                System.IO.Console.printf("raw: %s | len=%d\n",
+                                         raw.substring(0, firstLine), created.body().length());
+                return;
+            }
+        }
+    }
+}
