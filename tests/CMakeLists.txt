@@ -1315,6 +1315,14 @@ add_test(NAME sema_warns_transformer_naming
 set_tests_properties(sema_warns_transformer_naming PROPERTIES
     PASS_REGULAR_EXPRESSION "transformer 'Describable' should be named `TDescriber`")
 
+# A TYPED ARENA REFUSES THE WRONG TYPE, and until now it refused it only when the region happened to
+# be a LOCAL: the accepts check was never reached for a region held in a field, which is the only
+# place a container can keep one. So `accepts({T})` on a pool's own arena meant nothing.
+add_test(NAME sema_rejects_wrong_type_in_region_field
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/arena_pool_wrong_type.pol")
+set_tests_properties(sema_rejects_wrong_type_in_region_field PROPERTIES
+    PASS_REGULAR_EXPRESSION "region 'this.pen' does not accept type 'Cat'")
+
 # `collective` -- the relation must be COMPLETE over the appliers, and the two ways it can fail.
 #
 # A gap: `D` applies the transformer and nothing leads from `A` to it, so the set is not one
@@ -3170,6 +3178,17 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/inject_services.pol"
             "-DEXPECTED=wired=1 unwired=0 stamp=100 stored=1 at=100 shared=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A CONTAINER WHOSE ELEMENTS LIVE IN ONE ARENA AND WHOSE ARENA KNOWS WHAT MAY GO IN IT
+        # (System.Arena). A thousand nodes: one allocation for the arena, a pointer bump each, one
+        # release for all of them. The refusal half is sema_rejects_wrong_type_in_region_field.
+        add_test(NAME codegen_arena_pool_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/arena_pool.pol"
+            "-DEXPECTED=made=1000 first=0 last=999 sum=499500 after=0"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

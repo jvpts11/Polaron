@@ -606,8 +606,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             for (const std::string& t : list) {
                 // A generic constraint type (Box<?>, ArrayList<int>) names a template, not a plain
                 // class; skip the plain-class existence check for those (spec 17.3, best-effort filter).
+                // A TYPE PARAMETER waits for the instantiation, like every other check that cannot
+                // mean anything on the template pass (see currentTypeParams_). `Arena<T>` whose
+                // region `accepts({T})` is the shape a region-allocated container has, and refusing
+                // it here refused the container itself.
                 if (t.find('<') == std::string::npos && t.find('.') == std::string::npos &&
-                    lookupClass(t) == nullptr) {
+                    currentTypeParams_.count(baseType(t)) == 0 && lookupClass(t) == nullptr) {
                     error("region accepts/rejects references unknown type '" + t + "'", ri->loc);
                 }
             }
@@ -622,7 +626,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             for (const auto& list : {r.accepts, r.rejects}) {
                 for (const std::string& t : list) {
                     if (t.find('<') == std::string::npos && t.find('.') == std::string::npos &&
-                        lookupClass(t) == nullptr) {
+                        currentTypeParams_.count(baseType(t)) == 0 && lookupClass(t) == nullptr) {
                         error("region range accepts/rejects references unknown type '" + t + "'", ri->loc);
                     }
                 }
@@ -1092,6 +1096,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                               "` inside '" + qualifier + "', or declare the region `static` to share "
                               "one arena under the class's name",
                           nw->loc);
+                } else {
+                    // AND WHAT IT ACCEPTS -- which was checked for a region in a LOCAL and for a
+                    // region in a field by nobody. This branch validated that the field exists and
+                    // is a region, and then allowed anything into it, so `accepts({Dog})` on a field
+                    // meant nothing at all: a pool declared to hold one type quietly took another.
+                    // A region that is typed only when it happens to be a local is not typed.
+                    checkRegionAccepts(nw->region, cn, nw->loc);
                 }
             } else {
                 const LocalVar* r = lookupLocal(nw->region);

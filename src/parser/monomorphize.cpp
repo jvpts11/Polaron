@@ -77,6 +77,16 @@ std::string resolveAliasName(const std::string& name) {
 // segment substituted so the inner T becomes concrete ("Handler$int") instead of missing the lookup.
 std::string substArg(const std::string& arg, const Subst& s) {
     std::string a = resolveAliasName(arg);
+    // A POINTER OR REFERENCE TYPE ARGUMENT: `ArrayList<T*>` substitutes to `ArrayList<Node*>`, not to
+    // `ArrayList<T*>` unchanged. The map is keyed by the bare parameter name, so the marker has to
+    // come off and go back on -- without this, a generic container of POINTERS kept its template's
+    // `T*` after instantiation, and the class was reported as taking a `T*` where a `Node*` was
+    // handed in: a container of pointers to its own element type was unwritable.
+    if (!a.empty() && (a.back() == '*' || a.back() == '&')) {
+        const char mark = a.back();
+        const std::string inner = substArg(a.substr(0, a.size() - 1), s);
+        return inner + mark;
+    }
     if (a.find('$') == std::string::npos) {
         auto it = s.find(a);
         return it != s.end() ? it->second : a;
@@ -461,8 +471,18 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         auto n = std::make_unique<ast::RegionInitExpr>();
         n->loc = x->loc;
         n->size = cloneExpr(x->size.get(), s);
-        n->accepts = x->accepts;
-        n->rejects = x->rejects;
+        // THE CONSTRAINED TYPES ARE TYPES, so they substitute like every other type in the clone.
+        // Copied verbatim, a generic `Arena<T>` whose region `accepts({T})` produced an instance
+        // still constrained to `T` -- a type that no longer exists -- and the region rejected the
+        // very element the container is for. The whole point of a region-allocated container is that
+        // the arena knows what may go in it; a constraint that did not follow the instantiation was
+        // the one part that could not work.
+        for (const std::string& a : x->accepts) {
+            n->accepts.push_back(substArg(a, s));
+        }
+        for (const std::string& r : x->rejects) {
+            n->rejects.push_back(substArg(r, s));
+        }
         // WHERE the region lives, which this dropped. `itself.at(addr, size)` is a region over FIXED
         // memory and `itself.atMultiple({...})` is several of them -- losing either turns a region
         // pinned to a hardware address into an ordinary heap allocation, inside any generic type.
@@ -472,8 +492,12 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         for (const auto& r : x->ranges) {
             ast::RegionInitExpr::Range nr;
             nr.address = cloneExpr(r.address.get(), s);
-            nr.accepts = r.accepts;
-            nr.rejects = r.rejects;
+            for (const std::string& a : r.accepts) {
+                nr.accepts.push_back(substArg(a, s));
+            }
+            for (const std::string& rj : r.rejects) {
+                nr.rejects.push_back(substArg(rj, s));
+            }
             n->ranges.push_back(std::move(nr));
         }
         return n;
@@ -1064,6 +1088,26 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
         c.invariants.push_back(cloneExpr(inv.get(), s));
     }
     c.annotations = cloneAnnotations(d.annotations, s);
+    // THE LIFECYCLE HOOKS, which this dropped -- the same failure as the invariants above, one
+    // paragraph later. A class that was rewritten for any reason (instantiated, or renamed because
+    // its name collides with the standard library's) lost its `onClassLoad`, `onFirstInstance`,
+    // `onLastInstanceDestroyed` and `onClassUnload` blocks outright: the program printed neither its
+    // setup nor its teardown line and reported nothing, because a hook that is not there is
+    // indistinguishable from a hook that was never written.
+    //
+    // Found by a standard-library class named `Pool` making a user's `Pool` get renamed -- which is
+    // to say, found by accident, on the day a name happened to collide. Every generic class with a
+    // hook had been losing it since generics existed.
+    auto cloneHook = [&s](const std::unique_ptr<ast::Block>& b) -> std::unique_ptr<ast::Block> {
+        if (!b) {
+            return nullptr;
+        }
+        return std::make_unique<ast::Block>(cloneBlock(*b, s));
+    };
+    c.onClassLoad = cloneHook(d.onClassLoad);
+    c.onFirstInstance = cloneHook(d.onFirstInstance);
+    c.onLastInstanceDestroyed = cloneHook(d.onLastInstanceDestroyed);
+    c.onClassUnload = cloneHook(d.onClassUnload);
     return c;
 }
 
@@ -3025,8 +3069,17 @@ bool monomorphize(ast::Program& program) {
             std::size_t start = 0;
             while (true) {
                 const std::size_t d = a.find('$', start);
-                const std::string seg =
+                std::string seg =
                     a.substr(start, d == std::string::npos ? std::string::npos : d - start);
+                // ...and through a POINTER or REFERENCE marker: a field `ArrayList<T*>` inside a
+                // generic names the segment `T*`, which is the template's own parameter just as
+                // `T` is. Without stripping it, the collector materialized `ArrayList$T*` -- an
+                // instance over a type that does not exist -- and its `add` was reported as taking
+                // a `T*` where the caller had a `Node*`. Any generic container OF POINTERS hit this,
+                // which is every arena-backed one.
+                if (!seg.empty() && (seg.back() == '*' || seg.back() == '&')) {
+                    seg.pop_back();
+                }
                 if (typeParamNames.count(seg) > 0) {
                     selfParam = true;
                 }

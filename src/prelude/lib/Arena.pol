@@ -1,0 +1,55 @@
+    public namespace Arena {
+        // A CONTAINER WHOSE ELEMENTS LIVE IN ONE ARENA, AND WHOSE ARENA KNOWS WHAT MAY GO IN IT.
+        //
+        // An arena is the oldest trick in systems programming: allocate a block, hand out pieces of
+        // it, free the whole block at once. What it costs everywhere else is TYPE SAFETY -- Zig's
+        // `ArenaAllocator` and Odin's `arena` hand back raw bytes, and it is on the caller to
+        // remember what shape they asked for. Polaron's regions carry the constraint in the type
+        // system: `accepts({T})` means the compiler refuses an allocation of anything else, at the
+        // point where it is written.
+        //
+        // So this is an arena that cannot be misused rather than one that merely goes fast:
+        //
+        //   * every element is bump-allocated in the region -- one pointer bump, no per-object malloc
+        //   * `release` frees all of them at once, with no walk and no per-object free
+        //   * the region ACCEPTS ONLY T, so `new Cat() in region` inside a `Pool<Dog>` is a compile
+        //     error rather than a corruption
+        //   * the elements stay live as a group: nothing here can free one and leave a dangling
+        //     pointer in the list, because the only way out is releasing all of it
+        //
+        // WHAT IT ASKS OF T: a constructor taking no arguments, because the pool builds the object
+        // and the caller fills it in. That is the same requirement `Type.instantiate()` has, and for
+        // the same reason -- the pool does not know what T's constructor wants.
+        public class Pool<T> {
+            private mutable region storage;
+            private mutable ArrayList<T*> items;
+
+            // `new Pool<Node>(64 kilobytes)` -- the arena's whole size, decided once. A pool is worth
+            // having exactly when the total is known and the individual allocations are not.
+            public constructor Pool(ByteSize size) {
+                this.storage = itself.allocate(size).accepts({T});
+                this.items = new ArrayList<T*>() on heap;
+            }
+
+            // One more element, bump-allocated in the arena and kept.
+            public method take() returns T* {
+                T* p = new T() in region this.storage;
+                this.items.add(p);
+                return p;
+            }
+
+            public method size() returns int { return this.items.size(); }
+            public method at(int i) returns T* { return this.items.get(i); }
+
+            // Everything at once. After this the pool holds nothing and every pointer it handed out
+            // is gone -- which is the arena's whole bargain, stated rather than implied.
+            public method releaseAll() returns void {
+                release region this.storage;
+                this.items.clear();
+            }
+
+            public destructor ~Pool() returns void {
+                release region this.storage;
+            }
+        }
+    }

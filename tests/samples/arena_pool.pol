@@ -1,0 +1,48 @@
+import System.IO.Console;
+import System.Arena.Pool;
+import System.Memory.Units.kilobytes;
+program ArenaPool;
+
+// A CONTAINER WHOSE ELEMENTS LIVE IN ONE ARENA, AND WHOSE ARENA KNOWS WHAT MAY GO IN IT
+// (System.Arena). Every other language's arena hands back raw bytes and trusts the caller to
+// remember what shape they asked for; here the region is declared to accept only the element type,
+// so putting anything else in it is a compile error rather than a corruption.
+//
+// A thousand nodes: one allocation for the arena, a pointer bump each, and one release for all of
+// them -- no per-object malloc and no walk to free.
+//
+// Prints: made=1000 first=0 last=999 sum=499500 after=0
+public bundle Main {
+    public namespace App {
+
+        public class Node {
+            public mutable int id;
+            public mutable int weight;
+            public constructor Node() {
+                this.id = 0;
+                this.weight = 0;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Pool<Node> pool = new Pool<Node>(64 kilobytes) on heap;
+                for (mutable int i = 0; i < 1000; i++) {
+                    Node* n = pool.take();
+                    n.id = i;
+                    n.weight = i;
+                }
+                mutable int sum = 0;
+                for (mutable int i = 0; i < pool.size(); i++) {
+                    sum = sum + pool.at(i).weight;
+                }
+                System.IO.Console.printf("made=%d first=%d last=%d sum=%d\n",
+                                         pool.size(), pool.at(0).id, pool.at(999).id, sum);
+                pool.releaseAll();
+                System.IO.Console.printf("after=%d\n", pool.size());
+                delete pool;
+                return;
+            }
+        }
+    }
+}
