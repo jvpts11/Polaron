@@ -4927,6 +4927,80 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # READING A REAL CERTIFICATE. The input is a genuine self-signed root exported from a Windows
+        # trust store -- nothing invented for the test, because a DER reader tested against a
+        # certificate written for the test is tested against its own assumptions.
+        #
+        # The signature line is the one that matters: a self-signed root is signed by its own key, so
+        # verifying it exercises DER navigation, the exact bytes of the signed body (one byte out and
+        # the hash differs), SHA-256, the modulus and exponent, the modular exponentiation and the
+        # PKCS#1 unpadding — all at once, with no way to be right by accident.
+        add_test(NAME codegen_certificate_parse COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/certificate_parse.pol"
+            "-DCONTAINS=read: wellFormed=1 selfIssued=1 isCA=1 sigAlg=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # The dates against epochs computed outside the program: a calendar conversion off by a day or
+        # by a leap year shows up here as a number, not as a certificate that expires on the wrong
+        # afternoon. The `notBefore` is a UTCTime with a two-digit year, so it also pins the 50-year
+        # pivot RFC 5280 specifies.
+        add_test(NAME codegen_certificate_dates COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/certificate_parse.pol"
+            "-DCONTAINS=valid: from=1331769600 until=1962921599"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_certificate_signature COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/certificate_parse.pol"
+            "-DCONTAINS=signature: verifiesWithOwnKey=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # WHAT A CLIENT REFUSES. Encryption is not authentication: a handshake with whoever answered
+        # the socket stops somebody listening and does nothing about somebody answering in the
+        # server's place. These are the checks that turn an encrypted pipe into a conversation with a
+        # named party, and each REFUSES BY THROWING — a boolean can be dropped, and a validation
+        # result that is dropped is the same program as one that never validated.
+        #
+        # The hostname line is RFC 6125, and the NOs are what matter: a wildcard that swallowed a dot
+        # or matched the bare domain is a certificate for one subdomain accepted for a whole zone.
+        add_test(NAME codegen_certificate_hostnames COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/certificate_refusals.pol"
+            "-DCONTAINS=names: exact=1 wrongHost=0 wildcard=1 bareDomain=0 twoLabels=0 caseFolds=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_certificate_refuses_empty COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/certificate_refusals.pol"
+            "-DCONTAINS=empty chain: refused=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_certificate_refuses_untrusted COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/certificate_refusals.pol"
+            "-DCONTAINS=untrusted: refused=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # The validity window asked DIRECTLY. Routing it through `check` would prove nothing here:
+        # the hostname is tested first and this certificate covers no DNS name, so it would refuse
+        # before reading a date — a test that passes for the wrong reason.
+        add_test(NAME codegen_certificate_validity_window COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/certificate_refusals.pol"
+            "-DCONTAINS=window: before=0 inside=1 after=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A CHAIN OF METHOD CALLS COMPILES IN LINEAR TIME. This one is a stopwatch: the TIMEOUT is the
         # assertion, and a regression shows up as a test that never finishes rather than a wrong
         # answer.

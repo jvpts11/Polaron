@@ -1,0 +1,129 @@
+import System.IO.Console;
+import System.Net.Tls.Certificate;
+import System.Net.Tls.CertificateException;
+import System.Net.Tls.CertificateValidator;
+import System.Net.Tls.TrustStore;
+import System.Collections.ArrayList;
+program CertificateRefusals;
+
+// WHAT A CLIENT REFUSES, AND WHY IT SAYS SO OUT LOUD.
+//
+// Encryption is not authentication. A handshake that agrees a key with whoever answered the socket
+// protects against somebody listening and not at all against somebody answering in the server's
+// place — while looking identical to the caller. So the checks below are the ones that turn an
+// encrypted pipe into a conversation with a named party, and every one of them REFUSES BY THROWING.
+//
+// That is a deliberate shape, not a style. A boolean can be dropped on the floor without anybody
+// noticing, and a validation result that is dropped is the same program as one that never validated
+// — which is exactly how the commonest TLS bug in the field was written for a decade. The failure is
+// not the caller's intention (their intention was to talk to a server), so it is not something to
+// hand back for them to remember to inspect.
+//
+// HOSTNAME MATCHING IS RFC 6125, against the subject alternative names and nothing else. The common
+// name has not been valid for this since browsers stopped reading it; a client that falls back to it
+// accepts certificates the issuing rules never checked. A wildcard sits in the leftmost label only,
+// stands for exactly one label, and never matches the bare domain.
+//
+// Prints:
+//   names: exact=1 wrongHost=0 wildcard=1 bareDomain=0 twoLabels=0 caseFolds=1
+//   empty chain: refused=1 certificate refused: the server sent no certificate
+//   untrusted: refused=1 certificate refused: it is not for 'example.com' -- ...
+//   window: before=0 inside=1 after=0
+public bundle Main {
+    public namespace App {
+        public class Main {
+            private static method rootPem() returns String {
+                return "-----BEGIN CERTIFICATE-----\n"
+                    .concat("MIIDvTCCAqWgAwIBAgIQD2tVL56/kHsPZimpvfTYzjANBgkqhkiG9w0BAQsFADBk")
+                    .concat("MQswCQYDVQQGEwJVUzEdMBsGA1UEChMUU3ltYW50ZWMgQ29ycG9yYXRpb24xNjA0")
+                    .concat("BgNVBAMTLVN5bWFudGVjIEVudGVycHJpc2UgTW9iaWxlIFJvb3QgZm9yIE1pY3Jv")
+                    .concat("c29mdDAeFw0xMjAzMTUwMDAwMDBaFw0zMjAzMTQyMzU5NTlaMGQxCzAJBgNVBAYT")
+                    .concat("AlVTMR0wGwYDVQQKExRTeW1hbnRlYyBDb3Jwb3JhdGlvbjE2MDQGA1UEAxMtU3lt")
+                    .concat("YW50ZWMgRW50ZXJwcmlzZSBNb2JpbGUgUm9vdCBmb3IgTWljcm9zb2Z0MIIBIjAN")
+                    .concat("BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtT2wcu6R6aVpnBFNevmz+j3ylJsj")
+                    .concat("t6YD7GIY/IUSIv7BcX1Uk7mRfWL2yqg4FWX4dz3lgiA61LXRbo0GSb3fgg4khefv")
+                    .concat("eC0Y8uALaEY+JBDIV+4ObXGm07FWHNcp1bLqVAUKqDyhuCVSBwWg3+fc7lw7QbWr")
+                    .concat("XDMy0s7r6Zb4QPQKujMd+FYDCYL1ZwfEwDTBXfxFu+o8mtV0cW3VhtPC/IW8VOuj")
+                    .concat("1fJP1UWvV7zwIsCPokXIdTR33qFtN3Kzc40Ma1O6WeGoPoBX0l9Z7mh1z4Gco8pF")
+                    .concat("jDfbBXI0HDIC+NX5LA3aWJ7EF7SbyZDEiFk/cZGQRBi+Iot5ki5CsIuXWwIDAQAB")
+                    .concat("o2swaTAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAnBgNVHREEIDAe")
+                    .concat("pBwwGjEYMBYGA1UEAxMPTVBLSS0yMDQ4LTEtMTExMB0GA1UdDgQWBBRN7N8mBtwk")
+                    .concat("EMC2mfTXOcdvGfgmKDANBgkqhkiG9w0BAQsFAAOCAQEAqVdZ0AFUFEavx3lUDGoq")
+                    .concat("W9g6HYHkiKMxtPHzNfFGc1xDyf68omoZwL0vX8s4o21u6BRe8nh+RXrhu/Qum0Xr")
+                    .concat("4B1QHDRbf5iKhg+H2uRkJnf8Cd8jQU8On/oO+kSF8CmXpJTi9EAtkRx29Khg3nGm")
+                    .concat("sAXiT2nZGQuJOuD6qyv68bMy7fx8cGVe0HsRe53oWxpKdqR7UTmsfakMdDjou1Xf")
+                    .concat("xM7ApyFauBufAcWnEP59+WoImQHR9jVQOOT2Q+QY2IBM7McE4mGMfUntz7Sl8fKQ")
+                    .concat("kgkINXOgIzLK6ZyeHL4LByx3XhdM2pyC4YAbpfPa94i/vzkn+CT+sUvIl+3kEhQl")
+                    .concat("iA==\n")
+                    .concat("-----END CERTIFICATE-----\n");
+            }
+
+            public static method main(string[] args) returns void {
+                Main.hostnames();
+                Main.refusals();
+                return;
+            }
+
+            // The matcher on its own. Each line is a rule from RFC 6125, and the ones that must
+            // answer NO are the ones that matter: a wildcard that swallowed a dot, or matched the
+            // bare domain, is a certificate for one subdomain accepted for the whole zone.
+            private static method hostnames() returns void {
+                System.IO.Console.printf(
+                    "names: exact=%d wrongHost=%d wildcard=%d bareDomain=%d twoLabels=%d caseFolds=%d\n",
+                    CertificateValidator.nameMatches("api.example.com", "api.example.com") ? 1 : 0,
+                    CertificateValidator.nameMatches("api.example.com", "evil.example.com") ? 1 : 0,
+                    CertificateValidator.nameMatches("*.example.com", "api.example.com") ? 1 : 0,
+                    CertificateValidator.nameMatches("*.example.com", "example.com") ? 1 : 0,
+                    CertificateValidator.nameMatches("*.example.com", "a.b.example.com") ? 1 : 0,
+                    CertificateValidator.nameMatches("API.Example.COM", "api.example.com") ? 1 : 0);
+            }
+
+            // Three refusals, each caught and its reason printed. An empty chain, a chain that never
+            // reaches a trusted root, and a certificate outside its validity window — the last one
+            // asked about a moment long after it expires, so the test does not rot when the real
+            // clock passes 2032.
+            private static method refusals() returns void {
+                mutable TrustStore* empty = new TrustStore() on heap;
+                mutable ArrayList<Certificate*> none = new ArrayList<Certificate*>() on heap;
+                Main.expect("empty chain", none, "anything", empty, cast<long>(1700000000));
+
+                mutable Certificate* root = Certificate.fromPem(Main.rootPem());
+                mutable ArrayList<Certificate*> one = new ArrayList<Certificate*>() on heap;
+                one.add(root);
+                // Its subject alternative name is a directory name, not a DNS name, so no host is
+                // covered — which this correctly refuses before it ever looks at the chain.
+                Main.expect("untrusted", one, "example.com", empty, cast<long>(1700000000));
+
+                // THE VALIDITY WINDOW, asked directly. Routing this through `check` would prove
+                // nothing: the hostname is tested first and this certificate covers no DNS name, so
+                // it refuses before the dates are ever read — a test that passes for the wrong
+                // reason. Three moments, chosen relative to a window that ends in 2032 so the test
+                // does not rot: before it opens, inside it, and after it closes.
+                System.IO.Console.printf("window: before=%d inside=%d after=%d\n",
+                                         root.isValidAt(cast<long>(1000000000)) ? 1 : 0,
+                                         root.isValidAt(cast<long>(1700000000)) ? 1 : 0,
+                                         root.isValidAt(cast<long>(2000000000)) ? 1 : 0);
+
+                mutable TrustStore* trusting = new TrustStore() on heap;
+                trusting.add(root);
+                delete trusting;
+                delete one;
+                delete none;
+                delete empty;
+            }
+
+            // Runs the check and reports that it refused, with the reason. A check that RETURNED
+            // instead of throwing is itself a failure and says so.
+            private static method expect(String what, ArrayList<Certificate*> chain, String host,
+                                         TrustStore* trusted, long at) returns void {
+                try {
+                    CertificateValidator.check(chain, host, trusted, at);
+                    System.IO.Console.printf("%s: refused=0 (it accepted -- this is the bug)\n", what);
+                } catch (CertificateException e) {
+                    System.IO.Console.printf("%s: refused=1 %s\n", what, e.message());
+                }
+                return;
+            }
+        }
+    }
+}

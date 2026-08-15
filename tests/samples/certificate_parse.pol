@@ -1,0 +1,84 @@
+import System.IO.Console;
+import System.Net.Tls.Certificate;
+import System.Net.Tls.CertificateValidator;
+program CertificateParse;
+
+// READING A REAL CERTIFICATE, AND CHECKING THE SIGNATURE ON IT.
+//
+// The certificate below is a genuine self-signed root, exported from a Windows trust store. Nothing
+// about it was invented for this test, which is the point: a DER reader tested against a certificate
+// somebody wrote for the test is a reader tested against its own assumptions. Real ones carry the
+// awkward parts — an extension whose value is a directory name, a two-digit year, an issuer field
+// that has to match byte for byte.
+//
+// THE LAST LINE IS THE ONE THAT MATTERS. A self-signed root carries a signature by its own key, so
+// verifying it exercises the whole path at once: navigating DER to the signed body, copying exactly
+// those bytes (one byte more or fewer and the hash differs), SHA-256 over them, pulling the modulus
+// and exponent out of the public key, the modular exponentiation, and unpacking the PKCS#1 padding.
+// If any one of those is wrong the answer is 0, and there is no way for it to be right by accident.
+//
+// The dates are checked against values computed outside this program, so a calendar conversion that
+// is off by a day or by a leap year shows up as a number rather than as a certificate that quietly
+// expires on the wrong afternoon.
+//
+// Prints:
+//   read: wellFormed=1 selfIssued=1 isCA=1 sigAlg=1
+//   named: subject=Symantec Enterprise Mobile Root for Microsoft
+//   valid: from=1331769600 until=1962921599
+//   signature: verifiesWithOwnKey=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            // CN=Symantec Enterprise Mobile Root for Microsoft, sha256RSA, 2012-03-15 to 2032-03-14.
+            private static method rootPem() returns String {
+                return "-----BEGIN CERTIFICATE-----\n"
+                    .concat("MIIDvTCCAqWgAwIBAgIQD2tVL56/kHsPZimpvfTYzjANBgkqhkiG9w0BAQsFADBk")
+                    .concat("MQswCQYDVQQGEwJVUzEdMBsGA1UEChMUU3ltYW50ZWMgQ29ycG9yYXRpb24xNjA0")
+                    .concat("BgNVBAMTLVN5bWFudGVjIEVudGVycHJpc2UgTW9iaWxlIFJvb3QgZm9yIE1pY3Jv")
+                    .concat("c29mdDAeFw0xMjAzMTUwMDAwMDBaFw0zMjAzMTQyMzU5NTlaMGQxCzAJBgNVBAYT")
+                    .concat("AlVTMR0wGwYDVQQKExRTeW1hbnRlYyBDb3Jwb3JhdGlvbjE2MDQGA1UEAxMtU3lt")
+                    .concat("YW50ZWMgRW50ZXJwcmlzZSBNb2JpbGUgUm9vdCBmb3IgTWljcm9zb2Z0MIIBIjAN")
+                    .concat("BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtT2wcu6R6aVpnBFNevmz+j3ylJsj")
+                    .concat("t6YD7GIY/IUSIv7BcX1Uk7mRfWL2yqg4FWX4dz3lgiA61LXRbo0GSb3fgg4khefv")
+                    .concat("eC0Y8uALaEY+JBDIV+4ObXGm07FWHNcp1bLqVAUKqDyhuCVSBwWg3+fc7lw7QbWr")
+                    .concat("XDMy0s7r6Zb4QPQKujMd+FYDCYL1ZwfEwDTBXfxFu+o8mtV0cW3VhtPC/IW8VOuj")
+                    .concat("1fJP1UWvV7zwIsCPokXIdTR33qFtN3Kzc40Ma1O6WeGoPoBX0l9Z7mh1z4Gco8pF")
+                    .concat("jDfbBXI0HDIC+NX5LA3aWJ7EF7SbyZDEiFk/cZGQRBi+Iot5ki5CsIuXWwIDAQAB")
+                    .concat("o2swaTAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAnBgNVHREEIDAe")
+                    .concat("pBwwGjEYMBYGA1UEAxMPTVBLSS0yMDQ4LTEtMTExMB0GA1UdDgQWBBRN7N8mBtwk")
+                    .concat("EMC2mfTXOcdvGfgmKDANBgkqhkiG9w0BAQsFAAOCAQEAqVdZ0AFUFEavx3lUDGoq")
+                    .concat("W9g6HYHkiKMxtPHzNfFGc1xDyf68omoZwL0vX8s4o21u6BRe8nh+RXrhu/Qum0Xr")
+                    .concat("4B1QHDRbf5iKhg+H2uRkJnf8Cd8jQU8On/oO+kSF8CmXpJTi9EAtkRx29Khg3nGm")
+                    .concat("sAXiT2nZGQuJOuD6qyv68bMy7fx8cGVe0HsRe53oWxpKdqR7UTmsfakMdDjou1Xf")
+                    .concat("xM7ApyFauBufAcWnEP59+WoImQHR9jVQOOT2Q+QY2IBM7McE4mGMfUntz7Sl8fKQ")
+                    .concat("kgkINXOgIzLK6ZyeHL4LByx3XhdM2pyC4YAbpfPa94i/vzkn+CT+sUvIl+3kEhQl")
+                    .concat("iA==\n")
+                    .concat("-----END CERTIFICATE-----\n");
+            }
+
+            public static method main(string[] args) returns void {
+                mutable Certificate* root = Certificate.fromPem(Main.rootPem());
+
+                // 1 = RSA PKCS#1 v1.5 with SHA-256, which is what this one is signed with.
+                System.IO.Console.printf("read: wellFormed=%d selfIssued=%d isCA=%d sigAlg=%d\n",
+                                         root.isWellFormed() ? 1 : 0,
+                                         root.isSelfIssued() ? 1 : 0,
+                                         root.isCertificateAuthority() ? 1 : 0,
+                                         root.signatureAlgorithm());
+
+                System.IO.Console.printf("named: subject=%s\n", root.subjectCommonName());
+
+                // Both bounds, in seconds. The first is a UTCTime with a two-digit year; getting the
+                // 50-year pivot or the leap years wrong moves these.
+                System.IO.Console.printf("valid: from=%d until=%d\n",
+                                         cast<int>(root.notBefore()), cast<int>(root.notAfter()));
+
+                // The whole path in one answer.
+                System.IO.Console.printf("signature: verifiesWithOwnKey=%d\n",
+                                         CertificateValidator.signedBy(root, root) ? 1 : 0);
+                delete root;
+                return;
+            }
+        }
+    }
+}
