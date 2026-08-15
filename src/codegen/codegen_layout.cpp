@@ -1042,12 +1042,17 @@ void CodeGenerator::Impl::emitCascadePrintln(llvm::Value* objPtr, const std::str
 }
 
 const std::vector<const ast::Expr*>& CodeGenerator::Impl::classInvariants(const std::string& clsName) {
-    auto it = mergedInvariants_.find(clsName);
+    // THROUGH THE FUNNEL, and cached under the resolved key. Asked for a bare `Table` while the
+    // standard library also has one, this walked the WRONG class's chain: a program's own invariant
+    // was then emitted against the library's type and failed as `no such field 'slots' on
+    // 'System.Terminal.Table'`, naming a class the author had never heard of.
+    const std::string key = clsKey(clsName);
+    auto it = mergedInvariants_.find(key);
     if (it != mergedInvariants_.end()) {
         return it->second;
     }
     std::vector<const ast::Expr*> merged;
-    for (std::string cur = clsName; !cur.empty();) {
+    for (std::string cur = key; !cur.empty();) {
         auto cc = classes.find(cur);
         if (cc == classes.end()) {
             break;
@@ -1059,7 +1064,7 @@ const std::vector<const ast::Expr*>& CodeGenerator::Impl::classInvariants(const 
         }
         cur = cc->second.superclass;
     }
-    return mergedInvariants_[clsName] = std::move(merged);
+    return mergedInvariants_[key] = std::move(merged);
 }
 
 void CodeGenerator::Impl::emitCascadeValidate(llvm::Value* objPtr, const std::string& cn) {
@@ -1067,7 +1072,7 @@ void CodeGenerator::Impl::emitCascadeValidate(llvm::Value* objPtr, const std::st
     const std::string savedClass = currentClass;
     currentThis = objPtr;
     currentClass = cn;
-    for (std::string cur = cn; !cur.empty();) {
+    for (std::string cur = clsKey(cn); !cur.empty();) {   // by key: see classInvariants
         auto cc = classes.find(cur);
         if (cc == classes.end()) {
             break;

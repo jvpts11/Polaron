@@ -1,0 +1,86 @@
+import System.IO.Console;
+import System.Terminal.Style;
+import System.Terminal.TextTable;
+import System.Collections.ArrayList;
+import System.Text.Strings;
+program TerminalTable;
+
+// WRITING TO A TERMINAL (System.Terminal), which is what a compiler, a test runner and every
+// command-line tool spend their output on -- and the library had `println` and nothing else, so
+// colour and alignment were left to each program to reinvent slightly differently.
+//
+// The two pieces are separate on purpose: `Style` decides what text LOOKS like, `TextTable` decides where
+// it GOES. Why they must not be mixed is the first line of the test: THE WIDTH OF A STYLED STRING IS
+// NOT ITS LENGTH. `\e[31mred\e[0m` is twelve characters and occupies three columns, so a table that
+// measures with `length()` pushes every row after a coloured cell out of line -- the commonest bug in
+// hand-written terminal output. `TextTable` measures with `Style.width`, so a cell may be styled and
+// still line up.
+//
+// THE ALIGNMENT IS CHECKED BY THE PROGRAM, not by comparing spaces: the test harness collapses runs
+// of whitespace, so an expected string cannot carry column positions. Every rendered line having the
+// same on-screen width is the property that matters anyway, and it is one a person reading the output
+// cannot verify by eye either.
+//
+// Prints:
+//   styled=12 wide=3 stripped=red
+//   name   count  ratio
+//   -----  -----  -----
+//   north    120   0.60
+//   south     80   0.40
+//   lines=4 aligned=1 width=19 rightAligned=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Style.enable(true);
+                String red = Style.red("red");
+                System.IO.Console.printf("styled=%d wide=%d stripped=%s\n",
+                                         red.length(), Style.width(red), Style.strip(red));
+
+                // Off for the table itself, so the output a person reads is text and not escapes.
+                Style.enable(false);
+                mutable TextTable* t = new TextTable() on heap;
+                t.column("name", false);
+                t.column("count", true);
+                t.column("ratio", true);
+                Main.addRow(t, "north", "120", "0.60");
+                Main.addRow(t, "south", "80", "0.40");
+
+                String rendered = t.render();
+                System.IO.Console.print(rendered);
+
+                // Every line the same width -- which is what "it lines up" means.
+                mutable ArrayList<String> lines = Strings.split(rendered, "\n");
+                mutable int count = 0;
+                mutable int width = 0;
+                mutable boolean aligned = true;
+                for (mutable int i = 0; i < lines.size(); i++) {
+                    String line = lines.get(i);
+                    if (line.length() == 0) { continue; }
+                    count = count + 1;
+                    int w = Style.width(line);
+                    if (width == 0) { width = w; }
+                    if (w != width) { aligned = false; }
+                }
+                // ...and a right-aligned column really is right-aligned: the shorter number is the one
+                // pushed further in.
+                mutable boolean right = lines.get(3).indexOf("80") > lines.get(2).indexOf("120");
+                System.IO.Console.printf("lines=%d aligned=%d width=%d rightAligned=%d\n",
+                                         count, aligned ? 1 : 0, width, right ? 1 : 0);
+                delete lines;
+                delete t;
+                return;
+            }
+            // `TextTable*`, and it has to be: a by-value parameter is a COPY, so rows added through it
+            // would be added to the copy and the caller's table would come out empty.
+            private static method addRow(TextTable* t, String a, String b, String c) returns void {
+                mutable ArrayList<String> cells = new ArrayList<String>() on heap;
+                cells.add(a);
+                cells.add(b);
+                cells.add(c);
+                t.row(cells);
+                delete cells;
+            }
+        }
+    }
+}
