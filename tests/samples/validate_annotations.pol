@@ -1,0 +1,68 @@
+import System.IO.Console;
+import System.Validate.Validator;
+import System.Validate.Findings;
+import System.Validate.NotEmpty;
+import System.Validate.Range;
+import System.Validate.Length;
+import System.Validate.Email;
+import System.Validate.Positive;
+import reflect;
+program ValidateAnnotations;
+
+// VALIDATION RULES WRITTEN ON THE FIELDS THEY ARE ABOUT (System.Validate), with no framework, no
+// processor and no builder DSL: the rules are annotations, and the checker is one reflective walk
+// over the type. Adding a field with a rule on it changes what `check` reports and nothing else.
+//
+// Prints:
+//   good=1 problems=0
+//   bad=4
+//   name: must not be empty
+//   age: must be between 1 and 130
+//   email: is not an address
+//   score: must be positive
+public bundle Main {
+    public namespace App {
+
+        public class Signup {
+            [NotEmpty]
+            [Length(min: 2, max: 32)]
+            public String name;
+
+            [Range(min: 1, max: 130)]
+            public int age;
+
+            [Email]
+            public String email;
+
+            [Positive]
+            public int score;
+
+            public constructor Signup(String name, int age, String email, int score) {
+                this.name = name;
+                this.age = age;
+                this.email = email;
+                this.score = score;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Signup good = new Signup("Ada", 36, "ada@example.com", 10) on heap;
+                mutable Findings r1 = Validator.check<Signup>(good);
+                mutable int ok = 0;
+                if (r1.ok()) { ok = 1; }
+                System.IO.Console.printf("good=%d problems=%d\n", ok, r1.count());
+
+                Signup bad = new Signup("  ", 999, "nope", 0) on heap;
+                mutable Findings r2 = Validator.check<Signup>(bad);
+                System.IO.Console.printf("bad=%d\n", r2.count());
+                for (mutable int i = 0; i < r2.count(); i++) {
+                    System.IO.Console.println(r2.at(i));
+                }
+                delete bad;
+                delete good;
+                return;
+            }
+        }
+    }
+}

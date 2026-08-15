@@ -589,8 +589,15 @@ void CodeGenerator::Impl::collectTests() {
                         continue;
                     }
                     TestCase tc;
-                    tc.sym = cls.name + "." + m->name;
-                    tc.display = tc.sym;  // Class.method: what --filter matches and the report prints
+                    // THE SYMBOL BY KEY, THE DISPLAY BY NAME. The runner calls the function, so the
+                    // symbol has to be the one that was emitted -- which for a class whose name the
+                    // standard library also uses carries its path. Composed from the bare name, the
+                    // lookup silently found nothing and the class's tests VANISHED from the run: a
+                    // suite that reports "8 passed" when it holds eleven tests is worse than one
+                    // that fails. What a reader sees stays `Report.the_assertion_surface`, because
+                    // the path is the compiler's business and the test's name is the author's.
+                    tc.sym = clsKey(cls.name) + "." + m->name;
+                    tc.display = cls.name + "." + m->name;  // what --filter matches and the report prints
                     tc.cls = cls.name;
                     tc.isVoid = trt == "void";  // spec 32.11: verdict is "no assertion failed"
                     tc.tags = tags;
@@ -640,7 +647,7 @@ void CodeGenerator::Impl::collectHook(const ast::ClassDecl& cls, const ast::Meth
                                       m.loc});
         return;
     }
-    slot = cls.name + "." + m.name;
+    slot = clsKey(cls.name) + "." + m.name;  // the emitted symbol; see the note on tc.sym
 }
 
 void CodeGenerator::Impl::emitClassLoadHooks() {
@@ -653,7 +660,23 @@ void CodeGenerator::Impl::emitClassLoadHooks() {
             for (const ast::ClassDecl& c : n.classes) {
                 // `lazy import` defers a class's load to its first instance (spec 37.3).
                 if (c.onClassLoad && !isLazyImport(c.name)) {
-                    builder.CreateCall(functions[c.name + ".__onClassLoad"]);
+                    // By key: the hook was declared under the class's own key (see declareFunctions),
+                    // and `functions[]` on a missing one inserts a null that is then called.
+                    //
+                    // The anchor is RESTORED. This runs in the middle of emitting the entry function,
+                    // so leaving it pointing at the last class with a load hook -- which is one of
+                    // the standard library's -- made the rest of `main` resolve its names as though
+                    // it were library code: a program's own `Graph` became System.Collections.Graph,
+                    // reported as `no such field 'nodes'` on a class the author never mentioned.
+                    const std::string savedNs = currentNamespace, savedB = currentBundleName;
+                    currentNamespace = n.name;
+                    currentBundleName = b.name;
+                    llvm::Function* h = needFn(clsKey(c.name) + ".__onClassLoad");
+                    currentNamespace = savedNs;
+                    currentBundleName = savedB;
+                    if (h != nullptr) {
+                        builder.CreateCall(h);
+                    }
                 }
             }
         }

@@ -2919,7 +2919,8 @@ llvm::StructType* CodeGenerator::Impl::typeTokenType() {
              builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
              builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
              builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
-             builder.getPtrTy()},
+             builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
+             builder.getPtrTy(), builder.getPtrTy()},
             "ReflectType");  // ..., ptr fieldGetters, ptr fieldSetters, ptr methodAnnCounts(i64[]),
                              // and field 16: ptr fieldTypeNames(ptr[] -> String[]), parallel to the
                              // field names -- what a reflective walk needs to tell an int from a
@@ -2927,6 +2928,17 @@ llvm::StructType* CodeGenerator::Impl::typeTokenType() {
                              // and field 15: ptr arenaNew -- how to allocate one of this class when
                              // the class is only known at runtime. Null for everything but a region
                              // class, whose instances have exactly one place they may be.
+                             //
+                             // 17: ptr annArgs (String[]) -- each CLASS annotation's arguments as
+                             // written, rendered `min=1,max=10`. An annotation that cannot say what
+                             // it was given is a marker and nothing more, so `[Range(min: 1)]` and
+                             // `[Range(min: 99)]` were indistinguishable to a reflective reader.
+                             // 18/19/20: per-FIELD annotations -- counts (i64[]), names (ptr[] ->
+                             // String[]) and their arguments (ptr[] -> String[]), each parallel to
+                             // the field names. Class-level and method-level annotations were
+                             // readable and field-level ones were not, which is precisely where a
+                             // declarative rule is written: `[NotEmpty] String name;`.
+                             // 21: ptr methodAnnArgs (ptr[] -> String[]), the same for methods.
     }
                              // ptr methodAnnNames(ptr[] -> String[]), ptr methodRetTags(i64[])
     return typeStructTy;
@@ -2934,18 +2946,23 @@ llvm::StructType* CodeGenerator::Impl::typeTokenType() {
 
 llvm::StructType* CodeGenerator::Impl::annotationTokenType() {
     if (annotationStructTy == nullptr) {
-        annotationStructTy =
-            llvm::StructType::create(context, {builder.getPtrTy()}, "ReflectAnnotation");
+        // {ptr name, ptr args} -- the arguments as written, `min=1,max=10`, parsed by whoever cares.
+        // Rendered to text rather than typed, because an annotation's arguments are compile-time
+        // constants of several types and a reader wants them one at a time by name; keeping the
+        // parsing in the library means it can be tested, fixed and extended in Polaron.
+        annotationStructTy = llvm::StructType::create(
+            context, {builder.getPtrTy(), builder.getPtrTy()}, "ReflectAnnotation");
     }
     return annotationStructTy;
 }
 
 llvm::StructType* CodeGenerator::Impl::methodTokenType() {
     if (methodStructTy == nullptr) {
+        // { name, fn, annCount, annNames, retTag, annArgs }
         methodStructTy = llvm::StructType::create(
             context,
             {builder.getPtrTy(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
-             builder.getInt64Ty()},
+             builder.getInt64Ty(), builder.getPtrTy()},
             "ReflectMethod");
     }
     return methodStructTy;
@@ -3004,14 +3021,52 @@ llvm::Type* CodeGenerator::Impl::tagRetType(long long tag) {
 
 llvm::StructType* CodeGenerator::Impl::fieldTokenType() {
     if (fieldStructTy == nullptr) {
-        // { name, getter, setter, typeName } -- the last one added so a reflective walk can tell an
-        // int from a String from a nested object, which `get` alone cannot say.
+        // { name, getter, setter, typeName, annCount, annNames, annArgs } -- typeName so a walk can
+        // tell an int from a String from a nested object, which `get` alone cannot say; the
+        // annotations because a rule about a field is written ON the field.
         fieldStructTy = llvm::StructType::create(
             context,
-            {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()},
+            {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
+             builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy()},
             "ReflectField");
     }
     return fieldStructTy;
+}
+
+// AN ANNOTATION'S ARGUMENTS, AS TEXT: `[Range(min: 1, max: 10)]` -> `min=1,max=10`.
+//
+// Rendered rather than typed, and the reason is the reader rather than the writer: an annotation's
+// arguments are compile-time constants of several types, and every consumer wants them ONE AT A TIME
+// BY NAME -- "what is this field's `max`". A typed encoding would need a tagged union per argument
+// and a reflective accessor per type; text needs neither, and the parsing then lives in Polaron
+// (`System.Validate`), where it can be tested and extended without touching the compiler.
+//
+// The values ARE constants: the analyzer already requires it (spec 14.3). An expression this does not
+// recognise renders empty rather than guessing, so a consumer sees "the argument is not there" and
+// not a wrong value.
+std::string CodeGenerator::Impl::renderAnnotationArgs(const ast::AnnotationUse& a) {
+    std::string out;
+    for (const ast::AnnotationArg& arg : a.args) {
+        std::string v;
+        if (const auto* i = dynamic_cast<const ast::IntLiteralExpr*>(arg.value.get())) {
+            v = i->text;
+        } else if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(arg.value.get())) {
+            v = b->value ? "true" : "false";
+        } else if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(arg.value.get())) {
+            v = s->value;
+        } else if (const auto* c = dynamic_cast<const ast::CharLiteralExpr*>(arg.value.get())) {
+            v = c->value;
+        } else if (const auto* f = dynamic_cast<const ast::FloatLiteralExpr*>(arg.value.get())) {
+            v = f->text;
+        } else {
+            continue;
+        }
+        if (!out.empty()) {
+            out += ",";
+        }
+        out += arg.name + "=" + v;
+    }
+    return out;
 }
 
 llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
@@ -3025,6 +3080,11 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
     // or another object -- so nothing generic could be written over a type's SHAPE, which is the one
     // thing reflection exists for. The type was already being collected here and discarded.
     std::vector<std::string> fieldTypeNames;
+    // Each class annotation's arguments as written, and each field's own annotations with theirs.
+    // A rule about a field is written ON the field -- `[NotEmpty] String name;` -- and an annotation
+    // that cannot report what it was given is a marker and nothing more.
+    std::vector<std::string> annotationArgs;
+    std::vector<std::vector<std::string>> fieldAnnNames, fieldAnnArgs;  // parallel to fieldNames
     std::vector<llvm::Constant*> methodRetTags;      // parallel to methodNames (invoke, spec 31)
     std::vector<const ast::MethodDecl*> methodDecls; // parallel: for per-method annotations
     std::vector<std::string> methodOwners;           // parallel: class providing the impl
@@ -3072,6 +3132,37 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
         if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr) {
             for (const ast::AnnotationUse& a : cit->second.decl->annotations) {
                 annotationNames.push_back(a.name);  // applied [Name(...)] annotations (spec 14.3, 31)
+                annotationArgs.push_back(renderAnnotationArgs(a));
+            }
+            // A FIELD'S OWN ANNOTATIONS, parallel to fieldNames. `collectFields` walks the same chain
+            // and returns names, so the declarations are found here by name -- own class first, then
+            // up -- which keeps the two lists aligned however the fields were inherited.
+            for (const std::string& fname : fieldNames) {
+                std::vector<std::string> names, args;
+                for (std::string cn = className; !cn.empty();) {
+                    auto c2 = classes.find(cn);
+                    if (c2 == classes.end() || c2->second.decl == nullptr) {
+                        break;
+                    }
+                    bool found = false;
+                    for (const ast::MemberPtr& m : c2->second.decl->members) {
+                        const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get());
+                        if (fd == nullptr || fd->name != fname) {
+                            continue;
+                        }
+                        found = true;
+                        for (const ast::AnnotationUse& a : fd->annotations) {
+                            names.push_back(a.name);
+                            args.push_back(renderAnnotationArgs(a));
+                        }
+                    }
+                    if (found) {
+                        break;
+                    }
+                    cn = c2->second.superclass;
+                }
+                fieldAnnNames.push_back(std::move(names));
+                fieldAnnArgs.push_back(std::move(args));
             }
         }
     }
@@ -3081,6 +3172,21 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
     auto [ftcount, ftypes] = nameArray(fieldTypeNames, "fieldtypes." + className);
     (void)ftcount;   // same count as fcount, by construction
     auto [acount, anames] = nameArray(annotationNames, "annotations." + className);
+    auto [aacount, aargs] = nameArray(annotationArgs, "annotationargs." + className);
+    (void)aacount;   // same count as acount, by construction
+    // Per-field annotations: counts, names and arguments, each parallel to the field names. Same
+    // shape as the per-method arrays beside them, for the same reason -- a token holds one array per
+    // member, and the member's index selects its row.
+    std::vector<llvm::Constant*> fAnnCounts, fAnnNamePtrs, fAnnArgPtrs;
+    for (std::size_t fi = 0; fi < fieldNames.size(); ++fi) {
+        auto [cnt, arr] = nameArray(fieldAnnNames[fi], "fieldann." + className + "." + std::to_string(fi));
+        auto [acnt, aarr] =
+            nameArray(fieldAnnArgs[fi], "fieldannargs." + className + "." + std::to_string(fi));
+        (void)acnt;
+        fAnnCounts.push_back(cnt);
+        fAnnNamePtrs.push_back(arr);
+        fAnnArgPtrs.push_back(aarr);
+    }
     // Parallel array of method function pointers (null where there is no body).
     std::vector<llvm::Constant*> fns;
     for (std::size_t mi = 0; mi < methodNames.size(); ++mi) {
@@ -3112,15 +3218,20 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
     llvm::Constant* fSetG = fnArray(setFns, "fieldset." + className);
     // Per-method annotation arrays (spec 31), parallel to methodNames: for each method, its own
     // applied annotations as {count, String[]}, so a Method token can report them.
-    std::vector<llvm::Constant*> mAnnCounts, mAnnPtrs;
+    std::vector<llvm::Constant*> mAnnCounts, mAnnPtrs, mAnnArgPtrs;
     for (std::size_t mi = 0; mi < methodDecls.size(); ++mi) {  // parallel to methodNames
-        std::vector<std::string> anns;
+        std::vector<std::string> anns, annArgs;
         for (const ast::AnnotationUse& a : methodDecls[mi]->annotations) {
             anns.push_back(a.name);
+            annArgs.push_back(renderAnnotationArgs(a));
         }
         auto [cnt, arr] = nameArray(anns, "methodann." + className + "." + std::to_string(mi));
+        auto [acnt, aarr] =
+            nameArray(annArgs, "methodannargs." + className + "." + std::to_string(mi));
+        (void)acnt;
         mAnnCounts.push_back(cnt);
         mAnnPtrs.push_back(arr);
+        mAnnArgPtrs.push_back(aarr);
     }
     llvm::ArrayType* mAnnCountArrTy = llvm::ArrayType::get(builder.getInt64Ty(), mAnnCounts.size());
     auto* mAnnCountsG = new llvm::GlobalVariable(
@@ -3130,6 +3241,21 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
     auto* mAnnPtrsG = new llvm::GlobalVariable(
         module, mAnnPtrArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
         llvm::ConstantArray::get(mAnnPtrArrTy, mAnnPtrs), "methodannptrs." + className);
+    auto* mAnnArgsG = new llvm::GlobalVariable(
+        module, mAnnPtrArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+        llvm::ConstantArray::get(mAnnPtrArrTy, mAnnArgPtrs), "methodannargs." + className);
+    // ...and the same three for fields.
+    llvm::ArrayType* fAnnCountArrTy = llvm::ArrayType::get(builder.getInt64Ty(), fAnnCounts.size());
+    auto* fAnnCountsG = new llvm::GlobalVariable(
+        module, fAnnCountArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+        llvm::ConstantArray::get(fAnnCountArrTy, fAnnCounts), "fieldanncounts." + className);
+    llvm::ArrayType* fAnnPtrArrTy = llvm::ArrayType::get(builder.getPtrTy(), fAnnNamePtrs.size());
+    auto* fAnnNamesG = new llvm::GlobalVariable(
+        module, fAnnPtrArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+        llvm::ConstantArray::get(fAnnPtrArrTy, fAnnNamePtrs), "fieldannptrs." + className);
+    auto* fAnnArgsG = new llvm::GlobalVariable(
+        module, fAnnPtrArrTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
+        llvm::ConstantArray::get(fAnnPtrArrTy, fAnnArgPtrs), "fieldannargs." + className);
     // Parallel array of method return-type tags, for reflective invoke (spec 31).
     llvm::ArrayType* retTagArrTy = llvm::ArrayType::get(builder.getInt64Ty(), methodRetTags.size());
     auto* retTagsG = new llvm::GlobalVariable(
@@ -3140,7 +3266,7 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
     if (auto cit = classes.find(className); cit != classes.end()) {
         size = llvm::cast<llvm::Constant>(sizeOf(cit->second.type));
     }
-    auto ctorIt = functions.find(className + "." + className);
+    auto ctorIt = functions.find(ctorSym(className));
     llvm::Constant* ctorFn = ctorIt != functions.end()
                                  ? llvm::cast<llvm::Constant>(ctorIt->second)
                                  : llvm::ConstantPointerNull::get(builder.getPtrTy());
@@ -3153,7 +3279,7 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
     llvm::Constant* obj = llvm::ConstantStruct::get(
         typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn, acount,
                           anames, fGetG, fSetG, mAnnCountsG, mAnnPtrsG, retTagsG, arenaNewC,
-                          ftypes});
+                          ftypes, aargs, fAnnCountsG, fAnnNamesG, fAnnArgsG, mAnnArgsG});
     auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                        llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
     typeGlobals[className] = g;

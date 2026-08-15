@@ -474,14 +474,17 @@ std::string CodeGenerator::Impl::typeName(const ast::Expr& expr) {
                 }
             }
             if (ot == "Field") {
-                if (mem->member == "name") {
+                if (mem->member == "name" || mem->member == "typeName") {
                     return "String";
                 }
                 if (mem->member == "get") {
                     return "Object";  // boxed field value (spec 31)
                 }
+                if (mem->member == "annotations") {
+                    return "ArrayList$Annotation";
+                }
             }
-            if (ot == "Annotation" && mem->member == "name") {
+            if (ot == "Annotation" && (mem->member == "name" || mem->member == "args")) {
                 return "String";
             }
             if (ot == "Method") {

@@ -533,6 +533,11 @@ private:
     // where `Stack<T>` was written is what the monomorphizer saved on the way past. Same rule as the
     // type table, kept separately because the facts arrive from a different place.
     std::map<std::string, std::vector<std::string>> genericHomes_;
+    // Where each declared ANNOTATION lives, kept apart from the type map because an annotation and a
+    // class may share a name (they are used in different positions and never confused). Read by the
+    // import validator, so a library's annotation can be imported like anything else it declares.
+    std::unordered_map<std::string, std::string> annotationNamespace_;
+    std::unordered_map<std::string, std::string> annotationBundle_;
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
     std::unordered_map<std::string, std::string> typeBundle_;     // type name -> its bundle (import validation)
     std::unordered_map<std::string, std::string> namespaceBundle_;  // namespace name -> its bundle

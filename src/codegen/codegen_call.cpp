@@ -1882,6 +1882,16 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                     builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), names, i), "nm");
                 llvm::Value* tok = builder.CreateCall(mallocFn(), {sizeOf(tokTy)}, "tok");
                 builder.CreateStore(nm, builder.CreateStructGEP(tokTy, tok, 0));
+                if (isAnnotations) {
+                    // The arguments as written (Type token slot 17), so `[Range(min: 1)]` and
+                    // `[Range(min: 99)]` are not the same annotation to a reader.
+                    llvm::Value* aArgs = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 17), "aargs");
+                    builder.CreateStore(
+                        builder.CreateLoad(builder.getPtrTy(),
+                                           builder.CreateGEP(builder.getPtrTy(), aArgs, i), "aa"),
+                        builder.CreateStructGEP(tokTy, tok, 1));
+                }
                 if (isMethods) {
                     llvm::Value* fn = builder.CreateLoad(
                         builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), fns, i), "fn");
@@ -1896,6 +1906,13 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                         builder.CreateLoad(builder.getPtrTy(),
                                            builder.CreateGEP(builder.getPtrTy(), mAnnPtrs, i), "map"),
                         builder.CreateStructGEP(tokTy, tok, 3));
+                    // ...and their arguments (Type token slot 21 -> Method token slot 5).
+                    llvm::Value* mAnnArgs = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 21), "maa");
+                    builder.CreateStore(
+                        builder.CreateLoad(builder.getPtrTy(),
+                                           builder.CreateGEP(builder.getPtrTy(), mAnnArgs, i), "maa1"),
+                        builder.CreateStructGEP(tokTy, tok, 5));
                 } else if (isFields) {  // the field's get/set accessors (Field token slots 1, 2)
                     builder.CreateStore(
                         builder.CreateLoad(builder.getPtrTy(),
@@ -1913,6 +1930,19 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                         builder.CreateLoad(builder.getPtrTy(),
                                            builder.CreateGEP(builder.getPtrTy(), fTypes, i), "ft"),
                         builder.CreateStructGEP(tokTy, tok, 3));
+                    // And the field's OWN annotations (Type token slots 18/19/20 -> Field slots
+                    // 4/5/6): count, names and arguments. A rule about a field is written on the
+                    // field, so a walk that cannot read them can only ever be a walk over types.
+                    for (unsigned k = 0; k < 3; ++k) {
+                        llvm::Type* elemTy = k == 0 ? (llvm::Type*)builder.getInt64Ty()
+                                                    : (llvm::Type*)builder.getPtrTy();
+                        llvm::Value* arr = builder.CreateLoad(
+                            builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 18 + k),
+                            "fann");
+                        builder.CreateStore(
+                            builder.CreateLoad(elemTy, builder.CreateGEP(elemTy, arr, i), "fa"),
+                            builder.CreateStructGEP(tokTy, tok, 4 + k));
+                    }
                 }
                 builder.CreateCall(addIt->second, {list, tok});
                 builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
@@ -1920,6 +1950,22 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                 builder.SetInsertPoint(done);
                 return list;
             }
+        }
+        // Field.annotations() (spec 31): the annotations written ON the field, which is where a
+        // declarative rule about a field goes -- `[NotEmpty] String name;`. Same three arrays as a
+        // method's, read from Field token slots 4/5/6.
+        if (typeName(*mem->object) == "Field" && mem->member == "annotations") {
+            llvm::Value* f = emitExpr(*mem->object);
+            if (f == nullptr) {
+                return nullptr;
+            }
+            llvm::Value* count = builder.CreateLoad(
+                builder.getInt64Ty(), builder.CreateStructGEP(fieldTokenType(), f, 4), "fannc");
+            llvm::Value* names = builder.CreateLoad(
+                builder.getPtrTy(), builder.CreateStructGEP(fieldTokenType(), f, 5), "fannn");
+            llvm::Value* args = builder.CreateLoad(
+                builder.getPtrTy(), builder.CreateStructGEP(fieldTokenType(), f, 6), "fanna");
+            return emitAnnotationList(count, names, args, mem->loc);
         }
         // Field reflection (spec 31): name() reads the field token's name.
         if (typeName(*mem->object) == "Field" &&
@@ -1964,13 +2010,17 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
             return nullptr;
         }
         // Annotation reflection (spec 14.3, 31): name() reads the annotation token's name.
-        if (typeName(*mem->object) == "Annotation" && mem->member == "name") {
+        if (typeName(*mem->object) == "Annotation" &&
+            (mem->member == "name" || mem->member == "args")) {
             llvm::Value* a = emitExpr(*mem->object);
             if (a == nullptr) {
                 return nullptr;
             }
-            return builder.CreateLoad(builder.getPtrTy(),
-                                      builder.CreateStructGEP(annotationTokenType(), a, 0), "a.name");
+            // `args` is the argument list as written -- `min=1,max=10` -- parsed by whoever reads it.
+            const unsigned slot = mem->member == "name" ? 0 : 1;
+            return builder.CreateLoad(
+                builder.getPtrTy(), builder.CreateStructGEP(annotationTokenType(), a, slot),
+                "a.name");
         }
         // Method reflection (spec 31): name() and invoke(receiver) for no-arg methods.
         if (typeName(*mem->object) == "Method") {
@@ -1982,45 +2032,15 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                 return builder.CreateLoad(builder.getPtrTy(),
                                           builder.CreateStructGEP(methodTokenType(), m, 0), "m.name");
             }
-            // annotations(): the method's own applied annotations (spec 31), from token slots 2/3.
+            // annotations(): the method's own applied annotations (spec 31), from token slots 2/3/5.
             if (mem->member == "annotations") {
-                const std::string listCls = "ArrayList$Annotation";
-                auto clsIt = classes.find(listCls);
-                auto ctorIt2 = functions.find(listCls + "." + listCls);
-                auto addIt2 = functions.find(listCls + ".add");
-                if (clsIt == classes.end() || ctorIt2 == functions.end() ||
-                    addIt2 == functions.end()) {
-                    error("internal: ArrayList$Annotation not available for reflection", mem->loc);
-                    return nullptr;
-                }
-                llvm::Value* list =
-                    builder.CreateCall(mallocFn(), {sizeOf(clsIt->second.type)}, "annlist");
-                builder.CreateCall(ctorIt2->second, {list});
                 llvm::Value* count = builder.CreateLoad(
                     builder.getInt64Ty(), builder.CreateStructGEP(methodTokenType(), m, 2), "annc");
                 llvm::Value* names = builder.CreateLoad(
                     builder.getPtrTy(), builder.CreateStructGEP(methodTokenType(), m, 3), "annn");
-                llvm::Function* curFn = currentFn;
-                llvm::Value* iSlot = createEntryAlloca("ai", builder.getInt64Ty());
-                builder.CreateStore(builder.getInt64(0), iSlot);
-                auto* hdr = llvm::BasicBlock::Create(context, "ma.hdr", curFn);
-                auto* body = llvm::BasicBlock::Create(context, "ma.body", curFn);
-                auto* done = llvm::BasicBlock::Create(context, "ma.done", curFn);
-                builder.CreateBr(hdr);
-                builder.SetInsertPoint(hdr);
-                llvm::Value* i = builder.CreateLoad(builder.getInt64Ty(), iSlot, "i");
-                builder.CreateCondBr(builder.CreateICmpSLT(i, count), body, done);
-                builder.SetInsertPoint(body);
-                llvm::Value* nm = builder.CreateLoad(
-                    builder.getPtrTy(), builder.CreateGEP(builder.getPtrTy(), names, i), "nm");
-                llvm::Value* tok =
-                    builder.CreateCall(mallocFn(), {sizeOf(annotationTokenType())}, "ann");
-                builder.CreateStore(nm, builder.CreateStructGEP(annotationTokenType(), tok, 0));
-                builder.CreateCall(addIt2->second, {list, tok});
-                builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
-                builder.CreateBr(hdr);
-                builder.SetInsertPoint(done);
-                return list;
+                llvm::Value* args = builder.CreateLoad(
+                    builder.getPtrTy(), builder.CreateStructGEP(methodTokenType(), m, 5), "anna");
+                return emitAnnotationList(count, names, args, mem->loc);
             }
             // firstByte(): the first machine-code byte of the method (0xCC = 204 after a
             // physical unimport), so the code overwrite is observable.
