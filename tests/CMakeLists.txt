@@ -2646,6 +2646,36 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # DECLARING A TYPE THE STANDARD LIBRARY ALSO DECLARES. Yours wins -- the compiler says so -- and
+        # implementing that means renaming both apart and rewriting every reference. THREE kinds were
+        # never rewritten: an enum's method bodies (only its name was renamed), `sizeof`'s argument (a
+        # type written where a value goes, and bare identifiers are deliberately left alone by the clone
+        # that also monomorphizes generics), and `unimport`/`reimport`, which the statement clone did
+        # not handle at all, so the statement was silently dropped. None fires until a stdlib type
+        # shares a name with a user's: no collision, no renaming, nothing to walk. This test exists so
+        # they cannot come back the day somebody renames the library's `Color`.
+        add_test(NAME codegen_shadow_stdlib_name_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/shadow_stdlib_name.pol"
+            "-DEXPECTED=green=2 red=1 size=4 count=3 after=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # THE SPATIAL AND GAME LAYER. `SpatialGrid` -- insert and queryRect -- was the only spatial
+        # structure, and a uniform grid is the right answer only for a uniform population: give it a
+        # world where everything is in one town and it becomes a linear scan of that town's cell, which
+        # is exactly what a game has. No procedural noise and no colour type existed at all, in a
+        # language whose north-star is a 3D god-game. The last number is the one worth having a test
+        # for: blending in LINEAR light puts the midpoint of black and white at 188, not 128.
+        add_test(NAME codegen_spatial_game_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/spatial_game.pol"
+            "-DEXPECTED=rect=4 circle=2 near=12 box3=2 noise=1 seeds=1 range=1 hue=120 blend=188"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `Stats` could say what a sample LOOKED like and nothing could say whether it was SURPRISING.
         # Distributions, special functions, root finding, integration, ODE solvers, optimisation and
         # matrix decompositions were all absent. Every number is checked against a closed form or a

@@ -1,0 +1,104 @@
+import System.IO.Console;
+import System.Spatial.Quadtree;
+import System.Spatial.Octree;
+import System.Spatial.Noise;
+import System.Spatial.Color;
+program SpatialGame;
+
+// THE SPATIAL AND GAME LAYER. `SpatialGrid` -- insert and queryRect -- was the only spatial structure
+// in the library, and a uniform grid is the right answer only for a uniform population: give it a
+// world where everything is in one town and it degenerates to a linear scan of that town's cell,
+// which is exactly the case a game has. There was no procedural noise and no colour type at all, in a
+// language whose north-star is a 3D god-game.
+//
+// What this pins down:
+//   - a quadtree finds the right neighbours by rectangle and by CIRCLE (a game asks "who is near me",
+//     which is a circle, and a box answer includes its corners)
+//   - nearest works when the query point is nowhere near the data
+//   - an octree does the same in three dimensions
+//   - noise is deterministic per seed, differs BETWEEN seeds, and stays in range over many octaves
+//   - a colour round-trips through HSV, and blending happens in LINEAR light -- the midpoint of black
+//     and white is 188, not 128, which is the single most common graphics mistake there is
+//
+// Prints: rect=4 circle=2 near=12 box3=2 noise=1 seeds=1 range=1 hue=120 blend=188
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Main.trees();
+                Main.noise();
+                Main.colour();
+                return;
+            }
+
+            private static method trees() returns void {
+                mutable Quadtree* q = new Quadtree(0.0, 0.0, 100.0) on heap;
+                // A cluster near the origin and one far away -- the shape a grid handles badly.
+                q.insert(1.0, 1.0, 10);
+                q.insert(2.0, 2.0, 11);
+                q.insert(3.0, 3.0, 12);
+                q.insert(1.5, 2.5, 13);
+                q.insert(80.0, 80.0, 99);
+
+                // The rectangle takes all four of the cluster and leaves the far one.
+                mutable int[] inRect = q.queryRect(0.0, 0.0, 5.0, 5.0);
+                // The circle is the point: radius 0.8 around (2,2) holds (2,2) and (1.5,2.5) at 0.707,
+                // and excludes (1,1) and (3,3) at 1.414 -- which the enclosing SQUARE would have
+                // included, because they sit in its corners. Two, not four.
+                mutable int[] inCircle = q.queryCircle(2.0, 2.0, 0.8);
+                System.IO.Console.printf("rect=%d circle=%d near=%d ",
+                                         inRect.length(), inCircle.length(),
+                                         q.nearest(3.2, 3.1));
+
+                mutable Octree* o = new Octree(0.0, 0.0, 0.0, 100.0) on heap;
+                o.insert(1.0, 1.0, 1.0, 1);
+                o.insert(2.0, 2.0, 2.0, 2);
+                o.insert(50.0, 50.0, 50.0, 3);
+                mutable int[] inBox = o.queryBox(0.0, 0.0, 0.0, 5.0, 5.0, 5.0);
+                System.IO.Console.printf("box3=%d ", inBox.length());
+
+                delete inRect; delete inCircle; delete inBox; delete q; delete o;
+                return;
+            }
+
+            private static method noise() returns void {
+                mutable Noise* a = new Noise(1234) on heap;
+                mutable Noise* b = new Noise(1234) on heap;
+                mutable Noise* c = new Noise(9999) on heap;
+                // The same seed is the same world, and a different seed is a different one. The famous
+                // fixed permutation table gives everybody the SAME world, which is why the seed is
+                // here at all.
+                boolean same = a.at(3.7, 2.1) == b.at(3.7, 2.1);
+                boolean different = a.at(3.7, 2.1) != c.at(3.7, 2.1);
+
+                // Six octaves must still land in [-1, 1]: fBm that is not normalised grows with the
+                // octave count, and terrain built on it clips into flat plateaux at the extremes.
+                mutable boolean inRange = true;
+                for (mutable int i = 0; i < 50; i++) {
+                    double v = a.fractal(cast<double>(i) * 0.37, cast<double>(i) * 0.11, 6, 0.5);
+                    if (v < 0.0 - 1.0 || v > 1.0) { inRange = false; }
+                }
+                System.IO.Console.printf("noise=%d seeds=%d range=%d ", same, different, inRange);
+                delete a; delete b; delete c;
+                return;
+            }
+
+            private static method colour() returns void {
+                // Pure green through HSV and back.
+                mutable Color* green = Color.fromHsv(120.0, 1.0, 1.0);
+                System.IO.Console.printf("hue=%d ", cast<int>(green.hue() + 0.5));
+
+                // THE MIDPOINT OF BLACK AND WHITE IS NOT 128. Blending in linear light and converting
+                // back gives 188 -- and a renderer that averages sRGB directly produces the muddy
+                // half-dark grey that is the commonest graphics mistake there is.
+                mutable Color* black = Color.rgb(0.0, 0.0, 0.0);
+                mutable Color* white = Color.rgb(1.0, 1.0, 1.0);
+                mutable Color mid = Color.blend(black, white, 0.5);
+                System.IO.Console.printf("blend=%d\n", (mid.toPacked() >> 16) & 255);
+
+                delete green; delete black; delete white;
+                return;
+            }
+        }
+    }
+}

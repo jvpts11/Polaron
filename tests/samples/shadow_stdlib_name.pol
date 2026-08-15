@@ -1,0 +1,64 @@
+import System.IO.Console;
+import System.Memory.Raw;
+program ShadowStdlibName;
+
+// DECLARING A TYPE THE STANDARD LIBRARY ALSO DECLARES.
+//
+// The rule is that yours wins, and the compiler says so in a warning. Implementing it means renaming
+// both apart -- yours becomes `App__Color`, the library's `Spatial__Color` -- and then rewriting every
+// reference to point at the right one. Three kinds of reference were never rewritten, and each failed
+// differently:
+//
+//   1. AN ENUM'S METHOD BODIES. A class goes through the clone that substitutes inside every body; an
+//      enum had only its NAME renamed. `Color.GREEN` inside the enum's own method kept a bare `Color`
+//      that had just been renamed out from under it.
+//
+//   2. `sizeof`'s ARGUMENT, which is a type written where a value goes. Bare identifiers are
+//      deliberately left alone by that clone -- it is the same one that monomorphizes generics, where
+//      the map takes T to int and touching a variable named T would be a disaster -- so the type was
+//      not substituted. It failed pointing at LINE 1, because the expression came out of a string
+//      interpolation and sub-parsed nodes carry no location.
+//
+//   3. `unimport` / `reimport`, which name a type and were not handled by the statement clone at all,
+//      so the statement was silently DROPPED. The compiler warned that it did not know the kind --
+//      which is why this took five minutes -- but a warning is not handling it.
+//
+// None of it fires until a stdlib type shares a name with a user type: no collision, no renaming,
+// nothing to walk. Adding `Color` to the library made all three appear at once, in programs that had
+// done nothing unusual and never imported it.
+//
+// Prints: green=2 red=1 size=4 count=3 after=1
+public bundle Main {
+    public namespace App {
+
+        // The name the standard library also uses, in System.Spatial.
+        public enum Color {
+            RED,
+            GREEN,
+            BLUE;
+
+            // (1) A reference to the enum from inside the enum.
+            public method weight() returns int {
+                if (this == Color.GREEN) { return 2; }
+                return 1;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Color g = Color.GREEN;
+                Color r = Color.RED;
+                // (2) `sizeof` of the shadowing type, inside an interpolation -- both halves of the
+                // failure at once.
+                System.IO.Console.println(
+                    $"green={g.weight()} red={r.weight()} size={Raw.sizeof(Color)} count={Color.count()}");
+                // (3) The statement that used to vanish. Reimporting straight after keeps the program
+                // running, which is what makes the drop observable rather than merely fatal.
+                unimport enum Color;
+                reimport enum Color;
+                System.IO.Console.printf("after=%d\n", Color.RED.weight());
+                return;
+            }
+        }
+    }
+}

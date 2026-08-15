@@ -1,0 +1,679 @@
+    public namespace Spatial {
+        // A QUADTREE over points. `SpatialGrid` was the only spatial structure the library had, and a
+        // uniform grid is the right answer only for a uniform population: give it a world where
+        // everything is in one town and it degenerates to a linear scan of that town's cell, which is
+        // exactly the case a game has.
+        //
+        // Everything is FLAT ARRAYS -- no node objects, no per-node list. A tree of small objects is
+        // the shape that makes a spatial index slower than the scan it replaced, because every descent
+        // is a pointer chase into a different cache line. Nodes are indices into parallel arrays, and
+        // a node's points are a chain through one more.
+        public class Quadtree {
+            // Node geometry: centre and half-extent, which is cheaper to test than min/max and is what
+            // the subdivision produces anyway.
+            private mutable double[] cx;
+            private mutable double[] cy;
+            private mutable double[] half;
+            private mutable int[] child;      // first of four consecutive children, or -1 for a leaf
+            private mutable int[] head;       // first point of this leaf's chain, or -1
+            private mutable int[] count;
+            private mutable int nodes;
+
+            private mutable double[] px;
+            private mutable double[] py;
+            private mutable int[] pid;
+            private mutable int[] next;       // the chain
+            private mutable int points;
+
+            private mutable int cap;          // points per leaf before it splits
+            private mutable int maxDepth;
+
+            public constructor Quadtree(double centreX, double centreY, double halfSize) {
+                this.cx = new double[64]();
+                this.cy = new double[64]();
+                this.half = new double[64]();
+                this.child = new int[64]();
+                this.head = new int[64]();
+                this.count = new int[64]();
+                this.px = new double[64]();
+                this.py = new double[64]();
+                this.pid = new int[64]();
+                this.next = new int[64]();
+                this.nodes = 1;
+                this.points = 0;
+                this.cap = 8;
+                this.maxDepth = 12;
+                this.cx[0] = centreX;
+                this.cy[0] = centreY;
+                this.half[0] = halfSize;
+                this.child[0] = -1;
+                this.head[0] = -1;
+                this.count[0] = 0;
+            }
+
+            public method size() returns int { return this.points; }
+
+            public method insert(double x, double y, int id) returns void {
+                this.ensurePoint();
+                int p = this.points;
+                this.px[p] = x;
+                this.py[p] = y;
+                this.pid[p] = id;
+                this.next[p] = -1;
+                this.points = this.points + 1;
+                this.place(0, p, 0);
+                return;
+            }
+
+            // Descend to the leaf that owns (x, y), chain the point onto it, and split if it is now
+            // over capacity and there is depth left. The depth bound matters: two points at the same
+            // coordinate can never be separated by subdivision, and without a floor the split recurses
+            // until it runs out of memory.
+            private method place(int node, int p, int depth) returns void {
+                mutable int at = node;
+                mutable int d = depth;
+                while (this.child[at] >= 0) {
+                    at = this.child[at] + this.quadrantOf(at, this.px[p], this.py[p]);
+                    d = d + 1;
+                }
+                this.next[p] = this.head[at];
+                this.head[at] = p;
+                this.count[at] = this.count[at] + 1;
+                if (this.count[at] > this.cap && d < this.maxDepth) { this.split(at); }
+                return;
+            }
+
+            private method quadrantOf(int node, double x, double y) returns int {
+                mutable int q = 0;
+                if (x >= this.cx[node]) { q = q + 1; }
+                if (y >= this.cy[node]) { q = q + 2; }
+                return q;
+            }
+
+            private method split(int node) returns void {
+                this.ensureNodes(4);
+                int first = this.nodes;
+                double h = this.half[node] / 2.0;
+                for (mutable int i = 0; i < 4; i++) {
+                    int n = first + i;
+                    this.cx[n] = this.cx[node] + ((i % 2) == 0 ? 0.0 - h : h);
+                    this.cy[n] = this.cy[node] + ((i / 2) == 0 ? 0.0 - h : h);
+                    this.half[n] = h;
+                    this.child[n] = -1;
+                    this.head[n] = -1;
+                    this.count[n] = 0;
+                }
+                this.nodes = this.nodes + 4;
+                this.child[node] = first;
+                // Hand the points down. The chain is walked into a local first because `place` rewrites
+                // `next` as it goes, and walking a list you are relinking is how one silently loses
+                // half of it.
+                mutable int p = this.head[node];
+                this.head[node] = -1;
+                this.count[node] = 0;
+                while (p >= 0) {
+                    int nextP = this.next[p];
+                    int q = this.child[node] + this.quadrantOf(node, this.px[p], this.py[p]);
+                    this.next[p] = this.head[q];
+                    this.head[q] = p;
+                    this.count[q] = this.count[q] + 1;
+                    p = nextP;
+                }
+                return;
+            }
+
+            // Every id whose point is inside the rectangle. The result is an `int[]` sized to what was
+            // found, because a caller that gets a bare count and has to ask again has paid for the
+            // descent twice.
+            public method queryRect(double minX, double minY, double maxX, double maxY) returns int[] {
+                mutable int[] found = new int[this.points > 0 ? this.points : 1]();
+                mutable int n = this.gather(0, minX, minY, maxX, maxY, found, 0);
+                mutable int[] out = new int[n]();
+                for (mutable int i = 0; i < n; i++) { out[i] = found[i]; }
+                delete found;
+                return out;
+            }
+            private method gather(int node, double minX, double minY, double maxX, double maxY,
+                                  int[] out, int at) returns int {
+                // Reject the whole node when its box misses the query, which is the entire value of
+                // the structure.
+                double h = this.half[node];
+                if (this.cx[node] + h < minX || this.cx[node] - h > maxX ||
+                    this.cy[node] + h < minY || this.cy[node] - h > maxY) {
+                    return at;
+                }
+                mutable int n = at;
+                if (this.child[node] < 0) {
+                    mutable int p = this.head[node];
+                    while (p >= 0) {
+                        if (this.px[p] >= minX && this.px[p] <= maxX &&
+                            this.py[p] >= minY && this.py[p] <= maxY) {
+                            out[n] = this.pid[p];
+                            n = n + 1;
+                        }
+                        p = this.next[p];
+                    }
+                    return n;
+                }
+                for (mutable int i = 0; i < 4; i++) {
+                    n = this.gather(this.child[node] + i, minX, minY, maxX, maxY, out, n);
+                }
+                return n;
+            }
+
+            // Within a radius, which is the query a game actually asks -- "who is near me" is a circle
+            // and not a square. The box is used to prune and the distance to decide, so the answer is
+            // exact rather than the square's corners included.
+            public method queryCircle(double x, double y, double radius) returns int[] {
+                mutable int[] box = this.queryRect(x - radius, y - radius, x + radius, y + radius);
+                double r2 = radius * radius;
+                mutable int[] keep = new int[box.length() > 0 ? box.length() : 1]();
+                mutable int n = 0;
+                for (mutable int i = 0; i < box.length(); i++) {
+                    int id = box[i];
+                    // The point's coordinates are found by id, which costs a scan -- so the radius
+                    // filter is done against the stored points directly instead.
+                    keep[n] = id;
+                    n = n + 1;
+                }
+                delete keep;
+                delete box;
+                return this.circleScan(x, y, r2);
+            }
+            private method circleScan(double x, double y, double r2) returns int[] {
+                mutable int[] found = new int[this.points > 0 ? this.points : 1]();
+                mutable int n = this.gatherCircle(0, x, y, r2, found, 0);
+                mutable int[] out = new int[n]();
+                for (mutable int i = 0; i < n; i++) { out[i] = found[i]; }
+                delete found;
+                return out;
+            }
+            private method gatherCircle(int node, double x, double y, double r2, int[] out,
+                                        int at) returns int {
+                double h = this.half[node];
+                double r = Numerics.sqrt(r2);
+                if (this.cx[node] + h < x - r || this.cx[node] - h > x + r ||
+                    this.cy[node] + h < y - r || this.cy[node] - h > y + r) {
+                    return at;
+                }
+                mutable int n = at;
+                if (this.child[node] < 0) {
+                    mutable int p = this.head[node];
+                    while (p >= 0) {
+                        double dx = this.px[p] - x;
+                        double dy = this.py[p] - y;
+                        if (dx * dx + dy * dy <= r2) {
+                            out[n] = this.pid[p];
+                            n = n + 1;
+                        }
+                        p = this.next[p];
+                    }
+                    return n;
+                }
+                for (mutable int i = 0; i < 4; i++) {
+                    n = this.gatherCircle(this.child[node] + i, x, y, r2, out, n);
+                }
+                return n;
+            }
+
+            // The nearest id, or -1 when the tree is empty. Grows the search radius rather than
+            // walking the whole tree: most queries find their answer in the first ring.
+            public method nearest(double x, double y) returns int {
+                if (this.points == 0) { return -1; }
+                mutable double r = this.half[0] / 16.0;
+                if (r <= 0.0) { r = 1.0; }
+                for (mutable int tries = 0; tries < 8; tries++) {
+                    mutable int[] near = this.circleScan(x, y, r * r);
+                    if (near.length() > 0) {
+                        mutable int best = near[0];
+                        mutable double bestD = 0.0 - 1.0;
+                        for (mutable int i = 0; i < near.length(); i++) {
+                            int id = near[i];
+                            double d = this.distanceToId(x, y, id);
+                            if (bestD < 0.0 || d < bestD) { bestD = d; best = id; }
+                        }
+                        delete near;
+                        return best;
+                    }
+                    delete near;
+                    r = r * 2.0;
+                }
+                // Nothing within eight doublings: fall back to the whole set rather than answer -1 on
+                // a tree that plainly has points in it.
+                mutable int best = this.pid[0];
+                mutable double bestD = 0.0 - 1.0;
+                for (mutable int p = 0; p < this.points; p++) {
+                    double dx = this.px[p] - x;
+                    double dy = this.py[p] - y;
+                    double d = dx * dx + dy * dy;
+                    if (bestD < 0.0 || d < bestD) { bestD = d; best = this.pid[p]; }
+                }
+                return best;
+            }
+            private method distanceToId(double x, double y, int id) returns double {
+                for (mutable int p = 0; p < this.points; p++) {
+                    if (this.pid[p] == id) {
+                        double dx = this.px[p] - x;
+                        double dy = this.py[p] - y;
+                        return dx * dx + dy * dy;
+                    }
+                }
+                return 0.0;
+            }
+
+            private method ensureNodes(int more) returns void {
+                if (this.nodes + more <= this.cx.length()) { return; }
+                int bigger = this.cx.length() * 2 + more;
+                this.cx = Spatial.growDoubles(this.cx, this.nodes, bigger);
+                this.cy = Spatial.growDoubles(this.cy, this.nodes, bigger);
+                this.half = Spatial.growDoubles(this.half, this.nodes, bigger);
+                this.child = Spatial.growInts(this.child, this.nodes, bigger);
+                this.head = Spatial.growInts(this.head, this.nodes, bigger);
+                this.count = Spatial.growInts(this.count, this.nodes, bigger);
+                return;
+            }
+            private method ensurePoint() returns void {
+                if (this.points < this.px.length()) { return; }
+                int bigger = this.px.length() * 2;
+                this.px = Spatial.growDoubles(this.px, this.points, bigger);
+                this.py = Spatial.growDoubles(this.py, this.points, bigger);
+                this.pid = Spatial.growInts(this.pid, this.points, bigger);
+                this.next = Spatial.growInts(this.next, this.points, bigger);
+                return;
+            }
+            public destructor ~Quadtree() returns void {
+                delete this.cx; delete this.cy; delete this.half;
+                delete this.child; delete this.head; delete this.count;
+                delete this.px; delete this.py; delete this.pid; delete this.next;
+                return;
+            }
+        }
+
+        // Shared array growth, because six parallel arrays growing together would otherwise be six
+        // copies of the same six lines.
+        public class Spatial {
+            public static method growInts(int[] old, int used, int size) returns int[] {
+                mutable int[] bigger = new int[size]();
+                for (mutable int i = 0; i < used; i++) { bigger[i] = old[i]; }
+                delete old;
+                return bigger;
+            }
+            public static method growDoubles(double[] old, int used, int size) returns double[] {
+                mutable double[] bigger = new double[size]();
+                for (mutable int i = 0; i < used; i++) { bigger[i] = old[i]; }
+                delete old;
+                return bigger;
+            }
+        }
+
+        // AN OCTREE, the same idea in three dimensions -- eight children, and a `z`. Separate from the
+        // quadtree rather than a generic over the dimension, because the two differ in the one place
+        // that matters for speed: the child index is three comparisons instead of two, and folding
+        // that into a loop over an array of axes is what turns a descent into a cache miss.
+        public class Octree {
+            private mutable double[] cx;
+            private mutable double[] cy;
+            private mutable double[] cz;
+            private mutable double[] half;
+            private mutable int[] child;
+            private mutable int[] head;
+            private mutable int[] count;
+            private mutable int nodes;
+            private mutable double[] px;
+            private mutable double[] py;
+            private mutable double[] pz;
+            private mutable int[] pid;
+            private mutable int[] next;
+            private mutable int points;
+
+            public constructor Octree(double centreX, double centreY, double centreZ, double halfSize) {
+                this.cx = new double[64](); this.cy = new double[64](); this.cz = new double[64]();
+                this.half = new double[64]();
+                this.child = new int[64](); this.head = new int[64](); this.count = new int[64]();
+                this.px = new double[64](); this.py = new double[64](); this.pz = new double[64]();
+                this.pid = new int[64](); this.next = new int[64]();
+                this.nodes = 1;
+                this.points = 0;
+                this.cx[0] = centreX; this.cy[0] = centreY; this.cz[0] = centreZ;
+                this.half[0] = halfSize;
+                this.child[0] = -1; this.head[0] = -1; this.count[0] = 0;
+            }
+            public method size() returns int { return this.points; }
+
+            public method insert(double x, double y, double z, int id) returns void {
+                if (this.points >= this.px.length()) {
+                    int bigger = this.px.length() * 2;
+                    this.px = Spatial.growDoubles(this.px, this.points, bigger);
+                    this.py = Spatial.growDoubles(this.py, this.points, bigger);
+                    this.pz = Spatial.growDoubles(this.pz, this.points, bigger);
+                    this.pid = Spatial.growInts(this.pid, this.points, bigger);
+                    this.next = Spatial.growInts(this.next, this.points, bigger);
+                }
+                int p = this.points;
+                this.px[p] = x; this.py[p] = y; this.pz[p] = z; this.pid[p] = id;
+                this.next[p] = -1;
+                this.points = this.points + 1;
+                mutable int at = 0;
+                mutable int d = 0;
+                while (this.child[at] >= 0) {
+                    at = this.child[at] + this.octantOf(at, x, y, z);
+                    d = d + 1;
+                }
+                this.next[p] = this.head[at];
+                this.head[at] = p;
+                this.count[at] = this.count[at] + 1;
+                if (this.count[at] > 8 && d < 10) { this.split(at); }
+                return;
+            }
+            private method octantOf(int node, double x, double y, double z) returns int {
+                mutable int q = 0;
+                if (x >= this.cx[node]) { q = q + 1; }
+                if (y >= this.cy[node]) { q = q + 2; }
+                if (z >= this.cz[node]) { q = q + 4; }
+                return q;
+            }
+            private method split(int node) returns void {
+                if (this.nodes + 8 > this.cx.length()) {
+                    int bigger = this.cx.length() * 2 + 8;
+                    this.cx = Spatial.growDoubles(this.cx, this.nodes, bigger);
+                    this.cy = Spatial.growDoubles(this.cy, this.nodes, bigger);
+                    this.cz = Spatial.growDoubles(this.cz, this.nodes, bigger);
+                    this.half = Spatial.growDoubles(this.half, this.nodes, bigger);
+                    this.child = Spatial.growInts(this.child, this.nodes, bigger);
+                    this.head = Spatial.growInts(this.head, this.nodes, bigger);
+                    this.count = Spatial.growInts(this.count, this.nodes, bigger);
+                }
+                int first = this.nodes;
+                double h = this.half[node] / 2.0;
+                for (mutable int i = 0; i < 8; i++) {
+                    int n = first + i;
+                    this.cx[n] = this.cx[node] + ((i % 2) == 0 ? 0.0 - h : h);
+                    this.cy[n] = this.cy[node] + (((i / 2) % 2) == 0 ? 0.0 - h : h);
+                    this.cz[n] = this.cz[node] + ((i / 4) == 0 ? 0.0 - h : h);
+                    this.half[n] = h;
+                    this.child[n] = -1; this.head[n] = -1; this.count[n] = 0;
+                }
+                this.nodes = this.nodes + 8;
+                this.child[node] = first;
+                mutable int p = this.head[node];
+                this.head[node] = -1;
+                this.count[node] = 0;
+                while (p >= 0) {
+                    int nextP = this.next[p];
+                    int q = this.child[node] + this.octantOf(node, this.px[p], this.py[p], this.pz[p]);
+                    this.next[p] = this.head[q];
+                    this.head[q] = p;
+                    this.count[q] = this.count[q] + 1;
+                    p = nextP;
+                }
+                return;
+            }
+            public method queryBox(double minX, double minY, double minZ,
+                                   double maxX, double maxY, double maxZ) returns int[] {
+                mutable int[] found = new int[this.points > 0 ? this.points : 1]();
+                int n = this.gather(0, minX, minY, minZ, maxX, maxY, maxZ, found, 0);
+                mutable int[] out = new int[n]();
+                for (mutable int i = 0; i < n; i++) { out[i] = found[i]; }
+                delete found;
+                return out;
+            }
+            private method gather(int node, double minX, double minY, double minZ,
+                                  double maxX, double maxY, double maxZ, int[] out, int at) returns int {
+                double h = this.half[node];
+                if (this.cx[node] + h < minX || this.cx[node] - h > maxX ||
+                    this.cy[node] + h < minY || this.cy[node] - h > maxY ||
+                    this.cz[node] + h < minZ || this.cz[node] - h > maxZ) {
+                    return at;
+                }
+                mutable int n = at;
+                if (this.child[node] < 0) {
+                    mutable int p = this.head[node];
+                    while (p >= 0) {
+                        if (this.px[p] >= minX && this.px[p] <= maxX &&
+                            this.py[p] >= minY && this.py[p] <= maxY &&
+                            this.pz[p] >= minZ && this.pz[p] <= maxZ) {
+                            out[n] = this.pid[p];
+                            n = n + 1;
+                        }
+                        p = this.next[p];
+                    }
+                    return n;
+                }
+                for (mutable int i = 0; i < 8; i++) {
+                    n = this.gather(this.child[node] + i, minX, minY, minZ, maxX, maxY, maxZ, out, n);
+                }
+                return n;
+            }
+            public destructor ~Octree() returns void {
+                delete this.cx; delete this.cy; delete this.cz; delete this.half;
+                delete this.child; delete this.head; delete this.count;
+                delete this.px; delete this.py; delete this.pz; delete this.pid; delete this.next;
+                return;
+            }
+        }
+
+        // PERLIN NOISE, which a language whose north-star is a god-game did not have. Procedural
+        // terrain, clouds, wood grain, wind -- all of it is this function and a few octaves of it.
+        //
+        // The permutation is generated from a seed rather than being the famous fixed table, so two
+        // worlds from two seeds are actually different; the classic table is one world that everybody
+        // shares.
+        public class Noise {
+            private mutable int[] perm;      // 512 entries: the 256 permutation, doubled to avoid a wrap
+
+            public constructor Noise(int seed) {
+                this.perm = new int[512]();
+                mutable int[] p = new int[256]();
+                for (mutable int i = 0; i < 256; i++) { p[i] = i; }
+                // A shuffle driven by a small xorshift, which is enough for noise and needs no state
+                // beyond the seed.
+                mutable int state = seed == 0 ? 1 : seed;
+                for (mutable int i = 255; i > 0; i--) {
+                    state = state ^ (state << 13);
+                    state = state ^ ((state >> 17) & 32767);
+                    state = state ^ (state << 5);
+                    mutable int j = state % (i + 1);
+                    if (j < 0) { j = 0 - j; }
+                    int t = p[i]; p[i] = p[j]; p[j] = t;
+                }
+                for (mutable int i = 0; i < 512; i++) { this.perm[i] = p[i % 256]; }
+                delete p;
+            }
+
+            // The 2D value in [-1, 1]. Integer lattice corners, a gradient at each, and the smoothstep
+            // that makes the result continuous in its derivative -- which is why Perlin looks like
+            // terrain and value noise looks like static.
+            public method at(double x, double y) returns double {
+                int xi = Noise.floorInt(x) & 255;
+                int yi = Noise.floorInt(y) & 255;
+                double xf = x - cast<double>(Noise.floorInt(x));
+                double yf = y - cast<double>(Noise.floorInt(y));
+                double u = Noise.fade(xf);
+                double v = Noise.fade(yf);
+                int aa = this.perm[this.perm[xi] + yi];
+                int ab = this.perm[this.perm[xi] + yi + 1];
+                int ba = this.perm[this.perm[xi + 1] + yi];
+                int bb = this.perm[this.perm[xi + 1] + yi + 1];
+                double x1 = Noise.lerp(Noise.grad(aa, xf, yf), Noise.grad(ba, xf - 1.0, yf), u);
+                double x2 = Noise.lerp(Noise.grad(ab, xf, yf - 1.0),
+                                       Noise.grad(bb, xf - 1.0, yf - 1.0), u);
+                return Noise.lerp(x1, x2, v);
+            }
+
+            // Fractal Brownian motion: octaves of the same noise at doubling frequency and halving
+            // amplitude. One octave is a smooth blob; six is a landscape. Normalised so the result
+            // stays in [-1, 1] however many octaves are asked for.
+            public method fractal(double x, double y, int octaves, double persistence) returns double {
+                mutable double total = 0.0;
+                mutable double frequency = 1.0;
+                mutable double amplitude = 1.0;
+                mutable double maxValue = 0.0;
+                for (mutable int i = 0; i < octaves; i++) {
+                    total = total + this.at(x * frequency, y * frequency) * amplitude;
+                    maxValue = maxValue + amplitude;
+                    amplitude = amplitude * persistence;
+                    frequency = frequency * 2.0;
+                }
+                if (maxValue == 0.0) { return 0.0; }
+                return total / maxValue;
+            }
+            // Ridged noise: the absolute value, inverted -- which turns the smooth hills of fBm into
+            // the sharp crests a mountain range has.
+            public method ridged(double x, double y, int octaves) returns double {
+                mutable double total = 0.0;
+                mutable double frequency = 1.0;
+                mutable double amplitude = 1.0;
+                mutable double maxValue = 0.0;
+                for (mutable int i = 0; i < octaves; i++) {
+                    double n = 1.0 - Numerics.abs(this.at(x * frequency, y * frequency));
+                    total = total + n * n * amplitude;
+                    maxValue = maxValue + amplitude;
+                    amplitude = amplitude * 0.5;
+                    frequency = frequency * 2.0;
+                }
+                if (maxValue == 0.0) { return 0.0; }
+                return total / maxValue;
+            }
+
+            // 6t^5 - 15t^4 + 10t^3: the quintic whose first AND second derivatives vanish at both
+            // ends. The older cubic leaves a visible seam at the lattice lines, which is the artefact
+            // everybody who writes this from memory ships.
+            private static method fade(double t) returns double {
+                return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+            }
+            private static method lerp(double a, double b, double t) returns double {
+                return a + t * (b - a);
+            }
+            private static method grad(int hash, double x, double y) returns double {
+                int h = hash & 3;
+                if (h == 0) { return x + y; }
+                if (h == 1) { return 0.0 - x + y; }
+                if (h == 2) { return x - y; }
+                return 0.0 - x - y;
+            }
+            // Toward negative infinity, which is what a lattice needs -- a cast toward zero puts every
+            // coordinate in [-1, 0) into the same cell as [0, 1) and mirrors the whole negative half
+            // of the world.
+            private static method floorInt(double v) returns int {
+                int i = cast<int>(v);
+                if (cast<double>(i) > v) { return i - 1; }
+                return i;
+            }
+            public destructor ~Noise() returns void { delete this.perm; return; }
+        }
+
+        // A COLOUR, which the library had only as packed bytes in `Colors` (a hex codec, really).
+        //
+        // The conversions are the point. sRGB is NOT linear light: averaging two sRGB values gives a
+        // colour darker than the average of what the eye sees, which is why naively blended graphics
+        // look muddy. Linearising, blending, and converting back is the correct operation, and having
+        // both here is what makes it possible to write.
+        public class Color {
+            public mutable double r;
+            public mutable double g;
+            public mutable double b;
+            public mutable double a;
+            public constructor Color(double r, double g, double b, double a) {
+                this.r = r; this.g = g; this.b = b; this.a = a;
+            }
+            public static method rgb(double r, double g, double b) returns Color {
+                return new Color(r, g, b, 1.0) on heap;
+            }
+            public static method fromBytes(int r, int g, int b, int a) returns Color {
+                return new Color(cast<double>(r) / 255.0, cast<double>(g) / 255.0,
+                                 cast<double>(b) / 255.0, cast<double>(a) / 255.0) on heap;
+            }
+            public method toPacked() returns int {
+                return (Color.byteOf(this.a) << 24) | (Color.byteOf(this.r) << 16) |
+                       (Color.byteOf(this.g) << 8) | Color.byteOf(this.b);
+            }
+            private static method byteOf(double v) returns int {
+                mutable double c = v;
+                if (c < 0.0) { c = 0.0; }
+                if (c > 1.0) { c = 1.0; }
+                return cast<int>(c * 255.0 + 0.5);
+            }
+
+            // HSV, for the one thing it is genuinely good at: moving along a hue without changing how
+            // bright a colour is, which is what a palette needs and what RGB cannot express.
+            public static method fromHsv(double hue, double saturation, double value) returns Color {
+                double h = hue - cast<double>(cast<int>(hue / 360.0)) * 360.0;
+                double c = value * saturation;
+                double hp = h / 60.0;
+                double x = c * (1.0 - Numerics.abs(hp - cast<double>(cast<int>(hp / 2.0) * 2) - 1.0));
+                mutable double r = 0.0; mutable double g = 0.0; mutable double b = 0.0;
+                if (hp < 1.0) { r = c; g = x; }
+                else { if (hp < 2.0) { r = x; g = c; }
+                else { if (hp < 3.0) { g = c; b = x; }
+                else { if (hp < 4.0) { g = x; b = c; }
+                else { if (hp < 5.0) { r = x; b = c; }
+                else { r = c; b = x; } } } } }
+                double m = value - c;
+                return new Color(r + m, g + m, b + m, 1.0) on heap;
+            }
+            public method hue() returns double {
+                double max = Color.largest(this.r, this.g, this.b);
+                double min = Color.smallest(this.r, this.g, this.b);
+                double d = max - min;
+                if (d == 0.0) { return 0.0; }
+                mutable double h = 0.0;
+                if (max == this.r) { h = 60.0 * ((this.g - this.b) / d); }
+                else { if (max == this.g) { h = 60.0 * (2.0 + (this.b - this.r) / d); }
+                else { h = 60.0 * (4.0 + (this.r - this.g) / d); } }
+                if (h < 0.0) { h = h + 360.0; }
+                return h;
+            }
+            public method saturation() returns double {
+                double max = Color.largest(this.r, this.g, this.b);
+                if (max == 0.0) { return 0.0; }
+                return (max - Color.smallest(this.r, this.g, this.b)) / max;
+            }
+            public method value() returns double { return Color.largest(this.r, this.g, this.b); }
+
+            // sRGB to linear light and back. The 2.4 exponent with a linear toe near zero is the
+            // actual sRGB transfer function; the 2.2 gamma everybody uses instead is an approximation
+            // that is visibly wrong in the darks.
+            public method toLinear() returns Color {
+                return new Color(Color.linearOf(this.r), Color.linearOf(this.g),
+                                 Color.linearOf(this.b), this.a) on heap;
+            }
+            public method toSrgb() returns Color {
+                return new Color(Color.srgbOf(this.r), Color.srgbOf(this.g),
+                                 Color.srgbOf(this.b), this.a) on heap;
+            }
+            private static method linearOf(double c) returns double {
+                if (c <= 0.04045) { return c / 12.92; }
+                return Numerics.pow((c + 0.055) / 1.055, 2.4);
+            }
+            private static method srgbOf(double c) returns double {
+                if (c <= 0.0031308) { return c * 12.92; }
+                return 1.055 * Numerics.pow(c, 1.0 / 2.4) - 0.055;
+            }
+
+            // Blending IN LINEAR LIGHT, which is the whole reason the conversions above are here: the
+            // midpoint of black and white is not 50% grey in sRGB, it is about 73%.
+            public static method blend(Color* from, Color* to, double t) returns Color {
+                mutable Color* a = from.toLinear();
+                mutable Color* b = to.toLinear();
+                mutable Color* mixed = new Color(a.r + (b.r - a.r) * t,
+                                                 a.g + (b.g - a.g) * t,
+                                                 a.b + (b.b - a.b) * t,
+                                                 from.a + (to.a - from.a) * t) on heap;
+                Color out = mixed.toSrgb();
+                delete a; delete b; delete mixed;
+                return out;
+            }
+            private static method largest(double a, double b, double c) returns double {
+                mutable double m = a;
+                if (b > m) { m = b; }
+                if (c > m) { m = c; }
+                return m;
+            }
+            private static method smallest(double a, double b, double c) returns double {
+                mutable double m = a;
+                if (b < m) { m = b; }
+                if (c < m) { m = c; }
+                return m;
+            }
+        }
+    }
