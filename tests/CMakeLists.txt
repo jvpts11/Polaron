@@ -4875,6 +4875,47 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # TOTAL CONTROL OF THE FILESYSTEM, under rules that stop the usual mistakes. One line per
+        # rule, so a failure says which one broke.
+        #   missing -- a file that is not there read as "" through the builtin, exactly like an empty
+        #              one. The plain read now refuses and names the path; tryRead/readOr are the two
+        #              ways to ask about a file whose absence is ordinary.
+        #   temp    -- a scratch file exists inside its scope and is gone after it, whatever happened
+        #              in between. The constructor creates it, because a factory returning one by
+        #              value would hand back a copy and destroy the original.
+        #   paths   -- `..` resolved WITHOUT the filesystem (so it works on a path not yet created),
+        #              and `relative`, which is what a tool prints.
+        #   glob    -- `*` stays inside one component and `**` crosses directories: the distinction
+        #              every hand-written matcher forgets, so it silently sees only the top level.
+        add_test(NAME codegen_file_control_missing COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_control.pol"
+            "-DCONTAINS=missing: threw=1 message=cannot read 'nope.txt' try=0 or='default'"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_control_temp COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_control.pol"
+            "-DCONTAINS=temp: inside=1 gone after scope=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_control_paths COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_control.pol"
+            "-DCONTAINS=paths: normalize=a/d abs=1 stem=report.tar ext=dir/report.md rel=sub/two.pol"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_control_glob COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_control.pol"
+            "-DCONTAINS=glob: shallow=1 deep=2 exact=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # sortedBy (spec 34): order a collection by a comparator lambda, leaving the original untouched.
         add_test(NAME codegen_collection_sorted_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

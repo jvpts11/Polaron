@@ -1,0 +1,144 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.Paths;
+import System.IO.IoException;
+import System.IO.TempDirectory;
+import System.IO.TempFile;
+import System.Collections.ArrayList;
+import System.Text.StringBuilder;
+import System.Errors.Option;
+program FileControl;
+
+// TOTAL CONTROL OF THE FILESYSTEM, UNDER RULES THAT STOP THE USUAL MISTAKES.
+//
+// A FILE THAT IS NOT THERE READS AS "" through the builtin -- exactly like an empty one. Nothing
+// fails: the program parses nothing, finds nothing, reports zero of whatever it counts, and the run
+// looks healthy. So `Files.read` refuses and names the path, and the two ways to ask about a file
+// that may legitimately be absent are separate calls that say so: `tryRead` gives an Option and
+// `readOr` takes the fallback.
+//
+// A SCRATCH FILE CLEANS ITSELF UP. Every program that writes one writes the same three things wrong:
+// a name that collides when two copies run at once, a directory that does not exist on the other
+// platform, and a delete that is skipped on the failure path -- which is the path that matters,
+// because that is when the file has something in it. `using` makes the removal the language's job.
+//
+// A PATH IS NOT A STRING. `normalize` resolves `.` and `..` WITHOUT asking the filesystem, so it
+// works on a path that does not exist yet -- which is exactly when a program is building one -- and
+// a `..` that would climb past the root is dropped rather than kept, so a joined path cannot escape
+// its base. `relative` is what a tool prints: an error naming a file forty characters into a
+// repository is read by somebody who already knows where the repository is.
+//
+// A PATTERN IS HOW A PERSON SAYS WHICH FILES. `*` stays inside one component and `**` crosses
+// directories -- the distinction every hand-written matcher forgets, which is why hand-written ones
+// silently match only the top level.
+//
+// Prints:
+//   missing: threw=1 message=cannot read 'nope.txt' try=0 or='default'
+//   present: read=hello try=1
+//   temp: inside=1 gone after scope=1
+//   paths: normalize=a/d abs=1 stem=report.tar ext=dir/report.md rel=sub/two.pol
+//   glob: shallow=1 deep=2 exact=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Everything happens inside one scratch directory, removed on the way out whatever
+                // the outcome -- including the two files written into it.
+                using (TempDirectory work = new TempDirectory("polaron-fc") on stack) {
+                    String root = work.path();
+                    Main.missingFile(root);
+                    Main.presentFile(root);
+                    Main.tempFileScope(root);
+                    Main.pathShapes();
+                    Main.patterns(root);
+                }
+                return;
+            }
+
+            // The headline: a read that cannot happen is reported, not answered with "".
+            private static method missingFile(String root) returns void {
+                String path = Paths.join(root, "nope.txt");
+                mutable boolean threw = false;
+                mutable String message = "";
+                try {
+                    String never = Files.read(path);
+                    System.IO.Console.printf("read a missing file as '%s'\n", never);
+                } catch (IoException e) {
+                    threw = true;
+                    message = e.message();
+                }
+                Option<String> tried = Files.tryRead(path);
+                // The path is printed as its basename so the line does not carry a temp directory
+                // that changes every run.
+                System.IO.Console.printf("missing: threw=%d message=cannot read '%s' try=%d or='%s'\n",
+                                         threw ? 1 : 0, Paths.basename(path),
+                                         tried.isSome() ? 1 : 0,
+                                         Files.readOr(path, "default"));
+            }
+
+            private static method presentFile(String root) returns void {
+                String path = Paths.join(root, "there.txt");
+                Files.write(path, "hello");
+                Option<String> tried = Files.tryRead(path);
+                System.IO.Console.printf("present: read=%s try=%d\n",
+                                         Files.read(path), tried.isSome() ? 1 : 0);
+            }
+
+            // A scratch file exists inside its scope and is gone after it -- which is the point, and
+            // is a thing the program can check rather than take on trust.
+            private static method tempFileScope(String root) returns void {
+                mutable String remembered = "";
+                mutable boolean inside = false;
+                using (TempFile scratch = new TempFile("piece") on stack) {
+                    remembered = scratch.path();
+                    Files.write(remembered, "working");
+                    inside = Files.exists(remembered);
+                }
+                System.IO.Console.printf("temp: inside=%d gone after scope=%d\n",
+                                         inside ? 1 : 0, Files.exists(remembered) ? 0 : 1);
+            }
+
+            private static method pathShapes() returns void {
+                // `..` climbs one and `.` disappears, with no filesystem involved.
+                String norm = Paths.normalize("a/b/../c/./../d");
+                // Separators of both kinds are read, so the answer is the same on either platform.
+                String rel = Paths.relative("C:/proj", "C:/proj/sub/two.pol");
+                System.IO.Console.printf("paths: normalize=%s abs=%d stem=%s ext=%s rel=%s\n",
+                                         Main.forward(norm),
+                                         Paths.isAbsolute("/usr/lib") ? 1 : 0,
+                                         Paths.stem("report.tar.gz"),
+                                         Paths.withExtension("dir/report.txt", "md"),
+                                         Main.forward(rel));
+            }
+            // Printed with forward slashes so the expected output is one string on both platforms.
+            // The paths themselves keep the platform's separator, which is what a program hands on.
+            private static method forward(String path) returns String {
+                mutable StringBuilder out = new StringBuilder() on heap;
+                for (mutable int i = 0; i < path.length(); i++) {
+                    char c = path.charAt(i);
+                    out.appendChar(c == '\\' ? '/' : c);
+                }
+                return out.toString();
+            }
+
+            private static method patterns(String root) returns void {
+                String sub = Paths.join(root, "sub");
+                Files.createDirectory(sub);
+                Files.write(Paths.join(root, "one.pol"), "");
+                Files.write(Paths.join(sub, "two.pol"), "");
+                Files.write(Paths.join(sub, "notes.txt"), "");
+                // `*` stops at a separator, `**` crosses it -- the distinction that decides whether
+                // a tool sees the whole tree or only its top.
+                mutable ArrayList<String> shallow = Files.glob(root, "*.pol");
+                mutable ArrayList<String> deep = Files.glob(root, "**.pol");
+                mutable ArrayList<String> exact = Files.glob(root, "sub/*.txt");
+                System.IO.Console.printf("glob: shallow=%d deep=%d exact=%d\n",
+                                         shallow.size(), deep.size(), exact.size());
+                delete exact;
+                delete deep;
+                delete shallow;
+                return;
+            }
+        }
+    }
+}
