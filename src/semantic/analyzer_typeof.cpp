@@ -2423,14 +2423,35 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (isFloatType(objType) && mem->member == "toString" && call->args.empty()) {
                 return "String";
             }
-            // And a boolean, for exactly the same reason and with exactly the same limit: a `record`
-            // with a boolean field could not be DECLARED, because its synthesized toString() calls
-            // toString() on every field and there was no such method -- so the error landed on the
-            // record declaration, naming a call the author never wrote. "true"/"false", which is the
-            // answer every language that has this gives. (toString only: a bare boolean is not a
-            // useful map key, so it stays out of the Hashable/Comparable builtins.)
-            if (objType == "boolean" && mem->member == "toString" && call->args.empty()) {
-                return "String";
+            // And a boolean, for exactly the same reason: a `record` with a boolean field could not
+            // be DECLARED, because its synthesized toString() calls toString() on every field and
+            // there was no such method -- so the error landed on the record declaration, naming a
+            // call the author never wrote. "true"/"false", which is the answer every language that
+            // has this gives.
+            //
+            // `equalsKey`/`hash`/`compareTo` too, which used to be left out on the grounds that "a
+            // bare boolean is not a useful map key". True, and it was the wrong test: a collection
+            // requires them of its ELEMENT type, so leaving them out meant `ArrayList<boolean>` --
+            // an ordinary list, and `indexOf(true)` an ordinary question -- did not compile at all.
+            // The error surfaced inside the standard library, at `this.data[i].equalsKey(item)`, on
+            // a line the author of the list never saw. Usefulness as a key is the caller's judgement;
+            // whether the list compiles is not.
+            if (objType == "boolean") {
+                for (const auto& arg : call->args) {
+                    typeOf(*arg);
+                }
+                if (mem->member == "toString" && call->args.empty()) {
+                    return "String";
+                }
+                if (mem->member == "equalsKey" && call->args.size() == 1) {
+                    return "boolean";
+                }
+                if (mem->member == "hash" && call->args.empty()) {
+                    return "long";
+                }
+                if (mem->member == "compareTo" && call->args.size() == 1) {
+                    return "int";   // false < true, the only order there is
+                }
             }
             // Integer types satisfy Hashable<T>/Comparable<T> via builtins, so they can be used as
             // map/set keys without boxing (collections, spec 34).

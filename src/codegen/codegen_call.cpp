@@ -1566,10 +1566,14 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         // Integer keys satisfy Hashable<T>/Comparable<T> via builtins (collections). Gate on the
         // builtin member names so this never intercepts ClassName.staticMethod() (whose receiver
         // typeName falls back to "int").
+        // `boolean` is in the list because a collection requires these of its ELEMENT type, and a
+        // list of booleans is an ordinary list. It lowers as an i32 like the others, so `equalsKey`
+        // and `compareTo` are the same comparison (false < true, the only order there is).
         if (const std::string ot = typeName(*mem->object);
-            isIntName(ot) && (mem->member == "hash" || mem->member == "toString" ||
-                              mem->member == "equalsKey" || mem->member == "compareTo" ||
-                              isIntOverflowMethod(mem->member))) {
+            (isIntName(ot) || ot == "boolean") &&
+            (mem->member == "hash" || mem->member == "toString" ||
+             mem->member == "equalsKey" || mem->member == "compareTo" ||
+             isIntOverflowMethod(mem->member))) {
             llvm::Value* a = emitExpr(*mem->object);
             if (a == nullptr) {
                 return nullptr;
@@ -2564,6 +2568,34 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         }
         const std::string owner = methodOwner(typeName(*mem->object), mem->member);
         auto fnit = functions.find(owner + "." + mem->member);
+        // IDENTITY IS A PROPERTY OF AN OBJECT, NOT OF ITS ROOT CLASS.
+        //
+        // `Object.equalsKey` is `this == other` and `hashCode` is nothing -- but a FREESTANDING
+        // program has no Object at all (assignObjectRoot skips it: a kernel has no managed runtime),
+        // so every class there lacked both, and the standard library's collections call `equalsKey`
+        // on their element type. The result was that `ArrayList<SomeClass>` did not compile bare
+        // metal, reported from inside the library at `this.data[i].equalsKey(item)` -- a line the
+        // author of the list never saw.
+        //
+        // Answered here rather than by giving freestanding an Object: the answer needs no runtime,
+        // no vtable and no allocation. It is a pointer comparison, which is what the hosted one
+        // compiles to anyway.
+        if ((owner.empty() || fnit == functions.end()) &&
+            (mem->member == "equalsKey" || mem->member == "hash") &&
+            classes.count(clsKey(baseType(typeName(*mem->object)))) > 0) {
+            llvm::Value* a = emitObjectPtr(*mem->object);
+            if (a == nullptr) {
+                return nullptr;
+            }
+            if (mem->member == "hash") {
+                return builder.CreatePtrToInt(a, builder.getInt64Ty());
+            }
+            llvm::Value* b = emitExpr(*call.args[0]);
+            if (b == nullptr) {
+                return nullptr;
+            }
+            return builder.CreateZExt(builder.CreateICmpEQ(a, b), builder.getInt32Ty());
+        }
         if (owner.empty() || fnit == functions.end()) {
             // NAME THE RECEIVER, and by the key it resolved to. "unknown method 'one'" is true of
             // every class that does not have `one`, which is the wrong half of the fact: what a

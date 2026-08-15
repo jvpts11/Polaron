@@ -182,6 +182,40 @@
             // Returns a new list with the elements ordered by a comparator (spec 34): compare(a, b) is
             // negative when a comes first, positive when b does. Stable merge sort, leaves this list
             // untouched. The comparator keeps it generic -- the element type needs no ordering of its own.
+            // IN PLACE, for when the copy is the waste. `sortedBy` builds a second list and returns
+            // it, which is right when the original is still wanted and is a full duplication when it
+            // is not -- and "put this list in order" is the commoner of the two. Same stable merge
+            // sort; only the copy is gone.
+            public method sort(function<int, T, T> compare) returns void {
+                if (this.count > 1) {
+                    T[] scratch = new T[this.count]();
+                    this.mergeSortRange(scratch, 0, this.count - 1, compare);
+                    delete scratch;
+                }
+            }
+            // Everything from another list, in its order. Written by hand at every call site
+            // otherwise, and the loop is the same loop every time.
+            public method addAll(ArrayList<T> other) returns void {
+                this.ensureCapacity(this.count + other.size());
+                for (mutable int i = 0; i < other.size(); i++) { this.add(other.get(i)); }
+            }
+            public method reverse() returns void {
+                mutable int i = 0;
+                mutable int j = this.count - 1;
+                while (i < j) {
+                    T t = this.data[i];
+                    this.data[i] = this.data[j];
+                    this.data[j] = t;
+                    i = i + 1;
+                    j = j - 1;
+                }
+            }
+            public method lastIndexOf(T item) returns int {
+                for (mutable int i = this.count - 1; i >= 0; i--) {
+                    if (this.data[i].equalsKey(item)) { return i; }
+                }
+                return -1;
+            }
             public method sortedBy(function<int, T, T> compare) returns ArrayList<T> {
                 mutable ArrayList<T> out = new ArrayList<T>() on heap;
                 out.ensureCapacity(this.count);  // the copy is known-size; fill without reallocating
@@ -930,6 +964,30 @@
                     if (this.used[i] != 0) { out[j] = this.keys[i]; j = j + 1; }
                 }
                 return out;
+            }
+            // THE SAME KEYS AS A LIST, because that is what the caller then wants: an array has to be
+            // deleted, and the loop that walks it into a list was being written at every call site.
+            public method keys() returns ArrayList<K> {
+                mutable ArrayList<K> out = new ArrayList<K>() on heap;
+                out.ensureCapacity(this.count);
+                for (mutable int i = 0; i < this.cap; i++) {
+                    if (this.used[i] != 0) { out.add(this.keys[i]); }
+                }
+                return out;
+            }
+            public method values() returns ArrayList<V> {
+                mutable ArrayList<V> out = new ArrayList<V>() on heap;
+                out.ensureCapacity(this.count);
+                for (mutable int i = 0; i < this.cap; i++) {
+                    if (this.used[i] != 0) { out.add(this.values[i]); }
+                }
+                return out;
+            }
+            // Empty it without throwing the map away, which is what a cache does between runs and
+            // what a reused scratch map does every iteration.
+            public method clear() returns void {
+                for (mutable int i = 0; i < this.cap; i++) { this.used[i] = cast<byte>(0); }
+                this.count = 0;
             }
             public method valueArray() returns V[] {  // values (arbitrary order)
                 mutable V[] out = new V[this.count]();
