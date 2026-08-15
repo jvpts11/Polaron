@@ -2659,6 +2659,20 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A NUMBER THAT KNOWS WHAT IT MEASURES. `System.Memory.Units.ByteSize` proved the mechanism --
+        # `64 kilobytes` is a literal suffix producing a TYPE -- and it existed for bytes alone, so
+        # everything else a program measures went back to a bare number, which is how a timeout in
+        # seconds reaches a parameter expecting milliseconds with nothing said. Each quantity keeps one
+        # canonical unit; arithmetic exists only where it means something, and `distance + duration` is
+        # a compile error, which is the entire reason to have the types.
+        add_test(NAME codegen_typed_units_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/typed_units.pol"
+            "-DEXPECTED=ms=1500 secs=1 sum=90 km=5 deg=90 rad=1.5708 wrap=10 speed=20 back=1000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A NAMESPACE MAY CONTAIN A NAMESPACE. Spec 2.7 promises `Bundle.Ns1.Ns2.Type` -- "namespace(s)",
         # plural -- and only the dotted spelling parsed; the block form died on "expected 'class',
         # 'struct', 'union', 'interface' or 'layout'", which never mentions nesting. Flattened at parse
@@ -3120,6 +3134,18 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reflect_field_getset.pol"
             "-DEXPECTED=before=10 after=99 direct=99"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # AUTOMATIC SERIALIZATION WITH NO MACRO AND NO GENERATED CODE: `System.Serialize` walks a
+        # type's fields through reflection, asks each what it is DECLARED as (Field.typeName, added
+        # for this) and writes it. Adding a field to `Player` changes the JSON with nothing else
+        # recompiled. Also covers `[Serializable]` and reflection inside a generic method.
+        add_test(NAME codegen_auto_serialize_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/auto_serialize.pol"
+            "-DEXPECTED=shape=Player{name:String,score:int,alive:boolean,ratio:double} json={\"name\":\"Ada\",\"score\":42,\"alive\":true,\"ratio\":0.5} serializable=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

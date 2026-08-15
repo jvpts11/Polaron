@@ -1,0 +1,119 @@
+    public namespace Serialize {
+        // WHAT A PROGRAM MEANS TO SEND. Serialization here does not need it -- the walk works on any
+        // type -- so this marks INTENT rather than granting a capability: a type carrying it is one
+        // whose author thought about it crossing a boundary. `Schema.isSerializable<T>()` reads it
+        // back, and what to do about a type that lacks it is the program's decision, not this
+        // library's.
+        public annotation Serializable {}
+
+        // AUTOMATIC SERIALIZATION, WITH NO MACROS AND NO CODE GENERATION.
+        //
+        // Every other language needs one or the other. Rust derives it with a procedural macro, Java
+        // with reflection plus an annotation processor, C++ with a code generator or a hand-written
+        // trait per type. Polaron needs neither, because reflection here is not a sidecar:
+        // `reflect.typeOf<T>()` gives the fields, `Field.name()` gives what each is called,
+        // `Field.typeName()` what it is declared as, and `Field.get(obj)` reads it.
+        //
+        // So this is the whole feature, written in Polaron over the language's own reflection -- and
+        // adding a field to a type changes its JSON with nothing recompiled but the type.
+        //
+        // GENERIC, and that is not a style choice: `reflect.typeOf` takes a TYPE argument, so the type
+        // must be known where the call is written. It is -- a caller always knows what it is handing
+        // over -- and requiring it keeps the whole thing compile-time, with no runtime type lookup on
+        // a value.
+        //
+        // What it does NOT do, said plainly: cycles, which are refused by a depth bound rather than
+        // detected; and private fields, which reflection reports and this writes -- a serializer that
+        // skipped them would produce a document that cannot rebuild the object, which is worse than
+        // one that shows more than you expected.
+        public class Serializer {
+            // An object into a `Json` document, by walking its fields. The depth bound is the answer
+            // to a cycle: a graph that points back at itself is not a tree and cannot be written as
+            // one, and stopping at a fixed depth is a truthful failure rather than a hang.
+            public static method of<T>(T value) returns Json {
+                Type t = reflect.typeOf<T>();
+                mutable Json out = Json.object();
+                mutable ArrayList<Field> fs = t.fields();
+                for (mutable int i = 0; i < fs.size(); i++) {
+                    Field f = fs.get(i);
+                    out.put(f.name(), Serializer.encodeField(f, value));
+                }
+                return out;
+            }
+            public static method text<T>(T value) returns String {
+                mutable Json j = Serializer.of<T>(value);
+                return j.toString();
+            }
+
+            // ONE FIELD, BY ITS DECLARED TYPE. This is what `Field.typeName()` bought: `get` hands
+            // back an Object, and without knowing what the field was DECLARED as there is no way to
+            // tell an int that should be written bare from a String that must be quoted.
+            //
+            // A field whose type is another object is written as its type NAME rather than walked:
+            // walking it would need `typeOf` on a value, which the language does not have, and
+            // inventing a runtime type lookup for this one feature is the wrong trade. Naming it is
+            // honest and still tells a reader what is there.
+            private static method encodeField(Field f, Object owner) returns Json {
+                String kind = f.typeName();
+                if (kind.equals("int") || kind.equals("long") || kind.equals("short") ||
+                    kind.equals("byte")) {
+                    return Json.ofNum(cast<long>(cast<int>(f.get(owner))));
+                }
+                if (kind.equals("boolean")) {
+                    return Json.ofBool(cast<int>(f.get(owner)) != 0);
+                }
+                if (kind.equals("char")) {
+                    mutable StringBuilder sb = new StringBuilder() on heap;
+                    sb.appendChar(cast<char>(cast<int>(f.get(owner))));
+                    return Json.ofStr(sb.toString());
+                }
+                if (kind.equals("String") || kind.equals("string")) {
+                    return Json.ofStr(cast<String>(f.get(owner)));
+                }
+                if (kind.equals("double") || kind.equals("float")) {
+                    return Json.ofReal(cast<double>(f.get(owner)));
+                }
+                return Json.ofStr(kind);
+            }
+        }
+
+        // WHAT A TYPE IS MADE OF, as text -- `name{field:type,...}`. For a schema, a log line, or the
+        // message that explains why something did not round-trip. The same walk, without the values.
+        //
+        // Named `Schema` and not `Shape`, deliberately. `Shape` is the single likeliest name in
+        // anybody's own program -- it is the first example in every tutorial about polymorphism,
+        // including this project's own -- and a standard library that takes it puts every such
+        // program into the collision path for no reason. The compiler resolves collisions correctly
+        // now, which is what makes this a choice about the LIBRARY rather than a workaround: a name
+        // this general belongs to the user, and `Schema` says more about what the class does anyway.
+        public class Schema {
+            public static method of<T>() returns String {
+                Type t = reflect.typeOf<T>();
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.append(t.name());
+                sb.append("{");
+                mutable ArrayList<Field> fs = t.fields();
+                for (mutable int i = 0; i < fs.size(); i++) {
+                    if (i > 0) { sb.append(","); }
+                    sb.append(fs.get(i).name());
+                    sb.append(":");
+                    sb.append(fs.get(i).typeName());
+                }
+                sb.append("}");
+                return sb.toString();
+            }
+            // Whether the type carries `[Serializable]`. Not needed to serialize -- the walk works on
+            // anything -- and it is what lets a program say which types are MEANT to cross a boundary,
+            // so sending one that was not is a question that can be asked rather than a surprise on
+            // the wire. A question and not a refusal: this namespace does not know what a caller wants
+            // done about it, and a library that decides that for you is one people work around.
+            public static method isSerializable<T>() returns boolean {
+                Type t = reflect.typeOf<T>();
+                mutable ArrayList<Annotation> anns = t.annotations();
+                for (mutable int i = 0; i < anns.size(); i++) {
+                    if (anns.get(i).name().equals("Serializable")) { return true; }
+                }
+                return false;
+            }
+        }
+    }

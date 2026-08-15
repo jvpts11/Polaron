@@ -1,0 +1,62 @@
+import System.IO.Console;
+import System.Units.Span;
+import System.Units.Length;
+import System.Units.Turn;
+import System.Units.Speed;
+import System.Units.seconds;
+import System.Units.milliseconds;
+import System.Units.minutes;
+import System.Units.metres;
+import System.Units.kilometres;
+import System.Units.degrees;
+program TypedUnits;
+
+// A NUMBER THAT KNOWS WHAT IT MEASURES.
+//
+// `System.Memory.Units.ByteSize` already proved the mechanism -- `64 kilobytes` is a literal suffix
+// that produces a TYPE rather than an int -- and it existed for bytes and nothing else. Everything
+// else a program measures went back to being a bare number, which is how a timeout in seconds reaches
+// a parameter expecting milliseconds with nothing said.
+//
+// Each quantity keeps ONE canonical unit and converts at the edges: a `Span` is nanoseconds, always,
+// so adding two of them adds two longs and there is no conversion table to disagree with itself.
+//
+// Arithmetic exists only where it means something. Two spans add; a span times a span does not,
+// because there is no such quantity -- and `distance + duration` is a compile error, which is the
+// entire reason to have the types.
+//
+// Prints: ms=1500 secs=1 sum=90 km=5 deg=90 rad=1.5708 wrap=10 speed=20 back=1000
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A literal suffix builds the type; reading it out names the unit, so a truncating
+                // read cannot be mistaken for the whole value.
+                Span wait = 1500 milliseconds;
+                System.IO.Console.printf("ms=%d secs=%d ", wait.asMilliseconds(), wait.asSeconds());
+
+                // Two spans add, and the result is still a span.
+                Span total = 1 minutes + 30 seconds;
+                System.IO.Console.printf("sum=%d ", total.asSeconds());
+
+                Length trip = 5 kilometres;
+                System.IO.Console.printf("km=%d ", trip.asKilometres());
+
+                // Turns are integer millidegrees, so a whole turn is exact and normalising is not a
+                // float that drifts after a million rotations.
+                Turn right = 90 degrees;
+                System.IO.Console.printf("deg=%d rad=%.4f ", right.asDegrees(), right.asRadians());
+                Turn over = 370 degrees;
+                System.IO.Console.printf("wrap=%d ", over.normalised().asDegrees());
+
+                // The one derived quantity a program computes rather than writes -- and the pair
+                // round-trips: 1000 m over 50 s is 20 m/s, which carries 1000 m back over 50 s.
+                Speed pace = Speed.over(1000 metres, 50 seconds);
+                System.IO.Console.printf("speed=%d back=%d\n",
+                                         pace.asMetresPerSecond(),
+                                         pace.across(50 seconds).asMetres());
+                return;
+            }
+        }
+    }
+}

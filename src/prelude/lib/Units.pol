@@ -1,0 +1,229 @@
+    public namespace Units {
+        // TYPED QUANTITIES: a number that knows what it measures.
+        //
+        // `System.Memory.Units.ByteSize` already proved the mechanism -- `64 kilobytes` is a literal
+        // suffix that produces a TYPE, not an int -- and it existed for bytes alone. Everything else a
+        // program measures went back to being a bare number, which is how a timeout in seconds gets
+        // passed to a parameter expecting milliseconds and nothing says a word.
+        //
+        // Each quantity keeps ONE canonical unit and converts at the edges. That is the decision that
+        // makes the rest work: a `Duration` is nanoseconds, always, so adding two of them is adding
+        // two longs and no conversion table exists to disagree with itself.
+        //
+        // Arithmetic is only defined where it MEANS something. Two durations add; a duration times a
+        // duration does not, because there is no such quantity -- and the absence is the point. The
+        // compiler refuses `distance + duration` because the types differ, which is the whole reason
+        // to have them.
+
+        // Time, canonically in NANOSECONDS: 292 years fit in a signed 64-bit count of them, which is
+        // longer than any program runs, and finer than any clock this language reads.
+        public struct Span {
+            public final long ns;
+            public constructor Span(long ns) { this.ns = ns; }
+
+            public comptime literal nanoseconds(int x) returns Span {
+                return new Span(cast<long>(x)) on heap;
+            }
+            public comptime literal microseconds(int x) returns Span {
+                return new Span(cast<long>(x) * 1000) on heap;
+            }
+            public comptime literal milliseconds(int x) returns Span {
+                return new Span(cast<long>(x) * 1000000) on heap;
+            }
+            public comptime literal seconds(int x) returns Span {
+                return new Span(cast<long>(x) * 1000000000) on heap;
+            }
+            public comptime literal minutes(int x) returns Span {
+                return new Span(cast<long>(x) * 60000000000) on heap;
+            }
+            public comptime literal hours(int x) returns Span {
+                return new Span(cast<long>(x) * 3600000000000) on heap;
+            }
+            public comptime literal days(int x) returns Span {
+                return new Span(cast<long>(x) * 86400000000000) on heap;
+            }
+
+            // Reading back out. Truncating, and named so: `asSeconds` on 1500 milliseconds is 1, and a
+            // method called `seconds()` would have been read as "the seconds part".
+            public method asNanoseconds() returns long { return this.ns; }
+            public method asMicroseconds() returns long { return this.ns / 1000; }
+            public method asMilliseconds() returns long { return this.ns / 1000000; }
+            public method asSeconds() returns long { return this.ns / 1000000000; }
+            public method asMinutes() returns long { return this.ns / 60000000000; }
+            public method asHours() returns long { return this.ns / 3600000000000; }
+            // The fractional form, for a report rather than a computation.
+            public method asSecondsExact() returns double {
+                return cast<double>(this.ns) / 1000000000.0;
+            }
+
+            public operator + (Span other) returns Span {
+                return new Span(this.ns + other.ns) on heap;
+            }
+            public operator - (Span other) returns Span {
+                return new Span(this.ns - other.ns) on heap;
+            }
+            // Scaling by a PLAIN number is meaningful -- twice as long is a duration. Multiplying two
+            // durations is not, and there is deliberately no operator for it.
+            public operator * (int factor) returns Span {
+                return new Span(this.ns * cast<long>(factor)) on heap;
+            }
+            public operator < (Span other) returns boolean { return this.ns < other.ns; }
+            public operator > (Span other) returns boolean { return this.ns > other.ns; }
+            public operator <= (Span other) returns boolean { return this.ns <= other.ns; }
+            public operator >= (Span other) returns boolean { return this.ns >= other.ns; }
+        }
+
+        // Length, canonically in MICROMETRES: small enough for machining, and 9.2e12 kilometres of
+        // range, which is past the outer solar system.
+        public struct Length {
+            public final long um;
+            public constructor Length(long um) { this.um = um; }
+
+            public comptime literal micrometres(int x) returns Length {
+                return new Length(cast<long>(x)) on heap;
+            }
+            public comptime literal millimetres(int x) returns Length {
+                return new Length(cast<long>(x) * 1000) on heap;
+            }
+            public comptime literal centimetres(int x) returns Length {
+                return new Length(cast<long>(x) * 10000) on heap;
+            }
+            public comptime literal metres(int x) returns Length {
+                return new Length(cast<long>(x) * 1000000) on heap;
+            }
+            public comptime literal kilometres(int x) returns Length {
+                return new Length(cast<long>(x) * 1000000000) on heap;
+            }
+
+            public method asMicrometres() returns long { return this.um; }
+            public method asMillimetres() returns long { return this.um / 1000; }
+            public method asCentimetres() returns long { return this.um / 10000; }
+            public method asMetres() returns long { return this.um / 1000000; }
+            public method asKilometres() returns long { return this.um / 1000000000; }
+            public method asMetresExact() returns double {
+                return cast<double>(this.um) / 1000000.0;
+            }
+
+            public operator + (Length other) returns Length {
+                return new Length(this.um + other.um) on heap;
+            }
+            public operator - (Length other) returns Length {
+                return new Length(this.um - other.um) on heap;
+            }
+            public operator * (int factor) returns Length {
+                return new Length(this.um * cast<long>(factor)) on heap;
+            }
+            public operator < (Length other) returns boolean { return this.um < other.um; }
+            public operator > (Length other) returns boolean { return this.um > other.um; }
+            public operator <= (Length other) returns boolean { return this.um <= other.um; }
+            public operator >= (Length other) returns boolean { return this.um >= other.um; }
+        }
+
+        // Mass, canonically in MILLIGRAMS.
+        public struct Mass {
+            public final long mg;
+            public constructor Mass(long mg) { this.mg = mg; }
+
+            public comptime literal milligrams(int x) returns Mass {
+                return new Mass(cast<long>(x)) on heap;
+            }
+            public comptime literal grams(int x) returns Mass {
+                return new Mass(cast<long>(x) * 1000) on heap;
+            }
+            public comptime literal kilograms(int x) returns Mass {
+                return new Mass(cast<long>(x) * 1000000) on heap;
+            }
+            public comptime literal tonnes(int x) returns Mass {
+                return new Mass(cast<long>(x) * 1000000000) on heap;
+            }
+
+            public method asMilligrams() returns long { return this.mg; }
+            public method asGrams() returns long { return this.mg / 1000; }
+            public method asKilograms() returns long { return this.mg / 1000000; }
+            public method asTonnes() returns long { return this.mg / 1000000000; }
+
+            public operator + (Mass other) returns Mass {
+                return new Mass(this.mg + other.mg) on heap;
+            }
+            public operator - (Mass other) returns Mass {
+                return new Mass(this.mg - other.mg) on heap;
+            }
+            public operator * (int factor) returns Mass {
+                return new Mass(this.mg * cast<long>(factor)) on heap;
+            }
+            public operator < (Mass other) returns boolean { return this.mg < other.mg; }
+            public operator > (Mass other) returns boolean { return this.mg > other.mg; }
+        }
+
+        // Rotation, canonically in MILLIDEGREES -- integers, so a full turn is exact and 360000 of
+        // them come back to zero without the drift a float accumulates over a million rotations.
+        //
+        // `Turn` and not `Angle`, because `System.Math.Angle` already exists. A user program MAY
+        // shadow a library name -- that is fixed and tested -- but the library shadowing ITSELF is a
+        // different matter: two types of one name in one bundle collide in their function symbols,
+        // which are still built from the bare name. See spec-divergences 9.5.
+        public struct Turn {
+            public final long mdeg;
+            public constructor Turn(long mdeg) { this.mdeg = mdeg; }
+
+            public comptime literal millidegrees(int x) returns Turn {
+                return new Turn(cast<long>(x)) on heap;
+            }
+            public comptime literal degrees(int x) returns Turn {
+                return new Turn(cast<long>(x) * 1000) on heap;
+            }
+            public comptime literal turns(int x) returns Turn {
+                return new Turn(cast<long>(x) * 360000) on heap;
+            }
+
+            public method asMillidegrees() returns long { return this.mdeg; }
+            public method asDegrees() returns long { return this.mdeg / 1000; }
+            public method asDegreesExact() returns double {
+                return cast<double>(this.mdeg) / 1000.0;
+            }
+            public method asRadians() returns double {
+                return this.asDegreesExact() * Numerics.pi() / 180.0;
+            }
+            // Into [0, 360) -- the operation every angle needs and every program writes wrong once.
+            public method normalised() returns Turn {
+                mutable long m = this.mdeg % 360000;
+                if (m < cast<long>(0)) { m = m + 360000; }
+                return new Turn(m) on heap;
+            }
+
+            public operator + (Turn other) returns Turn {
+                return new Turn(this.mdeg + other.mdeg) on heap;
+            }
+            public operator - (Turn other) returns Turn {
+                return new Turn(this.mdeg - other.mdeg) on heap;
+            }
+            public operator * (int factor) returns Turn {
+                return new Turn(this.mdeg * cast<long>(factor)) on heap;
+            }
+        }
+
+        // Speed is the one derived quantity worth having, because it is the one a program computes
+        // rather than writes: `Speed.over(distance, time)`. Canonically micrometres per second.
+        //
+        // Its existence is also the argument for the rest. `distance / time` cannot be an operator
+        // here -- Polaron has no way to say "dividing a Length by a Span yields a Speed" without
+        // dimensional types the language does not have -- so the named constructor is the honest
+        // spelling, and it is still the one that cannot be handed the arguments backwards.
+        public struct Speed {
+            public final long umPerSecond;
+            public constructor Speed(long umPerSecond) { this.umPerSecond = umPerSecond; }
+            public static method over(Length distance, Span time) returns Speed {
+                long secs = time.asSeconds();
+                if (secs == cast<long>(0)) { return new Speed(cast<long>(0)) on heap; }
+                return new Speed(distance.asMicrometres() / secs) on heap;
+            }
+            public method asMetresPerSecond() returns long { return this.umPerSecond / 1000000; }
+            public method asKilometresPerHour() returns long {
+                return this.umPerSecond * cast<long>(3600) / 1000000000;
+            }
+            // How far this speed carries in that time -- the inverse, so the pair round-trips.
+            public method across(Span time) returns Length {
+                return new Length(this.umPerSecond * time.asSeconds()) on heap;
+            }
+        }
+    }

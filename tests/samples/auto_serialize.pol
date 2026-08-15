@@ -1,0 +1,45 @@
+import System.IO.Console;
+import System.Json.Json;
+import System.Serialize.Serializer;
+import System.Serialize.Schema;
+import reflect;
+program AutoSerialize;
+
+// Automatic serialization over reflection (spec 31), with no macro and no generated code: the
+// library walks the type's fields, asks each what it is DECLARED as, and writes it.
+//
+// Prints:
+//   shape=Player{name:String,score:int,alive:boolean,ratio:double}
+//   json={"name":"Ada","score":42,"alive":true,"ratio":0.5}
+//   serializable=1
+public bundle Main {
+    public namespace App {
+
+        [Serializable]
+        public class Player {
+            public String name;
+            public int score;
+            public boolean alive;
+            public double ratio;
+            public constructor Player(String name, int score, boolean alive, double ratio) {
+                this.name = name;
+                this.score = score;
+                this.alive = alive;
+                this.ratio = ratio;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Player p = new Player("Ada", 42, true, 0.5) on heap;
+                System.IO.Console.println($"shape={Schema.of<Player>()}");
+                System.IO.Console.println($"json={Serializer.text<Player>(p)}");
+                mutable int ok = 0;
+                if (Schema.isSerializable<Player>()) { ok = 1; }
+                System.IO.Console.printf("serializable=%d\n", ok);
+                delete p;
+                return;
+            }
+        }
+    }
+}
