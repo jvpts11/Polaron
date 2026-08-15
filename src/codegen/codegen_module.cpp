@@ -405,6 +405,11 @@ void CodeGenerator::Impl::declareClasses() {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::EnumDecl& en : ns.enums) {
                 enums[en.name] = en.constants;
+                // An enum's path, for the same reason a class's is recorded: a user enum and a stdlib
+                // class of one name is the collision that started this, and codegen picked the wrong
+                // one because it had nothing to pick by.
+                classNamespace[en.name] = ns.name;
+                classBundle[en.name] = bundle.name;
                 enumTypeId[en.name] = static_cast<int>(enumTypeId.size());  // stable per-enum tag id
                 if (en.isJavaStyle) {
                     javaEnums[en.name] = &en;
@@ -495,7 +500,33 @@ void CodeGenerator::Impl::declareClasses() {
                         layout.hasDestructor = true;
                     }
                 }
-                classes[cls.name] = std::move(layout);
+                // WHERE THIS CLASS LIVES, recorded as it is registered.
+                //
+                // Codegen walks bundles and namespaces already and kept neither, so it could not tell
+                // two same-named types apart -- which is why the renaming pass had to make them
+                // different before codegen ever saw them, and why every gap in that rewrite became a
+                // codegen failure about a type the author never wrote.
+                //
+                // Written here rather than threaded through as context because a class's namespace is
+                // a fact about the class, not about where it is being emitted from.
+                // A SECOND CLASS OF THE SAME NAME NO LONGER ERASES THE FIRST -- the same rule the
+                // analyzer now follows. The bare name keeps the first, so every existing lookup is
+                // untouched and costs what it did; the rest go under their full path, where a lookup
+                // that knows which one it wants can find them.
+                //
+                // Today the renaming pass makes this unreachable by making the names distinct
+                // upstream. It is here so that removing that pass does not silently lose a type,
+                // which is precisely what `classes[cls.name] = layout` did.
+                if (classes.count(cls.name) == 0) {
+                    classNamespace[cls.name] = ns.name;
+                    classBundle[cls.name] = bundle.name;
+                    classes[cls.name] = std::move(layout);
+                } else {
+                    const std::string path = bundle.name + "." + ns.name + "." + cls.name;
+                    classNamespace[path] = ns.name;
+                    classBundle[path] = bundle.name;
+                    classes[path] = std::move(layout);
+                }
             }
         }
     }
