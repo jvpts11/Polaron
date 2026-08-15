@@ -7,6 +7,22 @@
         // Line-oriented file helpers (spec 34.4): the File builtin reads and writes whole contents, and
         // Files layers lines on top of it through Strings, so a program reads a file into a list of lines
         // and writes a list back without handling the newline joins itself.
+        // Thrown when a file operation the program REQUIRED to work did not. Carries the operation
+        // and the path, because "could not read" without the path is a message that sends its reader
+        // back to the code to find out which file -- and there is always more than one.
+        public class IoException extends Exception {
+            private mutable String op;
+            private mutable String path;
+            public constructor IoException(String op, String path) {
+                this.op = op;
+                this.path = path;
+            }
+            public method path() returns String { return this.path; }
+            public override method message() returns String {
+                return "cannot ".concat(this.op).concat(" '").concat(this.path).concat("'");
+            }
+        }
+
         public class Files {
             // Each line is terminated with a newline, and a trailing empty piece from the final newline is
             // dropped on read, so writeLines then readLines round-trips and appendLine adds a clean line.
@@ -45,16 +61,49 @@
             // builtin. Six of the ten builtins were unreachable this way -- the runtime has had
             // exists/size/remove/isDir/mkdir/rename since file I/O landed, and only four of them ever
             // came out through a class.
-            public static method read(String path) returns String {
-                return File.readAll(path);
+            // A FILE THAT IS NOT THERE READS AS "" THROUGH THE BUILTIN, exactly like an empty one --
+            // the same defect as an unset environment variable reading as "". Nothing fails: the
+            // program parses nothing, finds nothing, and reports zero of whatever it counts, and the
+            // run looks healthy. So the plain read REFUSES rather than inventing an empty file, and
+            // says which path it could not read. The three ways to ask are the same three
+            // `Environment` offers, and each states what it does about absence:
+            //
+            //   read      -> throws IoException. For a file the program requires.
+            //   tryRead   -> Option<String>. For a file whose absence is an ordinary outcome.
+            //   readOr    -> the fallback. For a config file with defaults.
+            //
+            // The check costs one `exists` call and only on the empty answer, so an ordinary read of
+            // an ordinary file pays nothing for it -- and a genuinely empty file still reads "".
+            public static method read(String path) throws(IoException) returns String {
+                String content = File.readAll(path);
+                if (content.length() == 0 && !Files.isFile(path)) {
+                    throw new IoException("read", path) on heap;
+                }
+                return content;
             }
-            public static method write(String path, String content) returns void {
-                File.writeAll(path, content);
-                return;
+            public static method tryRead(String path) returns Option<String> {
+                String content = File.readAll(path);
+                if (content.length() == 0 && !Files.isFile(path)) {
+                    return None();
+                }
+                return Some(content);
             }
-            public static method append(String path, String content) returns void {
-                File.appendAll(path, content);
-                return;
+            public static method readOr(String path, String fallback) returns String {
+                String content = File.readAll(path);
+                if (content.length() == 0 && !Files.isFile(path)) {
+                    return fallback;
+                }
+                return content;
+            }
+            // Writing answers whether it worked, rather than throwing: a full disk, a read-only file
+            // and a path whose directory does not exist are all things a program is expected to cope
+            // with, and the runtime already reports them. What it must not do is stay silent, which
+            // is what returning void did -- every failed write in every program was discarded.
+            public static method write(String path, String content) returns boolean {
+                return File.writeAll(path, content);
+            }
+            public static method append(String path, String content) returns boolean {
+                return File.appendAll(path, content);
             }
 
             // ---- Metadata. Asking is not the same as trying and failing. ----
@@ -188,6 +237,88 @@
                 }
                 return File.rmdir(path);
             }
+            // A directory and everything under it, to a new place. Directories are created as they
+            // are reached, so a partially-existing destination is filled in rather than refused.
+            // Answers false the moment any one file fails and stops there: half a copy that reports
+            // success is worse than a failure, because whatever reads it will find a tree that looks
+            // whole.
+            public static method copyDirectory(String from, String to) returns boolean {
+                if (!File.isDir(from)) { return false; }
+                if (!Files.createDirectories(to)) { return false; }
+                mutable ArrayList<String> entries = Files.listDir(from);
+                mutable boolean ok = true;
+                for (mutable int i = 0; i < entries.size() && ok; i++) {
+                    String src = Paths.join(from, entries.get(i));
+                    String dst = Paths.join(to, entries.get(i));
+                    ok = File.isDir(src) ? Files.copyDirectory(src, dst) : Files.copy(src, dst);
+                }
+                delete entries;
+                return ok;
+            }
+
+            // NAMES MATCHED BY A PATTERN, which is how a person says which files they mean.
+            //
+            // `*` stands for any run of characters within one component, `?` for one character, and
+            // `**` crosses directories. Without this, every tool that takes "*.pol" on its command
+            // line writes its own matcher, and each writes a slightly different one -- usually the
+            // one that forgets `**`, so a pattern silently matches only the top level.
+            //
+            // Backtracking rather than a compiled automaton: patterns are short, the tree is the
+            // expensive part, and a matcher somebody can read is a matcher whose corners can be
+            // fixed.
+            public static method matches(String pattern, String path) returns boolean {
+                return Files.matchFrom(pattern, 0, path, 0);
+            }
+            private static method matchFrom(String pat, int pi, String s, int si) returns boolean {
+                mutable int p = pi;
+                mutable int i = si;
+                while (p < pat.length()) {
+                    char c = pat.charAt(p);
+                    if (c == '*') {
+                        // `**` crosses separators; a single `*` stops at one.
+                        boolean deep = p + 1 < pat.length() && pat.charAt(p + 1) == '*';
+                        int next = deep ? p + 2 : p + 1;
+                        // Try every length, shortest first -- including zero.
+                        mutable int j = i;
+                        while (true) {
+                            if (Files.matchFrom(pat, next, s, j)) { return true; }
+                            if (j >= s.length()) { return false; }
+                            char sc = s.charAt(j);
+                            if (!deep && (sc == '/' || sc == '\\')) { return false; }
+                            j = j + 1;
+                        }
+                    }
+                    if (i >= s.length()) { return false; }
+                    if (c == '?') {
+                        char sc = s.charAt(i);
+                        if (sc == '/' || sc == '\\') { return false; }
+                    } else if (c == '/' || c == '\\') {
+                        // A separator in the pattern matches either kind, so one pattern works on
+                        // both platforms -- which is the whole reason a program writes one.
+                        char sc = s.charAt(i);
+                        if (sc != '/' && sc != '\\') { return false; }
+                    } else if (pat.charAt(p) != s.charAt(i)) {
+                        return false;
+                    }
+                    p = p + 1;
+                    i = i + 1;
+                }
+                return i == s.length();
+            }
+            // Every file beneath `root` whose path relative to `root` matches `pattern`. The paths
+            // returned are full, so they can be opened; the matching is on the relative one, so a
+            // pattern does not have to know where the root is.
+            public static method glob(String root, String pattern) returns ArrayList<String> {
+                mutable ArrayList<String> all = Files.walk(root);
+                mutable ArrayList<String> hits = new ArrayList<String>() on heap;
+                for (mutable int i = 0; i < all.size(); i++) {
+                    if (Files.matches(pattern, Paths.relative(root, all.get(i)))) {
+                        hits.add(all.get(i));
+                    }
+                }
+                delete all;
+                return hits;
+            }
         }
         // AN OPEN FILE, which the language did not have.
         //
@@ -309,7 +440,238 @@
                 if (parts.size() < 2) { return ""; }
                 return parts.get(parts.size() - 1);
             }
+
+            // THE REST OF WHAT A PATH IS. `join`/`basename`/`dirname`/`extension` were the four a
+            // program writes by hand in an afternoon; these are the ones it gets wrong. Every one of
+            // them is a string operation somebody would otherwise write with `indexOf` and a guess
+            // about which separator this machine uses.
+
+            // The separator this platform writes. Reading either is always right -- `lastSep` takes
+            // both -- but WRITING the wrong one produces a path that works until it is shown to a
+            // person or handed to another program.
+            public static method separator() returns String {
+                return Machine.isWindows() ? "\\" : "/";
+            }
+            // Rooted rather than relative: a leading separator, or a drive letter on Windows. This is
+            // the question behind "may I join this onto a base directory", and getting it wrong turns
+            // a base into a prefix of nothing.
+            public static method isAbsolute(String path) returns boolean {
+                if (path.length() == 0) { return false; }
+                if (path.charAt(0) == '/' || path.charAt(0) == '\\') { return true; }
+                return path.length() > 2 && path.charAt(1) == ':' &&
+                       (path.charAt(2) == '/' || path.charAt(2) == '\\');
+            }
+            // The name without its extension: "report.tar.gz" -> "report.tar". The LAST dot, so a
+            // versioned name keeps its version, and a leading dot is a hidden file rather than an
+            // empty name with an extension.
+            public static method stem(String path) returns String {
+                String base = Paths.basename(path);
+                mutable int last = 0 - 1;
+                for (mutable int i = 1; i < base.length(); i++) {
+                    if (base.charAt(i) == '.') { last = i; }
+                }
+                return last < 0 ? base : base.substring(0, last);
+            }
+            // The same path with a different extension, given without the dot. An empty `ext`
+            // removes it.
+            public static method withExtension(String path, String ext) returns String {
+                String dir = Paths.dirname(path);
+                String name = ext.length() == 0 ? Paths.stem(path)
+                                                : Paths.stem(path).concat(".").concat(ext);
+                return dir.length() == 0 ? name : Paths.join(dir, name);
+            }
+            // Every component, separators of both kinds honoured, empty pieces dropped. What a
+            // program walks when it wants to compare two paths component by component rather than as
+            // strings -- which is the only way to compare them correctly.
+            public static method split(String path) returns ArrayList<String> {
+                mutable ArrayList<String> parts = new ArrayList<String>() on heap;
+                mutable StringBuilder piece = new StringBuilder() on heap;
+                for (mutable int i = 0; i < path.length(); i++) {
+                    char c = path.charAt(i);
+                    if (c == '/' || c == '\\') {
+                        if (piece.length() > 0) { parts.add(piece.toString()); }
+                        piece.clear();
+                    } else {
+                        piece.appendChar(c);
+                    }
+                }
+                if (piece.length() > 0) { parts.add(piece.toString()); }
+                return parts;
+            }
+            // `.` and `..` resolved, redundant separators dropped, WITHOUT asking the filesystem --
+            // so it works on a path that does not exist yet, which is exactly when a program is
+            // building one. A `..` that would climb past the root is dropped rather than kept: it
+            // names nothing, and keeping it would let a joined path escape its base.
+            public static method normalize(String path) returns String {
+                mutable ArrayList<String> parts = Paths.split(path);
+                mutable ArrayList<String> kept = new ArrayList<String>() on heap;
+                for (mutable int i = 0; i < parts.size(); i++) {
+                    String p = parts.get(i);
+                    if (p.equals(".")) { continue; }
+                    if (p.equals("..")) {
+                        if (kept.size() > 0 && !kept.get(kept.size() - 1).equals("..")) {
+                            kept.removeAt(kept.size() - 1);
+                        } else if (!Paths.isAbsolute(path)) {
+                            kept.add(p);   // a relative path may legitimately begin above itself
+                        }
+                        continue;
+                    }
+                    kept.add(p);
+                }
+                mutable StringBuilder out = new StringBuilder() on heap;
+                if (Paths.isAbsolute(path) && path.charAt(0) != '/' && path.charAt(0) != '\\') {
+                    out.append(path.substring(0, 2));   // the drive letter, which is not a component
+                }
+                for (mutable int i = 0; i < kept.size(); i++) {
+                    if (i > 0 || Paths.isAbsolute(path)) { out.append(Paths.separator()); }
+                    out.append(kept.get(i));
+                }
+                delete kept;
+                delete parts;
+                String result = out.toString();
+                return result.length() == 0 ? "." : result;
+            }
+            // Resolved against the working directory and against the filesystem -- links followed,
+            // `..` collapsed as the operating system collapses it. Empty when the path cannot be
+            // resolved, which on POSIX includes "it does not exist": `realpath` refuses to guess
+            // about a component it cannot see. Use `normalize` for a path that is not there yet.
+            public static method absolute(String path) returns String {
+                return System.OS.__pathAbsolute(path);
+            }
+            // `path` written relative to `base`, or `path` unchanged when it is not underneath it.
+            // What a tool prints: an error naming a file forty characters into a repository is read
+            // by a person who already knows where the repository is.
+            public static method relative(String base, String path) returns String {
+                mutable ArrayList<String> b = Paths.split(Paths.normalize(base));
+                mutable ArrayList<String> p = Paths.split(Paths.normalize(path));
+                mutable int common = 0;
+                while (common < b.size() && common < p.size() &&
+                       b.get(common).equals(p.get(common))) {
+                    common = common + 1;
+                }
+                mutable StringBuilder out = new StringBuilder() on heap;
+                if (common < b.size()) {
+                    // Not underneath: climbing out of the base with `..` is correct but unreadable
+                    // past a step or two, so the whole path is the more useful answer.
+                    delete p;
+                    delete b;
+                    return path;
+                }
+                for (mutable int i = common; i < p.size(); i++) {
+                    if (out.length() > 0) { out.append(Paths.separator()); }
+                    out.append(p.get(i));
+                }
+                delete p;
+                delete b;
+                String result = out.toString();
+                return result.length() == 0 ? "." : result;
+            }
         }
+        // A FILE THAT CLEANS ITSELF UP.
+        //
+        // Every program that writes a scratch file writes the same three things wrong: a name that
+        // collides when two copies run at once, a directory that does not exist on the other
+        // platform, and a delete that is skipped on the path where something failed -- which is the
+        // path that matters, because that is when the file has something in it.
+        //
+        //     using (TempFile t = new TempFile("build") on stack) {
+        //         Files.write(t.path(), text);
+        //     }                      // gone here, whatever happened inside
+        //
+        // THE CONSTRUCTOR DOES THE WORK, and there is no `create` factory, because assignment here
+        // is a COPY: a factory returning one by value would hand back a duplicate and destroy the
+        // original -- deleting the file the caller had just been given. A resource whose lifetime is
+        // its object's is built where the object is.
+        //
+        // The name carries the process id, so two runs cannot pick the same one, and a counter, so
+        // one run asking twice cannot either.
+        public class TempFile {
+            private static mutable int counter = 0;
+            private mutable String file;
+            private mutable boolean kept;
+
+            // In the platform's scratch directory, named after `prefix`. The file is CREATED here,
+            // empty, so the name is taken -- choosing a name and creating it later is the race this
+            // exists to close.
+            public constructor TempFile(String prefix) {
+                this.kept = false;
+                this.file = "";
+                TempFile.counter = TempFile.counter + 1;
+                mutable int tries = 0;
+                while (tries < 1000) {
+                    mutable StringBuilder name = new StringBuilder() on heap;
+                    name.append(prefix);
+                    name.append("-");
+                    name.appendInt(cast<int>(Machine.processId()));
+                    name.append("-");
+                    name.appendInt(TempFile.counter + tries);
+                    name.append(".tmp");
+                    String candidate = Paths.join(Workspace.tempDirectory(), name.toString());
+                    this.file = candidate;
+                    if (!Files.exists(candidate)) {
+                        Files.write(candidate, "");
+                        tries = 1000;
+                    } else {
+                        tries = tries + 1;
+                    }
+                }
+            }
+            public method path() returns String { return this.file; }
+            // Keep it after all -- for the failure a person is going to want to look at. The
+            // destructor then leaves it alone.
+            public method keep() returns void {
+                this.kept = true;
+                return;
+            }
+            public destructor ~TempFile() returns void {
+                if (!this.kept) {
+                    Files.delete(this.file);
+                }
+            }
+        }
+
+        // The same for a directory, contents and all. `deleteRecursively` on the way out, because a
+        // scratch directory that is not empty is the ordinary case and an empty-only remove would
+        // silently leave it behind.
+        public class TempDirectory {
+            private static mutable int counter = 0;
+            private mutable String dir;
+            private mutable boolean kept;
+
+            public constructor TempDirectory(String prefix) {
+                this.kept = false;
+                this.dir = "";
+                TempDirectory.counter = TempDirectory.counter + 1;
+                mutable int tries = 0;
+                while (tries < 1000) {
+                    mutable StringBuilder name = new StringBuilder() on heap;
+                    name.append(prefix);
+                    name.append("-");
+                    name.appendInt(cast<int>(Machine.processId()));
+                    name.append("-");
+                    name.appendInt(TempDirectory.counter + tries);
+                    String candidate = Paths.join(Workspace.tempDirectory(), name.toString());
+                    this.dir = candidate;
+                    if (!Files.exists(candidate)) {
+                        Files.createDirectory(candidate);
+                        tries = 1000;
+                    } else {
+                        tries = tries + 1;
+                    }
+                }
+            }
+            public method path() returns String { return this.dir; }
+            public method keep() returns void {
+                this.kept = true;
+                return;
+            }
+            public destructor ~TempDirectory() returns void {
+                if (!this.kept) {
+                    Files.deleteRecursively(this.dir);
+                }
+            }
+        }
+
         // Leveled logging to the console (spec 34): each message carries a level (debug/info/warn/error)
         // and is printed with the logger's name only when its level is at or above the configured minimum,
         // which starts at info. A quick way to get structured, filterable output without a framework.

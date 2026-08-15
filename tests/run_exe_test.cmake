@@ -15,7 +15,12 @@ endif()
 # RUNARGS and INPUT_FILE are part of the identity too: several tests may run the SAME sample with
 # different arguments (the test runner's --filter / --list, for instance), and leaving them out put
 # those tests back on a shared .exe path, where one ran while another was still linking it.
-string(MD5 _tag "${INPUT}|${INPUT2}|${OPT}|${RUNARGS}|${INPUT_FILE}")
+#
+# AND SO IS WHAT IS EXPECTED, which is the same failure along the axis nobody had used yet: one
+# sample printing several lines, checked by several tests that differ ONLY in the needle. They shared
+# an .exe again, and failed under `ctest -j` while every one of them passed alone -- the shape that
+# reads as flakiness. The expectation is part of the configuration; a test's files should be its own.
+string(MD5 _tag "${INPUT}|${INPUT2}|${OPT}|${RUNARGS}|${INPUT_FILE}|${EXPECTED}|${CONTAINS}")
 set(ll "${WORKDIR}/e2e_${_tag}.ll")
 set(exe "${WORKDIR}/e2e_${_tag}.exe")
 
