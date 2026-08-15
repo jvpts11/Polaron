@@ -151,6 +151,28 @@ gives you target IR and a host link.
 
 ---
 
+### 9.4 A NESTED NAMESPACE BLOCK DOES NOT PARSE — ABERTO, found 2026-08-15
+
+Spec 2.7 says a path is "primeiro o **bundle**, depois o(s) **namespace(s)**, e por fim o tipo" --
+namespace**s**, plural, so `Bundle.Ns1.Ns2.Type` is the shape the language promises. Two spellings
+could express it and only one compiles:
+
+```polaron
+public namespace Outer.Inner { public class Deep { } }   // works
+public namespace Outer { public namespace Inner { } }    // error[Polaron-0001]
+```
+
+The block form is refused with *"expected 'class', 'struct', 'union', 'interface' or 'layout' but
+found 'namespace'"* -- the member loop has no arm for it, and the message never mentions nesting.
+
+**The dotted form carries the whole path correctly**, verified rather than assumed: `parseDottedName`
+keeps `Memory.Units` intact, and a user type shadowing `System.Memory.Units.ByteSize` is reported
+against `'Memory.Units'`, not against `'Units'`. So nothing is wrong today -- the canonical names the
+type table builds are right for everything the language can currently express.
+
+What is open is whether the block form should parse at all. It is one of the two obvious ways to write
+what the spec describes, and a reader who tries it gets an error that does not say so.
+
 ### 9.3 Member visibility, enforced — 2026-08-14
 
 **The root was not a missing check. It was a missing field.** `FieldInfo` and `MethodInfo` carried no

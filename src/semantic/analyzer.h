@@ -453,12 +453,21 @@ private:
     // collisions pays nothing at all for the machinery that resolves them.
     std::unordered_set<std::string> sharedNames_;
     const ClassInfo* lookupShared(const std::string& name) const;
+    // The paths a shared name could have meant, as `'A.B.C' or 'D.E.C'`, for the message that has to
+    // say so. Empty for a name that is not shared, which is every ordinary name.
+    std::string sharedPathsFor(const std::string& name) const;
 
     // Registers one declared type and returns its id. Two declarations with the same CANONICAL name
     // are a redeclaration; two with the same WRITTEN name in different namespaces are the ordinary
     // case this table exists for, and are not an error.
     std::uint32_t internType(const std::string& written, const std::string& bundleName,
                              const std::string& nsName, SourceLocation loc) {
+        // `nsName` IS THE WHOLE PATH, NOT THE LAST SEGMENT. A namespace nests through its dotted form
+        // -- `namespace Memory.Units` -- and the parser keeps it whole (`parseDottedName`), so this
+        // composes `System.Memory.Units.ByteSize` rather than `System.Units.ByteSize`. Verified
+        // against a real nested type rather than assumed: two namespaces ending in the same segment
+        // would otherwise produce one canonical name for two types, which is the exact failure this
+        // table exists to prevent, arrived at from the other side.
         std::string canonical = bundleName + "." + nsName + "." + written;
         if (auto it = typeByCanonical_.find(canonical); it != typeByCanonical_.end()) {
             return it->second;

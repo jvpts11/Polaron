@@ -1,0 +1,67 @@
+import System.IO.Console;
+import Main.Outer.Inner.Deep;
+import Main.Outer.Inner.Deeper.Bottom;
+import Main.Side.Ways.Mixed;
+program NestedNamespaceBlock;
+
+// A NAMESPACE MAY CONTAIN A NAMESPACE.
+//
+// Spec 2.7 says a path is "primeiro o bundle, depois o(s) namespace(s), e por fim o tipo" --
+// namespaceS -- so `Bundle.Outer.Inner.Type` is a shape the language promises. Two spellings express
+// it, and only the dotted one parsed: the member loop had no arm for `namespace`, so the block form
+// failed with "expected 'class', 'struct', 'union', 'interface' or 'layout'" -- a message that never
+// mentions nesting, for one of the two obvious ways to write what the specification describes.
+//
+// The nesting is FLATTENED at parse time: `namespace A { namespace B { } }` becomes a namespace
+// literally named "A.B" beside "A", which is exactly what `namespace A.B` already produced. Nothing
+// downstream learns a new shape -- not the analyzer, not the type table's canonical names, not the
+// import validator -- because after the parser the two spellings are the same program. The imports
+// above are the proof: they name the full path, and the compiler demanded exactly that path.
+//
+// Prints: deep=7 bottom=9 mixed=4
+public bundle Main {
+    public namespace Outer {
+        public class AtTop {
+            public mutable int n;
+            public constructor AtTop(int n) { this.n = n; }
+        }
+
+        public namespace Inner {
+            public class Deep {
+                public mutable int n;
+                public constructor Deep(int n) { this.n = n; }
+            }
+
+            // Three levels, to show the prefix accumulates rather than being one level of special
+            // case: this is `Main.Outer.Inner.Deeper.Bottom`.
+            public namespace Deeper {
+                public class Bottom {
+                    public mutable int n;
+                    public constructor Bottom(int n) { this.n = n; }
+                }
+            }
+        }
+    }
+
+    // And the dotted spelling of the same idea, in the same program, so the two forms are shown to
+    // coexist rather than merely to work apart.
+    public namespace Side.Ways {
+        public class Mixed {
+            public mutable int n;
+            public constructor Mixed(int n) { this.n = n; }
+        }
+    }
+
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Deep d = new Deep(7) on heap;
+                mutable Bottom b = new Bottom(9) on heap;
+                mutable Side.Ways.Mixed m = new Side.Ways.Mixed(4) on heap;
+                System.IO.Console.printf("deep=%d bottom=%d mixed=%d\n", d.n, b.n, m.n);
+                delete d; delete b; delete m;
+                return;
+            }
+        }
+    }
+}

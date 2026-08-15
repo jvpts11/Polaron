@@ -2646,6 +2646,36 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A NAMESPACE MAY CONTAIN A NAMESPACE. Spec 2.7 promises `Bundle.Ns1.Ns2.Type` -- "namespace(s)",
+        # plural -- and only the dotted spelling parsed; the block form died on "expected 'class',
+        # 'struct', 'union', 'interface' or 'layout'", which never mentions nesting. Flattened at parse
+        # time to the dotted form, so nothing downstream learns a new shape: three levels deep, and
+        # both spellings in one program. The imports are the proof -- they name the full path, which is
+        # what the compiler demanded.
+        add_test(NAME codegen_nested_namespace_block_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/nested_namespace_block.pol"
+            "-DEXPECTED=deep=7 bottom=9 mixed=4"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # EVERY WAY A SHADOWED TYPE CAN BE WRITTEN, IN ONE PROGRAM. The three gaps pinned by
+        # shadow_stdlib_name were found by ACCIDENT -- somebody added `Color` to the library and the
+        # compiler fell over in three unrelated places. They were never in what was tested; they were
+        # in what the renaming pass never walked, and nothing walked it because a collision is rare.
+        # This collides on purpose on four stdlib names at once -- a class, an enum, a record and a
+        # generic argument -- and uses each in every construct that can name a type: field, parameter,
+        # return, array, generic instance, cast, sizeof, nullable, switch, interpolation, unimport. A
+        # node kind the rewrite misses is now a failing test rather than a bug report.
+        add_test(NAME codegen_shadow_stdlib_wide_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/shadow_stdlib_wide.pol"
+            "-DEXPECTED=field=3 param=7 ret=10 arr=2 gen=2 cast=0 size=4 null=1 match=2 chain=10 static=5 done=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # DECLARING A TYPE THE STANDARD LIBRARY ALSO DECLARES. Yours wins -- the compiler says so -- and
         # implementing that means renaming both apart and rewriting every reference. THREE kinds were
         # never rewritten: an enum's method bodies (only its name was renamed), `sizeof`'s argument (a

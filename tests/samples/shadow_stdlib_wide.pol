@@ -1,0 +1,132 @@
+import System.IO.Console;
+import System.Memory.Raw;
+import System.Collections.ArrayList;
+program ShadowStdlibWide;
+
+// EVERY WAY A SHADOWED TYPE CAN BE WRITTEN, IN ONE PROGRAM.
+//
+// `shadow_stdlib_name.pol` pins the three gaps found on 2026-08-15. This one exists because those
+// three were found by accident -- somebody added `Color` to the standard library and the compiler
+// fell over in three unrelated places. The gaps were never in what was TESTED; they were in what the
+// renaming pass never walked, and nothing walked it because a collision is rare.
+//
+// So this program collides on purpose, on FOUR stdlib names at once -- a class, an enum, a record and
+// a generic -- and then uses each of them in every construct that can name a type. If the rewrite
+// misses a node kind, one of these lines stops compiling. That is the point: the coverage of the pass
+// is now measured by a test rather than by whoever happens to trip on it.
+//
+// The names are real stdlib types: Color (System.Spatial), Scanner (System.Text), Duration
+// (System.Time), Slice (System.Collections).
+//
+// Prints: field=3 param=7 ret=10 arr=2 gen=2 cast=0 size=4 null=1 match=2 chain=10 static=5 done=1
+public bundle Main {
+    public namespace App {
+
+        // A CLASS with the name of a stdlib class.
+        public class Scanner {
+            public mutable int seen;
+            public constructor Scanner(int seen) { this.seen = seen; }
+            public method more(int by) returns int { return this.seen + by; }
+            // Its own name, inside its own body -- a static self-reference.
+            public static method of(int n) returns Scanner { return new Scanner(n) on heap; }
+        }
+
+        // An ENUM with the name of a stdlib class, referring to itself in its own method.
+        public enum Color {
+            RED,
+            GREEN,
+            BLUE;
+            public method weight() returns int {
+                if (this == Color.GREEN) { return 2; }
+                return 1;
+            }
+        }
+
+        // A RECORD with the name of a stdlib class.
+        public record Duration(int ticks) { }
+
+        // A class that names all three in FIELDS, and a fourth stdlib name for good measure.
+        public class Holder {
+            public mutable Scanner tool;
+            public mutable Color tint;
+            public mutable int[] Slice;          // a stdlib type name used as a FIELD name
+            public constructor Holder() {
+                this.tool = Scanner.of(3);
+                this.tint = Color.BLUE;
+                this.Slice = new int[2]();
+            }
+            public method fieldValue() returns int { return this.tool.seen; }
+            // Shadowed types as a PARAMETER and as a RETURN type.
+            public method through(Scanner s, Color c) returns Scanner {
+                return Scanner.of(s.more(cast<int>(c)) + 3);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Holder* h = new Holder() on heap;
+                System.IO.Console.printf("field=%d ", h.fieldValue());
+
+                // As a parameter and a return value.
+                mutable Scanner s = Scanner.of(7);
+                System.IO.Console.printf("param=%d ", s.seen);
+                mutable Scanner back = h.through(s, Color.RED);
+                System.IO.Console.printf("ret=%d ", back.seen);
+
+                // In an ARRAY of the shadowed type.
+                mutable Scanner[] many = new Scanner[2]();
+                many[0] = Scanner.of(1);
+                many[1] = Scanner.of(2);
+                System.IO.Console.printf("arr=%d ", many.length());
+
+                // As a GENERIC type argument -- the case that names an instantiation, and the one
+                // that must agree across the rename: the template is `ArrayList`, the argument is the
+                // shadowed `Scanner`, and the instance they meet in has to be the same name on both
+                // sides.
+                //
+                // (The shadowed ENUM cannot go here, and that is not this bug: `ArrayList<AnyEnum>`
+                // fails with or without a collision -- `equalsKey` wants an `Object` and an enum is an
+                // ordinal. Measured on a non-colliding enum before blaming the renaming.)
+                mutable ArrayList<Scanner>* tools = new ArrayList<Scanner>() on heap;
+                tools.add(Scanner.of(1));
+                tools.add(Scanner.of(2));
+                System.IO.Console.printf("gen=%d ", tools.size());
+
+                // In a CAST, and as `sizeof`'s argument (a type where a value goes).
+                System.IO.Console.printf("cast=%d size=%d ",
+                                         cast<int>(Color.GREEN) - 1, Raw.sizeof(Color));
+
+                // As a NULLABLE, which decorates the name.
+                mutable nullable Scanner* maybe = Scanner.of(4);
+                System.IO.Console.printf("null=%d ", maybe != null);
+
+                // In a SWITCH over the shadowed enum. The `break` is load-bearing: `switch` falls
+                // through, so without it the matching case runs and then `default` runs on top of it
+                // -- which reads exactly like a case that failed to match, and cost a probe to tell
+                // apart from one.
+                mutable int found = 0;
+                switch (cast<int>(Color.GREEN)) {
+                    case 1 { found = 2; break; }
+                    default { found = 9; }
+                }
+                System.IO.Console.printf("match=%d ", found);
+
+                // A CHAINED access through two shadowed types, inside an INTERPOLATION -- whose
+                // sub-parsed nodes carry no location and so report against line 1 when they break.
+                System.IO.Console.print($"chain={h.through(Scanner.of(5), Color.BLUE).seen} ");
+
+                // A record with a stdlib name, and a static call on a shadowed class.
+                Duration d = new Duration(5);
+                System.IO.Console.printf("static=%d ", d.ticks);
+
+                // And the statement that used to vanish when this pass ran.
+                unimport enum Color;
+                reimport enum Color;
+                System.IO.Console.printf("done=%d\n", Color.RED.weight());
+
+                delete h; delete many; delete tools;
+                return;
+            }
+        }
+    }
+}

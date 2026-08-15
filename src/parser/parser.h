@@ -67,7 +67,11 @@ private:
 
     ast::Bundle parseBundle();
     ast::ImportDecl parseImportDecl();
-    ast::Namespace parseNamespace();
+    // Parses one namespace and appends it to `out`, plus any namespace nested inside it. Nesting is
+    // FLATTENED to the dotted form -- `namespace A { namespace B { } }` becomes a namespace named
+    // "A.B" beside "A" -- because that form already works everywhere downstream and the two spellings
+    // mean the same path (spec 2.7: bundle, then the namespace(s), then the type).
+    void parseNamespaceInto(std::vector<ast::Namespace>& out, const std::string& prefix);
     ast::ClassDecl parseClassOrInterface();
     ast::ClassDecl parseRecord();
     ast::EnumDecl parseEnum();
