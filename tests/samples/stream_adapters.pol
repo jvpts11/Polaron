@@ -1,0 +1,86 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.Iterator;
+import System.Collections.Stream;
+import System.Collections.IteratorStream;
+import System.Text.StringBuilder;
+program StreamAdapters;
+
+// HOW A LAZY PIPELINE ENDS, AND HOW IT IS LIMITED. `Stream` had filter, map and fold, and no way to
+// get a LIST back out: a chain could only be walked with forEach into a list the caller had already
+// made. `toList` is how every use of a stream actually ends.
+//
+// `take` and `takeWhile` are the other half: on a stream over something expensive -- a file, a
+// generator, a search -- the point is that THE REST IS NEVER PULLED. The counter below proves it,
+// which is the only way to test laziness: a stream that pulled eagerly would give the same numbers
+// and touch all ten elements.
+//
+// Prints:
+//   first3=2/4/6 pulled=6
+//   after2=6/8/10
+//   under7=1/2/3/4/5/6 pulledWhile=7
+//   any=1 all=0
+public bundle Main {
+    public namespace App {
+
+        // A counter the pipeline writes to, so "how many elements were touched" is observable.
+        public class Counter {
+            public static mutable int pulls = 0;
+            public static method bump() returns void { Counter.pulls = Counter.pulls + 1; }
+            public static method reset() returns void { Counter.pulls = 0; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> nums = new ArrayList<int>() on heap;
+                for (mutable int i = 1; i <= 10; i++) { nums.add(i); }
+
+                // The first three even numbers. Ten elements exist; a lazy take stops at six.
+                Counter.reset();
+                IteratorStream<int> base = new IteratorStream<int>(nums.iterator()) on heap;
+                Stream<int> evens = base.filter(lambda(int x) returns boolean {
+                    Counter.bump();
+                    return x % 2 == 0;
+                });
+                mutable ArrayList<int> first3 = evens.take(3).toList();
+                System.IO.Console.printf("first3=%s pulled=%d\n",
+                                         Main.join(first3), Counter.pulls);
+
+                // ...and past the first two of them.
+                IteratorStream<int> b2 = new IteratorStream<int>(nums.iterator()) on heap;
+                mutable ArrayList<int> after2 = b2.filter(lambda(int x) returns boolean {
+                    return x % 2 == 0;
+                }).skip(2).toList();
+                System.IO.Console.printf("after2=%s\n", Main.join(after2));
+
+                // takeWhile stops at the first failure -- it does not keep looking like filter does.
+                Counter.reset();
+                IteratorStream<int> b3 = new IteratorStream<int>(nums.iterator()) on heap;
+                mutable ArrayList<int> under7 = b3.takeWhile(lambda(int x) returns boolean {
+                    Counter.bump();
+                    return x < 7;
+                }).toList();
+                System.IO.Console.printf("under7=%s pulledWhile=%d\n",
+                                         Main.join(under7), Counter.pulls);
+
+                IteratorStream<int> b4 = new IteratorStream<int>(nums.iterator()) on heap;
+                mutable int hasBig = 0;
+                if (b4.any(lambda(int x) returns boolean { return x > 9; })) { hasBig = 1; }
+                IteratorStream<int> b5 = new IteratorStream<int>(nums.iterator()) on heap;
+                mutable int allBig = 0;
+                if (b5.all(lambda(int x) returns boolean { return x > 9; })) { allBig = 1; }
+                System.IO.Console.printf("any=%d all=%d\n", hasBig, allBig);
+                return;
+            }
+
+            private static method join(ArrayList<int> xs) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (mutable int i = 0; i < xs.size(); i++) {
+                    if (i > 0) { sb.append("/"); }
+                    sb.appendInt(xs.get(i));
+                }
+                return sb.toString();
+            }
+        }
+    }
+}

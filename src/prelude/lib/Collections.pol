@@ -304,6 +304,111 @@
                 while (this.hasNext()) { this.next(); c = c + 1; }
                 return c;
             }
+            // HOW A PIPELINE ENDS. `filter`, `map` and `fold` were here and there was no way to get
+            // a LIST back out: a lazy chain could be walked with forEach into a list the caller had
+            // already made, and that is the one shape every use of a stream has. A pipeline that
+            // cannot be materialised is a pipeline nobody writes.
+            public method toList() returns ArrayList<T> {
+                mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                while (this.hasNext()) { out.add(this.next()); }
+                return out;
+            }
+            // THE FIRST `n`, and the point of it is that the REST IS NEVER PULLED. On a stream over
+            // something expensive -- a file, a generator, a search -- that is the difference between
+            // reading three lines and reading the file.
+            public method take(int n) returns Stream<T> {
+                return new TakeStream<T>(this, n) on heap;
+            }
+            // ...and past the first `n`, which is how a header is dropped.
+            public method skip(int n) returns Stream<T> {
+                return new SkipStream<T>(this, n) on heap;
+            }
+            // Up to the first element that fails the test, and no further. Different from `filter`
+            // in the way that matters on an infinite or expensive source: filter keeps asking, this
+            // stops.
+            public method takeWhile(function<boolean, T> pred) returns Stream<T> {
+                return new TakeWhileStream<T>(this, pred) on heap;
+            }
+            public method any(function<boolean, T> pred) returns boolean {
+                while (this.hasNext()) {
+                    if (pred(this.next())) { return true; }
+                }
+                return false;
+            }
+            public method all(function<boolean, T> pred) returns boolean {
+                while (this.hasNext()) {
+                    if (!pred(this.next())) { return false; }
+                }
+                return true;
+            }
+        }
+        // The first `n` and then nothing: `hasNext` lies as soon as the budget is spent, so the
+        // upstream is never asked again. That is the whole value of a lazy take -- an eager one
+        // would have pulled everything already.
+        public class TakeStream<T> extends Stream<T> {
+            private Stream<T> src;
+            private mutable int left;
+            public constructor TakeStream(Stream<T> src, int n) {
+                this.src = src;
+                this.left = n;
+            }
+            public override method hasNext() returns boolean {
+                return this.left > 0 && this.src.hasNext();
+            }
+            public override method next() returns T {
+                this.left = this.left - 1;
+                return this.src.next();
+            }
+        }
+        // Everything past the first `n`. The skipping happens on the first question asked, not in
+        // the constructor, so building the stream still costs nothing.
+        public class SkipStream<T> extends Stream<T> {
+            private Stream<T> src;
+            private mutable int left;
+            public constructor SkipStream(Stream<T> src, int n) {
+                this.src = src;
+                this.left = n;
+            }
+            public override method hasNext() returns boolean {
+                while (this.left > 0 && this.src.hasNext()) {
+                    this.src.next();
+                    this.left = this.left - 1;
+                }
+                return this.src.hasNext();
+            }
+            public override method next() returns T { return this.src.next(); }
+        }
+        // Up to the first element that fails the test. Caches the look-ahead like FilterStream does,
+        // because deciding whether there IS a next one means pulling it.
+        public class TakeWhileStream<T> extends Stream<T> {
+            private Stream<T> src;
+            private function<boolean, T> pred;
+            private mutable boolean hasCached;
+            private mutable boolean done;
+            private mutable T cached;
+            public constructor TakeWhileStream(Stream<T> src, function<boolean, T> pred) {
+                this.src = src;
+                this.pred = pred;
+                this.hasCached = false;
+                this.done = false;
+            }
+            public override method hasNext() returns boolean {
+                if (this.done) { return false; }
+                if (this.hasCached) { return true; }
+                if (!this.src.hasNext()) { return false; }
+                T v = this.src.next();
+                if (!this.pred(v)) {
+                    this.done = true;
+                    return false;
+                }
+                this.cached = v;
+                this.hasCached = true;
+                return true;
+            }
+            public override method next() returns T {
+                this.hasCached = false;
+                return this.cached;
+            }
         }
         // Adapts a plain Iterator into a Stream (the head of a pipeline). It adds nothing but its type,
         // so it answers nothing itself: `delegate` forwards hasNext and next to the iterator it wraps.

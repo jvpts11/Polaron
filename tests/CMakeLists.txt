@@ -3239,6 +3239,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # HOW A LAZY PIPELINE ENDS AND HOW IT IS LIMITED: `Stream` had filter/map/fold and no `toList`,
+        # so a chain could only be walked into a list the caller had already made. The counters in the
+        # sample are the only honest test of laziness -- an eager `take` would print the same numbers
+        # and touch all ten elements.
+        add_test(NAME codegen_stream_adapters_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/stream_adapters.pol"
+            "-DEXPECTED=first3=2/4/6 pulled=6 after2=6/8/10 under7=1/2/3/4/5/6 pulledWhile=7 any=1 all=0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
