@@ -1,0 +1,56 @@
+import System.IO.Console;
+import System.Time.Date;
+import System.Time.ZonedDateTime;
+import System.Time.ZoneOffset;
+import System.Time.Instant;
+program TimeParse;
+
+// THE INVERSE OF `toString`, which the library did not have: it could WRITE an ISO-8601 timestamp
+// and not read one. A timestamp that goes into a file, a log line or a request is meant to come
+// back, so a format with only one direction is half a format.
+//
+// The test is a ROUND TRIP -- format, parse, format again -- because that is the property a reader
+// actually depends on, and it catches an off-by-one in the offset that eyeballing the fields would
+// not.
+//
+// Prints:
+//   date=2026-08-15 dow=6 valid=1 bad=0
+//   utc=2026-07-03T14:05:09Z
+//   round=2026-07-03T14:05:09-03:00 same=1
+//   shifted=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Date d = Date.parse("2026-08-15");
+                mutable int valid = 0;
+                if (Date.isValid("2026-08-15")) { valid = 1; }
+                mutable int bad = 0;
+                if (Date.isValid("2026-02-30")) { bad = 1; }   // February has no 30th
+                System.IO.Console.printf("date=%s dow=%d valid=%d bad=%d\n",
+                                         d.toString(), d.dayOfWeek(), valid, bad);
+
+                // A `Z` timestamp, read and written back.
+                ZonedDateTime utc = ZonedDateTime.parse("2026-07-03T14:05:09Z");
+                System.IO.Console.printf("utc=%s\n", utc.toString());
+
+                // ...and one at an offset: the round trip must return the SAME text, which is what
+                // pins that the offset is applied in the right direction.
+                String text = "2026-07-03T14:05:09-03:00";
+                ZonedDateTime z = ZonedDateTime.parse(text);
+                String again = z.toString();
+                mutable int same = 0;
+                if (again.equals(text)) { same = 1; }
+                System.IO.Console.printf("round=%s same=%d\n", again, same);
+
+                // The two above name the same wall clock at different offsets, so the UTC instant
+                // behind them differs by exactly three hours.
+                long delta = z.toInstant().toEpochMillis() - utc.toInstant().toEpochMillis();
+                mutable int shifted = 0;
+                if (delta == cast<long>(10800000)) { shifted = 1; }
+                System.IO.Console.printf("shifted=%d\n", shifted);
+                return;
+            }
+        }
+    }
+}

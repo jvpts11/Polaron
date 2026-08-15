@@ -3215,6 +3215,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # READING BACK AN ISO-8601 TIMESTAMP, which the library could write and not read -- half a
+        # format. Tested as a ROUND TRIP (format, parse, format) because that is the property a caller
+        # depends on, and it catches an offset applied in the wrong direction, which reading the
+        # fields would not.
+        add_test(NAME codegen_time_parse_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/time_parse.pol"
+            "-DEXPECTED=date=2026-08-15 dow=6 valid=1 bad=0 utc=2026-07-03T14:05:09Z round=2026-07-03T14:05:09-03:00 same=1 shifted=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

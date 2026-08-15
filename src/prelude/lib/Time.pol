@@ -163,6 +163,47 @@
                 sb.append(this.zone.id());
                 return sb.toString();
             }
+            // THE INVERSE OF `toString`, which is the point: a timestamp written to a file, a log or
+            // a request is meant to be read back. `2026-07-03T14:05:09-03:00` and the `Z` form both,
+            // because both are what ISO-8601 produces and a reader does not get to choose which one
+            // arrives.
+            //
+            // A text this cannot read yields the epoch at UTC rather than a guess -- see `isValid`.
+            public static method parse(String text) returns ZonedDateTime {
+                if (!ZonedDateTime.isValid(text)) {
+                    return new ZonedDateTime(Instant.ofEpochMillis(cast<long>(0)),
+                                             ZoneOffset.utc()) on heap;
+                }
+                Date d = Date.parse(text.substring(0, 10));
+                int hh = text.substring(11, 13).toInt();
+                int mi = text.substring(14, 16).toInt();
+                int ss = text.substring(17, 19).toInt();
+                mutable ZoneOffset off = ZoneOffset.utc();
+                if (text.length() > 19 && text.charAt(19) != 'Z') {
+                    int oh = text.substring(20, 22).toInt();
+                    int om = text.substring(23, 25).toInt();
+                    mutable int secs = oh * 3600 + om * 60;
+                    if (text.charAt(19) == '-') { secs = 0 - secs; }
+                    off = ZoneOffset.ofSeconds(secs);
+                }
+                // The wall-clock reading is local to that offset; the instant is it shifted back.
+                long localSecs = cast<long>(d.toEpochDay()) * cast<long>(86400)
+                               + cast<long>(hh * 3600 + mi * 60 + ss);
+                long utcSecs = localSecs - cast<long>(off.totalSeconds());
+                return new ZonedDateTime(Instant.ofEpochMillis(utcSecs * cast<long>(1000)),
+                                         off) on heap;
+            }
+            public static method isValid(String text) returns boolean {
+                if (text.length() < 20) { return false; }
+                if (text.charAt(10) != 'T' || text.charAt(13) != ':' || text.charAt(16) != ':') {
+                    return false;
+                }
+                if (!Date.isValid(text.substring(0, 10))) { return false; }
+                char z = text.charAt(19);
+                if (z == 'Z') { return text.length() == 20; }
+                if (z != '+' && z != '-') { return false; }
+                return text.length() == 25 && text.charAt(22) == ':';
+            }
         }
         // A monotonic elapsed-time timer (spec 34): start/stop/reset accumulate high-resolution
         // nanoseconds from the monotonic clock (Time.nanos), unaffected by wall-clock changes.
@@ -258,6 +299,42 @@
             }
             public method addDays(int n) returns Date {
                 return Date.fromEpochDay(this.toEpochDay() + n);
+            }
+            // ISO-8601, `2026-08-15`, so a date can be written down.
+            public method toString() returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendInt(this.y);
+                sb.append("-");
+                if (this.mo < 10) { sb.append("0"); }
+                sb.appendInt(this.mo);
+                sb.append("-");
+                if (this.d < 10) { sb.append("0"); }
+                sb.appendInt(this.d);
+                return sb.toString();
+            }
+            // ...AND BACK. The library could write an ISO date and not read one, which is half of a
+            // format: a timestamp that goes into a file, a log line or a request is meant to come
+            // back. Refuses anything that is not `yyyy-MM-dd` by returning the epoch, so a caller
+            // that cares checks `isValid` first rather than being handed a plausible wrong date.
+            public static method parse(String text) returns Date {
+                if (!Date.isValid(text)) { return new Date(1970, 1, 1) on heap; }
+                int y = text.substring(0, 4).toInt();
+                int m = text.substring(5, 7).toInt();
+                int d = text.substring(8, 10).toInt();
+                return new Date(y, m, d) on heap;
+            }
+            public static method isValid(String text) returns boolean {
+                if (text.length() != 10) { return false; }
+                if (text.charAt(4) != '-' || text.charAt(7) != '-') { return false; }
+                for (mutable int i = 0; i < 10; i++) {
+                    if (i == 4 || i == 7) { continue; }
+                    char c = text.charAt(i);
+                    if (c < '0' || c > '9') { return false; }
+                }
+                int m = text.substring(5, 7).toInt();
+                int d = text.substring(8, 10).toInt();
+                if (m < 1 || m > 12) { return false; }
+                return d >= 1 && d <= Date.daysInMonth(text.substring(0, 4).toInt(), m);
             }
         }
         // Calendar arithmetic (spec 34): leap years, days in a month, day of the week (0=Sunday..6=Saturday
