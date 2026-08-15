@@ -1905,6 +1905,14 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                         builder.CreateLoad(builder.getPtrTy(),
                                            builder.CreateGEP(builder.getPtrTy(), fSet, i), "s"),
                         builder.CreateStructGEP(tokTy, tok, 2));
+                    // And the declared type's NAME (Field token slot 3), from the parallel array the
+                    // Type token now carries -- what tells an int from a String from a nested object.
+                    llvm::Value* fTypes = builder.CreateLoad(
+                        builder.getPtrTy(), builder.CreateStructGEP(typeTokenType(), t, 16), "ftn");
+                    builder.CreateStore(
+                        builder.CreateLoad(builder.getPtrTy(),
+                                           builder.CreateGEP(builder.getPtrTy(), fTypes, i), "ft"),
+                        builder.CreateStructGEP(tokTy, tok, 3));
                 }
                 builder.CreateCall(addIt->second, {list, tok});
                 builder.CreateStore(builder.CreateAdd(i, builder.getInt64(1)), iSlot);
@@ -1914,13 +1922,15 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
             }
         }
         // Field reflection (spec 31): name() reads the field token's name.
-        if (typeName(*mem->object) == "Field" && mem->member == "name") {
+        if (typeName(*mem->object) == "Field" &&
+            (mem->member == "name" || mem->member == "typeName")) {
             llvm::Value* f = emitExpr(*mem->object);
             if (f == nullptr) {
                 return nullptr;
             }
+            const unsigned slot = mem->member == "name" ? 0 : 3;
             return builder.CreateLoad(builder.getPtrTy(),
-                                      builder.CreateStructGEP(fieldTokenType(), f, 0), "f.name");
+                                      builder.CreateStructGEP(fieldTokenType(), f, slot), "f.name");
         }
         // Field.get(obj) / set(obj, value) (spec 31): call the field's boxing accessor stored in the
         // token. get returns the boxed field as an Object; set takes an Object (boxed primitive or
@@ -2209,9 +2219,12 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         }
         // Static call: the receiver names a class, not a local/this.
         if (const auto* objId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+            // Through the funnel, like every other class reference: `Paths.join(...)` names whichever
+            // Paths this namespace means, and its symbol carries that class's key.
+            const std::string statKey = clsKey(objId->name);
             if (objId->name != "this" && locals.find(objId->name) == locals.end() &&
-                classes.count(objId->name) > 0) {
-                auto fnit = functions.find(objId->name + "." + mem->member);
+                classes.count(statKey) > 0) {
+                auto fnit = functions.find(statKey + "." + mem->member);
                 if (fnit == functions.end()) {
                     // Qualified literal suffix: Type.kib(64) (spec 17.10).
                     if (literalSuffixParams.count(mem->member) > 0 && call.args.size() == 1) {
@@ -2230,7 +2243,7 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                     return nullptr;
                 }
                 const bool isExternCall =
-                    externReturnType.count(objId->name + "." + mem->member) > 0;
+                    externReturnType.count(statKey + "." + mem->member) > 0;
                 std::vector<llvm::Value*> args;
                 std::vector<SpillToken> atk(call.args.size());
                 for (std::size_t i = 0; i < call.args.size(); ++i) {
@@ -2527,7 +2540,14 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         const std::string owner = methodOwner(typeName(*mem->object), mem->member);
         auto fnit = functions.find(owner + "." + mem->member);
         if (owner.empty() || fnit == functions.end()) {
-            error("unknown method '" + mem->member + "'", call.loc);
+            // NAME THE RECEIVER, and by the key it resolved to. "unknown method 'one'" is true of
+            // every class that does not have `one`, which is the wrong half of the fact: what a
+            // reader needs is WHICH class the compiler decided the receiver was, because when two
+            // types share a name that decision is the bug and the missing method is only its shadow.
+            const std::string recv = typeName(*mem->object);
+            error("unknown method '" + mem->member + "' on '" + clsKey(recv) + "'" +
+                      (owner.empty() ? "" : " (found on '" + owner + "', which has no body here)"),
+                  call.loc);
             return nullptr;
         }
         // TARGET FEATURE GATES, AT THE PROGRAM'S OWN CALL and not inside the prelude.

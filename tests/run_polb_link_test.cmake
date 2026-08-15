@@ -14,7 +14,14 @@
 # twice in one evening, each time costing an investigation that ended in "passes in isolation".
 # A false failure is not free: it trains you to re-run instead of to look, which is exactly how a real
 # one gets waved through.
+#
+# THE APP IS PART OF THE IDENTITY TOO, and for the same reason: two tests may share ONE library and
+# differ only in the consumer -- which is exactly how a consumer-side question (does this program's
+# own `Square` disturb the library's symbols?) is asked. Tagging by the library alone put those two
+# back on one .polb and one .exe, i.e. back in the race this tagging exists to prevent.
 get_filename_component(TESTTAG "${LIB}" NAME_WE)
+get_filename_component(_apptag "${APP}" NAME_WE)
+set(TESTTAG "${TESTTAG}_${_apptag}")
 set(polb "${WORKDIR}/${TESTTAG}_link.polb")
 set(bc "${WORKDIR}/${TESTTAG}_link.bc")
 set(ll "${WORKDIR}/${TESTTAG}_link_app.ll")

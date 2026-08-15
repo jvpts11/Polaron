@@ -527,7 +527,7 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
                 ri != nullptr && !ri->accepts.empty()) {
                 const std::string acn = baseType(ri->accepts[0]);
                 if (auto cit = classes.find(acn); cit != classes.end() && cit->second.hasDestructor) {
-                    dtor = functions[acn + ".~" + acn];
+                    dtor = functions[dtorSym(acn)];
                 }
             }
             llvm::Value* block = builder.CreateLoad(builder.getPtrTy(), slot, "region");
@@ -1245,7 +1245,7 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
             if (objPtr == nullptr) {
                 return;
             }
-            const std::string cn = baseType(t);  // see through T*
+            const std::string cn = clsKey(baseType(t));  // see through T*, and through a shared name
             auto cit = classes.find(cn);
             // `delete X from region R` (spec 17.7): the region owns the memory and reclaims it on
             // release, so run the destructor now and drop the object from RAII tracking (so the
@@ -1280,7 +1280,7 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
                     if (llvm::Function* d =
                             registry
                                 ? regionDtorFn(cn)
-                                : (cit->second.hasDestructor ? functions[cn + ".~" + cn] : nullptr)) {
+                                : (cit->second.hasDestructor ? functions[dtorSym(cn)] : nullptr)) {
                         builder.CreateCall(d, {objPtr});
                     }
                 }
@@ -1326,7 +1326,7 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
                 if (auto lit = locals.find(tid->name); lit != locals.end()) {
                     if (stackObjectSlots_.count(lit->second.storage) > 0) {
                         if (cit != classes.end() && cit->second.hasDestructor) {
-                            builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+                            builder.CreateCall(functions[dtorSym(cn)], {objPtr});
                         }
                         if (cit != classes.end() && weakRelevant(cn)) {
                             emitWeakCleanup(objPtr, cn);

@@ -151,6 +151,32 @@ gives you target IR and a host link.
 
 ---
 
+### 9.5 THE STANDARD LIBRARY MAY NOT SHADOW ITSELF — FECHADO 2026-08-15, same day
+
+Recorded that morning as a piece of work rather than a line: a method's LLVM symbol was built from the
+bare class name, so `Angle.asDegrees` was **one symbol for two classes** and the second silently lost.
+Adding a `System.Units.Angle` beside `System.Math.Angle` broke every program in the tree with
+`unknown method 'asDegreesExact'`.
+
+Closed by making the symbol carry the class's key, which for a shared name is its path:
+`Own.World.Paths.one`, `System.Text.Scanner.nextWord`. A unique name -- every name in nearly every
+program -- keeps the bare symbol it always had, so an ordinary build emits exactly what it emitted
+before. The same change closed four failures that looked unrelated:
+
+| what it looked like | what it was |
+|---|---|
+| `unknown method 'one'` on a method three lines above the call | the receiver resolved to the right class; the symbol was looked up under the other one's name |
+| `cfg=517` where the program said 9 | a `movable Socket` field beside `System.Net.Socket` fell out of `llvmType` as an INTEGER, so storing the pointer wrote 8 bytes over 4 |
+| `class 'Stack$int' has no method 'count'` | two generic templates of one name: the monomorphizer keeps ONE, so both `Stack<int>`s were built from the library's |
+| a consumer crash with no output at all | `delete` asked for `<path>.__delete` while the declaration used the bare name; `functions[]` inserted a null and the emitter called through it |
+
+The remaining rule is narrower and is about generics only: two generic templates of one name are still
+told apart by the RENAME, because a template is erased before anything can key it by path and its
+instance is named `Stack$int` from the base name alone.
+
+Not a licence to collide inside the library: `System.Units.Turn` keeps its name, because the reason a
+type is called `Turn` and not `Angle` should be that it turns.
+
 ### 9.4 A NESTED NAMESPACE BLOCK DOES NOT PARSE — ABERTO, found 2026-08-15
 
 Spec 2.7 says a path is "primeiro o **bundle**, depois o(s) **namespace(s)**, e por fim o tipo" --

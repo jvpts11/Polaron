@@ -512,6 +512,8 @@ void CodeGenerator::Impl::collectTests() {
             continue;
         }
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
@@ -959,9 +961,28 @@ void CodeGenerator::Impl::emitFunctions() {
             continue;  // bodies live in the depended-on .polb (declared external)
         }
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 bool hasCtor = false;
                 enclosingClass_ = cls.name;
+                // Announce WHICH class this is, by key: the walk knows, and a body reached from a
+                // worklist later does not. Cleared after the class so a worklist body does not
+                // inherit it.
+                {
+                    const std::string byPath = bundle.name + "." + ns.name + "." + cls.name;
+                    emittingClassKey = classes.count(byPath) > 0 ? byPath : cls.name;
+                }
+                // The same key the declarations were registered under (see declareFunctions): a
+                // shared name's symbols carry the path, so a body must be attached to the function
+                // that belongs to THIS class rather than to whichever one was declared first.
+                const std::string ck = emittingClassKey;
+                // POLARON_SHOW_BODIES=1: the class about to be emitted, printed BEFORE the work
+                // starts. A crash inside a body otherwise leaves no trace of which one it was in,
+                // and the phase timer only reports bodies that finish.
+                if (std::getenv("POLARON_SHOW_BODIES") != nullptr) {
+                    std::fprintf(stderr, "[body] %s\n", ck.c_str());
+                }
                 for (const ast::MemberPtr& member : cls.members) {
                     // POLARON_PHASE_TIMES=1: report any single body that takes real time, so "codegen is
                     // slow" becomes "THIS method is slow" -- which is how the 181 s PageFlags.hash
@@ -998,7 +1019,7 @@ void CodeGenerator::Impl::emitFunctions() {
                         } else if (m->isAsync && !m->isAbstract) {
                             emitAsyncMethod(cls, *m);
                         } else if (!m->isAbstract && !m->isExtern) {  // extern: no Polaron body
-                            emitBody(functions[cls.name + "." + m->name], m->body, m->params,
+                            emitBody(functions[ck + "." + m->name], m->body, m->params,
                                      m->isStatic ? std::string() : cls.name,
                                      llvmType(typeRefName(m->returnType)), nullptr,
                                      &m->requiresClauses, &m->ensuresClauses,
@@ -1011,7 +1032,7 @@ void CodeGenerator::Impl::emitFunctions() {
                         hasCtor = true;
                         noBoundsCheck_ = false;
                         enclosingMethod_ = cls.name;  // ctor function is "class.class"
-                        emitBody(functions[cls.name + "." + cls.name], c->body, c->params,
+                        emitBody(functions[ck + "." + cls.name], c->body, c->params,
                                  cls.name, builder.getVoidTy(), &cls,
                                  &c->requiresClauses, &c->ensuresClauses,
                                  &classInvariants(cls.name));
@@ -1019,7 +1040,7 @@ void CodeGenerator::Impl::emitFunctions() {
                                    dynamic_cast<const ast::DestructorDecl*>(member.get())) {
                         // Chain to the nearest ancestor's destructor (derived-then-base).
                         enclosingMethod_ = "~" + cls.name;  // dtor function is "class.~class"
-                        emitBody(functions[cls.name + ".~" + cls.name], d->body, {}, cls.name,
+                        emitBody(functions[ck + ".~" + cls.name], d->body, {}, cls.name,
                                  builder.getVoidTy(), nullptr, nullptr, nullptr, nullptr, false,
                                  nullptr, nullptr, dtorImpl(cls.superclass), &cls);
                     }
@@ -1029,7 +1050,7 @@ void CodeGenerator::Impl::emitFunctions() {
                 if (!hasCtor && !cls.isInterface) {
                     const ast::Block emptyBody;
                     enclosingMethod_ = cls.name;
-                    emitBody(functions[cls.name + "." + cls.name], emptyBody, {}, cls.name,
+                    emitBody(functions[ck + "." + cls.name], emptyBody, {}, cls.name,
                              builder.getVoidTy(), &cls);
                 }
                 // ...and the synthesized destructor of an unimportable class that wrote none.
@@ -1038,14 +1059,14 @@ void CodeGenerator::Impl::emitFunctions() {
                 if (synthesizedDtors_.count(cls.name) > 0) {
                     const ast::Block emptyBody;
                     enclosingMethod_ = "~" + cls.name;
-                    emitBody(functions[cls.name + ".~" + cls.name], emptyBody, {}, cls.name,
+                    emitBody(functions[ck + ".~" + cls.name], emptyBody, {}, cls.name,
                              builder.getVoidTy(), nullptr, nullptr, nullptr, nullptr, false,
                              nullptr, nullptr, dtorImpl(cls.superclass), &cls);
                 }
                 // spec 32.5: static-context hook bodies.
                 auto emitHook = [&](const std::unique_ptr<ast::Block>& b, const char* suffix) {
                     if (b) {
-                        emitBody(functions[cls.name + suffix], *b, {}, /*thisClass=*/"",
+                        emitBody(functions[ck + suffix], *b, {}, /*thisClass=*/"",
                                  builder.getVoidTy());
                     }
                 };
@@ -1057,8 +1078,9 @@ void CodeGenerator::Impl::emitFunctions() {
                 // constructor) and __delete (destruct + free). Library mode only; a consumer just
                 // calls these to create/destroy an instance it cannot lay out itself.
                 if (libraryMode && !cls.isInterface && !cls.isAbstract &&
-                    cls.visibility == "public") {
-                    llvm::Function* nf = functions[cls.name + ".__new"];
+                    cls.visibility == "public" && needFn(ck + ".__new") != nullptr &&
+                    needFn(ck + ".__delete") != nullptr) {
+                    llvm::Function* nf = needFn(ck + ".__new");
                     currentFn = nf;
                     builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", nf));
                     // A region class exported from a library is still total: the consumer cannot lay
@@ -1074,10 +1096,10 @@ void CodeGenerator::Impl::emitFunctions() {
                     for (auto& a : nf->args()) {
                         cargs.push_back(&a);
                     }
-                    builder.CreateCall(functions[cls.name + "." + cls.name], cargs);
+                    builder.CreateCall(functions[ck + "." + cls.name], cargs);
                     builder.CreateRet(obj);
 
-                    llvm::Function* df = functions[cls.name + ".__delete"];
+                    llvm::Function* df = needFn(ck + ".__delete");
                     currentFn = df;
                     builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", df));
                     emitDeleteObject(df->getArg(0), cls.name);

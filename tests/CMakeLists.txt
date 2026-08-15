@@ -1855,6 +1855,19 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_polb_link_test.cmake")
 
+        # A CONSUMER DECLARING A NAME THE LIBRARY ALSO USES. Nothing this program declares may change
+        # how a library symbol is named: the rename used to rewrite the IMPORTED `Square` to
+        # `geo__Square`, and the link failed on `geo__Square.__new` against an exported `Square.__new`.
+        # The library here is the same one bundle_virtual_runs uses -- what differs is the consumer.
+        add_test(NAME bundle_shadowed_name_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_shape_lib.pol"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_shadow_app.pol"
+            "-DEXPECTED=area = 25"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_polb_link_test.cmake")
+
         # ABI: a LOCAL class extending an IMPORTED base -- listed as unaudited in docs/design/abi.md,
         # and it was broken. A bundle is compiled into an OPEN world, but devirtualization asked the
         # whole-program question "does anything extend this?", got "no" inside the library, and

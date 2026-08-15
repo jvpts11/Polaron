@@ -1428,9 +1428,15 @@ struct Program {
     // Internal names produced by namespace disambiguation (e.g. app__Box). These are
     // already explicitly scoped, so they bypass the import/visibility requirement.
     std::set<std::string> qualifiedTypes;
-    // Base name -> namespace for each generic class, captured before monomorphization erases the
-    // templates. Lets the type checker enforce imports on a collection (ArrayList) by its base name.
-    std::map<std::string, std::string> genericNamespaces;
+    // Base name -> the namespaceS declaring a generic class of that name, captured before
+    // monomorphization erases the templates. Lets the type checker enforce imports on a collection
+    // (ArrayList) by its base name.
+    //
+    // A LIST AND NOT ONE NAMESPACE: a program may declare its own `Stack` while the standard library
+    // declares `Collections.Stack`, and with a single slot the second registration overwrote the
+    // first -- so the checker told an author to import a type they had declared themselves. Both
+    // exist; which one a use means is decided by where the use is, and that decision needs both.
+    std::map<std::string, std::vector<std::string>> genericNamespaces;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };

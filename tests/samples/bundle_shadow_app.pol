@@ -1,0 +1,37 @@
+import System.IO.Console;
+import shapes.geo.Shape;
+import shapes.geo.Square;
+program BundleShadowApp;
+
+// A CONSUMER THAT DECLARES A NAME THE LIBRARY ALSO USES.
+//
+// The library's symbols were fixed when IT was compiled, by a build that had never heard of this
+// program. So nothing this program declares may change how a library symbol is named -- and the
+// disambiguating rename used to do exactly that: `Square` became `geo__Square` here, the linker was
+// asked for `geo__Square.__new`, and the library had exported `Square.__new`. It failed at link, on
+// a symbol neither author wrote.
+//
+// The consumer's OWN type is the one that gets renamed -- it is the one nothing outside this
+// compilation names -- and an unqualified `Square` in `app` means the imported one, which is what
+// the import at the top of the file says.
+//
+// Prints: area = 25 (the LIBRARY's Square; this program's would say -1)
+public bundle main {
+    public namespace other {
+        public class Square {
+            public method area() returns int {
+                return -1;
+            }
+        }
+    }
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape* s = new Square(5) on heap;
+                System.IO.Console.printf("area = %d\n", s.area());
+                delete s;
+                return;
+            }
+        }
+    }
+}

@@ -200,7 +200,7 @@ void CodeGenerator::Impl::emitWeakCleanup(llvm::Value* objPtr, const std::string
 }
 
 llvm::Function* CodeGenerator::Impl::regionDtorFn(const std::string& cn) {
-    auto dit = functions.find(cn + ".~" + cn);
+    auto dit = functions.find(dtorSym(cn));
     const bool weak = weakRelevant(cn);
     if (!weak) {
         return dit == functions.end() ? nullptr : dit->second;
@@ -348,7 +348,18 @@ llvm::Type* CodeGenerator::Impl::llvmType(const std::string& t) {
     if (isValueVariant(t)) {
         return variantStructType();  // value Result/Option: { i32 tag, i64 payload }
     }
+    // Through the funnel: a shared name is stored by path, so asking `classes` for the bare name
+    // answers no -- and the fall-through at the bottom turns "not a class" into an INTEGER. A
+    // `movable Socket socket` field beside a standard-library `Socket` was laid out as an i32, the
+    // pointer stored into it wrote eight bytes over four, and the next field came back as 517.
+    // Nothing failed; the number was just wrong.
     if (classes.count(t) > 0) {
+        return builder.getPtrTy();
+    }
+    // Only then through the funnel, and only when something actually collides. This is a hot
+    // function -- every field, parameter and local asks it -- so the bare lookup stays first and a
+    // program with no shared names does exactly the work it did before.
+    if (!sharedClassNames.empty() && classes.count(clsKey(t)) > 0) {
         return builder.getPtrTy();
     }
     if (auto it = newtypes_.find(t); it != newtypes_.end()) {
@@ -709,6 +720,16 @@ llvm::Value* CodeGenerator::Impl::coerceToType(llvm::Value* v, llvm::Type* ty) {
 }
 
 std::string CodeGenerator::Impl::clsKey(const std::string& t) const {
+    // THE ONE FUNNEL, so resolution happens once rather than at each of the dozens of `classes.find`
+    // sites. A name shared by two types has to be answered by asking whose code is being emitted --
+    // and until it was, the standard library's own `Scanner` constructor failed with `no such field
+    // 'src'` in a program whose author had merely declared a class of the same name.
+    //
+    // The guard is an empty-set test: a program where nothing collides -- which is nearly all of them
+    // -- pays exactly what it paid before.
+    if (!sharedClassNames.empty()) {
+        return resolveClassKey(classes.count(t) > 0 ? t : baseType(t));
+    }
     if (classes.count(t) > 0) {
         return t;
     }
@@ -851,7 +872,7 @@ void CodeGenerator::Impl::emitDeleteObject(llvm::Value* objPtr, const std::strin
         return;
     }
     if (cit != classes.end() && cit->second.hasDestructor) {
-        builder.CreateCall(functions[cn + ".~" + cn], {objPtr});
+        builder.CreateCall(functions[dtorSym(cn)], {objPtr});
     }
     emitWeakCleanup(objPtr, cn);
     freeStringFields(objPtr, cn);
@@ -1342,7 +1363,7 @@ std::string CodeGenerator::Impl::dtorImpl(const std::string& className) {
             break;
         }
         if (it->second.hasDestructor) {
-            return c + ".~" + c;
+            return dtorSym(c);
         }
         c = it->second.superclass;
     }
@@ -2081,6 +2102,21 @@ bool CodeGenerator::Impl::isClassValue(const std::string& t) {
     if (baseType(t) == "String") {
         return false;
     }
+    // `Object` IS THE SAME ARGUMENT AS THE ONE ABOVE, TAKEN TO ITS END. The root type describes no
+    // object at all: it has no fields, so its "size" is the size of nothing, and every value that
+    // ever arrives as an Object is really something else. Copying by that size does not truncate the
+    // object -- it discards it, and hands on a buffer with none of the original's bytes in it.
+    //
+    // Found by writing the serializer: `encodeField(Field f, Object owner)` read every field of the
+    // caller's object as garbage, because the callee's prologue had memcpy'd `sizeof(Object)` bytes
+    // into a fresh alloca and read the fields out of THAT. Nothing warned, and the numbers printed
+    // looked like numbers.
+    //
+    // So the rule is the interface rule, with no new concept: a type that cannot say how big its
+    // values are is a reference, and Object is the one that can say least.
+    if (baseType(t) == "Object") {
+        return false;
+    }
     return !isRefType(t) && !isArrayType(t) && classes.count(t) > 0 && javaEnums.count(t) == 0;
 }
 
@@ -2677,7 +2713,10 @@ llvm::Value* CodeGenerator::Impl::emitLValue(const ast::Expr& expr) {
         }
         auto fit = cit->second.fieldIndex.find(mem->member);
         if (fit == cit->second.fieldIndex.end()) {
-            error("no such field '" + mem->member + "'", mem->loc);
+            // Name the CLASS it looked in. "no such field 'src'" says nothing about WHICH of two
+            // same-named classes was asked, and that is the only interesting part when a program has
+            // two -- this message is what turned a day of guessing into one reading.
+            error("no such field '" + mem->member + "' on '" + cit->first + "'", mem->loc);
             return nullptr;
         }
         return builder.CreateStructGEP(cit->second.type, objPtr, fit->second, mem->member);
@@ -2879,8 +2918,12 @@ llvm::StructType* CodeGenerator::Impl::typeTokenType() {
             {builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(),
              builder.getInt64Ty(), builder.getPtrTy(), builder.getInt64Ty(), builder.getPtrTy(),
              builder.getInt64Ty(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
-             builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()},
+             builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(),
+             builder.getPtrTy()},
             "ReflectType");  // ..., ptr fieldGetters, ptr fieldSetters, ptr methodAnnCounts(i64[]),
+                             // and field 16: ptr fieldTypeNames(ptr[] -> String[]), parallel to the
+                             // field names -- what a reflective walk needs to tell an int from a
+                             // String from a nested object.
                              // and field 15: ptr arenaNew -- how to allocate one of this class when
                              // the class is only known at runtime. Null for everything but a region
                              // class, whose instances have exactly one place they may be.
@@ -2961,8 +3004,12 @@ llvm::Type* CodeGenerator::Impl::tagRetType(long long tag) {
 
 llvm::StructType* CodeGenerator::Impl::fieldTokenType() {
     if (fieldStructTy == nullptr) {
+        // { name, getter, setter, typeName } -- the last one added so a reflective walk can tell an
+        // int from a String from a nested object, which `get` alone cannot say.
         fieldStructTy = llvm::StructType::create(
-            context, {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()}, "ReflectField");
+            context,
+            {builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy(), builder.getPtrTy()},
+            "ReflectField");
     }
     return fieldStructTy;
 }
@@ -2973,6 +3020,11 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
         return it->second;
     }
     std::vector<std::string> methodNames, fieldNames, annotationNames;
+    // Parallel to `fieldNames`: what each field's declared type is called. Reflection could name a
+    // field and read it as an Object, and had no way to say whether that Object was an int, a String
+    // or another object -- so nothing generic could be written over a type's SHAPE, which is the one
+    // thing reflection exists for. The type was already being collected here and discarded.
+    std::vector<std::string> fieldTypeNames;
     std::vector<llvm::Constant*> methodRetTags;      // parallel to methodNames (invoke, spec 31)
     std::vector<const ast::MethodDecl*> methodDecls; // parallel: for per-method annotations
     std::vector<std::string> methodOwners;           // parallel: class providing the impl
@@ -3009,8 +3061,13 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
         // object layout (collectFields drives fieldIndex too), so every per-field boxing accessor
         // lines up with its fieldIndex slot and Field.get/set read the right offset.
         for (const auto& [fname, ftype] : collectFields(className)) {
-            (void)ftype;
+            // THE FIELD'S TYPE, which was collected and thrown away one line later. Without it a
+            // reflective walk knows a field's NAME and can `get` it as an Object, and has no way to
+            // tell an int from a String from a nested object -- so nothing generic can be written over
+            // a type's shape, which is what reflection is for. It is the piece auto-serialization
+            // needs and the only piece it was missing.
             fieldNames.push_back(fname);
+            fieldTypeNames.push_back(ftype);
         }
         if (auto cit = classes.find(className); cit != classes.end() && cit->second.decl != nullptr) {
             for (const ast::AnnotationUse& a : cit->second.decl->annotations) {
@@ -3021,6 +3078,8 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
     auto* nameStr = llvm::cast<llvm::Constant>(emitStringObject(className));
     auto [mcount, mnames] = nameArray(methodNames, "methods." + className);
     auto [fcount, fnames] = nameArray(fieldNames, "fields." + className);
+    auto [ftcount, ftypes] = nameArray(fieldTypeNames, "fieldtypes." + className);
+    (void)ftcount;   // same count as fcount, by construction
     auto [acount, anames] = nameArray(annotationNames, "annotations." + className);
     // Parallel array of method function pointers (null where there is no body).
     std::vector<llvm::Constant*> fns;
@@ -3093,7 +3152,8 @@ llvm::Value* CodeGenerator::Impl::typeTokenFor(const std::string& className) {
                                     : llvm::ConstantPointerNull::get(builder.getPtrTy());
     llvm::Constant* obj = llvm::ConstantStruct::get(
         typeTokenType(), {nameStr, mcount, mnames, fnsG, fcount, fnames, size, ctorFn, acount,
-                          anames, fGetG, fSetG, mAnnCountsG, mAnnPtrsG, retTagsG, arenaNewC});
+                          anames, fGetG, fSetG, mAnnCountsG, mAnnPtrsG, retTagsG, arenaNewC,
+                          ftypes});
     auto* g = new llvm::GlobalVariable(module, typeTokenType(), /*isConstant=*/true,
                                        llvm::GlobalValue::PrivateLinkage, obj, "type." + className);
     typeGlobals[className] = g;

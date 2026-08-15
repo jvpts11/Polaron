@@ -1,4 +1,6 @@
 import System.IO.Console;
+import Own.World.Paths;
+import Own.World.Scanner;
 program OwnNamespaceWins;
 
 // A type of your own, in a namespace of your own, named the same as one in the standard library --
@@ -12,6 +14,12 @@ program OwnNamespaceWins;
 // `class 'IO__Paths' has no method 'one'`, naming a mangled class the program never wrote.
 //
 // Any of IO, Math, Runtime, Errors, Collections, Concurrency or Ecs would have done the same thing.
+//
+// The two imports at the top are the language's ordinary rule, not a workaround: a type in another
+// namespace is imported before it is used, whoever declares it (spec 2.7). What is being tested is
+// which `Paths` that import means -- and an import naming the whole path is the strongest possible
+// statement of it, so if this program ever printed 43 the resolution would be ignoring what the
+// author wrote down.
 
 public bundle Own {
     public namespace World {

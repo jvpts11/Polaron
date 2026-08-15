@@ -1397,7 +1397,10 @@ llvm::Value* CodeGenerator::Impl::emitNew(const ast::NewExpr& nw) {
         agg = builder.CreateInsertValue(agg, payload, {1u}, "var.val");
         return agg;
     }
-    const std::string cn = ast::mangleGeneric(nw.className, nw.typeArgs);  // Box<int> -> Box$int
+    // Box<int> -> Box$int, and then through the one funnel: `new Scanner()` in a program that also
+    // has a standard-library Scanner has to build the one whose name the author's namespace and
+    // imports point at, not whichever was declared first.
+    const std::string cn = clsKey(ast::mangleGeneric(nw.className, nw.typeArgs));
     auto cit = classes.find(cn);
     if (cit == classes.end()) {
         error("unknown class '" + cn + "'", nw.loc);
@@ -1591,7 +1594,7 @@ llvm::Value* CodeGenerator::Impl::emitNew(const ast::NewExpr& nw) {
         pendingPersistKey.clear();
         pendingPersistIndex = nullptr;
     }
-    auto fnit = functions.find(cn + "." + cn);
+    auto fnit = functions.find(ctorSym(cn));
     if (fnit != functions.end()) {
         std::vector<llvm::Value*> args;
         args.push_back(objPtr);

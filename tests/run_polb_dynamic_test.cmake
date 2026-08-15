@@ -29,6 +29,8 @@ set(ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
 # A false failure is not free: it trains you to re-run instead of to look, which is exactly how a real
 # one gets waved through.
 get_filename_component(TESTTAG "${LIB}" NAME_WE)
+get_filename_component(_apptag "${APP}" NAME_WE)   # two tests may share a library, see the link harness
+set(TESTTAG "${TESTTAG}_${_apptag}")
 set(polb "${WORKDIR}/${TESTTAG}_dyn.polb")
 set(ll "${WORKDIR}/${TESTTAG}_dyn_app.ll")
 set(exe "${WORKDIR}/${TESTTAG}_dyn_app.exe")

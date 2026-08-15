@@ -403,6 +403,8 @@ void CodeGenerator::Impl::declareClasses() {
     // constants are singletons materialized as instances of a desugared class).
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::EnumDecl& en : ns.enums) {
                 enums[en.name] = en.constants;
                 // An enum's path, for the same reason a class's is recorded: a user enum and a stdlib
@@ -423,9 +425,86 @@ void CodeGenerator::Impl::declareClasses() {
         }
     }
     // Pass 1: create struct types and record declaration, superclass,
+    // WHICH NAMES ARE SHARED, BEFORE ANY OF THEM IS STORED.
+    //
+    // The first attempt let the first declaration keep the bare name and sent the rest to their path.
+    // That is one rule with two cases, and every later pass had to know which case it was in -- the
+    // layout walk, the field fill, the body emitter -- so they disagreed, and the standard library's
+    // own `Scanner` ended up with the user's fields.
+    //
+    // One rule instead: a name that TWO types answer to is stored by path for BOTH of them, and a
+    // unique name is stored bare exactly as before. Deciding it needs a look ahead, which is this
+    // scan; it costs one walk over the declarations and removes the asymmetry entirely.
+    //
+    // Counted by NAMESPACE, not by occurrence. A java-style enum desugars into a class AND a light
+    // enum of the same name in the same namespace -- so counting declarations marked every one of
+    // them as colliding with itself, and every java enum in the program went down a path meant for
+    // two different types.
+    {
+        std::unordered_map<std::string, std::string> firstNs;
+        auto note = [&](const std::string& name, const std::string& where) {
+            auto it = firstNs.find(name);
+            if (it == firstNs.end()) {
+                firstNs[name] = where;
+                firstOwnerKey[name] = where + "." + name;   // the deterministic fallback
+            } else if (it->second != where) {
+                sharedClassNames.insert(name);   // two namespaces, two types, one name
+            }
+        };
+        for (const ast::Bundle& bundle : program.bundles) {
+            for (const ast::Namespace& ns : bundle.namespaces) {
+                const std::string where = bundle.name + "." + ns.name;
+                for (const ast::ClassDecl& cls : ns.classes) {
+                    note(cls.name, where);
+                }
+                for (const ast::EnumDecl& en : ns.enums) {
+                    note(en.name, where);
+                }
+            }
+            // AND WHAT EACH BUNDLE IMPORTED, because an import is the author saying which of two
+            // same-named types they mean, and codegen has to reach the same conclusion the analyzer
+            // did. Without it, code that passed type checking -- the analyzer honours the import --
+            // resolved here by "first declared" instead, and a program that imports its own
+            // `World.Paths` called the standard library's, reported as `unknown method 'one'`
+            // against a method the author had just written.
+            //
+            // The import path IS the key: `import Own.World.Paths;` is `Own.World.Paths`, which is
+            // exactly how a shared name is stored.
+            // BOTH LISTS. An import is written before `program` (spec 2.7, file level) and lands in
+            // `program.imports`; `bundle.imports` is the in-bundle form the standard library uses for
+            // itself. Reading only the second saw every library import and none of the author's,
+            // which is the half that matters here.
+            auto take = [&](const ast::ImportDecl& imp) {
+                if (imp.path.size() < 2) {
+                    return;   // `import reflect;` and other bare, pathless imports
+                }
+                std::string key;
+                for (const std::string& seg : imp.path) {
+                    key += key.empty() ? seg : "." + seg;
+                }
+                bundleImportKey[bundle.name][imp.path.back()] = key;
+            };
+            for (const ast::ImportDecl& imp : program.imports) {
+                take(imp);
+            }
+            for (const ast::ImportDecl& imp : bundle.imports) {
+                take(imp);
+            }
+        }
+    }
+    // POLARON_SHOW_SHARED=1: which names two types answer to, and where each one lives. A collision
+    // is resolved in four passes that must agree, so the first question when they do not is whether
+    // this scan saw the collision at all.
+    if (std::getenv("POLARON_SHOW_SHARED") != nullptr) {
+        for (const std::string& n : sharedClassNames) {
+            std::fprintf(stderr, "[shared] %s\n", n.c_str());
+        }
+    }
     // interfaces, flags and own members. All names registered first.
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 ClassLayout layout;
                 layout.decl = &cls;
@@ -517,15 +596,20 @@ void CodeGenerator::Impl::declareClasses() {
                 // Today the renaming pass makes this unreachable by making the names distinct
                 // upstream. It is here so that removing that pass does not silently lose a type,
                 // which is precisely what `classes[cls.name] = layout` did.
-                if (classes.count(cls.name) == 0) {
+                // By path when the name is shared, bare when it is not -- decided by the scan above,
+                // so both halves of a collision are treated alike and no pass has to remember which
+                // of the two it is holding.
+                const std::string key = sharedClassNames.count(cls.name) > 0
+                                            ? bundle.name + "." + ns.name + "." + cls.name
+                                            : cls.name;
+                classNamespace[key] = ns.name;
+                classBundle[key] = bundle.name;
+                classes[key] = std::move(layout);
+                if (sharedClassNames.count(cls.name) > 0 && classNamespace.count(cls.name) == 0) {
+                    // Remember where the bare name will point; the copy itself waits until the fields
+                    // exist (see the aliasing step after the layout passes).
                     classNamespace[cls.name] = ns.name;
                     classBundle[cls.name] = bundle.name;
-                    classes[cls.name] = std::move(layout);
-                } else {
-                    const std::string path = bundle.name + "." + ns.name + "." + cls.name;
-                    classNamespace[path] = ns.name;
-                    classBundle[path] = bundle.name;
-                    classes[path] = std::move(layout);
                 }
             }
         }
@@ -595,6 +679,8 @@ void CodeGenerator::Impl::declareClasses() {
     // class with multiple interfaces dispatch each one to the correct slot.
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 auto cit = classes.find(cls.name);
                 if (cit == classes.end() || !cit->second.hasVtable) {
@@ -622,13 +708,19 @@ void CodeGenerator::Impl::declareClasses() {
     // inherited fields first, then own.
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
-                ClassLayout& layout = classes[cls.name];
+                // THE SAME CLASS THIS PASS IS LOOKING AT, not whoever holds the bare name. Fields are
+                // filled in a second walk, and with two `Scanner`s in the program this wrote the
+                // standard library's fields into the USER's layout -- so the library's own
+                // constructor then failed with `no such field 'src'`.
+                ClassLayout& layout = classes[resolveClassKey(cls.name)];
                 if (layout.isUnion) {
                     // All fields overlap at offset 0; storage is the largest field.
                     std::string biggest;
                     unsigned maxBytes = 0;
-                    for (const auto& [fname, ftype] : collectFields(cls.name)) {
+                    for (const auto& [fname, ftype] : collectFields(resolveClassKey(cls.name))) {
                         layout.fieldIndex[fname] = 0;
                         layout.fieldType[fname] = ftype;
                         if (byteSizeOf(ftype) > maxBytes) {
@@ -667,7 +759,7 @@ void CodeGenerator::Impl::declareClasses() {
                 //     touched as a 32-bit access and not as four byte pokes.
                 // A run wider than 64 bits is an ERROR, not a silent second unit: a header that does
                 // not fit an integer needs the author to say where it splits.
-                std::vector<std::pair<std::string, std::string>> ordered = collectFields(cls.name);
+                std::vector<std::pair<std::string, std::string>> ordered = collectFields(resolveClassKey(cls.name));
                 std::size_t fi = 0;
                 while (fi < ordered.size()) {
                     if (layout.bitFieldWidth.count(ordered[fi].first) == 0) { ++fi; continue; }
@@ -707,7 +799,7 @@ void CodeGenerator::Impl::declareClasses() {
                 }
                 // One element per field, EXCEPT that every field of a run shares the run's element.
                 std::string runOwner;   // the field whose element the current run occupies
-                for (const auto& [fname, ftype] : collectFields(cls.name)) {
+                for (const auto& [fname, ftype] : collectFields(resolveClassKey(cls.name))) {
                     if (auto ub = layout.bitFieldUnitBits.find(fname);
                         ub != layout.bitFieldUnitBits.end()) {
                         const bool startsRun =
@@ -761,6 +853,23 @@ void CodeGenerator::Impl::declareClasses() {
                 }
                 layout.type->setBody(fieldTypes);
             }
+        }
+    }
+    // THE BARE NAME GETS AN ALIAS, now that the layouts are complete.
+    //
+    // Every shared type is stored by its path, so a site that RESOLVES gets the right one. This is
+    // for the sites that do not -- `classes[name]` with operator[], of which there are several --
+    // because with the bare key absent those create an EMPTY layout with a null type and the compiler
+    // segfaults on it. An alias makes an unresolved answer wrong-but-valid rather than fatal, which is
+    // the difference between a diagnosable bug and a crash.
+    //
+    // AFTER the fills, and that ordering is the whole of it: the first attempt copied at registration,
+    // when the layout had no fields yet, so the alias was permanently empty and every unresolved
+    // lookup reported `no such field` on a class that plainly had one.
+    for (const auto& [bare, key] : firstOwnerKey) {
+        if (sharedClassNames.count(bare) > 0 && classes.count(bare) == 0 &&
+            classes.count(key) > 0) {
+            classes[bare] = classes[key];
         }
     }
     checkLayoutBudgets(program);
@@ -863,6 +972,8 @@ void CodeGenerator::Impl::emitNamespaceConsts() {
     // Index `comptime` methods first, so const initializers can call them (spec 28.3).
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
@@ -904,6 +1015,8 @@ void CodeGenerator::Impl::emitNamespaceConsts() {
     std::vector<std::pair<const ast::ConstDecl*, std::string>> waiting;
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::ConstDecl& c : ns.consts) {
                 waiting.push_back({&c, ""});
             }
@@ -1026,6 +1139,8 @@ void CodeGenerator::Impl::emitStaticFields() {
     std::vector<std::pair<std::string, const ast::FieldDecl*>> statics;
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
@@ -1062,6 +1177,8 @@ void CodeGenerator::Impl::emitStaticFields() {
     }
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
@@ -1392,6 +1509,8 @@ bool CodeGenerator::Impl::declaresInterrupt(const std::string& className) const 
 void CodeGenerator::Impl::declareFunctions() {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;      // so resolveClassKey knows whose code this is
+            currentBundleName = bundle.name;
             for (const ast::ExternDecl& ex : ns.externs) {  // external C functions (spec 26)
                 llvm::FunctionType* ty =
                     externFnType(ex.params, ex.returnType, ex.isVariadic, ex.loc);
@@ -1402,6 +1521,21 @@ void CodeGenerator::Impl::declareFunctions() {
             }
             for (const ast::ClassDecl& cls : ns.classes) {
                 bool hasCtor = false;
+                // A METHOD'S SYMBOL CARRIES ITS CLASS'S KEY, WHICH FOR A SHARED NAME IS ITS PATH.
+                //
+                // `Scanner.nextWord` is one symbol, and two classes called Scanner produced it twice:
+                // the second registration replaced the first outright, so half the program called
+                // methods belonging to a class it had never heard of -- and, since a call resolves
+                // the receiver by path and then looked the symbol up by bare name, the other half
+                // failed with `unknown method` against a method plainly written above it.
+                //
+                // This is also the whole of the "the standard library may not shadow itself"
+                // limitation recorded as spec-divergences 9.5: it was never a rule about the library,
+                // only about symbol names, and naming them by key ends it in both directions.
+                //
+                // Unique names -- every name in nearly every program -- keep the bare symbol they
+                // always had, so nothing in an ordinary build changes at all.
+                const std::string ck = clsKey(cls.name);
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
                         if (m == entry.method && !testMode) {
@@ -1468,10 +1602,9 @@ void CodeGenerator::Impl::declareFunctions() {
                                                            sym, module);
                             }
                             f->setCallingConv(worldToCallConv(m->externConvention, m->loc));  // [unknown-abi]
-                            functions[cls.name + "." + m->name] = f;
+                            functions[ck + "." + m->name] = f;
                             functions[m->name] = f;  // also by bare C symbol, for goto (spec 7.9)
-                            externReturnType[cls.name + "." + m->name] =
-                                typeRefName(m->returnType);
+                            externReturnType[ck + "." + m->name] = typeRefName(m->returnType);
                             continue;
                         }
                         std::vector<llvm::Type*> ptypes;
@@ -1484,7 +1617,7 @@ void CodeGenerator::Impl::declareFunctions() {
                             ptypes.push_back(llvmType(typeRefName(p.type)));
                             pnames.push_back(typeRefName(p.type));
                         }
-                        const std::string mangled = cls.name + "." + m->name;
+                        const std::string mangled = ck + "." + m->name;
                         if (m->isAsync) {
                             // Wrapper returns a Task<T> object (ptr); a separate resume
                             // function void(ptr state) runs the body (spec 20.2).
@@ -1562,7 +1695,7 @@ void CodeGenerator::Impl::declareFunctions() {
                         }
                         llvm::FunctionType* ty =
                             llvm::FunctionType::get(builder.getVoidTy(), ptypes, false);
-                        const std::string mangled = cls.name + "." + cls.name;
+                        const std::string mangled = ck + "." + cls.name;
                         llvm::Function* cf = llvm::Function::Create(
                             ty, llvm::Function::ExternalLinkage, mangled, module);
                         functions[mangled] = cf;
@@ -1571,7 +1704,7 @@ void CodeGenerator::Impl::declareFunctions() {
                                nullptr) {
                         llvm::FunctionType* ty = llvm::FunctionType::get(
                             builder.getVoidTy(), {builder.getPtrTy()}, false);
-                        const std::string mangled = cls.name + ".~" + cls.name;
+                        const std::string mangled = ck + ".~" + cls.name;
                         functions[mangled] = llvm::Function::Create(
                             ty, llvm::Function::ExternalLinkage, mangled, module);
                     }
@@ -1582,7 +1715,7 @@ void CodeGenerator::Impl::declareFunctions() {
                 if (!hasCtor && !cls.isInterface) {
                     llvm::FunctionType* ty = llvm::FunctionType::get(
                         builder.getVoidTy(), {builder.getPtrTy()}, false);
-                    const std::string mangled = cls.name + "." + cls.name;
+                    const std::string mangled = ck + "." + cls.name;
                     functions[mangled] = llvm::Function::Create(
                         ty, llvm::Function::ExternalLinkage, mangled, module);
                 }
@@ -1597,10 +1730,10 @@ void CodeGenerator::Impl::declareFunctions() {
                 // on a missing key inserts a NULL, which then goes straight to CreateCall.
                 if ((unimportableClasses.count(cls.name) > 0 ||
                      countedClasses.count(cls.name) > 0) &&
-                    !cls.isInterface && functions.count(cls.name + ".~" + cls.name) == 0) {
+                    !cls.isInterface && functions.count(ck + ".~" + cls.name) == 0) {
                     llvm::FunctionType* ty = llvm::FunctionType::get(
                         builder.getVoidTy(), {builder.getPtrTy()}, false);
-                    const std::string mangled = cls.name + ".~" + cls.name;
+                    const std::string mangled = ck + ".~" + cls.name;
                     functions[mangled] = llvm::Function::Create(
                         ty, llvm::Function::ExternalLinkage, mangled, module);
                     synthesizedDtors_.insert(cls.name);
@@ -1611,8 +1744,8 @@ void CodeGenerator::Impl::declareFunctions() {
                         return;
                     }
                     llvm::FunctionType* ty = llvm::FunctionType::get(builder.getVoidTy(), false);
-                    functions[cls.name + suffix] = llvm::Function::Create(
-                        ty, llvm::Function::ExternalLinkage, cls.name + suffix, module);
+                    functions[ck + suffix] = llvm::Function::Create(
+                        ty, llvm::Function::ExternalLinkage, ck + suffix, module);
                 };
                 declHook(cls.onClassLoad, ".__onClassLoad");
                 declHook(cls.onFirstInstance, ".__onFirstInstance");
@@ -1633,12 +1766,16 @@ void CodeGenerator::Impl::declareFunctions() {
                             break;
                         }
                     }
-                    functions[cls.name + ".__new"] = llvm::Function::Create(
+                    // By key, like every other symbol: `delete` on an imported class resolves the
+                    // receiver through clsKey and then asks for `<key>.__delete`, so declaring it
+                    // under the bare name left that lookup inserting a null Function* and calling
+                    // through it -- an access violation with no diagnostic, in the consumer.
+                    functions[ck + ".__new"] = llvm::Function::Create(
                         llvm::FunctionType::get(builder.getPtrTy(), np, false),
-                        llvm::Function::ExternalLinkage, cls.name + ".__new", module);
-                    functions[cls.name + ".__delete"] = llvm::Function::Create(
+                        llvm::Function::ExternalLinkage, ck + ".__new", module);
+                    functions[ck + ".__delete"] = llvm::Function::Create(
                         llvm::FunctionType::get(builder.getVoidTy(), {builder.getPtrTy()}, false),
-                        llvm::Function::ExternalLinkage, cls.name + ".__delete", module);
+                        llvm::Function::ExternalLinkage, ck + ".__delete", module);
                 }
             }
             // `comptime literal` suffix functions (spec 17.10): namespace-level (legacy) and the
@@ -1781,7 +1918,9 @@ bool CodeGenerator::Impl::anyCtorWholeAssignsField(const ast::ClassDecl& cls, co
 }
 
 void CodeGenerator::Impl::emitFieldInits(const ast::ClassDecl& cls, llvm::Value* thisPtr) {
-    ClassLayout& layout = classes[cls.name];
+    // Resolved, for the same reason as the field-filling walk: with two classes of one name, the bare
+    // key is whichever was declared first, and initialising the wrong one's fields is silent.
+    ClassLayout& layout = classes[resolveClassKey(cls.name)];
     // Null-default owned-type fields (String, value class, array) that have no inline initializer,
     // before running the initializers/body. Heap objects come from malloc, which does not zero, so
     // such a field would otherwise hold garbage until first assigned -- and reassignment now frees

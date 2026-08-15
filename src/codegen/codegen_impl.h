@@ -326,6 +326,91 @@ struct CodeGenerator::Impl {
         }
         return b->second + "." + n->second + "." + name;
     }
+
+    // WHICH `Scanner` THIS CODE MEANS -- codegen's half of the same question the analyzer answers.
+    //
+    // The analyzer resolved it correctly and codegen did not, because codegen looked the bare name up
+    // in one map and took whatever was there. That surfaced as `no such field 'src'` inside the
+    // standard library's own Scanner constructor, on a program whose author had merely declared a
+    // class of the same name.
+    //
+    // The key a shared name is stored under: the first declaration keeps the bare name, the rest go
+    // under their path. Resolution walks the same order the analyzer uses -- the namespace being
+    // emitted, then the bundle, then whatever is left.
+    std::unordered_set<std::string> sharedClassNames;
+    std::string currentNamespace;   // set by every loop that walks namespaces
+    std::string currentBundleName;
+    // The KEY of the class whose members are being emitted, announced by the walk that knows it --
+    // `Bundle.Namespace.Name` for the one that did not get the bare key. Empty when a body is reached
+    // from a worklist instead, which is how emitBody tells the two apart.
+    std::string emittingClassKey;
+
+    // ONE RULE, NO CASES. A shared name is stored by path for every type that answers to it, so
+    // resolving is composing the path of whoever is asking -- there is no "unless it was declared
+    // first" branch for a later pass to get wrong.
+    std::string resolveClassKey(const std::string& name) const {
+        if (sharedClassNames.empty() || sharedClassNames.count(name) == 0) {
+            return name;   // the ordinary case: one type, one key, no work at all
+        }
+        const std::string here = currentBundleName + "." + currentNamespace + "." + name;
+        if (classes.count(here) > 0) {
+            return here;
+        }
+        // AN IMPORT NAMING THE PATH SETTLES IT -- the same order the analyzer resolves in, and it has
+        // to be the same or a program type-checks against one class and calls another.
+        if (auto b = bundleImportKey.find(currentBundleName); b != bundleImportKey.end()) {
+            if (auto i = b->second.find(name); i != b->second.end() && classes.count(i->second) > 0) {
+                return i->second;
+            }
+        }
+        // Not ours: the FIRST DECLARED one, recorded during the scan.
+        //
+        // Deterministic on purpose. The first version searched `classNamespace` for any key ending in
+        // this name -- and that is an unordered_map, so with two candidates the answer depended on the
+        // hash order and CHANGED BETWEEN RUNS. It compiled, then segfaulted, then compiled, on the
+        // same input. A fallback that has to pick must pick the same thing every time, or the bug it
+        // creates is one nobody can reproduce.
+        auto first = firstOwnerKey.find(name);
+        if (first != firstOwnerKey.end() && classes.count(first->second) > 0) {
+            return first->second;
+        }
+        return name;
+    }
+    // A CONSTRUCTOR'S AND DESTRUCTOR'S SYMBOL, FROM A CLASS KEY.
+    //
+    // The convention is `<key>.<simple name>`: `Scanner.Scanner` for an ordinary class, and
+    // `Own.World.Scanner.Scanner` for one whose name is shared. Composing it by hand as `k + "." + k`
+    // -- which was right while every key WAS the simple name -- produces
+    // `Own.World.Scanner.Own.World.Scanner` for a shared name, so the constructor is never found and
+    // the object is malloc'd and left uninitialised, with no diagnostic anywhere.
+    std::string simpleOf(const std::string& key) const {
+        const auto p = key.rfind('.');
+        return p == std::string::npos ? key : key.substr(p + 1);
+    }
+    std::string ctorSym(const std::string& key) const { return key + "." + simpleOf(key); }
+    std::string dtorSym(const std::string& key) const { return key + ".~" + simpleOf(key); }
+    // THE FUNCTION A BODY IS ABOUT TO BE WRITTEN INTO, or a sentence saying which one is missing.
+    //
+    // `functions[sym]` on an absent key inserts a null and hands it back, and the emitter walks
+    // straight into it: the compiler dies with an access violation and no output at all, which says
+    // nothing about which symbol was not declared. Every such crash so far has been a declaration
+    // pass and an emission pass naming the same method differently -- exactly the kind of mismatch a
+    // name in the message identifies in one reading.
+    llvm::Function* needFn(const std::string& sym) {
+        auto it = functions.find(sym);
+        if (it == functions.end() || it->second == nullptr) {
+            error("internal: no function was declared for '" + sym +
+                      "' -- the declaration and emission passes disagree about its name",
+                  {});
+            return nullptr;
+        }
+        return it->second;
+    }
+    // The key of the first-declared type for each shared name -- the deterministic fallback above.
+    std::unordered_map<std::string, std::string> firstOwnerKey;
+    // Per bundle, what each imported simple name resolves to: "Own" -> { "Paths" -> "Own.World.Paths" }.
+    // Filled in the pre-scan; read by resolveClassKey so an import decides here as it does in sema.
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> bundleImportKey;
     // `newtype Name = Underlying;` (spec 24): a distinct type that shares the underlying's
     // representation, so codegen lowers it exactly like the underlying type.
     std::unordered_map<std::string, std::string> newtypes_;
@@ -4604,6 +4689,16 @@ struct CodeGenerator::Impl {
                   const std::vector<std::string>* capTypes = nullptr,
                   const std::string& dtorChainBase = "", const ast::ClassDecl* dtorOf = nullptr,
                   bool asyncResume = false, bool argvEntry = false, const std::string& retTypeName = "") {
+        // NO FUNCTION TO WRITE INTO. Every caller reaches `functions[sym]`, which inserts a null for a
+        // symbol nobody declared and returns it -- so a naming disagreement between the declaration
+        // pass and this one arrived as an access violation with no output whatsoever. A refusal here
+        // is not a fix for that mismatch, but it turns a silent crash into a failure that can be
+        // read, and the callers that know the symbol say which one (see needFn).
+        if (fn == nullptr) {
+            error("internal: a method body was reached with no declared function to emit it into",
+                  body.loc);
+            return;
+        }
         // -g: a nested emitBody (a lambda emitted mid-method) must not leave its DISubprogram as the current
         // debug scope, or the enclosing method's later instructions get a mismatched scope (verifier error).
         llvm::DISubprogram* savedDiSP = diCurrentSP;
@@ -4622,6 +4717,46 @@ struct CodeGenerator::Impl {
         });
         currentFn = fn;
         currentClass = thisClass;
+        // WHOSE CODE THIS IS, anchored to the class rather than to whichever namespace loop ran last.
+        //
+        // A body is emitted from a worklist long after the walk that declared it, so ambient state set
+        // by that walk is stale here -- and with two classes of one name, resolving `this` against the
+        // stale namespace picked the wrong one. That surfaced as `no such field 'src'` inside the
+        // standard library's own constructor, in a program whose author had merely declared a class of
+        // the same name.
+        //
+        // Restored on the way out, because a lambda emitted mid-method re-enters this function.
+        const std::string savedNs = currentNamespace;
+        const std::string savedBundleName = currentBundleName;
+        auto nsRestore = llvm::make_scope_exit([this, &savedNs, &savedBundleName]() {
+            currentNamespace = savedNs;
+            currentBundleName = savedBundleName;
+        });
+        // TWO KINDS OF CALLER, and they need opposite things. A body emitted from the walk over
+        // namespaces has the right ambient value already; one emitted from a WORKLIST -- a
+        // specialization, a synthesized accessor -- is reached long after that walk and has whatever
+        // it left behind. So the walk announces itself by setting `emittingClassKey`, and only when it
+        // has not does this fall back to looking the class up by name.
+        //
+        // The distinction is not cosmetic: `classNamespace` is keyed by the bare name, which belongs
+        // to whichever class was declared FIRST, so for a shared name the fallback answers with the
+        // other class's namespace. Measured both ways -- overwriting the caller cost ten errors,
+        // removing the fallback cost ten different ones.
+        if (!emittingClassKey.empty()) {
+            if (auto it = classNamespace.find(emittingClassKey); it != classNamespace.end()) {
+                currentNamespace = it->second;
+            }
+            if (auto it = classBundle.find(emittingClassKey); it != classBundle.end()) {
+                currentBundleName = it->second;
+            }
+        } else if (!thisClass.empty()) {
+            if (auto it = classNamespace.find(thisClass); it != classNamespace.end()) {
+                currentNamespace = it->second;
+            }
+            if (auto it = classBundle.find(thisClass); it != classBundle.end()) {
+                currentBundleName = it->second;
+            }
+        }
         currentRetType = retType;
         currentRetTypeName_ = retTypeName;  // String RAII: drives copy-on-return for `returns String`
         // A value-struct return uses sret: the result slot is the trailing argument and the function

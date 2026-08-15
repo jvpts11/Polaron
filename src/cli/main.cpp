@@ -165,8 +165,56 @@ void appendPrelude(polaron::ast::Program& prog) {
         }
         return;
     }
+    // THE STANDARD LIBRARY IMPORTS ITSELF, like everybody else.
+    //
+    // It never did. There is not one `import` line in any of the 25 prelude files, and an exemption in
+    // the analyzer let it through: "the stdlib is internally cohesive -- a type in the System bundle
+    // may use any other System-bundle type without an import". Convenient, and it made the standard
+    // library the ONE body of code in the program that resolves a name by a different rule from
+    // everything else.
+    //
+    // That is what blocks type identity. When two types answer to `Scanner`, resolution asks the
+    // ordinary questions -- is it yours, did you import it -- and the prelude answers neither, so it
+    // needs a special case, and a special case is a second rule that has to agree with the first
+    // forever. It stops needing one the moment its imports exist.
+    //
+    // Generated rather than written: the compiler has just parsed the declarations, so it knows every
+    // type and where it lives exactly. Writing ~280 import lines by hand across 25 files would be the
+    // same list, maintained by somebody.
     for (auto& bundle : prelude.bundles) {
         bundle.isPrelude = true;  // not user source; kept out of the .polh
+        // `reflect` is a builtin NAMESPACE rather than a type, and the library uses it too -- the
+        // serializer walks a type's fields with it. One entry, because it has no path to name.
+        {
+            polaron::ast::ImportDecl r;
+            r.loc.file = "<prelude>";
+            r.path.push_back("reflect");
+            bundle.imports.push_back(std::move(r));
+        }
+        for (const auto& ns : bundle.namespaces) {
+            auto declare = [&](const std::string& typeName) {
+                polaron::ast::ImportDecl imp;
+                // FROM `<prelude>`, and that is not decoration. Half a dozen checks ask whether a
+                // declaration came from the standard library by looking at its FILE -- the
+                // freestanding gate most of all, which refuses `StringBuilder`, `Console` and `Paths`
+                // to user code and must not refuse the library its own. A synthesized import with no
+                // location reads as user source and is held to the user's rules.
+                imp.loc.file = "<prelude>";
+                imp.path.push_back(bundle.name);
+                imp.path.push_back(ns.name);
+                imp.path.push_back(typeName);
+                bundle.imports.push_back(std::move(imp));
+            };
+            for (const auto& c : ns.classes) {
+                declare(c.name);
+            }
+            for (const auto& e : ns.enums) {
+                declare(e.name);
+            }
+            for (const auto& cat : ns.catalogs) {
+                declare(cat.name);
+            }
+        }
         prog.bundles.push_back(std::move(bundle));
     }
 }
