@@ -4986,6 +4986,26 @@ if(POLARON_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         # The early secret is the published starting point of the TLS 1.3 schedule; matching it means
         # extract, expand and the label construction all agree with the specification at once.
+        # The key exchange, against RFC 7748 AND against the property that makes it an exchange: what
+        # each side computes from the other's public value must agree. A scalar multiplication that
+        # is subtly wrong can still agree with itself, so the vector alone would not catch it.
+        add_test(NAME codegen_tls_x25519 COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tls_primitives.pol"
+            "-DCONTAINS=x25519: vector=1 agrees=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # AES-GCM against NIST SP 800-38D, and the field that matters most: a flipped bit in the tag
+        # must make `open` REFUSE. Decrypting first and checking after is how a program ends up acting
+        # on bytes an attacker chose.
+        add_test(NAME codegen_tls_gcm COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tls_primitives.pol"
+            "-DCONTAINS=gcm: vector=1 roundTrip=1 forgedTagRefused=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         add_test(NAME codegen_tls_key_schedule COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"

@@ -1,6 +1,8 @@
 import System.IO.Console;
+import System.Net.Tls.Gcm;
 import System.Net.Tls.Hkdf;
 import System.Net.Tls.KeySchedule;
+import System.Net.Tls.X25519;
 import System.Security.Sha256;
 import System.Security.Sha384;
 import System.Security.Sha512;
@@ -29,6 +31,8 @@ program TlsPrimitives;
 //   hmac: rfc4231=1
 //   hkdf: prk=1 okm=1
 //   keyschedule: earlySecret=1 keyIsSixteen=1 ivIsTwelve=1
+//   x25519: vector=1 agrees=1
+//   gcm: vector=1 roundTrip=1 forgedTagRefused=1
 public bundle Main {
     public namespace App {
         public class Main {
@@ -81,6 +85,39 @@ public bundle Main {
                 System.IO.Console.printf("keyschedule: earlySecret=%d keyIsSixteen=%d ivIsTwelve=%d\n",
                     Sha256.toHex(early, 32).equals("33ad0a1c607ec03b09e6cd9893680ce210adf300aa1f2660e1b22e10f170f92a") ? 1 : 0,
                     k.length() == 16 ? 1 : 0, iv.length() == 12 ? 1 : 0);
+
+                // RFC 7748 §5.2, and then the property that makes a key exchange one at all: what
+                // Alice computes from Bob's public value equals what Bob computes from hers. A
+                // scalar multiplication that is subtly wrong can still agree with ITSELF, so the
+                // published vector and the agreement are both needed.
+                mutable int[] scalar = Main.bytesOf("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4");
+                mutable int[] point = Main.bytesOf("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c");
+                mutable int[] shared = X25519.scalarMult(scalar, point);
+                mutable int[] alice = Main.bytesOf("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+                mutable int[] bob = Main.bytesOf("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb");
+                mutable int[] alicePublic = X25519.publicKey(alice);
+                mutable int[] bobPublic = X25519.publicKey(bob);
+                System.IO.Console.printf("x25519: vector=%d agrees=%d\n",
+                    Sha256.toHex(shared, 32).equals("c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552") ? 1 : 0,
+                    Sha256.toHex(X25519.scalarMult(alice, bobPublic), 32)
+                        .equals(Sha256.toHex(X25519.scalarMult(bob, alicePublic), 32)) ? 1 : 0);
+
+                // NIST SP 800-38D. The last field is the one that matters most: a flipped bit in the
+                // tag must make `open` refuse, because decrypting first and checking after is how a
+                // program ends up acting on bytes an attacker chose.
+                mutable int[] gcmKey = Main.bytesOf("feffe9928665731c6d6a8f9467308308");
+                mutable int[] gcmIv = Main.bytesOf("cafebabefacedbaddecaf888");
+                mutable int[] plain = Main.bytesOf("d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a721c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255");
+                mutable int[] noAad = new int[1]();
+                mutable int[] box = Gcm.seal(gcmKey, gcmIv, noAad, 0, plain, 64);
+                mutable int[] back = Gcm.open(gcmKey, gcmIv, noAad, 0, box, 80);
+                mutable boolean roundTrip = back.length() == 64 &&
+                    Sha256.toHex(back, 64).equals(Sha256.toHex(plain, 64));
+                box[79] = box[79] ^ 1;
+                mutable int[] forged = Gcm.open(gcmKey, gcmIv, noAad, 0, box, 80);
+                System.IO.Console.printf("gcm: vector=%d roundTrip=%d forgedTagRefused=%d\n",
+                    Sha256.toHex(box, 64).equals("42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985") ? 1 : 0,
+                    roundTrip ? 1 : 0, forged.length() <= 1 ? 1 : 0);
                 return;
             }
         }
