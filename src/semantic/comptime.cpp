@@ -1,5 +1,7 @@
 #include "semantic/comptime.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 namespace polaron::comptime {
@@ -417,6 +419,26 @@ int evalStringBuiltin(const ast::CallExpr& call, Num& out, Context& ctx, const E
     const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
     if (mem == nullptr) {
         return 0;
+    }
+    // THE NAME IS CHECKED BEFORE THE RECEIVER IS EVALUATED, and that ordering is the whole
+    // difference between linear and exponential.
+    //
+    // Evaluating the receiver means evaluating everything to its left, and the receiver of a method
+    // this function cannot fold is evaluated for nothing. On a chain -- `a.concat(b).concat(c)...`,
+    // which is how anybody writes a long literal -- that wasted evaluation happens at EVERY level,
+    // and each one re-evaluates the whole chain below it. Measured before this: eight links compiled
+    // in 482 ms, fourteen took 34 SECONDS, and twenty never finished. `concat` is not foldable (it
+    // would have to allocate a string in the compiler), so every one of those evaluations was thrown
+    // away the moment it returned.
+    //
+    // Asking "can I use this?" first costs a string comparison.
+    {
+        const std::string& m = mem->member;
+        const bool foldable = m == "length" || m == "isEmpty" || m == "charAt" || m == "equals" ||
+                              m == "indexOf" || m == "substring";
+        if (!foldable) {
+            return 0;
+        }
     }
     Num recv;
     if (!eval(*mem->object, recv, ctx, env) || !recv.isStr) {
