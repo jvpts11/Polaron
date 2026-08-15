@@ -1,0 +1,175 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.Paths;
+import System.IO.LineReader;
+import System.IO.TempDirectory;
+import System.OS.Command;
+import System.OS.Disk;
+import System.OS.Environment;
+import System.OS.ProcessResult;
+import System.OS.Workspace;
+import System.Collections.ArrayList;
+import System.Text.StringBuilder;
+program TreeSync;
+
+// A REAL TOOL, written to find out whether this part of the library is actually finished.
+//
+// Not a probe and not a list of calls: a directory-syncing program of the kind everybody writes
+// eventually, doing the things such a program really has to do. Whatever it cannot express is a hole,
+// and whatever it expresses awkwardly is a design note. That is a stricter test than any checklist,
+// because a checklist only asks about the calls somebody already thought of.
+//
+// It copies a source tree to a destination, skipping files that are already identical, replacing the
+// rest ATOMICALLY, writing a manifest, reading that manifest back line by line, and running a
+// post-sync hook as a real program with real arguments. Along the way it asks how much room it needs
+// and how much there is.
+//
+// The three things it proves are the three that are hard to get right:
+//   - a second sync copies NOTHING, because nothing changed. A tool that copies everything every
+//     time is a tool nobody can use on a large tree, and the comparison that decides is size plus
+//     modification time -- the one `isNewerThan` was built for.
+//   - a destination file is never half-written. `replace` puts a whole file there or leaves the old
+//     one, which is what makes a sync interruptible.
+//   - the hook receives its argument whole, including the spaces and the `&` in a real filename.
+//
+// Prints:
+//   plan: files=3 bytes>0=1 roomEnough=1
+//   first: copied=3 skipped=0
+//   second: copied=0 skipped=3
+//   changed: copied=1 skipped=2
+//   manifest: lines=3 firstIsRelative=1
+//   hook: argumentIntact=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                if (args.length() > 0) {
+                    // The hook half: print the argument back so the parent can check it survived.
+                    System.IO.Console.print(args[0]);
+                    return;
+                }
+                using (TempDirectory work = new TempDirectory("polaron-sync") on stack) {
+                    String source = Paths.join(work.path(), "src");
+                    String target = Paths.join(work.path(), "dst");
+                    Main.buildSource(source);
+
+                    Main.plan(source, target);
+                    Main.report("first", Main.sync(source, target));
+                    Main.report("second", Main.sync(source, target));
+
+                    // One file changes; only that one should move.
+                    Files.write(Paths.join(source, "notes.txt"), "changed, and longer than before");
+                    Main.report("changed", Main.sync(source, target));
+
+                    Main.manifest(source, target);
+                    Main.hook();
+                }
+                return;
+            }
+
+            private static method buildSource(String source) returns void {
+                Files.createDirectories(Paths.join(source, "deep"));
+                Files.write(Paths.join(source, "notes.txt"), "one");
+                Files.write(Paths.join(source, "data.bin"), "two");
+                // Three segments, which is why `joinAll` exists: `join` takes two, and Polaron has no
+                // overloading and no variadic parameters -- so writing this tool is what found it.
+                mutable ArrayList<String> deep = new ArrayList<String>() on heap;
+                deep.add(source);
+                deep.add("deep");
+                deep.add("inner.txt");
+                Files.write(Paths.joinAll(deep), "three");
+                delete deep;
+                return;
+            }
+
+            // How much has to move, and whether there is room for it -- asked BEFORE starting, which
+            // is the difference between a failed sync and a half-finished one.
+            private static method plan(String source, String target) returns void {
+                mutable ArrayList<String> files = Files.walk(source);
+                long bytes = Files.directorySize(source);
+                System.IO.Console.printf("plan: files=%d bytes>0=%d roomEnough=%d\n",
+                                         files.size(), bytes > cast<long>(0) ? 1 : 0,
+                                         Disk.freeSpace(Workspace.tempDirectory()) > bytes ? 1 : 0);
+                delete files;
+            }
+
+            // Returns "<copied>:<skipped>". A file is skipped when the destination has the same size
+            // and is not older -- the comparison a sync lives or dies by.
+            private static method sync(String source, String target) returns String {
+                mutable int copied = 0;
+                mutable int skipped = 0;
+                mutable ArrayList<String> files = Files.walk(source);
+                for (mutable int i = 0; i < files.size(); i++) {
+                    String from = files.get(i);
+                    String rel = Paths.relative(source, from);
+                    String to = Paths.join(target, rel);
+                    if (Files.exists(to) && Files.size(to) == Files.size(from) &&
+                        !Files.isNewerThan(from, to)) {
+                        skipped = skipped + 1;
+                        continue;
+                    }
+                    Files.createDirectories(Paths.dirname(to));
+                    // ATOMIC: the destination holds the old file or the new one, never half of
+                    // either. That is what makes an interrupted sync safe to run again.
+                    Files.replace(to, Files.read(from));
+                    copied = copied + 1;
+                }
+                delete files;
+                mutable StringBuilder out = new StringBuilder() on heap;
+                out.appendInt(copied);
+                out.append(":");
+                out.appendInt(skipped);
+                return out.toString();
+            }
+
+            // `stage` and not `label`, which is reserved: a bare name before a loop is a loop label.
+            private static method report(String stage, String counts) returns void {
+                mutable ArrayList<String> parts = Strings.split(counts, ":");
+                System.IO.Console.printf("%s: copied=%s skipped=%s\n", stage, parts.get(0),
+                                         parts.get(1));
+                delete parts;
+            }
+
+            // What was synced, written as a file and read back the way a large one has to be read.
+            private static method manifest(String source, String target) returns void {
+                String path = Paths.join(target, "manifest.txt");
+                mutable ArrayList<String> files = Files.walk(source);
+                mutable StringBuilder text = new StringBuilder() on heap;
+                for (mutable int i = 0; i < files.size(); i++) {
+                    text.append(Paths.relative(source, files.get(i)));
+                    text.append("\n");
+                }
+                Files.replace(path, text.toString());
+
+                mutable LineReader* lines = new LineReader(path) on heap;
+                mutable int count = 0;
+                mutable String first = "";
+                while (lines.hasNext()) {
+                    String line = lines.next();
+                    if (line.length() == 0) { continue; }
+                    if (count == 0) { first = line; }
+                    count = count + 1;
+                }
+                // A manifest holding absolute paths is a manifest that is wrong on the next machine.
+                System.IO.Console.printf("manifest: lines=%d firstIsRelative=%d\n", count,
+                                         Paths.isAbsolute(first) ? 0 : 1);
+                delete lines;
+                delete files;
+            }
+
+            // The post-sync hook: another program, with an argument that a shell would have torn
+            // apart. This is the case a sync tool meets constantly, because filenames have spaces in
+            // them and sometimes have worse.
+            private static method hook() returns void {
+                String awkward = "a file & another.txt";
+                ProcessResult r = new Command(Workspace.executable()) on heap
+                    .arg(awkward)
+                    .env("POLARON_SYNC_ZZZ", "1")
+                    .timeout(10000)
+                    .run();
+                System.IO.Console.printf("hook: argumentIntact=%d\n",
+                                         r.output.equals(awkward) ? 1 : 0);
+            }
+        }
+    }
+}
