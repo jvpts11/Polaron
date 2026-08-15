@@ -71,6 +71,17 @@
             public static method processId() returns long {
                 return System.OS.__pid();
             }
+            // WHICH INSTRUCTION SET, which is a different question from which operating system:
+            // "x86_64", "arm64", "x86", "arm", "riscv64", "wasm". A program choosing a SIMD path,
+            // naming a downloaded binary, or reporting where a crash happened needs this one and not
+            // `os()` -- and a Mac may be either of two answers.
+            public static method architecture() returns String {
+                return System.OS.__cpuArch();
+            }
+            public static method is64Bit() returns boolean {
+                String arch = Machine.architecture();
+                return arch.equals("x86_64") || arch.equals("arm64") || arch.equals("riscv64");
+            }
         }
 
         // THE ENVIRONMENT, AND THE DIFFERENCE BETWEEN ABSENT AND EMPTY.
@@ -381,6 +392,21 @@
             public method wait() returns int {
                 return Subproc.wait(this.handle);
             }
+            // ...with a DEADLINE in milliseconds. Answers -2 when the time ran out and the child is
+            // still going, which is a different thing from -1 ("could not find out") and calls for a
+            // different response: one waits longer or gives up on it, the other reports.
+            //
+            // Without this, a parent that waits is a parent that a hung child hangs -- and a child
+            // that prompts for input with nobody there to type hangs forever. A build, a test runner
+            // and a language server all need to be able to stop waiting.
+            public method waitFor(int millis) returns int {
+                return Subproc.waitFor(this.handle, millis);
+            }
+            // Was it still running when the wait ran out? The name for the sentinel, so a caller
+            // compares against a word rather than remembering that -2 means that.
+            public static method timedOut(int code) returns boolean {
+                return code == 0 - 2;
+            }
             // Started from a Command, which is the form that does not go through a shell. Internal:
             // `Command.start()` is the way in.
             public static method fromHandle(long h) returns Subprocess {
@@ -420,6 +446,8 @@
             private mutable boolean ownEnvironment;        // false -> inherit ours
             private mutable boolean combineStderr;
             private mutable boolean visible;
+            private mutable String toWrite;      // fed to the child's stdin by `run`
+            private mutable int deadlineMillis;  // 0 = wait as long as it takes
 
             public constructor Command(String path) {
                 this.exe = path;
@@ -429,6 +457,8 @@
                 this.ownEnvironment = false;
                 this.combineStderr = false;
                 this.visible = false;
+                this.toWrite = "";
+                this.deadlineMillis = 0;
             }
 
             // `Command*` and not `Command`, and it has to be: assignment here is a COPY, so a fluent
@@ -486,6 +516,19 @@
                 this.visible = true;
                 return this;
             }
+            // What to write to the child's stdin before reading its output -- piping INTO a program,
+            // which is half of what a pipeline is for and which `run` could not do at all. The
+            // stream is closed after, so a filter that reads to EOF finishes instead of waiting.
+            public method input(String text) returns Command* {
+                this.toWrite = text;
+                return this;
+            }
+            // Give up after this many milliseconds. `run` then reports -2 (Subprocess.timedOut) and
+            // ends the child, rather than waiting for a program that is never going to finish.
+            public method timeout(int millis) returns Command* {
+                this.deadlineMillis = millis;
+                return this;
+            }
 
             // The program and its arguments as one NUL-separated blob. A Polaron String carries its
             // own length, so a NUL inside it is a separator rather than an end -- which is what lets
@@ -528,14 +571,48 @@
                 if (!child.isValid()) {
                     return new ProcessResult("", 0 - 1) on heap;
                 }
+                if (this.toWrite.length() > 0) {
+                    child.write(this.toWrite);
+                }
                 child.closeInput();
                 mutable StringBuilder output = new StringBuilder() on heap;
-                mutable String chunk = child.read();
-                while (chunk.length() > 0) {
-                    output.append(chunk);
-                    chunk = child.read();
+                if (this.deadlineMillis <= 0) {
+                    mutable String chunk = child.read();
+                    while (chunk.length() > 0) {
+                        output.append(chunk);
+                        chunk = child.read();
+                    }
+                    int code = child.wait();
+                    child.close();
+                    return new ProcessResult(output.toString(), code) on heap;
                 }
-                int code = child.wait();
+                // THE DEADLINE HAS TO COVER THE READING TOO, and the first version of this did not:
+                // it drained the child's output and only then started counting. A hung child holds
+                // its stdout OPEN, so `read` blocks and the deadline is never reached -- the timeout
+                // protected exactly the case that could not happen and missed the one it was for.
+                // Measured the honest way, by writing a child that spins forever and watching the
+                // parent spin with it.
+                //
+                // So the loop asks `canRead` first, which answers immediately, and only reads when
+                // there is something there. A child that is neither readable nor alive is finished.
+                mutable int left = this.deadlineMillis;
+                mutable boolean finished = false;
+                while (left > 0 && !finished) {
+                    if (child.canRead()) {
+                        String chunk = child.read();
+                        if (chunk.length() == 0) {
+                            finished = true;   // end of output
+                        } else {
+                            output.append(chunk);
+                        }
+                    } else if (!child.isAlive()) {
+                        finished = true;
+                    } else {
+                        Time.sleep(1);
+                        left = left - 1;
+                    }
+                }
+                int code = finished ? child.waitFor(left > 0 ? left : 1) : 0 - 2;
                 child.close();
                 return new ProcessResult(output.toString(), code) on heap;
             }

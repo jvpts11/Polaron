@@ -875,6 +875,22 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                 module.getOrInsertFunction("__polaron_subproc_wait", ft), {fitInt(h, 64)});
             return builder.CreateTrunc(r, i32);
         }
+        // ...with a deadline. -2 means "still running when the time ran out", which is a different
+        // thing from -1 ("could not find out") and calls for a different response: one waits longer
+        // or kills, the other reports. Without this a parent that waits is a parent that a hung
+        // child hangs -- and a child that prompts for input with nobody there hangs forever.
+        if (fn == "waitFor") {
+            llvm::Value* h = emitExpr(*call.args[0]);
+            llvm::Value* ms = emitExpr(*call.args[1]);
+            if (h == nullptr || ms == nullptr) {
+                return nullptr;
+            }
+            llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64, i64}, false);
+            llvm::Value* r =
+                builder.CreateCall(module.getOrInsertFunction("__polaron_subproc_wait_for", ft),
+                                   {fitInt(h, 64), fitInt(ms, 64)});
+            return builder.CreateTrunc(r, i32);
+        }
         if (fn == "writeStr") {
             llvm::Value* h = emitExpr(*call.args[0]);
             llvm::Value* data = emitExpr(*call.args[1]);
@@ -1121,6 +1137,33 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                                       {builder.CreateIntCast(h, i64, true),
                                        builder.CreateIntCast(off, i64, true),
                                        builder.CreateIntCast(whence, builder.getInt32Ty(), true)});
+        }
+        // KEEPING TWO PROGRAMS OFF ONE FILE. Held on the open handle and released by the operating
+        // system if the process dies -- which is the whole difference from a lock FILE, whose stale
+        // remains outlive the program that crashed and make every reader guess.
+        //   lock(handle, exclusive, wait) -> 1 taken, 0 not
+        if (fn == "lock") {
+            llvm::Value* h = emitExpr(*call.args[0]);
+            llvm::Value* ex = emitExpr(*call.args[1]);
+            llvm::Value* wt = emitExpr(*call.args[2]);
+            if (h == nullptr || ex == nullptr || wt == nullptr) {
+                return nullptr;
+            }
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::Type* i32 = builder.getInt32Ty();
+            llvm::FunctionType* ft = llvm::FunctionType::get(i32, {i64, i32, i32}, false);
+            return builder.CreateCall(module.getOrInsertFunction("__polaron_file_lock", ft),
+                                      {fitInt(h, 64), fitInt(ex, 32), fitInt(wt, 32)});
+        }
+        if (fn == "unlock") {
+            llvm::Value* h = emitExpr(*call.args[0]);
+            if (h == nullptr) {
+                return nullptr;
+            }
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt32Ty(), {i64}, false);
+            return builder.CreateCall(module.getOrInsertFunction("__polaron_file_unlock", ft),
+                                      {fitInt(h, 64)});
         }
         if (fn == "tell" || fn == "flush" || fn == "close" || fn == "atEnd") {
             llvm::Value* h = emitExpr(*call.args[0]);
