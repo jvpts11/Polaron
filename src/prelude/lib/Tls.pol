@@ -398,6 +398,14 @@
                 int first = Der.contentOffset(this.der, this.validityOffset);
                 return this.timeAt(Der.nextOffset(this.der, first));
             }
+            // Is it valid at this moment, in seconds since the epoch? Both bounds inclusive, as RFC
+            // 5280 defines them. Asked separately from `CertificateValidator.check` because a program
+            // may want to report how long it has left -- a certificate about to expire is something
+            // to warn about while it still works, and there is no way to do that from a refusal.
+            public method isValidAt(long seconds) returns boolean {
+                return seconds >= this.notBefore() && seconds <= this.notAfter();
+            }
+
             // UTCTime is "YYMMDDHHMMSSZ" and GeneralizedTime is "YYYYMMDDHHMMSSZ" -- the two-digit
             // year pivots at 50, by RFC 5280. A certificate written for 2049 and one written for
             // 1950 are the same six digits, and the pivot is the only thing that separates them.
