@@ -1980,6 +1980,81 @@ struct LdpSubproc {
 #endif
 };
 
+// ---- STARTING A PROGRAM WITHOUT A SHELL (spec 34). ----
+//
+// Everything above takes a COMMAND LINE: one string, handed to `cmd.exe` or `/bin/sh`. That makes
+// every argument shell syntax. A path with a space becomes two arguments; a filename holding `&` or
+// `|` or `$(...)` becomes a second command, and it runs. There is no amount of care at the call site
+// that fixes it, because the call site is where the string is built.
+//
+// So the primitive below takes an ARGUMENT VECTOR: the program and its arguments as separate values,
+// crossing as one NUL-separated blob with a count. Nothing in an argument can be read as syntax,
+// because no shell ever sees it.
+//
+// POSIX gets this exactly: `execvp` takes the vector as it stands. WINDOWS HAS NO SUCH CALL --
+// `CreateProcess` takes a command line and the CHILD parses it -- so the vector has to be encoded
+// into one, by the rules the C runtime's parser actually uses. That encoding is below and it is not
+// optional: getting it wrong is the same defect through a different door. What is avoided either way
+// is `cmd.exe`, and with it `&`, `|`, `>`, `^` and `%VAR%` expansion.
+
+// C++ linkage, because these are the file's own helpers rather than part of the runtime's C
+// interface -- and a C-linkage function may not return a std::vector, which is how the compiler
+// pointed out that the surrounding block is `extern "C"`.
+extern "C++" {
+
+// One argument, quoted for the MSVCRT command-line parser (the algorithm Microsoft documents for
+// CommandLineToArgvW). Quotes are added only when needed, so an ordinary command line still reads
+// like one in a process listing.
+static void appendWindowsArg(std::string& out, const char* arg) {
+    const bool needsQuotes = arg[0] == 0 || strpbrk(arg, " \t\n\v\"") != nullptr;
+    if (!needsQuotes) {
+        out += arg;
+        return;
+    }
+    out += '"';
+    for (const char* p = arg;; ++p) {
+        std::size_t backslashes = 0;
+        while (*p == '\\') {
+            ++p;
+            ++backslashes;
+        }
+        if (*p == 0) {
+            // Backslashes before the CLOSING quote are doubled, so they stay backslashes rather than
+            // escaping the quote that ends the argument.
+            out.append(backslashes * 2, '\\');
+            break;
+        }
+        if (*p == '"') {
+            out.append(backslashes * 2 + 1, '\\');   // ...and the one that escapes this quote
+            out += '"';
+        } else {
+            out.append(backslashes, '\\');
+            out += *p;
+        }
+    }
+    out += '"';
+}
+
+// The NUL-separated blob as a vector of pointers into it. The blob is not modified and the pointers
+// are valid for as long as it is.
+static std::vector<const char*> splitBlob(const char* blob, long long len, int count) {
+    std::vector<const char*> out;
+    if (blob == nullptr || count <= 0) {
+        return out;
+    }
+    long long at = 0;
+    for (int i = 0; i < count && at <= len; ++i) {
+        out.push_back(blob + at);
+        while (at < len && blob[at] != 0) {
+            ++at;
+        }
+        ++at;   // past the separator
+    }
+    return out;
+}
+
+}  // extern "C++"
+
 #ifdef _WIN32
 // mergeErr: give the child's stderr the same pipe as its stdout, so ONE stream carries everything the
 // child says. A compiler prints its diagnostics on stderr, and a caller that only reads stdout would call
@@ -2028,6 +2103,92 @@ long long __polaron_subproc_spawn_ex(const char* cmdline, long long mergeErr, lo
 
 long long __polaron_subproc_spawn(const char* cmdline) {
     return __polaron_subproc_spawn_ex(cmdline, 0, 0);
+}
+
+// The argument-vector spawn. Same handle as above, so read/write/alive/close all work unchanged --
+// what changes is that nothing here is parsed by a shell.
+//
+// `cwd` empty means "inherit ours". `envBlob` holds `NAME=VALUE` entries, NUL-separated; when
+// `envCount` is 0 the child inherits our environment, which is what nearly every caller wants.
+long long __polaron_subproc_spawn_argv(const char* argvBlob, long long argvLen, long long argc,
+                                       const char* cwd, const char* envBlob, long long envLen,
+                                       long long envCount, long long mergeErr,
+                                       long long showWindow) {
+    std::vector<const char*> args = splitBlob(argvBlob, argvLen, static_cast<int>(argc));
+    if (args.empty()) {
+        return 0;
+    }
+    std::string cmdline;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (i > 0) {
+            cmdline += ' ';
+        }
+        appendWindowsArg(cmdline, args[i]);
+    }
+    // A doubly-NUL-terminated block, which is the shape CreateProcess wants.
+    std::string envBlock;
+    if (envCount > 0) {
+        std::vector<const char*> entries = splitBlob(envBlob, envLen, static_cast<int>(envCount));
+        for (const char* e : entries) {
+            envBlock.append(e);
+            envBlock.push_back('\0');
+        }
+        envBlock.push_back('\0');
+    }
+
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
+    HANDLE inRd = nullptr, inWr = nullptr, outRd = nullptr, outWr = nullptr;
+    if (!CreatePipe(&inRd, &inWr, &sa, 0)) {
+        return 0;
+    }
+    if (!CreatePipe(&outRd, &outWr, &sa, 0)) { CloseHandle(inRd); CloseHandle(inWr); return 0; }
+    SetHandleInformation(inWr, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(outRd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOA si;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = inRd;
+    si.hStdOutput = outWr;
+    si.hStdError = mergeErr != 0 ? outWr : GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof(pi));
+    std::vector<char> mutableCmd(cmdline.begin(), cmdline.end());
+    mutableCmd.push_back('\0');   // CreateProcessA may write into the command line
+    const DWORD creationFlags = showWindow != 0 ? 0 : CREATE_NO_WINDOW;
+    // The block is passed as LPVOID, so it must be writable storage rather than the string's own.
+    std::vector<char> envBytes(envBlock.begin(), envBlock.end());
+    BOOL ok = CreateProcessA(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE, creationFlags,
+                             envBytes.empty() ? nullptr : static_cast<LPVOID>(envBytes.data()),
+                             (cwd != nullptr && cwd[0] != 0) ? cwd : nullptr, &si, &pi);
+    CloseHandle(inRd);
+    CloseHandle(outWr);
+    if (!ok) { CloseHandle(inWr); CloseHandle(outRd); return 0; }
+    CloseHandle(pi.hThread);
+    LdpSubproc* s = static_cast<LdpSubproc*>(std::malloc(sizeof(LdpSubproc)));
+    s->proc = pi.hProcess;
+    s->hIn = inWr;
+    s->hOut = outRd;
+    return static_cast<long long>(reinterpret_cast<std::intptr_t>(s));
+}
+
+// Wait for the child to finish and answer its exit code; -1 when it cannot be determined. Separate
+// from `close`, which discards the code AND terminates a child still running -- fine for a tool the
+// parent is done with, useless for asking whether the thing worked.
+long long __polaron_subproc_wait(long long h) {
+    if (h == 0) {
+        return -1;
+    }
+    LdpSubproc* s = reinterpret_cast<LdpSubproc*>(static_cast<std::intptr_t>(h));
+    WaitForSingleObject(s->proc, INFINITE);
+    DWORD code = 0;
+    if (!GetExitCodeProcess(s->proc, &code)) {
+        return -1;
+    }
+    return static_cast<long long>(static_cast<int>(code));
 }
 
 long long __polaron_subproc_write(long long h, const char* data, long long len) {
@@ -2140,6 +2301,77 @@ long long __polaron_subproc_spawn_ex(const char* cmdline, long long mergeErr, lo
 
 long long __polaron_subproc_spawn(const char* cmdline) {
     return __polaron_subproc_spawn_ex(cmdline, 0, 0);
+}
+
+// The argument-vector spawn: `execvp` takes the vector as it stands, so no shell is involved and
+// nothing in an argument can be read as syntax. See the note above the Windows half, where the same
+// guarantee costs an encoding.
+long long __polaron_subproc_spawn_argv(const char* argvBlob, long long argvLen, long long argc,
+                                       const char* cwd, const char* envBlob, long long envLen,
+                                       long long envCount, long long mergeErr,
+                                       long long showWindow) {
+    static_cast<void>(showWindow);   // a Windows affordance; POSIX has no console-window concept
+    std::vector<const char*> args = splitBlob(argvBlob, argvLen, static_cast<int>(argc));
+    if (args.empty()) {
+        return 0;
+    }
+    std::vector<char*> argv;
+    for (const char* a : args) {
+        argv.push_back(const_cast<char*>(a));
+    }
+    argv.push_back(nullptr);
+    std::vector<const char*> envEntries = splitBlob(envBlob, envLen, static_cast<int>(envCount));
+    std::vector<char*> envp;
+    for (const char* e : envEntries) {
+        envp.push_back(const_cast<char*>(e));
+    }
+    envp.push_back(nullptr);
+
+    int inPipe[2], outPipe[2];
+    if (pipe(inPipe) != 0) return 0;
+    if (pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return 0; }
+    pid_t pid = fork();
+    if (pid < 0) { close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]); return 0; }
+    if (pid == 0) {
+        setpgid(0, 0);   // own group, so close() reaches the whole subtree
+        dup2(inPipe[0], 0);
+        dup2(outPipe[1], 1);
+        if (mergeErr != 0) dup2(outPipe[1], 2);
+        close(inPipe[0]); close(inPipe[1]); close(outPipe[0]); close(outPipe[1]);
+        if (cwd != nullptr && cwd[0] != 0 && chdir(cwd) != 0) {
+            _exit(127);   // the directory was the caller's instruction; running elsewhere is not it
+        }
+        if (envCount > 0) {
+            // `environ` rather than execvpe, which is a GNU extension that macOS and FreeBSD do not
+            // have -- and the failure would be a link error on the platform nobody built on. The
+            // child is single-threaded and about to exec, so replacing it here is safe.
+            extern char** environ;
+            environ = envp.data();
+        }
+        execvp(argv[0], argv.data());
+        _exit(127);   // exec only returns on failure -- 127 is the shell's "not found", kept for parity
+    }
+    static_cast<void>(setpgid(pid, pid));
+    close(inPipe[0]);
+    close(outPipe[1]);
+    LdpSubproc* s = static_cast<LdpSubproc*>(std::malloc(sizeof(LdpSubproc)));
+    s->pid = pid;
+    s->fdIn = inPipe[1];
+    s->fdOut = outPipe[0];
+    return static_cast<long long>(reinterpret_cast<std::intptr_t>(s));
+}
+
+// Wait and answer the exit code; -1 when it cannot be determined, and 128+N for a child killed by
+// signal N -- the convention every shell already reports, so a caller reading the number gets the
+// same answer it would from the command line.
+long long __polaron_subproc_wait(long long h) {
+    if (h == 0) return -1;
+    LdpSubproc* s = reinterpret_cast<LdpSubproc*>(static_cast<std::intptr_t>(h));
+    int status = 0;
+    if (waitpid(s->pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return static_cast<long long>(WEXITSTATUS(status));
+    if (WIFSIGNALED(status)) return static_cast<long long>(128 + WTERMSIG(status));
+    return -1;
 }
 
 long long __polaron_subproc_write(long long h, const char* data, long long len) {

@@ -1871,6 +1871,26 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (fn == "spawn" || fn == "spawnCombined" || fn == "spawnVisible") {
                 return "long";
             }
+            // WITHOUT A SHELL: the program and its arguments cross as one NUL-separated blob with a
+            // count, so nothing in an argument can be read as syntax. Seven arguments, checked here
+            // because the codegen indexes all seven and a miscount would be a crash rather than a
+            // message: (argvBlob, argc, cwd, envBlob, envCount, mergeErr, showWindow).
+            if (fn == "spawnArgv") {
+                if (call->args.size() != 7) {
+                    error("Subproc.spawnArgv takes 7 arguments (argvBlob, argc, cwd, envBlob, "
+                          "envCount, mergeErr, showWindow)",
+                          call->loc);
+                }
+                return "long";
+            }
+            // The exit code, after waiting for it. `kill` above is the disposer and throws the code
+            // away; this is how a caller learns whether the thing worked.
+            if (fn == "wait") {
+                if (call->args.size() != 1) {
+                    error("Subproc.wait takes a handle", call->loc);
+                }
+                return "int";
+            }
             if (fn == "writeStr") {
                 return "int";
             }

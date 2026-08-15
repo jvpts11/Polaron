@@ -1,0 +1,140 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.Paths;
+import System.IO.TempDirectory;
+import System.OS.Command;
+import System.OS.Environment;
+import System.OS.Exit;
+import System.OS.Process;
+import System.OS.ProcessResult;
+import System.OS.Workspace;
+program ProcessNoShell;
+
+// RUNNING ANOTHER PROGRAM WITHOUT A SHELL BETWEEN YOU AND IT.
+//
+// `Process.run(cmd)` takes ONE STRING and hands it to `cmd.exe` or `/bin/sh`, which makes every
+// argument shell syntax. No care at the call site fixes that, because the call site is where the
+// string is built: `Process.run("grep " + pattern + " " + file)`. A `file` holding a space silently
+// becomes two arguments; a `pattern` holding `&` or `$(...)` becomes a SECOND COMMAND, and it runs.
+// That is not an exotic attack -- it is what happens the first time somebody has a file called
+// `my notes.txt`.
+//
+// A Command keeps the program and its arguments apart the whole way down. The argument below is
+// deliberately the worst thing anybody could pass:
+//
+//     a b & echo PWNED > out.txt | dir "quoted" $(id) %PATH% \back\slash\
+//
+// Under a shell that is six commands, a redirection, a pipe, a variable expansion and a command
+// substitution. Here it is ONE argument, and it arrives byte for byte -- which the child proves by
+// printing it back. If a shell were involved, `out.txt` would exist; the program checks that it does
+// not.
+//
+// HOW THE TEST WORKS: the program runs ITSELF. `Workspace.executable()` is its own path, so no
+// external tool is needed and the check is the same on every platform -- which matters, because
+// there is no program that echoes its arguments on both Windows and POSIX. Given an argument it
+// prints it back and stops; given none it is the parent.
+//
+// It also proves the two things a command STRING cannot carry: the directory to run in, and the
+// environment to run with. `cd x && ...` is shell syntax, which is the thing being removed.
+//
+// Prints:
+//   echoed: identical=1
+//   no shell ran: redirect file absent=1
+//   through a shell: redirect obeyed=1
+//   directory: child saw the temp dir=1
+//   environment: child saw POLARON_CHILD_ZZZ=passed
+//   exit code: ok=0 bad=3
+public bundle Main {
+    public namespace App {
+        public class Main {
+            // The one argument, holding every character a shell would act on.
+            private static method nasty() returns String {
+                return "a b & echo PWNED > out.txt | dir \"quoted\" $(id) %PATH% \\back\\slash\\";
+            }
+
+            public static method main(string[] args) returns void {
+                if (args.length() > 0) {
+                    Main.child(args);
+                    return;
+                }
+                using (TempDirectory work = new TempDirectory("polaron-proc") on stack) {
+                    Main.echoesExactly(work.path());
+                    Main.shellWouldHaveObeyed(work.path());
+                    Main.runsInDirectory(work.path());
+                    Main.carriesEnvironment();
+                    Main.reportsExitCode();
+                }
+                return;
+            }
+
+            // The child half. `echo` prints the argument back; `where` prints the working directory;
+            // `env` prints one variable; `fail` exits with a chosen code.
+            private static method child(string[] args) returns void {
+                String what = args[0];
+                if (what.equals("where")) {
+                    System.IO.Console.print(Workspace.current());
+                } else if (what.equals("env")) {
+                    System.IO.Console.print(Environment.get("POLARON_CHILD_ZZZ", "<unset>"));
+                } else if (what.equals("fail")) {
+                    Exit.now(3);
+                } else {
+                    System.IO.Console.print(args.length() > 1 ? args[1] : "");
+                }
+                return;
+            }
+
+            // The headline: one argument in, the same bytes out, and no shell ran.
+            private static method echoesExactly(String work) returns void {
+                ProcessResult r = new Command(Workspace.executable()) on heap
+                    .arg("echo").arg(Main.nasty())
+                    .directory(work)
+                    .run();
+                System.IO.Console.printf("echoed: identical=%d\n",
+                                         r.output.equals(Main.nasty()) ? 1 : 0);
+                // A shell would have obeyed the `>` and left this behind.
+                System.IO.Console.printf("no shell ran: redirect file absent=%d\n",
+                                         Files.exists(Paths.join(work, "out.txt")) ? 0 : 1);
+            }
+
+            // THE SAME REDIRECTION THROUGH THE OLD PATH, so this sample demonstrates rather than
+            // claims. `Process.run` hands its string to cmd.exe or /bin/sh, which obeys the `>` and
+            // writes the file -- the exact thing the Command above left inert. Both shells accept
+            // this line, and the file lands in the scratch directory that is removed on the way out.
+            private static method shellWouldHaveObeyed(String work) returns void {
+                String target = Paths.join(work, "shell.txt");
+                Process.run("echo PWNED > \"".concat(target).concat("\""));
+                System.IO.Console.printf("through a shell: redirect obeyed=%d\n",
+                                         Files.exists(target) ? 1 : 0);
+            }
+
+            // Something a command string cannot say at all: run over there.
+            private static method runsInDirectory(String work) returns void {
+                ProcessResult r = new Command(Workspace.executable()) on heap
+                    .arg("where")
+                    .directory(work)
+                    .run();
+                // Compared through `absolute`, because the temp directory may be reached by a
+                // symbolic link whose two spellings name the same place.
+                System.IO.Console.printf("directory: child saw the temp dir=%d\n",
+                                         Paths.absolute(r.output).equals(Paths.absolute(work)) ? 1 : 0);
+            }
+
+            // ...and the other: run with this variable set. The first `env` call copies ours, so a
+            // caller setting one does not have to rebuild the rest.
+            private static method carriesEnvironment() returns void {
+                ProcessResult r = new Command(Workspace.executable()) on heap
+                    .arg("env")
+                    .env("POLARON_CHILD_ZZZ", "passed")
+                    .run();
+                System.IO.Console.printf("environment: child saw POLARON_CHILD_ZZZ=%s\n", r.output);
+            }
+
+            // Waiting for the code, which `close` alone throws away.
+            private static method reportsExitCode() returns void {
+                ProcessResult ok = new Command(Workspace.executable()) on heap.arg("echo").arg("hi").run();
+                ProcessResult bad = new Command(Workspace.executable()) on heap.arg("fail").run();
+                System.IO.Console.printf("exit code: ok=%d bad=%d\n", ok.exitCode, bad.exitCode);
+            }
+        }
+    }
+}
