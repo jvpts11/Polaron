@@ -27,6 +27,117 @@
             }
         }
 
+        // PARALLEL ALGORITHMS, which the library did not have.
+        //
+        // `Thread`, `Mutex`, `Channel` and `atomic` were all here -- every PRIMITIVE, and not one
+        // algorithm. So a program that wanted to run a loop across the machine wrote the pool itself:
+        // count the cores, split the range, build the threads, join them, and get the chunk arithmetic
+        // right at the boundary. That is a page of code that is the same every time and wrong in the
+        // same place every time (the last chunk), in a language whose own game already runs a parallel
+        // tick.
+        //
+        // `forRange` is the primitive the rest is written over. It is deliberately NOT a work-stealing
+        // scheduler: stealing pays when the work per item varies a lot, and costs a queue and its
+        // synchronization when it does not. A static split is the right default, and a caller who has
+        // uneven work can say so by making the items coarser.
+        public class Parallel {
+            // Runs `body(i)` for every i in [from, to), split across the machine's hardware threads,
+            // and returns when all of them have finished. `body` must be safe to run at the same time
+            // as itself on different i -- which the language says with `Shared` on what it touches,
+            // and which this cannot check for you.
+            public static method forRange(int from, int to, function<void, int> body) returns void {
+                int n = to - from;
+                if (n <= 0) { return; }
+                mutable int workers = Machine.threads();
+                if (workers < 1) { workers = 1; }
+                if (workers > n) { workers = n; }        // never more hands than items
+                if (workers == 1) {
+                    for (mutable int i = from; i < to; i++) { body(i); }
+                    return;                              // no thread at all: a pool of one is a loop
+                }
+                mutable Thread[] pool = new Thread[workers]();
+                int chunk = (n + workers - 1) / workers;  // round UP, so the tail never falls off
+                for (mutable int w = 0; w < workers; w++) {
+                    int lo = from + w * chunk;
+                    mutable int hi = lo + chunk;
+                    if (hi > to) { hi = to; }             // the last chunk is the short one
+                    function<void> slice =
+                        lambda[captures: byvalue lo, byvalue hi, byvalue body]() returns void {
+                            for (mutable int i = lo; i < hi; i++) { body(i); }
+                        };
+                    pool[w] = new Thread(slice) on heap;
+                    pool[w].start();
+                }
+                for (mutable int w = 0; w < workers; w++) { pool[w].join(); }
+                delete pool;
+                return;
+            }
+
+            // The same split, but each worker is handed its chunk rather than each item: for work that
+            // is cheap per item, where a call per element is most of the cost. `body(lo, hi)` sees a
+            // half-open range.
+            public static method forChunks(int from, int to, function<void, int, int> body) returns void {
+                int n = to - from;
+                if (n <= 0) { return; }
+                mutable int workers = Machine.threads();
+                if (workers < 1) { workers = 1; }
+                if (workers > n) { workers = n; }
+                if (workers == 1) { body(from, to); return; }
+                mutable Thread[] pool = new Thread[workers]();
+                int chunk = (n + workers - 1) / workers;
+                for (mutable int w = 0; w < workers; w++) {
+                    int lo = from + w * chunk;
+                    mutable int hi = lo + chunk;
+                    if (hi > to) { hi = to; }
+                    function<void> slice =
+                        lambda[captures: byvalue lo, byvalue hi, byvalue body]() returns void {
+                            if (lo < hi) { body(lo, hi); }
+                        };
+                    pool[w] = new Thread(slice) on heap;
+                    pool[w].start();
+                }
+                for (mutable int w = 0; w < workers; w++) { pool[w].join(); }
+                delete pool;
+                return;
+            }
+
+            // Every element of `src` through `f`, into `dst`. Two arrays rather than one returned,
+            // because the workers write disjoint slots of a destination that already exists -- which
+            // is what makes this safe without a lock, and what a version returning a fresh collection
+            // would have to synchronize to do.
+            public static method mapInts(int[] src, int[] dst, function<int, int> f) returns void {
+                int n = src.length() < dst.length() ? src.length() : dst.length();
+                Parallel.forChunks(0, n,
+                    lambda[captures: byvalue src, byvalue dst, byvalue f](int lo, int hi) returns void {
+                        for (mutable int i = lo; i < hi; i++) { dst[i] = f(src[i]); }
+                    });
+                return;
+            }
+
+            // A sum over a range, in parallel. The accumulation is atomic per CHUNK and not per item:
+            // one atomic add per worker instead of one per element, which is the difference between a
+            // parallel reduction and a very expensive way to serialise.
+            public static method sumInts(int[] data) returns long {
+                mutable atomic<long> total = new atomic<long>(cast<long>(0)) on heap;
+                Parallel.forChunks(0, data.length(),
+                    lambda[captures: byvalue data, byvalue total](int lo, int hi) returns void {
+                        mutable long part = cast<long>(0);
+                        for (mutable int i = lo; i < hi; i++) { part = part + cast<long>(data[i]); }
+                        total.add(part);
+                    });
+                long r = total.get();
+                delete total;
+                return r;
+            }
+
+            // How many hands this machine has -- the number every pool above uses, exposed because a
+            // caller sizing its own work wants the same answer rather than a guess.
+            public static method width() returns int {
+                int t = Machine.threads();
+                return t < 1 ? 1 : t;
+            }
+        }
+
         // A TYPE ITS OWN THREADS MAY SHARE, and the whole of what it says is that its author
         // thought about it (spec 20).
         //

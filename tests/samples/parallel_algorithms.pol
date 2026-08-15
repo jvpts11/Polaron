@@ -1,0 +1,50 @@
+import System.IO.Console;
+import System.Concurrency.Parallel;
+program ParallelAlgorithms;
+
+// PARALLEL ALGORITHMS, which the library did not have.
+//
+// `Thread`, `Mutex`, `Channel` and `atomic` were all here -- every primitive, and not one algorithm.
+// A program that wanted to run a loop across the machine wrote the pool itself every time: count the
+// cores, split the range, build the threads, join, and get the chunk arithmetic right at the boundary.
+// That is a page of code that is the same every time and wrong in the same place every time -- the
+// last chunk -- in a language whose own game already runs a parallel tick.
+//
+// The answers are checked against the closed forms, so the test fails if a chunk is dropped, counted
+// twice, or if the tail falls off:
+//   sum of 0..99999            = 4999950000
+//   sum of (i*2) over the same = 9999900000
+//
+// Prints: width=1 sum=4999950000 mapped=9999900000 empty=0 one=7
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int n = 100000;
+                mutable int[] src = new int[n]();
+                for (mutable int i = 0; i < n; i++) { src[i] = i; }
+
+                System.IO.Console.printf("width=%d ", Parallel.width() >= 1);
+                // `%lld`, because the answer does not fit in 32 bits -- and the first version of this
+                // sample printed `%d` and read 704982704, which is 4999950000 with the top bits gone.
+                // A truncation that looks exactly like a parallel sum that lost a chunk.
+                System.IO.Console.printf("sum=%lld ", Parallel.sumInts(src));
+
+                mutable int[] dst = new int[n]();
+                Parallel.mapInts(src, dst, lambda(int x) returns int { return x * 2; });
+                System.IO.Console.printf("mapped=%lld ", Parallel.sumInts(dst));
+
+                // The two edges every hand-written pool gets wrong: nothing to do, and one item --
+                // where the split would ask for more workers than there is work.
+                mutable int[] none = new int[0]();
+                System.IO.Console.printf("empty=%lld ", Parallel.sumInts(none));
+                mutable int[] one = new int[1]();
+                one[0] = 7;
+                System.IO.Console.printf("one=%lld\n", Parallel.sumInts(one));
+
+                delete src; delete dst; delete none; delete one;
+                return;
+            }
+        }
+    }
+}
