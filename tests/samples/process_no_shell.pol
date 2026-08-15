@@ -44,6 +44,7 @@ program ProcessNoShell;
 //   directory: child saw the temp dir=1
 //   environment: child saw POLARON_CHILD_ZZZ=passed
 //   exit code: ok=0 bad=3
+//   missing program: exit=-1 outputLen=0
 public bundle Main {
     public namespace App {
         public class Main {
@@ -63,6 +64,7 @@ public bundle Main {
                     Main.runsInDirectory(work.path());
                     Main.carriesEnvironment();
                     Main.reportsExitCode();
+                    Main.saysWhenThereIsNoSuchProgram();
                 }
                 return;
             }
@@ -134,6 +136,18 @@ public bundle Main {
                 ProcessResult ok = new Command(Workspace.executable()) on heap.arg("echo").arg("hi").run();
                 ProcessResult bad = new Command(Workspace.executable()) on heap.arg("fail").run();
                 System.IO.Console.printf("exit code: ok=%d bad=%d\n", ok.exitCode, bad.exitCode);
+            }
+
+            // A program that is not there answers -1, on BOTH platforms -- which took work on one of
+            // them. Windows finds out at CreateProcess and fails the spawn; POSIX forks successfully
+            // and only the child discovers there is nothing to exec, exiting 127 -- a code a real
+            // program may also return, so "not found" and "ran and failed" arrived as the same
+            // answer. A close-on-exec pipe carrying the child's errno removes the guess.
+            private static method saysWhenThereIsNoSuchProgram() returns void {
+                ProcessResult r =
+                    new Command("polaron-no-such-program-zzz") on heap.arg("x").run();
+                System.IO.Console.printf("missing program: exit=%d outputLen=%d\n",
+                                         r.exitCode, r.output.length());
             }
         }
     }
