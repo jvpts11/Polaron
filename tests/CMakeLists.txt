@@ -2646,6 +2646,20 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A URL YOU CAN TAKE APART, AND A REQUEST YOU CAN BUILD. `Http.get(host, port, path)` was the
+        # entire client -- one verb, no headers, no body -- and there was no Url type at all, so every
+        # caller had already split the host from the path by hand. Opens no socket on purpose: building
+        # a request and reading a response are pure, which is what makes them testable without a
+        # server. The last field is the regression: a BODY containing `X-Secret: leaked` used to answer
+        # as though it were a header, because the search scanned the whole response.
+        add_test(NAME codegen_http_client_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/http_client.pol"
+            "-DCONTAINS=resp: status=200 type=text/plain body=hello notheader="
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # PARALLEL ALGORITHMS. Thread, Mutex, Channel and atomic were all here -- every primitive and
         # not one algorithm -- so every program that wanted a loop across the machine wrote the pool
         # itself, and got the chunk arithmetic wrong in the same place: the last one. The answers are

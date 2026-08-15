@@ -49,6 +49,124 @@
             }
             public method close() returns void { Net.udpClose(this.handle); }
         }
+        // A URL, taken apart (RFC 3986). The library had `UrlCodec` and `QueryString` for escaping and
+        // for a query's pairs, and nothing that could read `https://host:8443/a/b?x=1#top` -- so every
+        // caller of `Http.get` had to have already split the host from the path by hand, which is
+        // exactly the kind of parsing that is easy to do nearly right.
+        //
+        // The port is the SCHEME'S DEFAULT when the URL does not say -- 80 or 443 -- because a caller
+        // that has to remember which is which is a caller that will one day connect to port 0.
+        public class Url {
+            private mutable String schemePart;
+            private mutable String hostPart;
+            private mutable int portPart;
+            private mutable String pathPart;
+            private mutable String queryPart;
+            private mutable String fragmentPart;
+
+            public constructor Url(String scheme, String host, int port, String path, String query,
+                                   String fragment) {
+                this.schemePart = scheme;
+                this.hostPart = host;
+                this.portPart = port;
+                this.pathPart = path;
+                this.queryPart = query;
+                this.fragmentPart = fragment;
+            }
+
+            public static method parse(String text) returns Url {
+                mutable String rest = text;
+                mutable String scheme = "";
+                int colon = rest.indexOf("://");
+                if (colon >= 0) {
+                    scheme = rest.substring(0, colon);
+                    rest = rest.substring(colon + 3, rest.length());
+                }
+                // The fragment goes first: it is never sent, and it may contain a '?' or a '/' that
+                // would otherwise be read as part of the query or the path.
+                mutable String fragment = "";
+                int hash = rest.indexOf("#");
+                if (hash >= 0) {
+                    fragment = rest.substring(hash + 1, rest.length());
+                    rest = rest.substring(0, hash);
+                }
+                mutable String query = "";
+                int q = rest.indexOf("?");
+                if (q >= 0) {
+                    query = rest.substring(q + 1, rest.length());
+                    rest = rest.substring(0, q);
+                }
+                mutable String path = "/";
+                int slash = rest.indexOf("/");
+                if (slash >= 0) {
+                    path = rest.substring(slash, rest.length());
+                    rest = rest.substring(0, slash);
+                }
+                mutable String host = rest;
+                mutable int port = scheme.equals("https") ? 443 : 80;
+                int pc = host.indexOf(":");
+                if (pc >= 0) {
+                    String digits = host.substring(pc + 1, host.length());
+                    host = host.substring(0, pc);
+                    mutable int n = 0;
+                    mutable boolean any = false;
+                    for (mutable int i = 0; i < digits.length(); i++) {
+                        char c = digits.charAt(i);
+                        if (c >= '0' && c <= '9') { n = n * 10 + cast<int>(c - '0'); any = true; }
+                    }
+                    if (any) { port = n; }
+                }
+                if (path.length() == 0) { path = "/"; }
+                return new Url(scheme, host, port, path, query, fragment) on heap;
+            }
+
+            public method scheme() returns String { return this.schemePart; }
+            public method host() returns String { return this.hostPart; }
+            public method port() returns int { return this.portPart; }
+            public method path() returns String { return this.pathPart; }
+            public method query() returns String { return this.queryPart; }
+            public method fragment() returns String { return this.fragmentPart; }
+            public method isSecure() returns boolean { return this.schemePart.equals("https"); }
+
+            // What goes on the request line: the path with its query, and never the fragment.
+            public method requestTarget() returns String {
+                if (this.queryPart.length() == 0) { return this.pathPart; }
+                return this.pathPart.concat("?").concat(this.queryPart);
+            }
+            // What goes in the Host header: the port is included only when it is not the scheme's
+            // default, which is what a server compares against its own configuration.
+            public method authority() returns String {
+                boolean standard = (this.portPart == 80 && !this.isSecure()) ||
+                                   (this.portPart == 443 && this.isSecure());
+                if (standard) { return this.hostPart; }
+                return this.hostPart.concat(":").concat(this.portPart.toString());
+            }
+            public method toText() returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                if (this.schemePart.length() > 0) { sb.append(this.schemePart); sb.append("://"); }
+                sb.append(this.authority());
+                sb.append(this.pathPart);
+                if (this.queryPart.length() > 0) { sb.append("?"); sb.append(this.queryPart); }
+                if (this.fragmentPart.length() > 0) { sb.append("#"); sb.append(this.fragmentPart); }
+                return sb.toString();
+            }
+            // A `Location:` header may be absolute or relative, and a client that follows redirects
+            // has to handle both. Relative-from-root replaces the path; anything else is resolved
+            // against the base's directory.
+            public method resolve(String reference) returns Url {
+                if (reference.indexOf("://") >= 0) { return Url.parse(reference); }
+                if (reference.length() > 0 && reference.charAt(0) == '/') {
+                    return new Url(this.schemePart, this.hostPart, this.portPart, reference, "", "")
+                               on heap;
+                }
+                mutable int cut = this.pathPart.length();
+                while (cut > 0 && this.pathPart.charAt(cut - 1) != '/') { cut = cut - 1; }
+                String base = this.pathPart.substring(0, cut);
+                return new Url(this.schemePart, this.hostPart, this.portPart,
+                               base.concat(reference), "", "") on heap;
+            }
+        }
+
         // A parsed HTTP response (spec 34): the raw text is kept and queried lazily. status reads the code
         // from the start line, header returns a field's value, and body is everything after the blank line.
         public class HttpResponse {
@@ -69,21 +187,227 @@
             public method body() returns String {
                 int idx = this.raw.indexOf("\r\n\r\n");
                 if (idx < 0) { return ""; }
-                return this.raw.substring(idx + 4, this.raw.length());
+                String b = this.raw.substring(idx + 4, this.raw.length());
+                // `Transfer-Encoding: chunked` is what an HTTP/1.1 server sends when it does not know
+                // the length in advance, which is most of them for anything generated. Returning the
+                // chunked framing as though it were the body hands the caller its own content with
+                // hex lengths sprinkled through it -- text that looks almost right, which is the worst
+                // kind of wrong.
+                if (this.header("Transfer-Encoding").indexOf("chunked") >= 0) {
+                    return HttpResponse.dechunk(b);
+                }
+                return b;
             }
+            // HEADERS ARE SEARCHED IN THE HEADER SECTION ONLY. This used to scan the whole response,
+            // so a body that happened to contain `Content-Type: ` -- an email, a code sample, a
+            // proxied response quoted inside another -- answered as if it were a header of this one.
             public method header(String name) returns String {
+                int end = this.raw.indexOf("\r\n\r\n");
+                String head = end < 0 ? this.raw : this.raw.substring(0, end);
                 String key = name.concat(": ");
-                int idx = this.raw.indexOf(key);
-                if (idx < 0) { return ""; }
-                int start = idx + key.length();
-                mutable int end = start;
-                while (end < this.raw.length() && this.raw.charAt(end) != '\r') { end = end + 1; }
-                return this.raw.substring(start, end);
+                // From a line start, so `X-Rate: 1` is not found by asking for `Rate`.
+                mutable int at = 0;
+                while (at < head.length()) {
+                    mutable int lineEnd = at;
+                    while (lineEnd < head.length() && head.charAt(lineEnd) != '\r') {
+                        lineEnd = lineEnd + 1;
+                    }
+                    String line = head.substring(at, lineEnd);
+                    if (line.length() >= key.length() &&
+                        Strings.equalsIgnoreCase(line.substring(0, key.length()), key)) {
+                        return line.substring(key.length(), line.length());
+                    }
+                    at = lineEnd + 2;
+                }
+                return "";
+            }
+            public method hasHeader(String name) returns boolean {
+                return this.header(name).length() > 0;
+            }
+            // Each chunk is a hex length on its own line, then that many bytes, until a zero length.
+            private static method dechunk(String b) returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable int at = 0;
+                mutable boolean more = true;
+                while (more && at < b.length()) {
+                    mutable int lineEnd = at;
+                    while (lineEnd < b.length() && b.charAt(lineEnd) != '\r') { lineEnd = lineEnd + 1; }
+                    String sizeText = b.substring(at, lineEnd);
+                    mutable int size = 0;
+                    for (mutable int i = 0; i < sizeText.length(); i++) {
+                        char c = sizeText.charAt(i);
+                        mutable int d = -1;
+                        if (c >= '0' && c <= '9') { d = cast<int>(c - '0'); }
+                        if (c >= 'a' && c <= 'f') { d = 10 + cast<int>(c - 'a'); }
+                        if (c >= 'A' && c <= 'F') { d = 10 + cast<int>(c - 'A'); }
+                        if (d < 0) { i = sizeText.length(); } else { size = size * 16 + d; }
+                    }
+                    at = lineEnd + 2;
+                    if (size == 0) { more = false; }
+                    else {
+                        mutable int stop = at + size;
+                        if (stop > b.length()) { stop = b.length(); }
+                        sb.append(b.substring(at, stop));
+                        at = stop + 2;                   // past the chunk's own trailing CRLF
+                    }
+                }
+                return sb.toString();
             }
         }
-        // A minimal HTTP/1.1 client over Socket (spec 34). buildRequest formats a request line plus Host and
-        // Connection: close headers; get opens a socket, sends a GET, drains the reply, and parses it. The
-        // request building and response parsing are pure; get performs the network round-trip.
+        // A REQUEST YOU CAN BUILD BEFORE YOU SEND IT.
+        //
+        // `Http.get(host, port, path)` was the entire client: one verb, no headers you could set, no
+        // body you could send. So nothing could authenticate, post a form, send JSON, or set an
+        // Accept -- which is nearly everything an HTTP client is for. This is the request as a value,
+        // so it can be built, inspected and tested without a socket anywhere near it.
+        public class HttpRequest {
+            private mutable String verbPart;
+            private mutable Url target;
+            private mutable ArrayList<String> headerNames;
+            private mutable ArrayList<String> headerValues;
+            private mutable String bodyPart;
+
+            public constructor HttpRequest(String verb, Url* url) {
+                this.verbPart = verb;
+                this.target = url;
+                this.headerNames = new ArrayList<String>() on heap;
+                this.headerValues = new ArrayList<String>() on heap;
+                this.bodyPart = "";
+            }
+            public static method of(String verb, String url) returns HttpRequest {
+                return new HttpRequest(verb, Url.parse(url)) on heap;
+            }
+            public static method get(String url) returns HttpRequest { return HttpRequest.of("GET", url); }
+            public static method post(String url) returns HttpRequest { return HttpRequest.of("POST", url); }
+            public static method put(String url) returns HttpRequest { return HttpRequest.of("PUT", url); }
+            public static method patch(String url) returns HttpRequest { return HttpRequest.of("PATCH", url); }
+            public static method remove(String url) returns HttpRequest {  // `delete` is a keyword
+                return HttpRequest.of("DELETE", url);
+            }
+            public static method head(String url) returns HttpRequest { return HttpRequest.of("HEAD", url); }
+
+            public method url() returns Url { return this.target; }
+            public method verb() returns String { return this.verbPart; }
+            public method body() returns String { return this.bodyPart; }
+
+            public method setHeader(String name, String value) returns void {
+                for (mutable int i = 0; i < this.headerNames.size(); i++) {
+                    if (Strings.equalsIgnoreCase(this.headerNames.get(i), name)) {
+                        this.headerValues.set(i, value);
+                        return;
+                    }
+                }
+                this.headerNames.add(name);
+                this.headerValues.add(value);
+                return;
+            }
+            public method header(String name) returns String {
+                for (mutable int i = 0; i < this.headerNames.size(); i++) {
+                    if (Strings.equalsIgnoreCase(this.headerNames.get(i), name)) { return this.headerValues.get(i); }
+                }
+                return "";
+            }
+            // A body implies its length, so `Content-Length` is set here rather than left to the
+            // caller: a request whose body and length disagree is one a server will hang waiting on.
+            public method setBody(String value) returns void {
+                this.bodyPart = value;
+                this.setHeader("Content-Length", value.length().toString());
+                return;
+            }
+            public method setJson(String value) returns void {
+                this.setHeader("Content-Type", "application/json");
+                this.setBody(value);
+                return;
+            }
+            public method setForm(String encoded) returns void {
+                this.setHeader("Content-Type", "application/x-www-form-urlencoded");
+                this.setBody(encoded);
+                return;
+            }
+            // HTTP Basic, which is the one scheme that is pure string work. Bearer tokens and the rest
+            // are `setHeader("Authorization", ...)` and need nothing from here.
+            public method setBasicAuth(String user, String password) returns void {
+                String pair = user.concat(":").concat(password);
+                this.setHeader("Authorization", "Basic ".concat(Base64.encode(pair)));
+                return;
+            }
+
+            // The bytes that go on the wire. Pure: no socket, no clock, nothing that can fail -- which
+            // is what lets a test assert on a request without a server to send it to.
+            public method toWire() returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.append(this.verbPart);
+                sb.append(" ");
+                sb.append(this.target.requestTarget());
+                sb.append(" HTTP/1.1\r\nHost: ");
+                sb.append(this.target.authority());
+                sb.append("\r\n");
+                for (mutable int i = 0; i < this.headerNames.size(); i++) {
+                    sb.append(this.headerNames.get(i));
+                    sb.append(": ");
+                    sb.append(this.headerValues.get(i));
+                    sb.append("\r\n");
+                }
+                // Connection: close last and unconditional -- this client reads until the socket ends,
+                // so a keep-alive reply would leave it waiting for bytes nobody is going to send.
+                sb.append("Connection: close\r\n\r\n");
+                sb.append(this.bodyPart);
+                return sb.toString();
+            }
+        }
+
+        // The client: one round trip, and the redirects if you ask for them.
+        public class HttpClient {
+            public static method send(HttpRequest* request) returns HttpResponse {
+                Url u = request.url();
+                if (u.isSecure()) {
+                    // Said plainly rather than attempted: this client speaks to the socket directly,
+                    // and an https URL needs TLS between the two. Returning a synthetic response with
+                    // a status of its own is what lets a caller notice, instead of a connection that
+                    // fails somewhere further down for a reason that reads like the network.
+                    return new HttpResponse("HTTP/1.1 000 TLS not available\r\n\r\n") on heap;
+                }
+                mutable Socket s = new Socket(Net.connect(u.host(), u.port())) on heap;
+                if (!s.isOpen()) {
+                    return new HttpResponse("HTTP/1.1 000 Connection failed\r\n\r\n") on heap;
+                }
+                s.send(request.toWire());
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable boolean more = true;
+                while (more) {
+                    String chunk = s.receive(4096);
+                    if (chunk.length() == 0) { more = false; } else { sb.append(chunk); }
+                }
+                s.close();
+                return new HttpResponse(sb.toString()) on heap;
+            }
+
+            // Follows 301/302/303/307/308 up to `limit` hops. Bounded because a server may point at
+            // itself, and a client that follows forever is a client that hangs rather than fails.
+            // 303 and 302 become GET, which is what every browser does and what servers expect.
+            public static method sendFollowing(HttpRequest* request, int limit) returns HttpResponse {
+                mutable HttpRequest* current = request;
+                mutable int hops = 0;
+                while (hops <= limit) {
+                    mutable HttpResponse r = HttpClient.send(current);
+                    int code = r.status();
+                    boolean redirect = code == 301 || code == 302 || code == 303 || code == 307 ||
+                                       code == 308;
+                    if (!redirect) { return r; }
+                    String where = r.header("Location");
+                    if (where.length() == 0) { return r; }
+                    Url next = current.url().resolve(where);
+                    String verb = (code == 303 || code == 302) ? "GET" : current.verb();
+                    current = new HttpRequest(verb, next) on heap;
+                    hops = hops + 1;
+                }
+                return new HttpResponse("HTTP/1.1 000 Too many redirects\r\n\r\n") on heap;
+            }
+        }
+
+        // A minimal HTTP/1.1 client over Socket (spec 34). Kept as it was: `Http.get` is what existing
+        // programs call, and it is still the shortest way to fetch a page. `HttpRequest`/`HttpClient`
+        // above are for everything it cannot express.
         public class Http {
             public static method buildRequest(String verb, String host, String path) returns String {
                 mutable StringBuilder sb = new StringBuilder() on heap;
@@ -106,6 +430,11 @@
                 }
                 s.close();
                 return new HttpResponse(sb.toString()) on heap;
+            }
+            // The whole URL in one call, which is how a caller thinks of it.
+            public static method fetch(String url) returns HttpResponse {
+                mutable HttpRequest* r = HttpRequest.get(url);
+                return HttpClient.sendFollowing(r, 5);
             }
         }
     }
