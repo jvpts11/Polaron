@@ -2077,8 +2077,63 @@ void qualifyNamespaces(ast::Program& program) {
         }
     }
 
+    // QUALIFICATION IS STILL CONDITIONAL, AND THAT IS THE REMAINING DEBT.
+    //
+    // Running it on every type -- which is what gives a type real identity, and what would make every
+    // one of the 799 tests exercise the rewrite instead of one program in a hundred -- was tried on
+    // 2026-08-15 and is written up in docs/design/type-identity.md. It found three more gaps in two
+    // iterations, which is exactly the argument for doing it:
+    //
+    //   - `Object` is attached implicitly, by the compiler, in a namespace that never imported it, so
+    //     no substitution map contains it. It is exempt below for the same reason a primitive is.
+    //   - The ENTRY POINT was found by comparing against the bare name "Main", so a qualified `Main`
+    //     produced "this program has no entry point" to somebody looking straight at one. Fixed.
+    //   - A GENERIC INSTANCE is named `Base$Arg` from the base as written, while the template's
+    //     declaration is qualified -- so `Option$String` and `Errors__Option$String` are the same
+    //     type under two names. That one is not fixed, and it is what stops the switch being flipped.
+    //
+    // The `Object` exemption stays because it is correct under either scheme.
+    // A TYPE THE COMPILER NAMES BY ITSELF CANNOT BE RENAMED.
+    //
+    // The rule, and it is a rule rather than three exceptions: a substitution map is built from what a
+    // namespace declares and what it imports, so it can only contain names somebody WROTE. Where the
+    // compiler synthesises a reference -- an implicit `extends Object`, the `Option$T` behind
+    // `Some(x)`, the `Result$T$E` behind `Ok(v)` -- the name appears in no source file, reaches no
+    // substitution map, and is left pointing at a declaration that has just been renamed away.
+    //
+    // These are part of the LANGUAGE rather than of a library that happens to ship with it, which is
+    // why they are exempt for the same reason a primitive is. Found by turning qualification on for
+    // every type (docs/design/type-identity.md): `Object` failed first, then `Option`/`Result` as
+    // `Option$String` against `Errors__Option$String` -- the same type under two names.
+    // The list is not invented here: `ast::builtinStaticClasses()` already names the classes whose
+    // METHODS the compiler recognises and lowers itself (`Bits.doubleToLong`, `File.readAll`,
+    // `Raw.sizeof`), and it exists precisely so that the monomorphizer and the analyzer give the same
+    // answer -- "Two copies of it already cost a day", says the comment beside it. Renaming one of
+    // those classes leaves the builtin dispatch, which matches on the bare name, looking at a class
+    // that no longer has that name.
+    //
+    // Three more join them, found by running qualification over everything: `Object`, which every
+    // class extends implicitly; and `Option`/`Result`, whose instance names the compiler synthesises
+    // for `Some(x)` and `Ok(v)` -- so `Option$String` met `Errors__Option$String`, the same type
+    // under two names. `Channel` and `atomic` are here for the same reason as `Bits`: their methods
+    // are builtins matched by the bare class name.
+    auto languageIntrinsic = [](const std::string& n) {
+        return ast::isBuiltinStaticClassName(n) || n == "Object" || n == "Option" || n == "Result" ||
+               n == "Channel" || n == "atomic";
+    };
     std::set<std::string> ambiguous;
     for (auto& [name, nss] : declNs) {
+        if (languageIntrinsic(name)) {
+            continue;
+        }
+        // STILL CONDITIONAL, AND THE NUMBER IS WHY. Turning this on for every type -- which is what
+        // would give a type real identity and make all 799 tests exercise the rewrite instead of one
+        // program in a hundred -- was measured on 2026-08-15: **341 of 799 tests fail**, segfaults
+        // among them. A single-class `hello_world` compiled clean, which is exactly how a change of
+        // this shape flatters itself.
+        //
+        // That number is the argument against finishing the rewrite and for replacing it: a pass that
+        // is 43% incomplete is not one gap away from total. See docs/design/type-identity.md.
         if (nss.size() > 1) {
             ambiguous.insert(name);
         }

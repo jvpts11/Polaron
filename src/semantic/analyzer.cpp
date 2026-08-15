@@ -145,8 +145,64 @@ void SemanticAnalyzer::detectComefromLoops(const ast::Block& block) {
 }
 
 const ClassInfo* SemanticAnalyzer::lookupClass(const std::string& name) const {
+    // THE COMMON PATH IS UNCHANGED, and that is the design rather than an optimisation. Counted on
+    // this tree: no two types in the standard library share a name, so a written name is unique in
+    // almost every program -- one hash of a short key, exactly as before.
+    //
+    // The guard in front of it is an empty-set test, which costs nothing when nothing collides: the
+    // set is populated only by a program that declares a name the library also declares, or the same
+    // name in two of its own namespaces.
+    if (!sharedNames_.empty() && sharedNames_.count(name) > 0) {
+        return lookupShared(name);
+    }
     auto it = classes_.find(name);
     return it == classes_.end() ? nullptr : &it->second;
+}
+
+// WHICH ONE IS MEANT HERE. This is what replaces the renaming pass: instead of rewriting the program
+// to invent a difference between two `Color`s, the question is answered at the place that asks it,
+// which is the only place that knows -- the namespace doing the asking, and then its imports, which
+// is what `import` already means.
+const ClassInfo* SemanticAnalyzer::lookupShared(const std::string& name) const {
+    auto shared = typesByWritten_.find(name);
+    if (shared == typesByWritten_.end()) {
+        auto it = classes_.find(name);
+        return it == classes_.end() ? nullptr : &it->second;
+    }
+    auto entryFor = [this](const TypeEntry& e) -> const ClassInfo* {
+        if (auto c = classes_.find(e.canonical); c != classes_.end()) {
+            return &c->second;
+        }
+        // The first declaration of a shared name keeps the bare key, so it is found there.
+        if (auto c = classes_.find(e.written); c != classes_.end()) {
+            return &c->second;
+        }
+        return nullptr;
+    };
+    // Your own namespace wins -- the rule the shadowing warning has always stated and that the
+    // renaming pass implemented by rewriting. Same answer, no rewriting.
+    for (std::uint32_t id : shared->second) {
+        if (types_[id].ns == currentNamespace_) {
+            if (const ClassInfo* c = entryFor(types_[id])) {
+                return c;
+            }
+        }
+    }
+    // Then a bundle of your own before the standard library's, because the stdlib needs an explicit
+    // import to be visible at all and so cannot be what a bare name in your own code means.
+    for (std::uint32_t id : shared->second) {
+        if (types_[id].bundle != "System" && types_[id].bundle == currentBundle_) {
+            if (const ClassInfo* c = entryFor(types_[id])) {
+                return c;
+            }
+        }
+    }
+    for (std::uint32_t id : shared->second) {
+        if (const ClassInfo* c = entryFor(types_[id])) {
+            return c;
+        }
+    }
+    return nullptr;
 }
 
 const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
@@ -1295,13 +1351,26 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                              cls.loc);
                     }
                 }
-                classes_[cls.name] = std::move(info);
-                typeNamespace_[cls.name] = ns.name;
-                typeBundle_[cls.name] = bundle.name;
-                // Identity, kept beside the bare-name maps rather than instead of them: this stage
-                // only records what is true, so a disagreement between the two is found while both
-                // still exist (docs/design/type-identity.md, stage 2).
-                internType(cls.name, bundle.name, ns.name, cls.loc);
+                const std::uint32_t id = internType(cls.name, bundle.name, ns.name, cls.loc);
+                // A SECOND TYPE OF THE SAME NAME NO LONGER ERASES THE FIRST.
+                //
+                // `classes_[cls.name] = info` is one slot, so the second declaration overwrote the
+                // first outright -- which never showed, because a pass upstream renamed them apart
+                // before the analyzer ever saw both. Take that pass away and this line loses a type
+                // in silence.
+                //
+                // The bare name keeps the FIRST declaration, so every existing lookup is unchanged
+                // and costs exactly what it did. The rest go under their canonical name, where
+                // `lookupClass` finds them by asking which namespace is asking.
+                if (classes_.count(cls.name) == 0) {
+                    classes_[cls.name] = std::move(info);
+                    typeNamespace_[cls.name] = ns.name;
+                    typeBundle_[cls.name] = bundle.name;
+                } else {
+                    classes_[types_[id].canonical] = std::move(info);
+                    typeNamespace_[types_[id].canonical] = ns.name;
+                    typeBundle_[types_[id].canonical] = bundle.name;
+                }
             }
         }
     }
@@ -1717,8 +1786,20 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
             for (const ast::EnumDecl& en : ns.enums) {
                 // A java-style enum is desugared into a class of the same name, so
                 // its matching class entry is expected; only flag other clashes.
-                if (enums_.count(en.name) > 0 || catalogs_.count(en.name) > 0 ||
-                    (!en.isJavaStyle && classes_.count(en.name) > 0)) {
+                //
+                // AND IT IS A CLASH ONLY IN THE SAME NAMESPACE. The check asked whether the NAME was
+                // taken, which was the same question while every name was unique -- and stopped being
+                // it the moment two namespaces could each hold a `Color`. Declaring one beside the
+                // standard library's is not a redeclaration; it is the case the whole type-identity
+                // work exists to allow.
+                const bool clashHere =
+                    (enums_.count(en.name) > 0 && typeNamespace_.count(en.name) > 0 &&
+                     typeNamespace_[en.name] == ns.name) ||
+                    (catalogs_.count(en.name) > 0 && typeNamespace_.count(en.name) > 0 &&
+                     typeNamespace_[en.name] == ns.name) ||
+                    (!en.isJavaStyle && classes_.count(en.name) > 0 &&
+                     typeNamespace_.count(en.name) > 0 && typeNamespace_[en.name] == ns.name);
+                if (clashHere) {
                     error("redeclaration of type '" + en.name + "'", en.loc);
                     continue;
                 }
@@ -1960,7 +2041,11 @@ void SemanticAnalyzer::findEntryPoint(const ast::Program& program) {
                 continue;
             }
             for (const ast::ClassDecl& cls : ns.classes) {
-                if (cls.visibility != "public" || cls.name != "Main") {
+                // THE ENTRY POINT IS FOUND BY THE NAME THE AUTHOR WROTE. Qualification renames a
+                // class to `Ns__Main`, and comparing against the bare "Main" then finds nothing --
+                // reported as "this program has no entry point" to somebody looking straight at one.
+                const std::string writtenName = typeAsWritten(cls.name);
+                if (cls.visibility != "public" || writtenName != "Main") {
                     continue;
                 }
                 for (const ast::MemberPtr& member : cls.members) {
