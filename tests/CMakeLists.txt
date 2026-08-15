@@ -4961,6 +4961,60 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # SIGNATURE VERIFICATION, against signatures this project did not produce. Both vectors were
+        # made by .NET's own ECDSA and RSA-PSS and verified there before being written down — a
+        # verifier tested against a signer we also wrote is a verifier tested against its own
+        # misunderstanding, and cryptographic code fails by giving the wrong ANSWER rather than by
+        # crashing, so an outside oracle is the only useful witness.
+        #
+        # ECDSA matters because most certificates the internet presents are ECDSA: a client that
+        # verifies only RSA either refuses the servers people use or treats "I cannot check this" as
+        # "this checks out". PSS matters because TLS 1.3 requires it for CertificateVerify — the
+        # message that proves the server holds the key belonging to the certificate it just sent.
+        #
+        # The NO answers carry the weight. A verifier that skips a step still passes every test made
+        # of valid signatures; only the refusals show it is doing the work.
+        add_test(NAME codegen_ecdsa_verify COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ecdsa_verify.pol"
+            "-DCONTAINS=valid signature: 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # An off-curve public key is the invalid-curve attack: the arithmetic then happens in a group
+        # the attacker chose. Four multiplications to check, so skipping it would be a decision.
+        add_test(NAME codegen_ecdsa_refuses COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ecdsa_verify.pol"
+            "-DCONTAINS=point off the curve: 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # The budget: a handshake verifies two or three signatures, and the same work on the standard
+        # library's decimal BigInteger measured over a second EACH — which is why this arithmetic is
+        # purpose-built with 16-bit limbs and Montgomery reduction.
+        add_test(NAME codegen_ecdsa_fast_enough COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ecdsa_verify.pol"
+            "-DCONTAINS=one verification: under 200 ms"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_rsa_pss_verify COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/rsa_pss_verify.pol"
+            "-DCONTAINS=valid signature: 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_rsa_pss_refuses COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/rsa_pss_verify.pol"
+            "-DCONTAINS=tampered signature: 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # WHAT A CLIENT REFUSES. Encryption is not authentication: a handshake with whoever answered
         # the socket stops somebody listening and does nothing about somebody answering in the
         # server's place. These are the checks that turn an encrypted pipe into a conversation with a
