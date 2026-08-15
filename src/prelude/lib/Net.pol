@@ -437,4 +437,257 @@
                 return HttpClient.sendFollowing(r, 5);
             }
         }
+
+        // ---- THE SERVER SIDE, which was the half that was missing. ----
+        //
+        // `HttpRequest` BUILDS a request and `HttpResponse` READS one: both are the client's view.
+        // A server has the mirror job -- read the request off the wire, decide what answers it, write
+        // the response -- and had only `ServerSocket.accept()`, which hands back a socket and leaves
+        // every byte after that to the program.
+        //
+        // Named `ServerRequest`/`ServerResponse` rather than `Request`/`Response` for the reason
+        // `Schema` is not `Shape`: those two are among the likeliest names in anybody's own program,
+        // and a standard library that takes them makes every such program build with a warning about
+        // something its author did nothing wrong to cause.
+
+        // A request as it arrived: verb, path, query, headers, body -- and the path parameters the
+        // router filled in from the pattern that matched.
+        public class ServerRequest {
+            private mutable String verbPart;
+            private mutable String pathPart;
+            private mutable String queryPart;
+            private mutable String bodyPart;
+            private mutable HashMap<String, String> headerMap;
+            private mutable HashMap<String, String> paramMap;
+
+            public constructor ServerRequest(String verb, String path, String query, String body) {
+                this.verbPart = verb;
+                this.pathPart = path;
+                this.queryPart = query;
+                this.bodyPart = body;
+                this.headerMap = new HashMap<String, String>() on heap;
+                this.paramMap = new HashMap<String, String>() on heap;
+            }
+
+            // `verb` and not `method`, which is a keyword -- the same choice `HttpRequest` made.
+            public method verb() returns String { return this.verbPart; }
+            public method path() returns String { return this.pathPart; }
+            public method queryString() returns String { return this.queryPart; }
+            public method body() returns String { return this.bodyPart; }
+            // Header names are matched WITHOUT case, because the wire does not agree on it: a client
+            // may send `Content-Type` or `content-type` and both mean the same header.
+            public method header(String name) returns String {
+                return this.headerMap.getOrDefault(name.toLower(), "");
+            }
+            public method hasHeader(String name) returns boolean {
+                return this.headerMap.containsKey(name.toLower());
+            }
+            public method setHeader(String name, String value) returns void {
+                this.headerMap.put(name.toLower(), value);
+            }
+            public method query(String name) returns String {
+                mutable HashMap<String, String> q = QueryString.parse(this.queryPart);
+                String v = q.getOrDefault(name, "");
+                delete q;
+                return v;
+            }
+            // A segment captured by the route pattern: `/users/{id}` matching `/users/42` gives
+            // `param("id")` = "42". Filled by the router, empty for anything it did not capture.
+            public method param(String name) returns String {
+                return this.paramMap.getOrDefault(name, "");
+            }
+            public method setParam(String name, String value) returns void {
+                this.paramMap.put(name, value);
+            }
+
+            // FROM THE WIRE. `GET /users/42?full=1 HTTP/1.1`, then headers, then a blank line, then
+            // the body. Tolerates `\n` as well as `\r\n`, because a hand-written client sends either
+            // and refusing one of them makes the server look broken to a person testing it by hand.
+            public static method parse(String raw) returns ServerRequest {
+                mutable String text = Strings.replace(raw, "\r\n", "\n");
+                int split = text.indexOf("\n\n");
+                mutable String head = text;
+                mutable String body = "";
+                if (split >= 0) {
+                    head = text.substring(0, split);
+                    body = text.substring(split + 2, text.length());
+                }
+                mutable ArrayList<String> lines = Strings.split(head, "\n");
+                mutable String verb = "GET";
+                mutable String target = "/";
+                if (lines.size() > 0) {
+                    mutable ArrayList<String> parts = Strings.split(lines.get(0), " ");
+                    if (parts.size() > 0) { verb = parts.get(0); }
+                    if (parts.size() > 1) { target = parts.get(1); }
+                    delete parts;
+                }
+                mutable String path = target;
+                mutable String query = "";
+                int q = target.indexOf("?");
+                if (q >= 0) {
+                    path = target.substring(0, q);
+                    query = target.substring(q + 1, target.length());
+                }
+                mutable ServerRequest r = new ServerRequest(verb, path, query, body) on heap;
+                for (mutable int i = 1; i < lines.size(); i++) {
+                    String line = lines.get(i);
+                    int colon = line.indexOf(":");
+                    if (colon > 0) {
+                        r.setHeader(line.substring(0, colon),
+                                    line.substring(colon + 1, line.length()).trim());
+                    }
+                }
+                delete lines;
+                return r;
+            }
+        }
+
+        // A response being built. Fluent, because a handler writes one in a line and a builder that
+        // needs four statements is a builder people work around.
+        public class ServerResponse {
+            private mutable int statusCode;
+            private mutable String bodyPart;
+            private mutable HashMap<String, String> headerMap;
+
+            public constructor ServerResponse(int status, String body) {
+                this.statusCode = status;
+                this.bodyPart = body;
+                this.headerMap = new HashMap<String, String>() on heap;
+            }
+            public static method of(int status, String body) returns ServerResponse {
+                return new ServerResponse(status, body) on heap;
+            }
+            public static method ok(String body) returns ServerResponse {
+                return new ServerResponse(200, body) on heap;
+            }
+            public static method json(String body) returns ServerResponse {
+                mutable ServerResponse r = new ServerResponse(200, body) on heap;
+                r.setHeader("Content-Type", "application/json");
+                return r;
+            }
+            public static method notFound() returns ServerResponse {
+                return new ServerResponse(404, "not found") on heap;
+            }
+            public method status() returns int { return this.statusCode; }
+            public method body() returns String { return this.bodyPart; }
+            public method setHeader(String name, String value) returns void {
+                this.headerMap.put(name, value);
+            }
+            public method header(String name) returns String {
+                return this.headerMap.getOrDefault(name, "");
+            }
+
+            // The bytes to put on the wire. `Content-Length` is written from the body rather than
+            // trusted from a header: a wrong length is a hang at the other end, which is the worst
+            // way for this to be wrong.
+            public method toRaw() returns String {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.append("HTTP/1.1 ");
+                sb.appendInt(this.statusCode);
+                sb.append(" ");
+                sb.append(ServerResponse.reason(this.statusCode));
+                sb.append("\r\n");
+                mutable ArrayList<String> names = this.headerMap.keys();
+                for (mutable int i = 0; i < names.size(); i++) {
+                    sb.append(names.get(i));
+                    sb.append(": ");
+                    sb.append(this.headerMap.get(names.get(i)));
+                    sb.append("\r\n");
+                }
+                delete names;
+                sb.append("Content-Length: ");
+                sb.appendInt(this.bodyPart.length());
+                sb.append("\r\n\r\n");
+                sb.append(this.bodyPart);
+                return sb.toString();
+            }
+            public static method reason(int code) returns String {
+                if (code == 200) { return "OK"; }
+                if (code == 201) { return "Created"; }
+                if (code == 204) { return "No Content"; }
+                if (code == 400) { return "Bad Request"; }
+                if (code == 401) { return "Unauthorized"; }
+                if (code == 403) { return "Forbidden"; }
+                if (code == 404) { return "Not Found"; }
+                if (code == 405) { return "Method Not Allowed"; }
+                if (code == 500) { return "Internal Server Error"; }
+                return "Unknown";
+            }
+        }
+
+        // One route: a verb, a pattern and what answers it.
+        public class Route {
+            public mutable String verb;
+            public mutable String pattern;
+            public mutable function<ServerResponse*, ServerRequest*> handler;
+            public constructor Route(String verb, String pattern,
+                                     function<ServerResponse*, ServerRequest*> handler) {
+                this.verb = verb;
+                this.pattern = pattern;
+                this.handler = handler;
+            }
+        }
+
+        // WHICH HANDLER ANSWERS A REQUEST. Patterns are path segments, with `{name}` capturing one:
+        // `/users/{id}/posts` matches `/users/42/posts` and gives `param("id")` = "42".
+        //
+        // First match wins, in the order the routes were added -- which is the rule that lets a
+        // program put a specific route before a general one and have it mean something. A table that
+        // sorted by "most specific" would be cleverer and would make the order in the file a lie.
+        public class Router {
+            private mutable ArrayList<Route> routes;
+            public constructor Router() {
+                this.routes = new ArrayList<Route>() on heap;
+            }
+            public method add(String verb, String pattern,
+                              function<ServerResponse*, ServerRequest*> handler) returns void {
+                this.routes.add(new Route(verb, pattern, handler) on heap);
+            }
+            public method get(String pattern,
+                              function<ServerResponse*, ServerRequest*> handler) returns void {
+                this.add("GET", pattern, handler);
+            }
+            public method post(String pattern,
+                               function<ServerResponse*, ServerRequest*> handler) returns void {
+                this.add("POST", pattern, handler);
+            }
+            public method size() returns int { return this.routes.size(); }
+
+            // The answer, or 404 when no pattern matches -- and 405 when a pattern matches under a
+            // DIFFERENT verb, because "you asked the wrong way" and "there is nothing here" are
+            // different answers and telling them apart is most of what makes an API debuggable.
+            public method dispatch(ServerRequest* request) returns ServerResponse* {
+                mutable boolean pathMatched = false;
+                for (mutable int i = 0; i < this.routes.size(); i++) {
+                    Route r = this.routes.get(i);
+                    if (!Router.matches(r.pattern, request.path(), request)) { continue; }
+                    pathMatched = true;
+                    if (!r.verb.equals(request.verb())) { continue; }
+                    return r.handler(request);
+                }
+                if (pathMatched) { return ServerResponse.of(405, "method not allowed"); }
+                return ServerResponse.notFound();
+            }
+
+            // Segment by segment. A `{name}` segment captures whatever is in that position; anything
+            // else must be equal. Different lengths never match, so `/a` does not answer `/a/b`.
+            public static method matches(String pattern, String path, ServerRequest* into) returns boolean {
+                mutable ArrayList<String> want = Strings.split(pattern, "/");
+                mutable ArrayList<String> got = Strings.split(path, "/");
+                mutable boolean ok = want.size() == got.size();
+                if (ok) {
+                    for (mutable int i = 0; i < want.size(); i++) {
+                        String w = want.get(i);
+                        if (w.length() > 2 && w.charAt(0) == '{' && w.charAt(w.length() - 1) == '}') {
+                            into.setParam(w.substring(1, w.length() - 1), got.get(i));
+                            continue;
+                        }
+                        if (!w.equals(got.get(i))) { ok = false; }
+                    }
+                }
+                delete got;
+                delete want;
+                return ok;
+            }
+        }
     }

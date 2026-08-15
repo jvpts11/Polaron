@@ -3381,6 +3381,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THE SERVER SIDE OF HTTP (System.Net), the half that was missing: HttpRequest builds and
+        # HttpResponse reads, both the CLIENT's view, and a server had only `accept()`. Parsing,
+        # routing and writing are separate from the I/O, so this test hands them TEXT and opens no
+        # socket -- a server that can only be tested by being run is a server nobody tests.
+        add_test(NAME codegen_http_router_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/http_router.pol"
+            "-DEXPECTED=parsed: verb=GET path=/users/42 q=1 host=example.com routed: 200 {\"id\":42,\"full\":\"1\"} missing: 404 not found wrong verb: 405 method not allowed raw: HTTP/1.1 201 Created | len=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
