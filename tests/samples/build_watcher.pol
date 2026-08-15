@@ -1,0 +1,197 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.Paths;
+import System.IO.DirectoryChanges;
+import System.IO.DirectoryWatcher;
+import System.IO.TempDirectory;
+import System.IO.TempFile;
+import System.OS.Command;
+import System.OS.Environment;
+import System.OS.ProcessResult;
+import System.OS.Subprocess;
+import System.OS.Workspace;
+import System.Memory.Buffer;
+import System.Collections.ArrayList;
+import System.Text.StringBuilder;
+program BuildWatcher;
+
+// A SECOND REAL TOOL, and deliberately a different kind from the syncing one.
+//
+// A build watcher: it takes a snapshot of a source directory, notices what changed, hands each
+// changed file to a long-lived worker over a pipe, backs up what it produced, and keeps the log of a
+// failed run for a person to read. Everything a task runner does, and between the two tools every
+// call in this part of the library is now exercised by a program rather than by a checklist.
+//
+// What this one covers that the syncing tool did not:
+//   - A PERSISTENT child built from a Command -- started once and talked to many times, rather than
+//     run and waited for. That is what a language server, a compiler daemon and a debugger are, and
+//     it is a completely different code path from `run()`.
+//   - `mergeStderr`, so one stream carries everything the worker says. A caller reading only stdout
+//     calls a failing build silent -- and a build that fails silently is worse than one that fails.
+//   - `clearEnv`, for running something that must not see what this program was given.
+//   - `copyDirectory`, `appendBytes`, and a TempFile KEPT on failure: the file with the evidence in
+//     it is exactly the one that must not be deleted on the way out.
+//
+// Prints:
+//   watch: changed=2
+//   worker: replies=2 lastOk=1
+//   stderr: merged=1
+//   env: cleared=1
+//   backup: files=3 identical=1
+//   evidence: keptOnFailure=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                if (args.length() > 0) {
+                    Main.worker(args);
+                    return;
+                }
+                using (TempDirectory work = new TempDirectory("polaron-build") on stack) {
+                    String src = Paths.join(work.path(), "src");
+                    Files.createDirectories(src);
+                    Files.write(Paths.join(src, "a.txt"), "one");
+                    Files.write(Paths.join(src, "b.txt"), "two");
+                    Files.write(Paths.join(src, "c.txt"), "three");
+
+                    mutable ArrayList<String> changed = Main.watchFor(src);
+                    Main.buildEach(changed);
+                    delete changed;
+
+                    Main.mergedOutput();
+                    Main.clearedEnvironment();
+                    Main.backup(src, Paths.join(work.path(), "backup"));
+                    Main.evidence(work.path());
+                }
+                return;
+            }
+
+            // The worker half. `serve` answers one line per line it is given, until its input closes;
+            // `noisy` writes to stderr; `showenv` reports how many variables it can see.
+            private static method worker(string[] args) returns void {
+                String role = args[0];
+                if (role.equals("noisy")) {
+                    System.IO.Console.errorln("a warning on stderr");
+                    System.IO.Console.print("and a line on stdout\n");
+                    return;
+                }
+                if (role.equals("showenv")) {
+                    System.IO.Console.print(Environment.has("POLARON_PARENT_ZZZ") ? "sees" : "blind");
+                    return;
+                }
+                mutable String line = System.IO.Console.read();
+                while (line.length() > 0) {
+                    System.IO.Console.print("built ".concat(line).concat("\n"));
+                    line = System.IO.Console.read();
+                }
+                return;
+            }
+
+            // Snapshot, change two of the three files, and ask what moved.
+            private static method watchFor(String src) returns ArrayList<String> {
+                mutable DirectoryWatcher* watcher = new DirectoryWatcher(src) on heap;
+                Files.write(Paths.join(src, "a.txt"), "one, edited");
+                Files.write(Paths.join(src, "b.txt"), "two, edited as well");
+                mutable DirectoryChanges seen = watcher.poll();
+                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                for (mutable int i = 0; i < seen.changed.size(); i++) {
+                    out.add(Paths.basename(seen.changed.get(i)));
+                }
+                System.IO.Console.printf("watch: changed=%d\n", out.size());
+                delete seen;
+                delete watcher;
+                return out;
+            }
+
+            // ONE worker for every file, not one process per file. Started from a Command -- so its
+            // arguments are arguments -- and then written to and read from for as long as there is
+            // work. Starting a process per item is what makes a task runner slow enough to replace.
+            private static method buildEach(ArrayList<String> files) returns void {
+                mutable Subprocess worker = new Command(Workspace.executable()) on heap
+                    .arg("serve")
+                    .start();
+                mutable int replies = 0;
+                mutable boolean lastOk = false;
+                if (worker.isValid()) {
+                    for (mutable int i = 0; i < files.size(); i++) {
+                        worker.write(files.get(i).concat("\n"));
+                    }
+                    worker.closeInput();   // EOF, so the worker finishes rather than waiting
+                    mutable StringBuilder all = new StringBuilder() on heap;
+                    mutable String chunk = worker.read();
+                    while (chunk.length() > 0) {
+                        all.append(chunk);
+                        chunk = worker.read();
+                    }
+                    mutable ArrayList<String> lines = Strings.split(all.toString(), "\n");
+                    for (mutable int i = 0; i < lines.size(); i++) {
+                        if (lines.get(i).startsWith("built ")) { replies = replies + 1; }
+                    }
+                    lastOk = worker.wait() == 0;
+                    delete lines;
+                }
+                worker.close();
+                System.IO.Console.printf("worker: replies=%d lastOk=%d\n", replies, lastOk ? 1 : 0);
+            }
+
+            // Everything the child says on one stream. Without this a caller reading stdout only
+            // would see the line and miss the warning -- and report a build with warnings as clean.
+            private static method mergedOutput() returns void {
+                ProcessResult r = new Command(Workspace.executable()) on heap
+                    .arg("noisy")
+                    .mergeStderr()
+                    .timeout(10000)
+                    .run();
+                System.IO.Console.printf("stderr: merged=%d\n",
+                                         r.output.indexOf("a warning on stderr") >= 0 ? 1 : 0);
+            }
+
+            // A child that must not see what this program was given.
+            private static method clearedEnvironment() returns void {
+                Environment.set("POLARON_PARENT_ZZZ", "visible");
+                ProcessResult r = new Command(Workspace.executable()) on heap
+                    .arg("showenv")
+                    .clearEnv()
+                    .timeout(10000)
+                    .run();
+                Environment.clear("POLARON_PARENT_ZZZ");
+                System.IO.Console.printf("env: cleared=%d\n", r.output.equals("blind") ? 1 : 0);
+            }
+
+            private static method backup(String src, String into) returns void {
+                Files.copyDirectory(src, into);
+                mutable ArrayList<String> copied = Files.walk(into);
+                mutable boolean same = Files.read(Paths.join(into, "c.txt")).equals("three");
+                System.IO.Console.printf("backup: files=%d identical=%d\n", copied.size(),
+                                         same ? 1 : 0);
+                delete copied;
+            }
+
+            // The log of a failed run is the one file that must survive the scope it was made in --
+            // a scratch file that deletes itself is right until the run fails, and then it is exactly
+            // wrong. `keep` is how a program says which case it is in.
+            private static method evidence(String root) returns void {
+                mutable String path = "";
+                using (TempFile log = new TempFile("failed-build") on stack) {
+                    path = log.path();
+                    // Appended as BYTES, because a log is written in pieces and a build's output may
+                    // hold anything at all -- including bytes no text encoding allows.
+                    mutable Buffer* line = new Buffer(6) on heap;
+                    line.writeByte(0, cast<byte>(69));    // 'E'
+                    line.writeByte(1, cast<byte>(82));    // 'R'
+                    line.writeByte(2, cast<byte>(82));    // 'R'
+                    line.writeByte(3, cast<byte>(0));     // a NUL, mid-line
+                    line.writeByte(4, cast<byte>(33));    // '!'
+                    line.writeByte(5, cast<byte>(10));    // '\n'
+                    Files.appendBytes(path, line, 6);
+                    delete line;
+                    log.keep();                            // the run failed: leave it for a person
+                }
+                System.IO.Console.printf("evidence: keptOnFailure=%d\n",
+                                         Files.exists(path) && Files.size(path) == cast<long>(6)
+                                             ? 1 : 0);
+                Files.delete(path);
+            }
+        }
+    }
+}

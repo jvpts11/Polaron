@@ -844,22 +844,25 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         // still arrive as one argument, because no shell ever parses it. The blob is passed as
         // (data, length) rather than a C string precisely so an embedded NUL is a separator instead
         // of an end; a Polaron String carries its own length, which is what makes that work.
-        //   spawnArgv(argvBlob, argc, cwd, envBlob, envCount, mergeErr, showWindow)
+        // `ownEnv` is separate from `envCount` on purpose: an EMPTY environment and "inherit mine"
+        // are different instructions, and passing only the count made them the same value -- so
+        // `clearEnv()` handed the child everything. See the note in the runtime.
+        //   spawnArgv(argvBlob, argc, cwd, envBlob, envCount, ownEnv, mergeErr, showWindow)
         if (fn == "spawnArgv") {
-            std::vector<llvm::Value*> a(7, nullptr);
-            for (int i = 0; i < 7; ++i) {
+            std::vector<llvm::Value*> a(8, nullptr);
+            for (int i = 0; i < 8; ++i) {
                 a[i] = emitExpr(*call.args[i]);
                 if (a[i] == nullptr) {
                     return nullptr;
                 }
             }
             llvm::FunctionType* ft =
-                llvm::FunctionType::get(i64, {p, i64, i64, p, p, i64, i64, i64, i64}, false);
+                llvm::FunctionType::get(i64, {p, i64, i64, p, p, i64, i64, i64, i64, i64}, false);
             return builder.CreateCall(
                 module.getOrInsertFunction("__polaron_subproc_spawn_argv", ft),
                 {stringData(a[0]), stringLen(a[0]), fitInt(a[1], 64), stringData(a[2]),
                  stringData(a[3]), stringLen(a[3]), fitInt(a[4], 64), fitInt(a[5], 64),
-                 fitInt(a[6], 64)});
+                 fitInt(a[6], 64), fitInt(a[7], 64)});
         }
         // Wait for it to finish and answer its exit code. Separate from `kill`, which is this file's
         // name for the disposer: that one discards the code AND terminates a child still running,
@@ -1297,6 +1300,40 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
             llvm::Value* buf = builder.CreateCall(
                 module.getOrInsertFunction("polaron_read_line", ft), {lenSlot}, "line");
             return ownedStr(emitStringFromParts(builder.CreateLoad(builder.getInt64Ty(), lenSlot), buf));
+        }
+        // WRITING TO THE ERROR STREAM. Everything a Polaron program said went to stdout, so a tool's
+        // output could not be piped anywhere without its complaints coming along -- and this is the
+        // very stream `Command.mergeStderr` exists to control, which the library could ask for and no
+        // program could produce.
+        //
+        // It takes a String, and INTERPOLATION is how one is composed: `Console.errorln($"cannot open
+        // {path}")`. That is the language's own formatting and it yields a String, so the value goes
+        // straight to the stream with no second format parser here. The printf-style form is refused
+        // in the analyzer, with a message naming this one.
+        if (name == "System.IO.Console.error" || name == "System.IO.Console.errorln") {
+            const bool nl = name == "System.IO.Console.errorln";
+            llvm::Type* p = builder.getPtrTy();
+            llvm::Type* i64 = builder.getInt64Ty();
+            llvm::FunctionType* ft = llvm::FunctionType::get(i64, {p, i64}, false);
+            llvm::FunctionCallee out = module.getOrInsertFunction("__polaron_write_err", ft);
+            if (!call.args.empty()) {
+                llvm::Value* text = nullptr;
+                if (const auto* is =
+                        dynamic_cast<const ast::InterpStringExpr*>(call.args.front().get())) {
+                    text = emitInterp(*is, /*addNewline=*/false, /*asString=*/true);
+                } else {
+                    text = emitExpr(*call.args.front());
+                }
+                if (text == nullptr) {
+                    return nullptr;
+                }
+                builder.CreateCall(out, {stringData(text), stringLen(text)});
+            }
+            if (nl) {
+                builder.CreateCall(out, {createGlobalStringPtr(builder, "\n", ".estr"),
+                                         llvm::ConstantInt::get(i64, 1)});
+            }
+            return nullptr;
         }
         if (isPrintf || isPrintln || isPrint) {
             const bool nl = isPrintln;

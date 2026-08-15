@@ -4955,6 +4955,59 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A SECOND REAL TOOL, deliberately a different kind: a build watcher, which keeps a worker
+        # ALIVE over a pipe rather than running one process per file. Between it and the syncing tool
+        # every call in this area is exercised by a program instead of a checklist -- and this one
+        # found three things a checklist would not have.
+        #
+        #   - There was NO WAY TO WRITE TO STDERR. Every diagnostic a Polaron program produced went
+        #     to stdout, mixed into whatever the program was for -- and stderr is the very stream
+        #     `mergeStderr` exists to control, which the library could ask for and no program could
+        #     produce. `Console.error`/`errorln` now do, taking a String (compose it by interpolation).
+        #   - `clearEnv()` HANDED THE CHILD EVERYTHING. An empty environment and "inherit mine"
+        #     reached the runtime as the same value -- a count of zero -- so the feature whose whole
+        #     purpose is running something blind did the opposite, silently. The same defect this
+        #     whole area exists to remove, in the code that removes it.
+        #   - ...and once that was separated, a Windows environment block of a single zero byte is
+        #     MALFORMED: two are required, one closing the last string and one closing the block. An
+        #     empty environment is "\0\0".
+        add_test(NAME codegen_build_watcher_worker COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/build_watcher.pol"
+            "-DCONTAINS=worker: replies=2 lastOk=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_build_watcher_stderr COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/build_watcher.pol"
+            "-DCONTAINS=stderr: merged=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_build_watcher_cleared_env COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/build_watcher.pol"
+            "-DCONTAINS=env: cleared=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_build_watcher_backup COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/build_watcher.pol"
+            "-DCONTAINS=backup: files=3 identical=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # The log of a FAILED run is the one scratch file that must survive the scope it was made in.
+        add_test(NAME codegen_build_watcher_evidence COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/build_watcher.pol"
+            "-DCONTAINS=evidence: keptOnFailure=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # THE SIX THINGS A PROGRAM NEEDS FROM A FILESYSTEM THAT NOTHING ELSE HERE PROVIDES.
         #   replace -- a plain write TRUNCATES and then fills, so a crash between the two leaves the
         #              caller's save file empty. `replace` writes beside it and renames, and leaves
