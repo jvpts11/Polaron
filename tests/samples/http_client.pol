@@ -1,0 +1,70 @@
+import System.IO.Console;
+import System.Net.Url;
+import System.Net.HttpRequest;
+import System.Net.HttpResponse;
+program HttpClientSample;
+
+// A URL YOU CAN TAKE APART, AND A REQUEST YOU CAN BUILD.
+//
+// `Http.get(host, port, path)` was the entire client: one verb, no headers you could set, no body you
+// could send. Nothing could authenticate, post a form, send JSON, or even set an Accept -- which is
+// nearly everything an HTTP client is for. And there was no `Url` at all: every caller had to have
+// split the host from the path by hand before it could ask for anything.
+//
+// NO SOCKET IS OPENED HERE, deliberately. Building a request and reading a response are pure, so they
+// are testable without a server -- which is the property that makes them worth having as values. The
+// round trip itself is `HttpClient.send`.
+//
+// Prints:
+//   url: scheme=https host=api.example.com port=8443 path=/v1/items target=/v1/items?q=hat secure=1
+//   auth: host=api.example.com:8443 rel=/v1/other abs=https://other.example.com/x
+//   wire: POST /v1/items?q=hat HTTP/1.1|Host: api.example.com:8443|Accept: application/json|Content-Type: application/json|Content-Length: 14|Connection: close||{"name":"hat"}
+//   resp: status=200 type=text/plain body=hello notheader=
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Main.urls();
+                Main.request();
+                Main.response();
+                return;
+            }
+
+            private static method urls() returns void {
+                Url u = Url.parse("https://api.example.com:8443/v1/items?q=hat#top");
+                System.IO.Console.printf("url: scheme=%s host=%s port=%d path=%s target=%s secure=%d\n",
+                                         u.scheme(), u.host(), u.port(), u.path(),
+                                         u.requestTarget(), u.isSecure());
+                // The authority carries the port only when it is not the scheme's default, which is
+                // what a server compares against its own configuration.
+                System.IO.Console.printf("auth: host=%s rel=%s abs=%s\n",
+                                         u.authority(),
+                                         u.resolve("/v1/other").path(),
+                                         u.resolve("https://other.example.com/x").toText());
+                return;
+            }
+
+            private static method request() returns void {
+                mutable HttpRequest* r = HttpRequest.post("https://api.example.com:8443/v1/items?q=hat");
+                r.setHeader("Accept", "application/json");
+                r.setJson("{\"name\":\"hat\"}");
+                // Newlines replaced with '|' so the whole wire form is one comparable line.
+                System.IO.Console.printf("wire: %s\n", Strings.replace(r.toWire(), "\r\n", "|"));
+                return;
+            }
+
+            private static method response() returns void {
+                // The body deliberately contains a line that LOOKS like a header. The old reader
+                // scanned the whole response for `name: `, so this body answered as if it were one.
+                String raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nhello";
+                mutable HttpResponse* r = new HttpResponse(raw) on heap;
+                mutable HttpResponse* tricky =
+                    new HttpResponse("HTTP/1.1 200 OK\r\n\r\nX-Secret: leaked") on heap;
+                System.IO.Console.printf("resp: status=%d type=%s body=%s notheader=%s\n",
+                                         r.status(), r.header("Content-Type"), r.body(),
+                                         tricky.header("X-Secret"));
+                return;
+            }
+        }
+    }
+}
