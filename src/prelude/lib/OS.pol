@@ -44,6 +44,19 @@
             public static method memory() returns long {
                 return System.OS.__machineMemory();
             }
+            // HOW MUCH IS FREE RIGHT NOW -- a different question from how much the machine has, and
+            // the one a program sizing a cache, a buffer pool or a batch actually needs. Sizing
+            // against `memory()` is how something that behaves on an idle machine takes a busy one
+            // down. -1 when the system will not say.
+            public static method availableMemory() returns long {
+                return System.OS.__availableMemory();
+            }
+            // Seconds since this machine started; -1 when it cannot be determined. A program
+            // comparing its own age against the machine's can tell "restarted with the box" from
+            // "restarted on its own", which is the first question when something died overnight.
+            public static method uptime() returns long {
+                return System.OS.__uptime();
+            }
             // The granularity every mapping and every guard page is rounded to. A program that
             // allocates by page has to ask, because it is 4 KiB on x86 and 16 KiB on Apple silicon,
             // and a constant compiled in at somebody's desk is wrong on half the machines.

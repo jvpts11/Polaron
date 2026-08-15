@@ -52,6 +52,10 @@ inline constexpr SysIntrinsic kSysIntrinsics[] = {
     {"System.OS.__osName",        "__polaron_os_name",       's', false},
     {"System.OS.__pid",           "__polaron_pid",           'l', false},
     {"System.OS.__machineMemory", "__polaron_machine_memory",'l', false},
+    // FREE RIGHT NOW, which is the number a program sizing a cache needs -- sizing against the total
+    // is how something that behaves on an idle machine takes a busy one down.
+    {"System.OS.__availableMemory","__polaron_machine_available_memory", 'l', false},
+    {"System.OS.__uptime",        "__polaron_uptime",        'l', false},
     {"System.OS.__pageSize",      "__polaron_page_size",     'l', false},
     // ---- How much room is left, on the volume holding a given path.
     {"System.OS.__diskFree",      "__polaron_disk_free",     'l', true},

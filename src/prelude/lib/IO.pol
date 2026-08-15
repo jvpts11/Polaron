@@ -396,6 +396,21 @@
                 return ok;
             }
 
+            // Every byte under `root`, files only -- what a program reports before it copies a tree,
+            // and what it checks against `Disk.freeSpace` before it starts. Directories themselves
+            // are not counted: their own size is a filesystem detail that varies by filesystem and
+            // is not what anybody means by "how big is this folder".
+            public static method directorySize(String root) returns long {
+                mutable ArrayList<String> found = Files.walk(root);
+                mutable long total = cast<long>(0);
+                for (mutable int i = 0; i < found.size(); i++) {
+                    long n = Files.size(found.get(i));
+                    if (n > cast<long>(0)) { total = total + n; }
+                }
+                delete found;
+                return total;
+            }
+
             // NAMES MATCHED BY A PATTERN, which is how a person says which files they mean.
             //
             // `*` stands for any run of characters within one component, `?` for one character, and
@@ -748,7 +763,10 @@
         // is filled again. Memory is the buffer, whatever the file's size. A line longer than the
         // buffer is returned in the pieces the buffer can hold, which is stated rather than hidden --
         // the alternative is growing without bound on a file whose first "line" is the whole thing.
-        public class LineReader {
+        // `implements Iterator<String>` for free: `hasNext`/`next` are already exactly that
+        // interface, so every generic algorithm written over an Iterator works on a file without
+        // knowing it is one -- which is the point of having the interface at all.
+        public class LineReader implements Iterator<String> {
             private mutable FileStream stream;
             private mutable Buffer* chunk;
             private mutable String held;      // bytes read but not yet returned as a line
@@ -781,14 +799,14 @@
 
             // Whether another line is available -- which may require reading, so this is the method
             // that does the work and `next` merely takes what it prepared.
-            public method hasNext() returns boolean {
+            public override method hasNext() returns boolean {
                 while (this.held.indexOf("\n") < 0 && this.fill()) { }
                 return this.held.length() > 0 || this.held.indexOf("\n") >= 0;
             }
             // The next line, without its newline. A trailing `\r` is dropped too, so a file written
             // on Windows and read on POSIX does not hand every line an invisible last character --
             // the commonest reason a comparison that looks right fails.
-            public method next() returns String {
+            public override method next() returns String {
                 while (this.held.indexOf("\n") < 0 && this.fill()) { }
                 int cut = this.held.indexOf("\n");
                 mutable String line = "";
