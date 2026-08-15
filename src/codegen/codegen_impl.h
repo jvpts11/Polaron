@@ -3337,6 +3337,45 @@ struct CodeGenerator::Impl {
     bool collectSelectChain(const ast::Expr* chain, std::vector<SelectCase>& cases);
     // Calls a function<void> / function<void, T> closure value (code+env pair) with an optional arg.
     void emitClosureCallVoid(llvm::Value* closPtr, const std::string& paramType, llvm::Value* arg);
+    // SPLIT A TYPE LIST ON ITS TOP-LEVEL COMMAS, AND TRIM EACH PIECE.
+    //
+    // The trim is the whole reason this exists as one function instead of three copies. `function<double,
+    // double>` is how every author and the whole standard library writes it, so the second piece came out
+    // as " double" with a leading space -- and `llvmType` compares type names exactly, does not recognise
+    // it, and falls through to the default. The parameter then had an INTEGER type in a signature whose
+    // argument was a double, and the call site sign-extended a float to fit: `sext double to i32`, which
+    // the module verifier refuses outright.
+    //
+    // It hid because this path is only taken where a `function<>` PARAMETER is called inside a method
+    // that specialization did not fold away -- so one such call in a program was fine, and two lambdas of
+    // the same shape in two different methods was what made it appear. That reads as a mysterious
+    // interaction between unrelated code rather than as a missing trim, which is what it is.
+    //
+    // `angles` also counts '(' and ')' for funcptr's parameter lists; harmless for the others.
+    static std::vector<std::string> splitTypeList(const std::string& inner, bool parens = false) {
+        std::vector<std::string> parts;
+        int depth = 0;
+        std::size_t start = 0;
+        for (std::size_t i = 0; i <= inner.size(); i++) {
+            if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
+                std::string piece = inner.substr(start, i - start);
+                const std::size_t a = piece.find_first_not_of(" \t");
+                if (a == std::string::npos) {
+                    parts.push_back(std::string());
+                } else {
+                    const std::size_t b = piece.find_last_not_of(" \t");
+                    parts.push_back(piece.substr(a, b - a + 1));
+                }
+                start = i + 1;
+            } else if (inner[i] == '<' || (parens && inner[i] == '(')) {
+                depth++;
+            } else if (inner[i] == '>' || (parens && inner[i] == ')')) {
+                depth--;
+            }
+        }
+        return parts;
+    }
+
     // Calls a funcptr<Ret, Args...> value -- a bare C function pointer (dynamic FFI, e.g. a
     // wglGetProcAddress result) -- with the plain C ABI: no closure environment, args passed directly.
     llvm::Value* emitFuncptrCall(const std::string& ft, llvm::Value* fnPtr,
@@ -3344,18 +3383,7 @@ struct CodeGenerator::Impl {
         const std::string raw = ft.substr(8, ft.size() - 9);  // strip "funcptr<" ... ">"
         const llvm::CallingConv::ID cc = worldToCallConv(ast::funcptrWorld(raw), loc);  // [unknown-abi]
         const std::string inner = ast::funcptrBody(raw);      // params/return, minus any leading $world
-        std::vector<std::string> parts;
-        int depth = 0;
-        for (std::size_t i = 0, s = 0; i <= inner.size(); i++) {
-            if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
-                parts.push_back(inner.substr(s, i - s));
-                s = i + 1;
-            } else if (inner[i] == '<' || inner[i] == '(') {
-                depth++;
-            } else if (inner[i] == '>' || inner[i] == ')') {
-                depth--;
-            }
-        }
+        std::vector<std::string> parts = splitTypeList(inner, /*parens=*/true);
         std::vector<llvm::Type*> pts;
         for (std::size_t i = 1; i < parts.size(); i++) {
             pts.push_back(llvmType(parts[i]));

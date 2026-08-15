@@ -194,6 +194,39 @@ bool CodeGenerator::generate() {
     std::string verifyMsg;
     llvm::raw_string_ostream os(verifyMsg);
     if (llvm::verifyModule(impl_->module, &os)) {
+        // NAME THE FUNCTION. `verifyModule` prints the offending instruction and nothing about where
+        // it lives, so a report reads `sext double to i32` with no way to tell which of a thousand
+        // emitted functions produced it -- and the compiler's own author is then reduced to bisecting
+        // the input program. `verifyFunction` per function costs one extra pass on a path that is
+        // already failing, and turns an hour of bisection into a name.
+        std::string where;
+        std::string bodies;
+        for (llvm::Function& f : impl_->module) {
+            if (f.isDeclaration()) {
+                continue;
+            }
+            if (llvm::verifyFunction(f)) {
+                if (!where.empty()) {
+                    where += ", ";
+                }
+                where += f.getName().str();
+                // AND SHOW IT. A verifier message names an instruction in a module that was never
+                // written out, because the write happens after this check -- so the one artifact that
+                // would explain the failure is the one thing the failure prevents. Printing the
+                // offending function is bounded (only functions that already failed) and is the
+                // difference between reading the bug and guessing at it.
+                if (std::getenv("POLARON_SHOW_BAD_IR") != nullptr) {
+                    llvm::raw_string_ostream fos(bodies);
+                    f.print(fos);
+                }
+            }
+        }
+        if (!where.empty()) {
+            verifyMsg = "in " + where + ": " + verifyMsg;
+        }
+        if (!bodies.empty()) {
+            verifyMsg += "\n" + bodies;
+        }
         errors_.push_back(CodegenError{"module verification failed: " + verifyMsg, {}});
         return false;
     }
