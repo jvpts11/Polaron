@@ -2,29 +2,63 @@
         // Result<T,E> / Option<T> (spec 21.2-21.3): sealed sum types matched with `match`. Ok/Err/
         // Some/None are constructed with the type args taken from the expected type at the use site.
         // The abstract method forces a vtable so `match` can dispatch on the variant.
+        //
+        // AND THE THINGS YOU DO WITH THEM WITHOUT OPENING THEM. These carried `isOk`/`isSome` and
+        // nothing else, so every use had to `match` -- which is right when a program branches on the
+        // outcome and is ceremony when it only wants a default, or wants to keep working inside the
+        // wrapper. Every language that ships these types ships this handful with them, for the same
+        // reason: the point of the type is not to unwrap at every step.
+        //
+        // Written on the ABSTRACT BASE where the answer is the same for both variants, and overridden
+        // where it differs -- so `match` and these agree by construction rather than by being kept in
+        // step, and a variant added later cannot forget one.
         public sealed abstract class Result<T, E> permits Ok, Err {
             public abstract method isOk() returns boolean;
+            public method isErr() returns boolean { return !this.isOk(); }
+            // The value, or this one instead. The commonest thing anybody does with a Result, and it
+            // needs no `match` and no unwrap that can fail.
+            public abstract method valueOr(T fallback) returns T;
+            // The error, or this one. The mirror, for reporting.
+            public abstract method errorOr(E fallback) returns E;
         }
         public class Ok<T, E> extends Result<T, E> {
             public final T value;
             public constructor Ok(T value) { this.value = value; }
             public override method isOk() returns boolean { return true; }
+            public override method valueOr(T fallback) returns T { return this.value; }
+            public override method errorOr(E fallback) returns E { return fallback; }
         }
         public class Err<T, E> extends Result<T, E> {
             public final E error;
             public constructor Err(E error) { this.error = error; }
             public override method isOk() returns boolean { return false; }
+            public override method valueOr(T fallback) returns T { return fallback; }
+            public override method errorOr(E fallback) returns E { return this.error; }
         }
         public sealed abstract class Option<T> permits Some, None {
             public abstract method isSome() returns boolean;
+            public method isNone() returns boolean { return !this.isSome(); }
+            // The value, or this one instead.
+            public abstract method valueOr(T fallback) returns T;
+            // Whether it holds something that passes the test. `present(p)` reads as the question it
+            // is -- "is there one, and is it what I want" -- which otherwise takes a match and an if.
+            public abstract method present(function<boolean, T> test) returns boolean;
         }
         public class Some<T> extends Option<T> {
             public final T value;
             public constructor Some(T value) { this.value = value; }
             public override method isSome() returns boolean { return true; }
+            public override method valueOr(T fallback) returns T { return this.value; }
+            public override method present(function<boolean, T> test) returns boolean {
+                return test(this.value);
+            }
         }
         public class None<T> extends Option<T> {
             public constructor None() {}
             public override method isSome() returns boolean { return false; }
+            public override method valueOr(T fallback) returns T { return fallback; }
+            public override method present(function<boolean, T> test) returns boolean {
+                return false;   // nothing to test, and the test is never called
+            }
         }
     }

@@ -1,0 +1,61 @@
+import System.IO.Console;
+import System.Errors.Result;
+import System.Errors.Option;
+program OptionResultOps;
+
+// WHAT YOU DO WITH A RESULT OR AN OPTION WITHOUT OPENING IT.
+//
+// These types carried `isOk`/`isSome` and nothing else, so every use had to `match` -- which is right
+// when a program branches on the outcome, and is ceremony when it only wants a default or wants to
+// ask one question about the value. Every language that ships these types ships this handful with
+// them, for the same reason: the point of the type is not to unwrap at every step.
+//
+// The operations live on the ABSTRACT BASE where both variants answer the same way and are overridden
+// where they differ, so `match` and these cannot drift apart -- and a variant added later cannot
+// forget one, because the base declares it abstract.
+//
+// Prints:
+//   ok=7 orElse=7 err=404 errOr=404 isErr=1
+//   some=9 none=-1 big=1 small=0 missing=0
+//   matched: ok 7 / err 404
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Result<int, int>* ok = new Ok<int, int>(7) on heap;
+                Result<int, int>* err = new Err<int, int>(404) on heap;
+
+                // No match, no unwrap that can fail: the value or a default, either way.
+                System.IO.Console.printf("ok=%d orElse=%d err=%d errOr=%d isErr=%d\n",
+                                         ok.valueOr(0), err.valueOr(7),
+                                         err.errorOr(0), ok.errorOr(404),
+                                         err.isErr() ? 1 : 0);
+
+                Option<int>* some = new Some<int>(9) on heap;
+                Option<int>* none = new None<int>() on heap;
+                // `present` is the question as it is actually asked -- is there one, and is it what I
+                // want -- which otherwise takes a match and an if.
+                System.IO.Console.printf("some=%d none=%d big=%d small=%d missing=%d\n",
+                                         some.valueOr(-1), none.valueOr(-1),
+                                         some.present(lambda(int v) returns boolean { return v > 5; }) ? 1 : 0,
+                                         some.present(lambda(int v) returns boolean { return v < 5; }) ? 1 : 0,
+                                         none.present(lambda(int v) returns boolean { return true; }) ? 1 : 0);
+
+                // ...and `match` still does what it always did, on the same objects.
+                match (ok) {
+                    case Ok(int v) { System.IO.Console.printf("matched: ok %d / ", v); }
+                    case Err(int e) { System.IO.Console.printf("matched: err %d / ", e); }
+                }
+                match (err) {
+                    case Ok(int v) { System.IO.Console.printf("ok %d\n", v); }
+                    case Err(int e) { System.IO.Console.printf("err %d\n", e); }
+                }
+                delete none;
+                delete some;
+                delete err;
+                delete ok;
+                return;
+            }
+        }
+    }
+}

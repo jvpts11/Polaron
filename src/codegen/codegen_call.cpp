@@ -2504,7 +2504,16 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         // class that nothing extends/implements (not in `subclassed_`): its instances are exactly
         // that type, so the call is direct and inlinable -- a plain-class method call then costs
         // nothing over a free function (e.g. Bitset.set in a tight sieve loop).
-        const std::string st = baseType(typeName(*mem->object));  // see through T* / T&
+        // THROUGH THE FUNNEL, not through `baseType`. A generic instantiated over a POINTER is named
+        // `Box$Node*`, and that trailing `*` is part of the CLASS NAME rather than a pointer to it --
+        // so stripping it, which is right for `Dog*`, produced `Box$Node`, which is no class at all.
+        // The virtual dispatch below was then skipped and the call fell through to the direct path,
+        // where an abstract method has no body: `unknown method 'full' on 'Box$Node*'`, reported
+        // against a base method that merely calls its own abstract one.
+        //
+        // `clsKey` is the lookup that tries the exact name first and only then sees through `T*`,
+        // which is the same fix already applied to the sixteen other `classes.find` sites.
+        const std::string st = clsKey(typeName(*mem->object));
         auto stit = classes.find(st);
         // Keep the virtual call whenever the runtime type may differ from the static type: the type
         // is extended/implemented (`subclassed_`), is an interface or abstract class (the value is

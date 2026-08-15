@@ -3343,6 +3343,31 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # WHAT YOU DO WITH A RESULT OR AN OPTION WITHOUT OPENING IT. They carried `isOk`/`isSome` and
+        # nothing else, so every use had to `match` -- right when a program branches on the outcome,
+        # ceremony when it only wants a default. On the abstract base where both variants answer alike
+        # and overridden where they differ, so `match` and these cannot drift apart.
+        add_test(NAME codegen_option_result_ops_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/option_result_ops.pol"
+            "-DEXPECTED=ok=7 orElse=7 err=404 errOr=404 isErr=1 some=9 none=-1 big=1 small=0 missing=0 matched: ok 7 / err 404"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A GENERIC BASE'S CONCRETE METHOD CALLING ITS OWN ABSTRACT ONE, over a POINTER type argument.
+        # `Box$Node*` ends in a `*` that belongs to the class NAME, and the virtual-dispatch decision
+        # stripped it with `baseType` -- right for `Dog*`, wrong here -- landing on `Box$Node`, no
+        # class at all, so the call fell through to the direct path where an abstract method has no
+        # body. Found by giving `Option<T>` an `isNone()`.
+        add_test(NAME codegen_generic_ptr_template_method_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/generic_ptr_template_method.pol"
+            "-DEXPECTED=int: full=1 empty=0 ptr: full=1 empty=0 hollow: full=0 empty=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
