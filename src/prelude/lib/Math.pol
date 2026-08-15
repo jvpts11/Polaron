@@ -30,6 +30,29 @@
             public method nextBool() returns boolean {
                 return this.nextIntMax(2) == 0;
             }
+            public method nextLong() returns long {
+                return (cast<long>(this.nextInt()) << 31) | cast<long>(this.nextInt());
+            }
+            // FISHER-YATES, which every program that deals a hand, picks a level or randomises a
+            // trial needs and had to write by hand -- the generator could produce numbers and there
+            // was nothing to DO with them to an array.
+            //
+            // Backwards from the end, picking from the unshuffled prefix INCLUDING the current
+            // position: the loop that picks from the whole array each time is the classic wrong
+            // version, and it does not produce a uniform permutation.
+            public method shuffle<T>(T[] a) returns void {
+                for (mutable int i = a.length() - 1; i > 0; i--) {
+                    int j = this.nextIntMax(i + 1);
+                    T t = a[i];
+                    a[i] = a[j];
+                    a[j] = t;
+                }
+            }
+            // One element, uniformly. Separate from `shuffle` because picking one of a list is far
+            // commoner than reordering it, and doing it by shuffling first is O(n) for one answer.
+            public method pick<T>(T[] a) returns T {
+                return a[this.nextIntMax(a.length())];
+            }
             // sqrt/ln are kept private here so Random depends on no external class name -- the `Math`
             // builtin name can be shadowed by a user class, and the prelude must never rely on it. The
             // algorithms mirror System.Math.Math (Newton's method; atanh series after range reduction).
