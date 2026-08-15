@@ -307,6 +307,25 @@ struct CodeGenerator::Impl {
     }
 
     std::unordered_map<std::string, ClassLayout> classes;
+    // WHERE EACH CLASS LIVES. Codegen walked bundles and namespaces and kept neither, so it had no way
+    // to tell two same-named types apart -- which is the reason the renaming pass has to make them
+    // different upstream, and the reason every gap in that rewrite surfaced here as a failure about a
+    // class the author never wrote (`Color.__unimportedCall`, a memcpy handed an i32).
+    //
+    // Recorded at registration, from the loop that was already walking them. It is a fact about the
+    // class, not about where the emitter happens to be, so it does not need threading through.
+    std::unordered_map<std::string, std::string> classNamespace;
+    std::unordered_map<std::string, std::string> classBundle;
+    // The full path of a class, for the day two of them share a name here as they already can in the
+    // analyzer: `Bundle.Namespace.Name`, the same spelling the type table uses.
+    std::string classPath(const std::string& name) const {
+        auto b = classBundle.find(name);
+        auto n = classNamespace.find(name);
+        if (b == classBundle.end() || n == classNamespace.end()) {
+            return name;
+        }
+        return b->second + "." + n->second + "." + name;
+    }
     // `newtype Name = Underlying;` (spec 24): a distinct type that shares the underlying's
     // representation, so codegen lowers it exactly like the underlying type.
     std::unordered_map<std::string, std::string> newtypes_;

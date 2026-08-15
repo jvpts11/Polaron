@@ -197,6 +197,20 @@ const ClassInfo* SemanticAnalyzer::lookupShared(const std::string& name) const {
             }
         }
     }
+    // THE STANDARD LIBRARY MEANS ITS OWN TYPES. It is one body of code that never imports itself, so
+    // an unqualified `Scanner` inside it can only be System's -- and without this the prelude's own
+    // `Scanner` lost its fields the moment a user declared one, reported as `no such field 'src'`
+    // against a class the author had not touched. The renaming pass carries the same exception, for
+    // the same reason, and the two must agree.
+    if (currentBundle_ == "System") {
+        for (std::uint32_t id : shared->second) {
+            if (types_[id].bundle == "System") {
+                if (const ClassInfo* c = entryFor(types_[id])) {
+                    return c;
+                }
+            }
+        }
+    }
     // WHAT CANNOT BE PROVEN IS NOT GUESSED.
     //
     // Neither yours nor imported: two types answer to this name and nothing here says which. Picking
@@ -1154,7 +1168,18 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
-                if (auto prev = classes_.find(cls.name); prev != classes_.end()) {
+                // A REDECLARATION IS THE SAME NAME IN THE SAME NAMESPACE, and this asked only about
+                // the name. That was the same question while a name could exist once, and stopped
+                // being it when two namespaces could each hold a `Scanner`: `Main.App.Scanner` beside
+                // `System.Text.Scanner` is not a redeclaration, it is the thing the whole type-identity
+                // work exists to allow, and the language's own rule ("yours wins") already said so in
+                // a warning while this said the opposite in an error.
+                const bool sameNamespaceClash =
+                    classes_.count(cls.name) > 0 && typeNamespace_.count(cls.name) > 0 &&
+                    typeNamespace_[cls.name] == ns.name && typeBundle_.count(cls.name) > 0 &&
+                    typeBundle_[cls.name] == bundle.name;
+                if (auto prev = classes_.find(cls.name);
+                    prev != classes_.end() && sameNamespaceClash) {
                     // Point at whichever of the two the AUTHOR wrote. A user type colliding with a
                     // stdlib one used to be reported wherever the displaced type was USED, which for
                     // a stdlib type is inside the prelude -- so declaring `class File` produced four

@@ -2134,6 +2134,22 @@ void qualifyNamespaces(ast::Program& program) {
         //
         // That number is the argument against finishing the rewrite and for replacing it: a pass that
         // is 43% incomplete is not one gap away from total. See docs/design/type-identity.md.
+        // TURNING THIS OFF FOR THE STDLIB COLLISION IS THE GOAL, AND IT IS NOT REACHED YET.
+        //
+        // Both halves of the replacement now exist -- the analyzer picks by namespace and imports
+        // (`lookupShared`), and codegen keeps each class's path (`classNamespace`/`classBundle`) so it
+        // can pick too. Switching the rename off for a name shared only with the standard library was
+        // tried on 2026-08-15 and surfaces one coupling at a time, each a real fix:
+        //
+        //   - the class redeclaration check asked whether the NAME was taken rather than whether it
+        //     was taken in the same namespace. FIXED.
+        //   - the prelude refers to its own types unqualified, and never imports itself, so an
+        //     unqualified `Scanner` inside it has to mean System's. A preference for that was added
+        //     and is NOT yet sufficient: the prelude's own `Scanner` still loses its fields, reported
+        //     as `no such field 'src'` against a class the author never touched.
+        //
+        // The remaining work is that list, not a mystery -- but it is a list, so the switch stays off
+        // until it is empty rather than being flipped with the suite red.
         if (nss.size() > 1) {
             ambiguous.insert(name);
         }
