@@ -295,7 +295,32 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->loc = x->loc;
         n->fromSuffix = x->fromSuffix;
         n->callee = cloneExpr(x->callee.get(), s);
+        // `sizeof`'s ARGUMENT IS A TYPE, not a value, so it follows a type substitution where a bare
+        // identifier otherwise must not -- this same clone monomorphizes generics, where the map takes
+        // T to int and touching a variable named T would be a disaster.
+        //
+        // Without it, `Raw.sizeof(Color)` kept a bare `Color` after the type was renamed for a name
+        // collision, and failed with `use of undeclared variable 'Color'` pointing at line 1 -- the
+        // expression came out of a string interpolation, whose sub-parsed nodes carry no location, so
+        // the one clue was a coordinate that belonged to nothing.
+        bool sizeofCall = false;
+        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(x->callee.get())) {
+            sizeofCall = cid->name == "sizeof";
+        } else if (const auto* cm = dynamic_cast<const ast::MemberExpr*>(x->callee.get())) {
+            sizeofCall = cm->member == "sizeof";   // Raw.sizeof / System.Memory.Raw.sizeof
+        }
         for (const auto& a : x->args) {
+            if (sizeofCall) {
+                if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(a.get())) {
+                    if (auto it = s.find(aid->name); it != s.end()) {
+                        auto sub = std::make_unique<ast::IdentifierExpr>();
+                        sub->loc = aid->loc;
+                        sub->name = it->second;
+                        n->args.push_back(std::move(sub));
+                        continue;
+                    }
+                }
+            }
             n->args.push_back(cloneExpr(a.get(), s));
         }
         for (const std::string& a : x->typeArgs) {  // generic call args may be type params
@@ -777,6 +802,26 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->cond = cloneExpr(x->cond.get(), s);
         n->update = cloneStmt(x->update.get(), s);
         n->body = cloneBlock(x->body, s);
+        return n;
+    }
+    // `unimport X` / `reimport X` NAMES A TYPE, so it follows a rename like any other reference --
+    // and it was not handled here at all, so the statement was DROPPED whenever this clone ran.
+    //
+    // It ran for the first time on a program that had done nothing unusual: the type collided with a
+    // standard-library name, which triggered the renaming pass, which silently removed the one
+    // statement the program was written to demonstrate. The compiler warned that it did not know the
+    // kind -- which is exactly the right thing to do and is why this was five minutes rather than an
+    // afternoon -- but a warning is not a substitute for handling it.
+    if (const auto* x = dynamic_cast<const ast::UnimportStmt*>(st)) {
+        auto n = std::make_unique<ast::UnimportStmt>();
+        n->loc = x->loc;
+        n->isReimport = x->isReimport;
+        n->granularity = x->granularity;
+        if (auto it = s.find(x->target); it != s.end()) {
+            n->target = it->second;
+        } else {
+            n->target = x->target;
+        }
         return n;
     }
     // Same rule as `cloneExpr`: a statement kind this has not been taught is a bug here, and it
@@ -2204,6 +2249,31 @@ void qualifyNamespaces(ast::Program& program) {
                 for (auto& cat : e.extendsCatalogs) {
                     if (auto it = subst.find(cat); it != subst.end()) {
                         cat = it->second;
+                    }
+                }
+                // AN ENUM'S MEMBERS ARE CODE TOO, and this walked only its NAME.
+                //
+                // A class goes through `cloneClass`, which substitutes inside every method body. An
+                // enum had its name renamed and its bodies left alone -- so a java-style enum whose
+                // method says `Color.GREEN` kept a bare `Color` that had just been renamed out from
+                // under it, and the program failed with `use of undeclared variable 'Color'` against
+                // a name it had plainly declared.
+                //
+                // Nothing tripped it while no stdlib type shared a name with a user enum, because
+                // without a collision no renaming happens at all. Adding `Color` to the standard
+                // library made two of this project's own samples fail -- which is the shape this bug
+                // has: it is invisible until someone else picks the same word.
+                for (auto& m : e.members) {
+                    if (ast::MemberPtr cm = cloneMember(m.get(), subst)) {
+                        m = std::move(cm);
+                    }
+                }
+                // And the constructor arguments of the constants themselves, which may name a type.
+                for (auto& args : e.constantArgs) {
+                    for (auto& a : args) {
+                        if (a != nullptr) {
+                            a = cloneExpr(a.get(), subst);
+                        }
                     }
                 }
             }
