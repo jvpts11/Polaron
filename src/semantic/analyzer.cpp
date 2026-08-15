@@ -1298,6 +1298,10 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 classes_[cls.name] = std::move(info);
                 typeNamespace_[cls.name] = ns.name;
                 typeBundle_[cls.name] = bundle.name;
+                // Identity, kept beside the bare-name maps rather than instead of them: this stage
+                // only records what is true, so a disagreement between the two is found while both
+                // still exist (docs/design/type-identity.md, stage 2).
+                internType(cls.name, bundle.name, ns.name, cls.loc);
             }
         }
     }
@@ -1730,6 +1734,7 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
                     }
                 }
                 enums_[en.name] = en.constants;
+                internType(en.name, bundle.name, ns.name, en.loc);
                 if (en.isSealed) {
                     sealedEnums_.insert(en.name);
                 }
@@ -1800,6 +1805,7 @@ void SemanticAnalyzer::registerCatalogs(const ast::Program& program) {
                 catalogs_[cat.name] = std::move(info);
                 typeNamespace_[cat.name] = ns.name;
                 typeBundle_[cat.name] = bundle.name;
+                internType(cat.name, bundle.name, ns.name, cat.loc);
             }
         }
     }

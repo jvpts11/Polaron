@@ -1271,10 +1271,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                     }
                 }
                 if (!covered) {
-                    std::string disp = bt;  // show the simple name, not the namespace-mangled one
-                    if (auto p = disp.rfind("__"); p != std::string::npos) {
-                        disp = disp.substr(p + 2);
-                    }
+                    // The simple name, not the namespace-mangled one -- through the shared projection,
+                    // which also says the full path when the simple name identifies two types.
+                    const std::string disp = typeAsWritten(bt);
                     warn("exception '" + disp + "' is neither caught nor declared in the method's "
                          "'throws' clause", th->loc);
                 }

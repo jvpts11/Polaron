@@ -424,6 +424,84 @@ private:
     std::unordered_map<std::string, const ast::MethodDecl*> comptimeMethods_;
     std::unordered_set<std::string> importedSuffixes_;  // literal suffixes in scope via import
     std::unordered_map<std::string, std::vector<std::string>> classSuffixes_;  // class -> its suffix names
+    // TYPE IDENTITY (docs/design/type-identity.md), built alongside the maps below -- which key on the
+    // BARE name and so hold one answer where there may be two.
+    //
+    // `typeNamespace_` and `typeBundle_` already know a type's namespace and its bundle: the material
+    // for a canonical name has been here all along. What was missing is somewhere to keep it TWICE,
+    // which is why two types called `Color` cannot both exist, and why the compiler invents a
+    // difference by rewriting them to `Ns__Color` instead of telling them apart.
+    //
+    // The id is a 32-bit index and the canonical name is stored once, deliberately: a canonical
+    // `Bundle.Namespace.Name` averages 21 characters against today's 8.2, and the standard library's
+    // small-string buffer holds 15 -- so keying the hot maps by canonical STRINGS would move every
+    // type name in the compiler from inline bytes to a heap allocation, inside a compile that is
+    // 325 ms of mostly symbol-table work. Measured before the design was chosen, not after.
+    struct TypeEntry {
+        std::string canonical;   // "System.Spatial.Color"
+        std::string written;     // "Color" -- what a diagnostic must say
+        std::string bundle;
+        std::string ns;
+        SourceLocation loc;
+    };
+    std::vector<TypeEntry> types_;
+    std::unordered_map<std::string, std::uint32_t> typeByCanonical_;
+    // Every id sharing a written name, so "which `Color` is meant here" is a lookup rather than a scan.
+    std::unordered_map<std::string, std::vector<std::uint32_t>> typesByWritten_;
+
+    // Registers one declared type and returns its id. Two declarations with the same CANONICAL name
+    // are a redeclaration; two with the same WRITTEN name in different namespaces are the ordinary
+    // case this table exists for, and are not an error.
+    std::uint32_t internType(const std::string& written, const std::string& bundleName,
+                             const std::string& nsName, SourceLocation loc) {
+        std::string canonical = bundleName + "." + nsName + "." + written;
+        if (auto it = typeByCanonical_.find(canonical); it != typeByCanonical_.end()) {
+            return it->second;
+        }
+        const auto id = static_cast<std::uint32_t>(types_.size());
+        types_.push_back(TypeEntry{std::move(canonical), written, bundleName, nsName, loc});
+        typeByCanonical_[types_.back().canonical] = id;
+        typesByWritten_[written].push_back(id);
+        return id;
+    }
+    // How many distinct types share this written name. One is the ordinary case; more than one is
+    // what the renaming pass exists to paper over.
+    std::size_t writtenNameCount(const std::string& written) const {
+        auto it = typesByWritten_.find(written);
+        return it == typesByWritten_.end() ? 0 : it->second.size();
+    }
+
+    // A TYPE, AS A MESSAGE SHOULD NAME IT.
+    //
+    // One function, replacing the `s.rfind("__")` that was copied by hand into the two places somebody
+    // remembered. That is not a tidying: a mangled name in a diagnostic tells an author about a class
+    // they never wrote, and the rule that it must be un-mangled is not enforceable while every message
+    // has to remember it for itself.
+    //
+    // When a name is unambiguous it is the written one, which is what the author sees in their file.
+    // When it is NOT -- two `Color`s in one program -- the message says the whole path, because that
+    // is precisely the case where "Color" identifies nothing and is the reason the reader is confused
+    // in the first place.
+    std::string typeAsWritten(const std::string& internal) const {
+        std::string bare = internal;
+        if (const auto p = bare.rfind("__"); p != std::string::npos) {
+            bare = bare.substr(p + 2);       // Ns__Type, while the renaming pass still exists
+        }
+        auto it = typesByWritten_.find(bare);
+        if (it == typesByWritten_.end() || it->second.size() <= 1) {
+            return bare;
+        }
+        // Ambiguous: say which one. Prefer the entry whose mangled form matches what was passed in,
+        // so the message names the type actually being talked about rather than the first declared.
+        for (std::uint32_t id : it->second) {
+            const TypeEntry& e = types_[id];
+            if (internal == e.ns + "__" + e.written || internal == e.canonical) {
+                return e.canonical;
+            }
+        }
+        return bare;
+    }
+
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
     std::unordered_map<std::string, std::string> typeBundle_;     // type name -> its bundle (import validation)
     std::unordered_map<std::string, std::string> namespaceBundle_;  // namespace name -> its bundle
