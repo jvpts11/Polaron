@@ -3454,6 +3454,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     validateTestDeclarations(program);  // spec 32.11: [Test]/[Cases]/hooks are well formed
     checkPersistentReleases();  // spec 18.15: after all bodies, so releases are collected
     checkInterruptReach();      // after all bodies, so the call graph is whole
+    checkByValueMutations();    // ...and for the same reason: which methods change their object
     checkProcedureTotality(program);
     return errors_.empty();
 }
@@ -3637,6 +3638,112 @@ void SemanticAnalyzer::noteUnsafeForInterrupt(const std::string& what, SourceLoc
 // that parameter is not caught. In practice the call graph closes most of that gap on its own -- a
 // method called on the shared object checks its own `this` -- but a method handed someone else's
 // object and writing its fields directly is a hole, and it is better written down than discovered.
+// CHANGING A COPY THE CALLER WILL NEVER SEE.
+//
+// Assignment and argument passing are a deep COPY here (spec: to share, take `T*` or `T&`). So a
+// method that receives an object by value and then changes it changes the callee's copy, and the
+// caller's object is untouched. Nothing fails: the program runs, and the answer is wrong.
+//
+// Measured on this tree before it was written -- three of them in one night, all in the standard
+// library, all of them mine, and all silent: a report that came back empty, a `render()` that
+// returned "", a table that came out with no rows. Each cost an hour of bisecting output that looked
+// like a logic bug and was not.
+//
+// The rule: a method CHANGES its object if it writes one of its own fields, or calls a method on
+// `this` that does -- a fixpoint over the call graph the analyzer already records. Then any call to
+// such a method on a by-value parameter is reported.
+//
+// A WARNING and not an error, deliberately. There is one honest use of the shape -- calling a
+// mutating method on a copy on purpose, to leave the caller's object alone -- and it is rare enough
+// to be worth a line of noise, while the mistake is common enough to be worth catching. The fix is
+// one character, and the message says which.
+// `this.f == null` (either way round) -> "f". The one shape whose write is not a change: see
+// `lazyInitField_`. Deliberately syntactic and narrow -- a general "is this write dominated by a
+// test of the same field" is a dataflow question, and the idiom it would buy over this is one
+// nobody writes.
+std::string SemanticAnalyzer::lazyInitGuardField(const ast::Expr& cond) {
+    const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&cond);
+    if (bin == nullptr || bin->op != "==") {
+        return "";
+    }
+    const ast::Expr* fieldSide = nullptr;
+    if (dynamic_cast<const ast::NullLiteralExpr*>(bin->rhs.get()) != nullptr) {
+        fieldSide = bin->lhs.get();
+    } else if (dynamic_cast<const ast::NullLiteralExpr*>(bin->lhs.get()) != nullptr) {
+        fieldSide = bin->rhs.get();
+    }
+    if (fieldSide == nullptr) {
+        return "";
+    }
+    const auto* mem = dynamic_cast<const ast::MemberExpr*>(fieldSide);
+    if (mem == nullptr) {
+        return "";
+    }
+    const auto* obj = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+    return (obj != nullptr && obj->name == "this") ? mem->member : "";
+}
+
+void SemanticAnalyzer::checkByValueMutations() {
+    if (byValueCalls_.empty()) {
+        return;
+    }
+    // Which methods change their own object. Seeded with the ones that write a field directly, then
+    // closed over the call graph: a method that calls a changing method on `this` changes it too.
+    std::set<std::string> changes;
+    for (const auto& [key, facts] : methodFacts_) {
+        if (!facts.ownFieldsWritten.empty()) {
+            changes.insert(key);
+        }
+    }
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (const auto& [key, facts] : methodFacts_) {
+            if (changes.count(key) > 0) {
+                continue;
+            }
+            // Only calls made ON `this`. A call on some other object -- including a fresh one of the
+            // same class, which is what a copy-builder does -- changes THAT object, and says nothing
+            // about whether this method changes its own.
+            for (const std::string& callee : facts.selfCallees) {
+                if (changes.count(callee) > 0) {
+                    changes.insert(key);
+                    grew = true;
+                    break;
+                }
+            }
+        }
+    }
+    // ONCE PER PARAMETER, not once per call. A method that changes a copy usually does it several
+    // times in a row, and three lines saying the same thing about the same parameter reads as three
+    // problems. The first call is where a reader looks anyway.
+    std::set<std::string> reported;
+    for (const ByValueCall& c : byValueCalls_) {
+        if (changes.count(c.callee) == 0) {
+            continue;
+        }
+        if (!reported.insert(c.caller + "#" + c.param).second) {
+            continue;
+        }
+        const std::string method = c.callee.substr(c.callee.rfind('.') + 1);
+        warn("'" + method + "' changes the object it is called on, and '" + c.param +
+                 "' is a parameter taken BY VALUE -- so it changes a copy, and the caller's object "
+                 "is left as it was. Nothing will fail; the answer will just be wrong. Declare the "
+                 "parameter as a pointer (`" + baseType(lookupLocalType(c.caller, c.param)) +
+                 "* " + c.param + "`) to change the caller's object, or ignore this if changing the "
+                 "copy is what you meant",
+             c.loc);
+    }
+}
+
+// The declared type of a parameter, for the message above. Empty when it cannot be recovered, which
+// only costs the message its precision.
+std::string SemanticAnalyzer::lookupLocalType(const std::string& methodKey,
+                                              const std::string& param) const {
+    auto it = paramTypes_.find(methodKey + "#" + param);
+    return it == paramTypes_.end() ? std::string("T") : it->second;
+}
+
 void SemanticAnalyzer::noteFieldForInterrupt(const std::string& owner, const std::string& field,
                                              const FieldInfo& info, const ast::Expr* receiver,
                                              SourceLocation loc) {
@@ -4361,7 +4468,19 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     inConstructor_ = inConstructor;
     pushScope();
     for (const ast::Param& p : params) {
-        declareLocal(p.name, LocalVar{typeRefStr(p.type), false});  // params immutable by default
+        LocalVar lv{typeRefStr(p.type), false};  // params immutable by default
+        // A class-typed parameter with no `*` or `&` arrives as a deep COPY, and everything the body
+        // changes about it is changed in that copy. Marked here so the by-value mutation check can
+        // ask; a pointer, a reference, a primitive and a String (immutable) are all excluded.
+        const std::string pt = lv.type;
+        if (!pt.empty() && pt.back() != '*' && pt.back() != '&' && !isArrayType(pt) &&
+            pt != "String" && pt != "string" && lookupClass(baseType(pt)) != nullptr) {
+            lv.isByValueClassParam = true;
+            if (!currentMethodKey_.empty()) {
+                paramTypes_[currentMethodKey_ + "#" + p.name] = pt;
+            }
+        }
+        declareLocal(p.name, lv);
     }
     // DEFINITE ASSIGNMENT FOR FIELDS. Seeded here so the flow machinery that already exists for locals
     // does the work: `init_` is keyed by opaque strings, and the join at a branch merge operates on the
@@ -4581,6 +4700,16 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         const FieldInfo* f = findField(objType, mem->member);
         if (f != nullptr) {
             noteFieldForInterrupt(objType, mem->member, *f, mem->object.get(), loc);  // rule 3, write
+            // ...and separately, that this body CHANGES its own object -- which `ownFieldsTouched`
+            // cannot say, since it does not tell a read from a write. It is the fact the by-value
+            // mutation check is built on.
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                oid != nullptr && oid->name == "this" && !f->isStatic &&
+                mem->member != lazyInitField_) {
+                if (MethodFacts* mf = facts()) {
+                    mf->ownFieldsWritten.insert(mem->member);
+                }
+            }
         }
         // THE TRAP IS READ-ONLY, and this is measured rather than conservative. `x86_intrcc` takes
         // the frame as a `byval` parameter, which promises the callee a PRIVATE COPY -- so LLVM is

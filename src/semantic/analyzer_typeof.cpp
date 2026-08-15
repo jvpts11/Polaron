@@ -2792,6 +2792,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // local, a parameter and a static receiver all arrive here already answered.
             if (MethodFacts* mf = facts()) {
                 mf->callees.insert(objType + "." + mem->member);
+                if (const auto* sid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                    sid != nullptr && sid->name == "this") {
+                    mf->selfCallees.insert(objType + "." + mem->member);
+                }
+            }
+            // A CALL ON A BY-VALUE PARAMETER, recorded for the check that runs once every method's
+            // facts are in. It cannot be decided here: whether the callee CHANGES its object depends
+            // on what that callee calls, and that is a fixpoint over the whole call graph. Here we
+            // only know the two things that are hard to recover later -- which parameter, and where.
+            if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                if (const LocalVar* lv = lookupLocal(rid->name);
+                    lv != nullptr && lv->isByValueClassParam && !currentMethodKey_.empty()) {
+                    byValueCalls_.push_back({currentMethodKey_, rid->name,
+                                             objType + "." + mem->member, call->loc});
+                }
             }
             // Named arguments (spec 22.4): rewrite into parameter order before anything checks the args.
             if (m->isDeprecated) {

@@ -1310,6 +1310,13 @@ add_test(NAME sema_rejects_partial_conversion
 set_tests_properties(sema_rejects_partial_conversion PROPERTIES
     PASS_REGULAR_EXPRESSION "must be total -- and it never reads: fraction")
 
+# The warning itself, and that it fires ONCE and only on the by-value half: the same sample has a
+# `Basket*` parameter mutated the same way three lines down, and that one is correct.
+add_test(NAME sema_warns_byvalue_mutation
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/byvalue_mutation_warn.pol")
+set_tests_properties(sema_warns_byvalue_mutation PROPERTIES
+    PASS_REGULAR_EXPRESSION "'add' changes the object it is called on, and 'b' is a parameter taken BY VALUE")
+
 add_test(NAME sema_warns_transformer_naming
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_naming_warn.pol")
 set_tests_properties(sema_warns_transformer_naming PROPERTIES
@@ -5738,6 +5745,18 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_semantics.pol"
             "-DEXPECTED=after copy: a=1 b=99 after share: a=42 p=42"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ...and the mistake that follows from it: changing an object received BY VALUE changes a
+        # copy, so the caller's object is left as it was and nothing fails. Three of these were found
+        # in the standard library in one night, all silent. The sample runs so the two halves are
+        # visible side by side -- the by-value one really does come out zero.
+        add_test(NAME codegen_byvalue_mutation_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/byvalue_mutation_warn.pol"
+            "-DEXPECTED=byValue=0 byPointer=3"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
