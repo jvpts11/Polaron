@@ -4927,6 +4927,40 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A CHAIN OF METHOD CALLS COMPILES IN LINEAR TIME. This one is a stopwatch: the TIMEOUT is the
+        # assertion, and a regression shows up as a test that never finishes rather than a wrong
+        # answer.
+        #
+        # `typeName` in the codegen needed two different things about a call's receiver -- the
+        # callee's type, and separately whether it is a `mat4` -- and each recursed into the receiver.
+        # Two derivations per level is 2^depth: measured, 8 links took 481 ms, 14 took 24 SECONDS, 18
+        # never finished. It hid because the ANALYSER is linear over the same expression (`--check`
+        # was flat), the emitted IR is linear, and the doubling happened in a pure query that emits
+        # nothing -- so counting emissions found nothing either.
+        #
+        # It matters far beyond the sample: a fluent builder, `b.append(x).append(y)...`, is the same
+        # shape, and stopped compiling past about fifteen links. The same defect was fixed once
+        # before for binary expressions and fixed AT THAT NODE, so it returned through another one;
+        # the memo is on the mechanism instead.
+        add_test(NAME codegen_deep_call_chain COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/deep_call_chain.pol"
+            "-DCONTAINS=chain: 24 links, length=24"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # Generous next to the 0.3 s it takes now, and far under the 24 s the defect cost at 14 links
+        # -- so it catches a return of the exponential without failing on a slow machine.
+        set_tests_properties(codegen_deep_call_chain PROPERTIES TIMEOUT 60)
+        add_test(NAME codegen_deep_call_chain_fluent COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/deep_call_chain.pol"
+            "-DCONTAINS=fluent: length=31"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        set_tests_properties(codegen_deep_call_chain_fluent PROPERTIES TIMEOUT 60)
+
         # A REAL TOOL over the whole filesystem/process surface, written to find out whether it is
         # actually finished -- a directory-syncing program of the kind everybody writes eventually.
         # Stricter than a checklist, because a checklist only asks about the calls somebody already
