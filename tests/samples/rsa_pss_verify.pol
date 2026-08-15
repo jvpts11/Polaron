@@ -1,0 +1,98 @@
+import System.IO.Console;
+import System.Net.Tls.Rsa;
+program RsaPssVerify;
+
+// RSASSA-PSS, CHECKED AGAINST A SIGNATURE THIS PROGRAM DID NOT MAKE.
+//
+// The 2048-bit key, the hash and the signature were produced by .NET's own RSA-PSS and verified there
+// first. As with the curve: a verifier tested against a signer we also wrote is a verifier tested
+// against its own misunderstanding.
+//
+// WHY PSS AND NOT ONLY PKCS#1 v1.5. TLS 1.3 requires it for the server's CertificateVerify — the
+// message that proves the server holds the private key belonging to the certificate it just sent.
+// Without PSS that proof cannot be checked, which means the certificate could belong to anybody.
+//
+// PSS exists because v1.5 padding is a fixed pattern, and a fixed pattern is something to aim at.
+// Here the encoded message is masked with a hash of itself, so there is nothing constant to forge
+// toward — and the price is that verification has real steps, every one of which must be checked.
+// Skipping the trailing 0xBC, or the zero prefix, or the salt reconstruction turns this into a
+// function that accepts nearly anything, and it would still pass a test that only tries valid
+// signatures. Hence the three refusals below.
+//
+// Prints:
+//   valid signature: 1
+//   wrong hash: 0
+//   tampered signature: 0
+//   truncated signature: 0
+public bundle Main {
+    public namespace App {
+        public class Main {
+            private static method hexBytes(String hex) returns int[] {
+                int[] out = new int[hex.length() / 2]();
+                mutable int i = 0;
+                while (i < out.length()) {
+                    out[i] = Main.nybble(hex.charAt(i * 2)) * 16 + Main.nybble(hex.charAt(i * 2 + 1));
+                    i = i + 1;
+                }
+                return out;
+            }
+            private static method nybble(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - 48; }
+                return cast<int>(c) - 87;
+            }
+
+            private static method modulus() returns int[] {
+                return Main.hexBytes(
+                    "bbb135fdec9bb85d1653d023597360c7ffdc25a4c7f6d5c30376dd6a0696768e"
+                    .concat("f5e884ce682c0788bafc1049f4b4f3aa59cfc9ea62d0218584bfc2f076b542f1")
+                    .concat("6fc2a938152f2aedda44b24187070a7ae0fcc42de7eec6e403a41ad15c8f2e08")
+                    .concat("3e762eb609287eac3833d5b196654222ef2545e089879fd3c9b1bd7463fcd062")
+                    .concat("c195d53d23018549fed2e8aed6a28fe2347eb6a7298b0a52446ccb781a379a9b")
+                    .concat("a4e5972fda6645d8e60929d3f03b0fbe969cfac67a521e04c8c85bd6d12566fd")
+                    .concat("40f40d7278cfb60f87b79ce69bac0c5ac23ac129e7328efd541c36514c6e655a")
+                    .concat("4588d1410843e27cc02db36884f7fe1499d79308d946de5650fb74dbfa948df5"));
+            }
+            private static method signature() returns int[] {
+                return Main.hexBytes(
+                    "a9999614bcf619f21e8b22ea6c71919a5135a719b8bf8d9d31ee54b36d2a0dd3"
+                    .concat("38a8ddf67443702c3bca9340a0f1c8038958580bc3a08a07fbbc052339187b58")
+                    .concat("baf4d5907ad31a8edee8f0742373ab1342828f04bba63a50390f981d393afb84")
+                    .concat("969760ce3be1dc5f70f2252a595dd32220f8a1926d129ef554cafa8cafe02b51")
+                    .concat("f622909b26966eee20b91809252bafd4ec20a72c3694b1db4d3ea44e199c575d")
+                    .concat("8e46a192fff4c34c03061807bfc0329ce43a8ad01fee1adb5c5ed32c87cc0cf4")
+                    .concat("9d70471b2cc5621470eccd31cf2b41b6a94fe41bd06cfc1ab56653763d1bd60b")
+                    .concat("b9cdc7c6a49c9e2ff21b678432c6aa9a24805098395d59115959fb9534efc34a"));
+            }
+            private static method messageHash() returns int[] {
+                return Main.hexBytes("69a6f9a6234c21bde6cae5f1f69983b6ff0f4aa70c2f6bbde2a0009dbb3a120a");
+            }
+
+            public static method main(string[] args) returns void {
+                mutable int[] n = Main.modulus();
+                mutable int[] sig = Main.signature();
+                mutable int[] hash = Main.messageHash();
+                int e = 65537;
+
+                System.IO.Console.printf("valid signature: %d\n",
+                    Rsa.verifyPssSha256(sig, 256, n, 256, e, hash) ? 1 : 0);
+
+                mutable int[] otherHash = Main.messageHash();
+                otherHash[31] = otherHash[31] ^ 1;
+                System.IO.Console.printf("wrong hash: %d\n",
+                    Rsa.verifyPssSha256(sig, 256, n, 256, e, otherHash) ? 1 : 0);
+
+                mutable int[] badSig = Main.signature();
+                badSig[100] = badSig[100] ^ 1;
+                System.IO.Console.printf("tampered signature: %d\n",
+                    Rsa.verifyPssSha256(badSig, 256, n, 256, e, hash) ? 1 : 0);
+
+                // A short signature must not be read as a valid one: the length is what says where
+                // the salt and the hash sit, and a verifier that trusts a wrong one reads whatever is
+                // next in memory.
+                System.IO.Console.printf("truncated signature: %d\n",
+                    Rsa.verifyPssSha256(sig, 200, n, 256, e, hash) ? 1 : 0);
+                return;
+            }
+        }
+    }
+}

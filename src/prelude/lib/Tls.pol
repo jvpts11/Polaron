@@ -653,6 +653,102 @@
         // standard library's BigInteger, and the public exponent is small (65537 as a rule), so
         // square-and-multiply over its bits is cheap.
         public class Rsa {
+            // RSASSA-PSS with SHA-256 and MGF1-SHA256 (RFC 8017 §9.1.2) -- what TLS 1.3 requires for
+            // the server's CertificateVerify, and increasingly what certificates are signed with.
+            //
+            // PSS exists because PKCS#1 v1.5 padding is a fixed pattern, and a fixed pattern is
+            // something an attacker can aim at. Here the encoded message is masked with a hash of
+            // itself, so there is nothing constant to forge toward. The cost is that verification has
+            // real steps rather than a memcmp, and every one of them has to be checked: skipping the
+            // trailing 0xBC, or the zero prefix, or the salt reconstruction turns this into a
+            // function that accepts almost anything.
+            public static method verifyPssSha256(int[] sig, int sigLength, int[] modulus,
+                                                 int modLength, int e, int[] hash) returns boolean {
+                BigInteger n = Rsa.fromBigEndian(modulus, modLength);
+                BigInteger s = Rsa.fromBigEndian(sig, sigLength);
+                BigInteger m = Rsa.modPow(s, e, n);
+                mutable int[] em = Rsa.toBigEndian(m, modLength);
+                int emLen = modLength;
+                int hLen = 32;
+                int sLen = 32;                                  // salt length = hash length
+                if (emLen < hLen + sLen + 2) { return false; }
+                if ((em[emLen - 1] & 255) != 188) { return false; }   // the trailing 0xBC
+
+                int dbLen = emLen - hLen - 1;
+                mutable int[] h = Der.copy(em, dbLen, hLen);
+                mutable int[] db = Der.copy(em, 0, dbLen);
+                mutable int[] mask = Rsa.mgf1(h, hLen, dbLen);
+                mutable int i = 0;
+                while (i < dbLen) {
+                    db[i] = (db[i] ^ mask[i]) & 255;
+                    i = i + 1;
+                }
+                // The top bits of the first byte are not part of the message: the modulus is not a
+                // whole number of bytes, and they must be cleared before the pattern is read.
+                db[0] = db[0] & 127;
+
+                // DB must be zeros, then a single 0x01, then the salt.
+                mutable int j = 0;
+                while (j < dbLen - sLen - 1) {
+                    if ((db[j] & 255) != 0) { return false; }
+                    j = j + 1;
+                }
+                if ((db[dbLen - sLen - 1] & 255) != 1) { return false; }
+
+                // H' = SHA-256(eight zero bytes || mHash || salt), compared against the H carried in
+                // the signature.
+                mutable int[] input = new int[8 + hLen + sLen]();
+                mutable int k = 0;
+                while (k < 8) { input[k] = 0; k = k + 1; }
+                while (k < 8 + hLen) { input[k] = hash[k - 8] & 255; k = k + 1; }
+                while (k < 8 + hLen + sLen) {
+                    input[k] = db[dbLen - sLen + (k - 8 - hLen)] & 255;
+                    k = k + 1;
+                }
+                mutable int[] expected = Sha256.digestRaw(input, 8 + hLen + sLen);
+                mutable boolean same = true;
+                mutable int c = 0;
+                while (c < hLen) {
+                    if ((expected[c] & 255) != (h[c] & 255)) { same = false; }
+                    c = c + 1;
+                }
+                delete expected;
+                delete input;
+                delete mask;
+                delete db;
+                delete h;
+                delete em;
+                return same;
+            }
+
+            // MGF1 with SHA-256 (RFC 8017 B.2.1): hash the seed with a counter appended, over and
+            // over, until there are enough bytes.
+            private static method mgf1(int[] seed, int seedLen, int wanted) returns int[] {
+                mutable int[] out = new int[wanted > 0 ? wanted : 1]();
+                mutable int produced = 0;
+                mutable int counter = 0;
+                while (produced < wanted) {
+                    mutable int[] input = new int[seedLen + 4]();
+                    mutable int i = 0;
+                    while (i < seedLen) { input[i] = seed[i] & 255; i = i + 1; }
+                    input[seedLen] = (counter >> 24) & 255;
+                    input[seedLen + 1] = (counter >> 16) & 255;
+                    input[seedLen + 2] = (counter >> 8) & 255;
+                    input[seedLen + 3] = counter & 255;
+                    mutable int[] block = Sha256.digestRaw(input, seedLen + 4);
+                    mutable int j = 0;
+                    while (j < 32 && produced < wanted) {
+                        out[produced] = block[j] & 255;
+                        produced = produced + 1;
+                        j = j + 1;
+                    }
+                    delete block;
+                    delete input;
+                    counter = counter + 1;
+                }
+                return out;
+            }
+
             // Is `sig` a valid signature over the SHA-256 `hash` under (modulus, e)?
             public static method verifySha256(int[] sig, int sigLength, int[] modulus, int modLength,
                                               int e, int[] hash) returns boolean {
@@ -739,6 +835,521 @@
                     h = h + 1;
                 }
                 return ok;
+            }
+        }
+
+        // ---- 256-BIT ARITHMETIC, because the standard library's BigInteger cannot do this job. ----
+        //
+        // `BigInteger` stores ONE DECIMAL DIGIT PER SLOT. That is a reasonable choice for a type whose
+        // job is exact arithmetic a person will read, and it is the wrong one underneath a curve:
+        // measured, a modular multiplication of two 256-bit numbers costs 0.16 ms there, and verifying
+        // one ECDSA signature needs about 6 700 of them -- over a second per signature, for something
+        // a TLS handshake does two or three times.
+        //
+        // So this is purpose-built and stays here rather than replacing BigInteger, which is used
+        // elsewhere and is right for what it does.
+        //
+        // SIXTEEN-BIT LIMBS, not thirty-two. A product of two 32-bit limbs plus an accumulator plus a
+        // carry brushes the top of a 64-bit word, and Polaron's `long` is signed -- one carry too many
+        // and the value goes negative and the answer is silently wrong. With 16-bit limbs a product is
+        // 32 bits and the accumulator never leaves the comfortable middle of the range. It costs four
+        // times the limb operations and buys arithmetic that cannot overflow into nonsense, which for
+        // code nobody can eyeball is the right trade.
+        public class U256 {
+            public static method zero() returns long[] { return new long[16](); }
+
+            // 64 hex characters, big-endian -- how every curve constant is published.
+            public static method fromHex(String hex) returns long[] {
+                mutable long[] out = new long[16]();
+                mutable int i = 0;
+                while (i < 64 && i < hex.length()) {
+                    int nybble = U256.hexValue(hex.charAt(hex.length() - 1 - i));
+                    int limb = i / 4;
+                    int shift = (i % 4) * 4;
+                    out[limb] = out[limb] | (cast<long>(nybble) << shift);
+                    i = i + 1;
+                }
+                return out;
+            }
+            private static method hexValue(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - 48; }
+                if (c >= 'a' && c <= 'f') { return cast<int>(c) - 87; }
+                if (c >= 'A' && c <= 'F') { return cast<int>(c) - 55; }
+                return 0;
+            }
+
+            // Big-endian bytes, at most 32 of them. Shorter is fine -- a signature integer often has
+            // fewer, and DER strips leading zeros.
+            public static method fromBytes(int[] b, int off, int len) returns long[] {
+                mutable long[] out = new long[16]();
+                mutable int i = 0;
+                while (i < len && i < 32) {
+                    int value = b[off + len - 1 - i] & 255;
+                    int limb = i / 2;
+                    int shift = (i % 2) * 8;
+                    out[limb] = out[limb] | (cast<long>(value) << shift);
+                    i = i + 1;
+                }
+                return out;
+            }
+            public static method toBytes(long[] a) returns int[] {
+                int[] out = new int[32]();
+                mutable int i = 0;
+                while (i < 32) {
+                    long limb = a[i / 2];
+                    int shift = (i % 2) * 8;
+                    out[31 - i] = cast<int>((limb >> shift) & cast<long>(255));
+                    i = i + 1;
+                }
+                return out;
+            }
+
+            public static method copy(long[] a) returns long[] {
+                mutable long[] out = new long[16]();
+                for (mutable int i = 0; i < 16; i++) { out[i] = a[i]; }
+                return out;
+            }
+            public static method isZero(long[] a) returns boolean {
+                for (mutable int i = 0; i < 16; i++) {
+                    if (a[i] != cast<long>(0)) { return false; }
+                }
+                return true;
+            }
+            // -1, 0 or 1. Compared from the top down, which is the only order that terminates early
+            // on the common case.
+            public static method compare(long[] a, long[] b) returns int {
+                for (mutable int i = 15; i >= 0; i--) {
+                    if (a[i] < b[i]) { return 0 - 1; }
+                    if (a[i] > b[i]) { return 1; }
+                }
+                return 0;
+            }
+            // `at` and not `index`, which is reserved.
+            public static method bit(long[] a, int at) returns int {
+                if (at < 0 || at >= 256) { return 0; }
+                return cast<int>((a[at / 16] >> (at % 16)) & cast<long>(1));
+            }
+            // a += b, answering the carry out of the top limb.
+            public static method addInto(long[] a, long[] b) returns long {
+                mutable long carry = cast<long>(0);
+                for (mutable int i = 0; i < 16; i++) {
+                    long sum = a[i] + b[i] + carry;
+                    a[i] = sum & cast<long>(65535);
+                    carry = sum >> 16;
+                }
+                return carry;
+            }
+            // a -= b, answering the borrow.
+            public static method subInto(long[] a, long[] b) returns long {
+                mutable long borrow = cast<long>(0);
+                for (mutable int i = 0; i < 16; i++) {
+                    long diff = a[i] - b[i] - borrow;
+                    if (diff < cast<long>(0)) {
+                        a[i] = diff + cast<long>(65536);
+                        borrow = cast<long>(1);
+                    } else {
+                        a[i] = diff;
+                        borrow = cast<long>(0);
+                    }
+                }
+                return borrow;
+            }
+        }
+
+        // MONTGOMERY ARITHMETIC over an odd 256-bit modulus.
+        //
+        // Multiplying modulo a prime needs a remainder, and a remainder needs division -- the one
+        // operation that is genuinely awkward on limbs. Montgomery's trick removes it: numbers are
+        // kept multiplied by R = 2^256, and the reduction after a product becomes shifts and
+        // multiply-adds. Both moduli this needs (the field prime and the group order) are odd, which
+        // is the only condition.
+        //
+        // Nothing here is constant-time, and that is stated rather than hidden: this verifies
+        // signatures with PUBLIC values -- a public key, a signature, a hash -- where a timing channel
+        // leaks nothing an observer does not already have. Signing, which touches a private key, is
+        // not implemented, and if it ever is it needs different code.
+        public class Mont {
+            private mutable long[] m;      // the modulus
+            private mutable long n0;       // -m^-1 mod 2^16, the per-limb reduction factor
+            private mutable long[] rr;     // R^2 mod m, for entering Montgomery form
+
+            public constructor Mont(long[] modulus) {
+                this.m = U256.copy(modulus);
+                // -m^-1 mod 2^16 by Newton iteration: four doublings take an odd m from 3 correct
+                // bits to more than 16.
+                mutable long inv = cast<long>(1);
+                mutable int i = 0;
+                while (i < 5) {
+                    inv = (inv * (cast<long>(2) - this.m[0] * inv)) & cast<long>(65535);
+                    i = i + 1;
+                }
+                this.n0 = (cast<long>(65536) - inv) & cast<long>(65535);
+                // R^2 mod m, by doubling 1 five hundred and twelve times with a conditional subtract.
+                // Doubling avoids needing a division to get here, which is the thing being avoided.
+                mutable long[] acc = U256.zero();
+                acc[0] = cast<long>(1);
+                mutable int d = 0;
+                while (d < 512) {
+                    mutable long carry = U256.addInto(acc, acc);
+                    if (carry != cast<long>(0) || U256.compare(acc, this.m) >= 0) {
+                        U256.subInto(acc, this.m);
+                    }
+                    d = d + 1;
+                }
+                this.rr = acc;
+            }
+
+            // The Montgomery product: (a * b) / R mod m. Separated operand scanning -- the full
+            // 32-limb product first, then one reduction pass per limb.
+            public method mul(long[] a, long[] b) returns long[] {
+                mutable long[] t = new long[34]();
+                for (mutable int i = 0; i < 16; i++) {
+                    mutable long carry = cast<long>(0);
+                    for (mutable int j = 0; j < 16; j++) {
+                        long sum = t[i + j] + a[j] * b[i] + carry;
+                        t[i + j] = sum & cast<long>(65535);
+                        carry = sum >> 16;
+                    }
+                    t[i + 16] = t[i + 16] + carry;
+                }
+                for (mutable int i = 0; i < 16; i++) {
+                    long factor = (t[i] * this.n0) & cast<long>(65535);
+                    mutable long carry = cast<long>(0);
+                    for (mutable int j = 0; j < 16; j++) {
+                        long sum = t[i + j] + factor * this.m[j] + carry;
+                        t[i + j] = sum & cast<long>(65535);
+                        carry = sum >> 16;
+                    }
+                    mutable int k = i + 16;
+                    while (carry != cast<long>(0) && k < 34) {
+                        long sum = t[k] + carry;
+                        t[k] = sum & cast<long>(65535);
+                        carry = sum >> 16;
+                        k = k + 1;
+                    }
+                }
+                mutable long[] out = U256.zero();
+                for (mutable int i = 0; i < 16; i++) { out[i] = t[i + 16]; }
+                // One conditional subtract: the result is below 2m, never below m by construction.
+                if (t[32] != cast<long>(0) || U256.compare(out, this.m) >= 0) {
+                    U256.subInto(out, this.m);
+                }
+                delete t;
+                return out;
+            }
+
+            public method toMont(long[] a) returns long[] { return this.mul(a, this.rr); }
+            public method fromMont(long[] a) returns long[] {
+                mutable long[] one = U256.zero();
+                one[0] = cast<long>(1);
+                long[] r = this.mul(a, one);
+                delete one;
+                return r;
+            }
+            public method addMod(long[] a, long[] b) returns long[] {
+                mutable long[] out = U256.copy(a);
+                long carry = U256.addInto(out, b);
+                if (carry != cast<long>(0) || U256.compare(out, this.m) >= 0) {
+                    U256.subInto(out, this.m);
+                }
+                return out;
+            }
+            public method subMod(long[] a, long[] b) returns long[] {
+                mutable long[] out = U256.copy(a);
+                long borrow = U256.subInto(out, b);
+                if (borrow != cast<long>(0)) { U256.addInto(out, this.m); }
+                return out;
+            }
+            public method modulus() returns long[] { return this.m; }
+
+            // The inverse, by Fermat: a^(m-2) mod m, square-and-multiply over the exponent's bits.
+            // Both operands stay in Montgomery form throughout. Slower than the extended Euclid, and
+            // it is the version with no branches on the value -- which costs nothing here and means
+            // this stays correct if it is ever reused where that matters.
+            public method invMont(long[] aMont) returns long[] {
+                mutable long[] e = U256.copy(this.m);
+                mutable long[] two = U256.zero();
+                two[0] = cast<long>(2);
+                U256.subInto(e, two);
+                mutable long[] result = this.toMont(Mont.oneRaw());
+                mutable long[] base = U256.copy(aMont);
+                mutable int i = 0;
+                while (i < 256) {
+                    if (U256.bit(e, i) == 1) { result = this.mul(result, base); }
+                    base = this.mul(base, base);
+                    i = i + 1;
+                }
+                delete two;
+                delete e;
+                delete base;
+                return result;
+            }
+            private static method oneRaw() returns long[] {
+                mutable long[] one = U256.zero();
+                one[0] = cast<long>(1);
+                return one;
+            }
+            public destructor ~Mont() returns void {
+                delete this.rr;
+                delete this.m;
+            }
+        }
+
+        // A POINT ON P-256, in Jacobian coordinates.
+        //
+        // Affine (x, y) is what a key is written as, and it is the wrong thing to compute with:
+        // adding two affine points needs a modular INVERSION, which costs about as much as 250
+        // multiplications. Jacobian coordinates carry a third number and represent the affine point
+        // (X/Z², Y/Z³), which lets addition and doubling be pure multiplication -- one inversion at
+        // the very end converts back.
+        //
+        // Every coordinate is in Montgomery form. Mixing forms is the kind of mistake that produces a
+        // point that is simply wrong rather than an error, so they never leave it until `toAffineX`.
+        public class EcPoint {
+            public mutable long[] x;
+            public mutable long[] y;
+            public mutable long[] z;
+            public mutable boolean infinite;   // the identity: no affine coordinates at all
+
+            public constructor EcPoint(long[] x, long[] y, long[] z, boolean infinite) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+                this.infinite = infinite;
+            }
+            public destructor ~EcPoint() returns void {
+                delete this.z;
+                delete this.y;
+                delete this.x;
+            }
+        }
+
+        // THE NIST P-256 CURVE, and ECDSA verification over it.
+        //
+        // This is the second half of what makes a TLS certificate chain checkable. RSA alone is not
+        // enough: the certificates most of the internet presents today are ECDSA, so a client that
+        // verifies only RSA signatures refuses the servers people actually use, or -- worse -- has to
+        // treat "I cannot check this" as "this checks out".
+        //
+        // Verification only. Signing touches a private key and would need constant-time code; nothing
+        // here is constant-time, because everything it touches is public.
+        public class P256 {
+            // The published constants. Hex because that is how they are published, and reading them
+            // back out in a test is how a typo in one of them is caught.
+            public static method primeHex() returns String {
+                return "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff";
+            }
+            public static method orderHex() returns String {
+                return "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551";
+            }
+            public static method bHex() returns String {
+                return "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b";
+            }
+            public static method gxHex() returns String {
+                return "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
+            }
+            public static method gyHex() returns String {
+                return "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+            }
+
+            // The identity element. Represented by a flag rather than by z = 0, because every formula
+            // below would otherwise have to notice that z is zero and none of them naturally does.
+            public static method infinity(Mont* f) returns EcPoint* {
+                return new EcPoint(U256.zero(), U256.zero(), U256.zero(), true) on heap;
+            }
+
+            // An affine point (x, y) entering the computation: z = 1.
+            public static method fromAffine(Mont* f, long[] x, long[] y) returns EcPoint* {
+                mutable long[] one = U256.zero();
+                one[0] = cast<long>(1);
+                mutable long[] zm = f.toMont(one);
+                delete one;
+                return new EcPoint(f.toMont(x), f.toMont(y), zm, false) on heap;
+            }
+
+            // Is this point actually ON the curve: y² = x³ - 3x + b. A public key that is not on the
+            // curve is the invalid-curve attack, and the check costs four multiplications -- cheap
+            // enough that skipping it would be a decision, and the wrong one.
+            public static method isOnCurve(Mont* f, long[] xm, long[] ym) returns boolean {
+                mutable long[] bm = f.toMont(U256.fromHex(P256.bHex()));
+                mutable long[] left = f.mul(ym, ym);
+                mutable long[] x2 = f.mul(xm, xm);
+                mutable long[] x3 = f.mul(x2, xm);
+                mutable long[] three = U256.zero();
+                three[0] = cast<long>(3);
+                mutable long[] threeM = f.toMont(three);
+                mutable long[] tx = f.mul(threeM, xm);
+                mutable long[] right = f.addMod(f.subMod(x3, tx), bm);
+                boolean same = U256.compare(left, right) == 0;
+                delete three;
+                return same;
+            }
+
+            // Doubling, with the a = -3 shortcut the curve was chosen to allow.
+            public static method twice(Mont* f, EcPoint* p) returns EcPoint* {
+                if (p.infinite || U256.isZero(p.y)) { return P256.infinity(f); }
+                mutable long[] delta = f.mul(p.z, p.z);
+                mutable long[] gamma = f.mul(p.y, p.y);
+                mutable long[] beta = f.mul(p.x, gamma);
+                mutable long[] sum = f.addMod(p.x, delta);
+                mutable long[] diff = f.subMod(p.x, delta);
+                mutable long[] prod = f.mul(sum, diff);
+                mutable long[] alpha = f.addMod(f.addMod(prod, prod), prod);      // 3*(x-d)*(x+d)
+                mutable long[] beta4 = f.addMod(beta, beta);
+                beta4 = f.addMod(beta4, beta4);                                   // 4*beta
+                mutable long[] x3 = f.subMod(f.mul(alpha, alpha), f.addMod(beta4, beta4));
+                mutable long[] yz = f.addMod(p.y, p.z);
+                mutable long[] z3 = f.subMod(f.subMod(f.mul(yz, yz), gamma), delta);
+                mutable long[] g2 = f.mul(gamma, gamma);
+                mutable long[] g8 = f.addMod(g2, g2);
+                g8 = f.addMod(g8, g8);
+                g8 = f.addMod(g8, g8);                                            // 8*gamma²
+                mutable long[] y3 = f.subMod(f.mul(alpha, f.subMod(beta4, x3)), g8);
+                return new EcPoint(x3, y3, z3, false) on heap;
+            }
+
+            // Addition. The two special cases are the ones that make a naive implementation answer
+            // nonsense: equal points need doubling (the formula divides by zero otherwise), and
+            // opposite points are the identity.
+            public static method add(Mont* f, EcPoint* a, EcPoint* b) returns EcPoint* {
+                if (a.infinite) {
+                    return new EcPoint(U256.copy(b.x), U256.copy(b.y), U256.copy(b.z), b.infinite) on heap;
+                }
+                if (b.infinite) {
+                    return new EcPoint(U256.copy(a.x), U256.copy(a.y), U256.copy(a.z), a.infinite) on heap;
+                }
+                mutable long[] z1z1 = f.mul(a.z, a.z);
+                mutable long[] z2z2 = f.mul(b.z, b.z);
+                mutable long[] u1 = f.mul(a.x, z2z2);
+                mutable long[] u2 = f.mul(b.x, z1z1);
+                mutable long[] s1 = f.mul(f.mul(a.y, b.z), z2z2);
+                mutable long[] s2 = f.mul(f.mul(b.y, a.z), z1z1);
+                mutable long[] h = f.subMod(u2, u1);
+                mutable long[] rr = f.subMod(s2, s1);
+                if (U256.isZero(h)) {
+                    if (U256.isZero(rr)) { return P256.twice(f, a); }
+                    return P256.infinity(f);
+                }
+                mutable long[] h2 = f.addMod(h, h);
+                mutable long[] i = f.mul(h2, h2);
+                mutable long[] j = f.mul(h, i);
+                mutable long[] r2 = f.addMod(rr, rr);
+                mutable long[] v = f.mul(u1, i);
+                mutable long[] x3 = f.subMod(f.subMod(f.mul(r2, r2), j), f.addMod(v, v));
+                mutable long[] s1j = f.mul(s1, j);
+                mutable long[] y3 = f.subMod(f.mul(r2, f.subMod(v, x3)), f.addMod(s1j, s1j));
+                mutable long[] zs = f.addMod(a.z, b.z);
+                mutable long[] z3 = f.mul(f.subMod(f.subMod(f.mul(zs, zs), z1z1), z2z2), h);
+                return new EcPoint(x3, y3, z3, false) on heap;
+            }
+
+            // k*P, double-and-add from the top bit down.
+            public static method multiply(Mont* f, EcPoint* p, long[] k) returns EcPoint* {
+                // The accumulator is replaced every step, and the OLD point is what gets deleted --
+                // under its own name. Writing it the other way round (`delete acc; acc = next;`) is
+                // a use of a deleted variable, and the compiler says so: a name does not come back
+                // to life by being assigned again.
+                mutable EcPoint* acc = P256.infinity(f);
+                mutable int i = 255;
+                while (i >= 0) {
+                    mutable EcPoint* previous = acc;
+                    acc = P256.twice(f, previous);
+                    delete previous;
+                    if (U256.bit(k, i) == 1) {
+                        mutable EcPoint* before = acc;
+                        acc = P256.add(f, before, p);
+                        delete before;
+                    }
+                    i = i - 1;
+                }
+                return acc;
+            }
+
+            // Back to an affine x: X / Z². The one inversion the whole computation needs.
+            public static method affineX(Mont* f, EcPoint* p) returns long[] {
+                if (p.infinite) { return U256.zero(); }
+                mutable long[] zinv = f.invMont(p.z);
+                mutable long[] zinv2 = f.mul(zinv, zinv);
+                return f.fromMont(f.mul(p.x, zinv2));
+            }
+
+            // ECDSA-with-SHA-256 (FIPS 186-4). `key` is the uncompressed point from the certificate:
+            // 0x04 then 32 bytes of x then 32 of y. `sig` is the DER SEQUENCE { INTEGER r, INTEGER s }.
+            //
+            // Every refusal below is a real attack if it is skipped, which is why each is spelled out
+            // rather than folded into one "is it valid" test.
+            public static method verify(int[] key, int keyLen, int[] sig, int sigLen,
+                                        int[] hash) returns boolean {
+                if (keyLen != 65 || (key[0] & 255) != 4) { return false; }   // only uncompressed
+                mutable long[] p = U256.fromHex(P256.primeHex());
+                mutable long[] n = U256.fromHex(P256.orderHex());
+                mutable Mont* fp = new Mont(p) on heap;
+                mutable Mont* fn = new Mont(n) on heap;
+
+                // r and s out of the DER, refusing anything outside [1, n-1]: a zero or an
+                // out-of-range scalar makes the arithmetic below meaningless and some verifiers
+                // accept it.
+                if (Der.tag(sig, 0) != 48) { return false; }
+                int rInt = Der.contentOffset(sig, 0);
+                int sInt = Der.nextOffset(sig, rInt);
+                mutable long[] r = P256.integerAt(sig, rInt);
+                mutable long[] s = P256.integerAt(sig, sInt);
+                if (U256.isZero(r) || U256.isZero(s)) { return false; }
+                if (U256.compare(r, n) >= 0 || U256.compare(s, n) >= 0) { return false; }
+
+                mutable long[] qx = U256.fromBytes(key, 1, 32);
+                mutable long[] qy = U256.fromBytes(key, 33, 32);
+                if (U256.compare(qx, p) >= 0 || U256.compare(qy, p) >= 0) { return false; }
+                mutable long[] qxm = fp.toMont(qx);
+                mutable long[] qym = fp.toMont(qy);
+                if (!P256.isOnCurve(fp, qxm, qym)) { return false; }   // invalid-curve attack
+
+                // e = the hash as an integer, reduced. SHA-256 is exactly the order's width, so no
+                // truncation is needed -- only the reduction, which matters when the hash exceeds n.
+                mutable long[] e = U256.fromBytes(hash, 0, 32);
+                if (U256.compare(e, n) >= 0) { U256.subInto(e, n); }
+
+                mutable long[] w = fn.fromMont(fn.invMont(fn.toMont(s)));
+                mutable long[] u1 = fn.fromMont(fn.mul(fn.toMont(e), fn.toMont(w)));
+                mutable long[] u2 = fn.fromMont(fn.mul(fn.toMont(r), fn.toMont(w)));
+
+                mutable EcPoint* g = P256.fromAffine(fp, U256.fromHex(P256.gxHex()),
+                                                        U256.fromHex(P256.gyHex()));
+                mutable EcPoint* q = new EcPoint(qxm, qym, fp.toMont(P256.oneRaw()), false) on heap;
+                mutable EcPoint* a = P256.multiply(fp, g, u1);
+                mutable EcPoint* b = P256.multiply(fp, q, u2);
+                mutable EcPoint* sum = P256.add(fp, a, b);
+                if (sum.infinite) { return false; }
+
+                mutable long[] x = P256.affineX(fp, sum);
+                if (U256.compare(x, n) >= 0) { U256.subInto(x, n); }
+                boolean ok = U256.compare(x, r) == 0;
+
+                delete sum;
+                delete b;
+                delete a;
+                delete q;
+                delete g;
+                delete fn;
+                delete fp;
+                return ok;
+            }
+
+            private static method oneRaw() returns long[] {
+                mutable long[] one = U256.zero();
+                one[0] = cast<long>(1);
+                return one;
+            }
+            // A DER INTEGER as a 256-bit value, with the sign-preserving leading zero dropped.
+            private static method integerAt(int[] d, int off) returns long[] {
+                mutable int c = Der.contentOffset(d, off);
+                mutable int len = Der.contentLength(d, off);
+                if (len > 0 && (d[c] & 255) == 0) {
+                    c = c + 1;
+                    len = len - 1;
+                }
+                if (len > 32) { return U256.zero(); }
+                return U256.fromBytes(d, c, len);
             }
         }
 
@@ -883,19 +1494,35 @@
             // through, because "I could not check it" and "it checks out" must not be the same answer.
             public static method signedBy(Certificate* cert, Certificate* issuer) returns boolean {
                 int alg = cert.signatureAlgorithm();
-                if (alg != 1) { return false; }        // PSS and ECDSA arrive with their own verifiers
-                mutable nullable RsaPublicKey* key = issuer.rsaPublicKey();
-                if (key == null) { return false; }
-                RsaPublicKey* rsa = cast<RsaPublicKey*>(key);
+                if (alg == 0) { return false; }   // an algorithm this library cannot check is refused
                 mutable int[] body = cert.signedBody();
                 mutable int[] hash = Sha256.digestRaw(body, cert.signedBodyLength());
                 mutable int[] sig = cert.signature();
-                boolean ok = Rsa.verifySha256(sig, cert.signatureLength(),
-                                              rsa.modulus, rsa.modLength, rsa.exponent, hash);
+                mutable boolean ok = false;
+
+                if (alg == 3) {                   // ECDSA with SHA-256, over P-256
+                    mutable int[] point = issuer.ecPublicKey();
+                    if (point.length() == 65) {
+                        ok = P256.verify(point, 65, sig, cert.signatureLength(), hash);
+                    }
+                    delete point;
+                } else {
+                    mutable nullable RsaPublicKey* key = issuer.rsaPublicKey();
+                    if (key != null) {
+                        RsaPublicKey* rsa = cast<RsaPublicKey*>(key);
+                        if (alg == 1) {
+                            ok = Rsa.verifySha256(sig, cert.signatureLength(), rsa.modulus,
+                                                  rsa.modLength, rsa.exponent, hash);
+                        } else {
+                            ok = Rsa.verifyPssSha256(sig, cert.signatureLength(), rsa.modulus,
+                                                     rsa.modLength, rsa.exponent, hash);
+                        }
+                        delete rsa;
+                    }
+                }
                 delete sig;
                 delete hash;
                 delete body;
-                delete rsa;
                 return ok;
             }
 
