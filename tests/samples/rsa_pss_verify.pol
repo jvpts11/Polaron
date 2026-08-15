@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Net.Tls.Rsa;
+import System.Net.Tls.Sha;
 program RsaPssVerify;
 
 // RSASSA-PSS, CHECKED AGAINST A SIGNATURE THIS PROGRAM DID NOT MAKE.
@@ -72,25 +73,31 @@ public bundle Main {
                 mutable int[] sig = Main.signature();
                 mutable int[] hash = Main.messageHash();
                 int e = 65537;
+                // THE HASH IS AN ARGUMENT, not a suffix on the method name. `verifyPssSha256` welded
+                // the padding to one digest, so SHA-384 meant a second copy of a routine where every
+                // step is load-bearing -- and a second copy is how one of them ends up missing the
+                // salt-length check.
+                mutable Sha* sha256 = Sha.sha256();
 
                 System.IO.Console.printf("valid signature: %d\n",
-                    Rsa.verifyPssSha256(sig, 256, n, 256, e, hash) ? 1 : 0);
+                    Rsa.verifyPss(sig, 256, n, 256, e, hash, sha256) ? 1 : 0);
 
                 mutable int[] otherHash = Main.messageHash();
                 otherHash[31] = otherHash[31] ^ 1;
                 System.IO.Console.printf("wrong hash: %d\n",
-                    Rsa.verifyPssSha256(sig, 256, n, 256, e, otherHash) ? 1 : 0);
+                    Rsa.verifyPss(sig, 256, n, 256, e, otherHash, sha256) ? 1 : 0);
 
                 mutable int[] badSig = Main.signature();
                 badSig[100] = badSig[100] ^ 1;
                 System.IO.Console.printf("tampered signature: %d\n",
-                    Rsa.verifyPssSha256(badSig, 256, n, 256, e, hash) ? 1 : 0);
+                    Rsa.verifyPss(badSig, 256, n, 256, e, hash, sha256) ? 1 : 0);
 
                 // A short signature must not be read as a valid one: the length is what says where
                 // the salt and the hash sit, and a verifier that trusts a wrong one reads whatever is
                 // next in memory.
                 System.IO.Console.printf("truncated signature: %d\n",
-                    Rsa.verifyPssSha256(sig, 200, n, 256, e, hash) ? 1 : 0);
+                    Rsa.verifyPss(sig, 200, n, 256, e, hash, sha256) ? 1 : 0);
+                delete sha256;
                 return;
             }
         }

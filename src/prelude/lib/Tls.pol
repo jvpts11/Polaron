@@ -144,6 +144,38 @@
         // The object identifiers this library recognises, as byte arrays because that is how they
         // appear on the wire. Built once and handed out, rather than re-created at every comparison.
         public class Oid {
+            // AN OID BACK IN THE FORM IT IS PUBLISHED IN: "1.2.840.113549.1.1.5". Needed because
+            // "an algorithm this program cannot check" is a sentence with the useful half missing --
+            // the reader cannot tell an obsolete SHA-1 authority, which should be refused, from
+            // something modern that is simply absent here, which is a gap to close. The number is
+            // searchable; the sentence is not.
+            //
+            // The first byte packs the first two arcs as 40*a + b, and every arc after it is
+            // base-128 with the top bit set on all but the last byte.
+            public static method dotted(int[] der, int off, int length) returns String {
+                if (length <= 0) { return ""; }
+                int first = der[off] & 255;
+                mutable StringBuilder out = new StringBuilder() on heap;
+                out.appendInt(first / 40);
+                out.appendChar('.');
+                out.appendInt(first % 40);
+                mutable int value = 0;
+                mutable int i = 1;
+                while (i < length) {
+                    int b = der[off + i] & 255;
+                    value = (value << 7) | (b & 127);
+                    if ((b & 128) == 0) {
+                        out.appendChar('.');
+                        out.appendInt(value);
+                        value = 0;
+                    }
+                    i = i + 1;
+                }
+                String text = out.toString();
+                delete out;
+                return text;
+            }
+
             // 1.2.840.113549.1.1.11 -- sha256WithRSAEncryption
             public static method sha256Rsa() returns int[] {
                 int[] o = new int[9]();
@@ -382,6 +414,35 @@
                 delete rsa384;
                 delete rsa256;
                 return which;
+            }
+
+            // What the certificate SAYS it was signed with, named where the name is known and given
+            // as its OID where it is not. The known ones here are the obsolete digests, on purpose:
+            // they are the answer to "why was this refused", and a client that refuses them without
+            // saying SHA-1 leaves the reader unable to tell a deliberate refusal from a missing
+            // feature.
+            public method signatureAlgorithmName() returns String {
+                // The AlgorithmIdentifier is a SEQUENCE whose first element is the OID, so this
+                // reaches in twice: once past the sequence, once past the OID's own tag and length.
+                // Reaching in once decoded the tag and the trailing NULL parameters as arcs, and
+                // produced "0.6.9.42.840..." -- a number that looks like an answer and is not one.
+                int algOid = Der.contentOffset(this.der, this.sigAlgOffset);
+                String dotted = Oid.dotted(this.der, Der.contentOffset(this.der, algOid),
+                                           Der.contentLength(this.der, algOid));
+                if (dotted.equals("1.2.840.113549.1.1.5")) { return "RSA with SHA-1"; }
+                if (dotted.equals("1.2.840.113549.1.1.4")) { return "RSA with MD5"; }
+                if (dotted.equals("1.2.840.113549.1.1.2")) { return "RSA with MD2"; }
+                if (dotted.equals("1.2.840.10045.4.1")) { return "ECDSA with SHA-1"; }
+                if (dotted.equals("1.2.840.10045.4.3.4")) { return "ECDSA with SHA-512"; }
+                if (dotted.equals("1.3.101.112")) { return "Ed25519"; }
+                if (dotted.equals("1.3.101.113")) { return "Ed448"; }
+                if (dotted.equals("1.2.840.113549.1.1.11")) { return "RSA with SHA-256"; }
+                if (dotted.equals("1.2.840.113549.1.1.12")) { return "RSA with SHA-384"; }
+                if (dotted.equals("1.2.840.113549.1.1.13")) { return "RSA with SHA-512"; }
+                if (dotted.equals("1.2.840.113549.1.1.10")) { return "RSA-PSS"; }
+                if (dotted.equals("1.2.840.10045.4.3.2")) { return "ECDSA with SHA-256"; }
+                if (dotted.equals("1.2.840.10045.4.3.3")) { return "ECDSA with SHA-384"; }
+                return "OID ".concat(dotted);
             }
 
             // The RSA public key, or null when the certificate carries an elliptic-curve one --
@@ -723,12 +784,49 @@
             }
         }
 
+        // WHICH HASH, as a value rather than as a name baked into a method.
+        //
+        // A signature scheme names two things -- the padding and the digest -- and the digest is the
+        // half that varies. Written as `verifyPssSha256`, the padding code and the choice of hash are
+        // welded together, so SHA-384 means a second copy of a delicate routine; and a second copy is
+        // how one of them ends up with the salt-length check and the other without it. Passing the
+        // hash in leaves exactly one PSS.
+        //
+        // NOT called `Digest`, which it was for an hour: System.Security already has one, meaning a
+        // non-cryptographic hash for hash tables, and two classes of one name in a library that
+        // imports nothing is a name that resolves by declaration order. `Collections.BloomFilter`
+        // started calling into this one and failed with "unknown static method 'fnv1a'" -- pointing
+        // at a class that has it. The compiler now refuses that rather than choosing; the name still
+        // had to go, because the reader deserves to know which of the two is meant.
+        public class Sha {
+            private mutable int width;      // bytes
+
+            public constructor Sha(int width) { this.width = width; }
+            public static method sha256() returns Sha* { return new Sha(32) on heap; }
+            public static method sha384() returns Sha* { return new Sha(48) on heap; }
+            public static method sha512() returns Sha* { return new Sha(64) on heap; }
+            // The digest a signature algorithm identifier calls for: 1 and 2 are RSA and PSS over
+            // SHA-256, 3 is ECDSA over it, 4 and 6 are SHA-384, 5 is SHA-512.
+            public static method forAlgorithm(int alg) returns Sha* {
+                if (alg == 4 || alg == 6) { return Sha.sha384(); }
+                if (alg == 5) { return Sha.sha512(); }
+                return Sha.sha256();
+            }
+
+            public method size() returns int { return this.width; }
+            public method of(int[] data, int length) returns int[] {
+                if (this.width == 48) { return Sha384.digestRaw(data, length); }
+                if (this.width == 64) { return Sha512.digestRaw(data, length); }
+                return Sha256.digestRaw(data, length);
+            }
+        }
+
         // RSA PKCS#1 v1.5 signature verification (RFC 8017) -- what almost every certificate in a
         // chain is signed with. Big-endian buffers throughout; the modular exponentiation rides the
         // standard library's BigInteger, and the public exponent is small (65537 as a rule), so
         // square-and-multiply over its bits is cheap.
         public class Rsa {
-            // RSASSA-PSS with SHA-256 and MGF1-SHA256 (RFC 8017 §9.1.2) -- what TLS 1.3 requires for
+            // RSASSA-PSS with MGF1 over the same hash (RFC 8017 §9.1.2) -- what TLS 1.3 requires for
             // the server's CertificateVerify, and increasingly what certificates are signed with.
             //
             // PSS exists because PKCS#1 v1.5 padding is a fixed pattern, and a fixed pattern is
@@ -737,19 +835,20 @@
             // real steps rather than a memcmp, and every one of them has to be checked: skipping the
             // trailing 0xBC, or the zero prefix, or the salt reconstruction turns this into a
             // function that accepts almost anything.
-            public static method verifyPssSha256(int[] sig, int sigLength, int[] modulus,
-                                                 int modLength, int e, int[] hash) returns boolean {
+            public static method verifyPss(int[] sig, int sigLength, int[] modulus,
+                                           int modLength, int e, int[] hash,
+                                           Sha* digest) returns boolean {
                 mutable int[] em = Rsa.recover(sig, sigLength, modulus, modLength, e);
                 int emLen = modLength;
-                int hLen = 32;
-                int sLen = 32;                                  // salt length = hash length
+                int hLen = digest.size();
+                int sLen = hLen;                                // salt length = hash length
                 if (emLen < hLen + sLen + 2) { return false; }
                 if ((em[emLen - 1] & 255) != 188) { return false; }   // the trailing 0xBC
 
                 int dbLen = emLen - hLen - 1;
                 mutable int[] h = Der.copy(em, dbLen, hLen);
                 mutable int[] db = Der.copy(em, 0, dbLen);
-                mutable int[] mask = Rsa.mgf1(h, hLen, dbLen);
+                mutable int[] mask = Rsa.mgf1(h, hLen, dbLen, digest);
                 mutable int i = 0;
                 while (i < dbLen) {
                     db[i] = (db[i] ^ mask[i]) & 255;
@@ -767,7 +866,7 @@
                 }
                 if ((db[dbLen - sLen - 1] & 255) != 1) { return false; }
 
-                // H' = SHA-256(eight zero bytes || mHash || salt), compared against the H carried in
+                // H' = hash(eight zero bytes || mHash || salt), compared against the H carried in
                 // the signature.
                 mutable int[] input = new int[8 + hLen + sLen]();
                 mutable int k = 0;
@@ -777,7 +876,7 @@
                     input[k] = db[dbLen - sLen + (k - 8 - hLen)] & 255;
                     k = k + 1;
                 }
-                mutable int[] expected = Sha256.digestRaw(input, 8 + hLen + sLen);
+                mutable int[] expected = digest.of(input, 8 + hLen + sLen);
                 mutable boolean same = true;
                 mutable int c = 0;
                 while (c < hLen) {
@@ -793,9 +892,10 @@
                 return same;
             }
 
-            // MGF1 with SHA-256 (RFC 8017 B.2.1): hash the seed with a counter appended, over and
-            // over, until there are enough bytes.
-            private static method mgf1(int[] seed, int seedLen, int wanted) returns int[] {
+            // MGF1 (RFC 8017 B.2.1): hash the seed with a counter appended, over and over, until
+            // there are enough bytes.
+            private static method mgf1(int[] seed, int seedLen, int wanted,
+                                       Sha* digest) returns int[] {
                 mutable int[] out = new int[wanted > 0 ? wanted : 1]();
                 mutable int produced = 0;
                 mutable int counter = 0;
@@ -807,9 +907,9 @@
                     input[seedLen + 1] = (counter >> 16) & 255;
                     input[seedLen + 2] = (counter >> 8) & 255;
                     input[seedLen + 3] = counter & 255;
-                    mutable int[] block = Sha256.digestRaw(input, seedLen + 4);
+                    mutable int[] block = digest.of(input, seedLen + 4);
                     mutable int j = 0;
-                    while (j < 32 && produced < wanted) {
+                    while (j < digest.size() && produced < wanted) {
                         out[produced] = block[j] & 255;
                         produced = produced + 1;
                         j = j + 1;
@@ -1138,11 +1238,14 @@
             // How many limbs a modulus of this many BYTES needs, rounded up.
             public static method limbsForBytes(int bytes) returns int { return (bytes + 1) / 2; }
 
-            // 64 hex characters, big-endian -- how every curve constant is published.
+            // A big-endian hex constant -- how every curve constant is published. THE WIDTH COMES FROM
+            // THE TEXT: 64 characters is a 256-bit prime, 96 is a 384-bit one. Fixing it at 16 limbs
+            // is what confined the elliptic-curve code to one curve, and a P-384 certificate chain is
+            // not exotic -- a third of this machine's trust store is signed that way.
             public static method fromHex(String hex) returns long[] {
-                mutable long[] out = new long[16]();
+                mutable long[] out = new long[(hex.length() + 3) / 4]();
                 mutable int i = 0;
-                while (i < 64 && i < hex.length()) {
+                while (i < hex.length()) {
                     int nybble = U256.hexValue(hex.charAt(hex.length() - 1 - i));
                     int limb = i / 4;
                     int shift = (i % 4) * 4;
@@ -1161,9 +1264,15 @@
             // Big-endian bytes, at most 32 of them. Shorter is fine -- a signature integer often has
             // fewer, and DER strips leading zeros.
             public static method fromBytes(int[] b, int off, int len) returns long[] {
-                mutable long[] out = new long[16]();
+                return U256.fromBytesOf(b, off, len, 16);
+            }
+            // The same, at a width the caller states. Two values compared limb by limb must have the
+            // SAME number of limbs: a 24-limb order compared against a 16-limb candidate reads only
+            // sixteen of the order's limbs and answers that everything is in range.
+            public static method fromBytesOf(int[] b, int off, int len, int limbs) returns long[] {
+                mutable long[] out = new long[limbs]();
                 mutable int i = 0;
-                while (i < len && i < 32) {
+                while (i < len && i < limbs * 2) {
                     int value = b[off + len - 1 - i] & 255;
                     int limb = i / 2;
                     int shift = (i % 2) * 8;
@@ -1172,13 +1281,14 @@
                 }
                 return out;
             }
-            public static method toBytes(long[] a) returns int[] {
-                int[] out = new int[32]();
+            public static method toBytes(long[] a) returns int[] { return U256.toBytesOf(a, 32); }
+            public static method toBytesOf(long[] a, int bytes) returns int[] {
+                int[] out = new int[bytes]();
                 mutable int i = 0;
-                while (i < 32) {
-                    long limb = a[i / 2];
+                while (i < bytes) {
+                    long limb = i / 2 < a.length() ? a[i / 2] : cast<long>(0);
                     int shift = (i % 2) * 8;
-                    out[31 - i] = cast<int>((limb >> shift) & cast<long>(255));
+                    out[bytes - 1 - i] = cast<int>((limb >> shift) & cast<long>(255));
                     i = i + 1;
                 }
                 return out;
@@ -1393,6 +1503,971 @@
             public destructor ~Mont() returns void {
                 delete this.rr;
                 delete this.m;
+            }
+        }
+
+        // READING WHOLE RECORDS OFF A SOCKET.
+        //
+        // A class rather than a function because of what TCP does not promise: it preserves the order
+        // of bytes and nothing about where the sender's writes ended. A single read can return half a
+        // record, or three of them, so whatever arrives beyond the record being assembled has to be
+        // KEPT -- and a leftover buffer that lives in a local variable is a leftover buffer somebody
+        // drops between the handshake and the session, taking the first bytes of the reply with it.
+        public class Wire {
+            private mutable Socket link;
+            private mutable String pending;
+
+            public constructor Wire(Socket link) {
+                this.link = link;
+                this.pending = "";
+            }
+            // One whole record, or an empty array at the end of the stream.
+            public method next() returns int[] {
+                while (this.pending.length() < 5) {
+                    String more = this.link.receive(16384);
+                    if (more.length() == 0) { return new int[1](); }
+                    this.pending = this.pending.concat(more);
+                }
+                int total = 5 + (((cast<int>(this.pending.charAt(3)) & 255) << 8) |
+                                 (cast<int>(this.pending.charAt(4)) & 255));
+                while (this.pending.length() < total) {
+                    String more = this.link.receive(16384);
+                    if (more.length() == 0) { return new int[1](); }
+                    this.pending = this.pending.concat(more);
+                }
+                int[] out = new int[total]();
+                for (mutable int i = 0; i < total; i++) {
+                    out[i] = cast<int>(this.pending.charAt(i)) & 255;
+                }
+                this.pending = this.pending.substring(total, this.pending.length());
+                return out;
+            }
+            // What has arrived but not yet been consumed -- handed to the session so the first
+            // application record is not lost.
+            public method leftover() returns String { return this.pending; }
+            public method socket() returns Socket { return this.link; }
+        }
+
+        // WHAT THE SERVER PICKED: which named group, and its public value. Two fields and not one
+        // array, because the value is meaningless without the group -- and the group is exactly what
+        // a client stops carrying the moment it decides it only ever offers one.
+        public class KeyShare {
+            public mutable int group;
+            public mutable int[] value;
+
+            public constructor KeyShare(int group, int[] value) {
+                this.group = group;
+                this.value = value;
+            }
+            public destructor ~KeyShare() returns void { delete this.value; }
+        }
+
+        // THE OTHER THING A SERVER CAN SAY. A TLS peer that will not continue sends an alert: a
+        // record of type 21 holding a level and a numbered reason. Naming the number is the whole
+        // point -- "handshake failure" and "unrecognised name" and "protocol version" send whoever
+        // is debugging in three different directions, and a client that reports none of them sends
+        // them nowhere.
+        public class Alert {
+            // A record as it came off the wire, described. Not just alerts: whatever arrived where a
+            // ServerHello was expected, so the caller has one method to ask and always gets a
+            // sentence rather than sometimes getting nothing.
+            public static method explain(int[] framed) returns String {
+                if (framed.length() <= 1) { return "the connection closed with no reply"; }
+                int kind = framed[0] & 255;
+                if (kind != 21) {
+                    return "a record of type ".concat(kind.toString()).concat(" arrived instead");
+                }
+                if (framed.length() < 7) { return "a truncated alert arrived"; }
+                int level = framed[5] & 255;
+                int code = framed[6] & 255;
+                String what = Alert.describe(code);
+                if (level == 1) { return "the server gave notice: ".concat(what); }
+                return "the server refused: ".concat(what);
+            }
+
+            // RFC 8446 §6.2. Only the ones a client can actually be told; anything else is reported
+            // by number, because inventing a name for a code we do not know is how a wrong diagnosis
+            // gets written down as a fact.
+            public static method describe(int code) returns String {
+                if (code == 0) { return "the connection was closed normally"; }
+                if (code == 10) { return "unexpected message"; }
+                if (code == 20) { return "bad record MAC -- the decryption did not authenticate"; }
+                if (code == 22) { return "record overflow"; }
+                // The commonest one a TLS 1.3-only client meets, and the commonest cause is not a
+                // fault at either end: the server speaks 1.2 and nothing else, so there was no
+                // version in common to fail over. Measured against badssl.com, which answers exactly
+                // this and which .NET reaches by negotiating TLS 1.2.
+                if (code == 40) {
+                    return "handshake failure -- nothing offered was acceptable; this client speaks "
+                        .concat("only TLS 1.3, and a server limited to 1.2 answers just like this");
+                }
+                if (code == 42) { return "bad certificate"; }
+                if (code == 43) { return "unsupported certificate"; }
+                if (code == 44) { return "certificate revoked"; }
+                if (code == 45) { return "certificate expired"; }
+                if (code == 46) { return "certificate unknown"; }
+                if (code == 47) { return "illegal parameter"; }
+                if (code == 48) { return "unknown certificate authority"; }
+                if (code == 49) { return "access denied"; }
+                if (code == 50) { return "decode error -- a message was malformed"; }
+                if (code == 51) { return "decrypt error -- a signature or MAC did not check out"; }
+                if (code == 70) { return "protocol version -- the server does not speak TLS 1.3"; }
+                if (code == 71) { return "insufficient security"; }
+                if (code == 80) { return "internal error"; }
+                if (code == 86) { return "inappropriate fallback"; }
+                if (code == 90) { return "the user cancelled"; }
+                if (code == 109) { return "missing extension"; }
+                if (code == 110) { return "unsupported extension"; }
+                if (code == 112) { return "unrecognised server name"; }
+                if (code == 113) { return "bad certificate status response"; }
+                if (code == 115) { return "unknown pre-shared key identity"; }
+                if (code == 116) { return "a client certificate is required"; }
+                if (code == 120) { return "no application protocol in common"; }
+                return "alert ".concat(code.toString());
+            }
+        }
+
+        // THE TLS 1.3 CLIENT: a connection to a named server that is encrypted AND authenticated.
+        //
+        // The second half of that sentence is the one this library exists for. A handshake that
+        // agrees a key with whoever answered the socket stops somebody listening and does nothing
+        // about somebody answering in the server's place -- and looks identical to the caller. Three
+        // things turn the first into the second, and all three happen here before a single byte of
+        // application data moves:
+        //
+        //   1. The CERTIFICATE CHAIN is checked to a root this machine already trusts, with every
+        //      signature verified and every validity window honoured.
+        //   2. The HOSTNAME is matched against the certificate's subject alternative names. Skipping
+        //      this accepts any valid certificate for any host -- and anybody can buy a valid
+        //      certificate for a domain they own. It was the commonest TLS bug in the field for a
+        //      decade.
+        //   3. CERTIFICATE VERIFY is checked: a signature, by the private key belonging to that
+        //      certificate, over everything said so far. Without it the server has shown a
+        //      certificate but not shown that it HAS one -- anybody can copy a certificate off the
+        //      wire, since they are public by design.
+        //
+        // Any of the three failing throws. There is no flag to turn them off, and the reason is not
+        // paternalism: a connection that skips them is a different thing wearing the same name, and
+        // the caller asked for this one.
+        public class TlsClient {
+            // The machine's trust store, read once. Reading it costs about half a second -- it walks
+            // every root the operating system holds and parses each one -- and a client that paid
+            // that per request would be a client nobody uses for more than one. Held rather than
+            // rebuilt, and never freed: it lives as long as the program does, by definition.
+            private static mutable nullable TrustStore* shared;
+
+            public static method systemTrust() returns TrustStore* {
+                if (TlsClient.shared == null) { TlsClient.shared = TrustStore.system(); }
+                return cast<TrustStore*>(TlsClient.shared);
+            }
+
+            // Connect, handshake, authenticate, against the certificates this machine already trusts.
+            // The short form, because it is the one that is almost always right: a caller who passes
+            // their own store is pinning, and a caller who has no opinion should not have to invent
+            // one to make a connection.
+            public static method open(String host, int port)
+                                      throws(TlsException, CertificateException)
+                                      returns TlsSession* {
+                return TlsClient.connect(host, port, TlsClient.systemTrust());
+            }
+
+            // Connect, handshake, authenticate. Throws rather than returning something unusable.
+            public static method connect(String host, int port, TrustStore* trusted)
+                                         throws(TlsException, CertificateException)
+                                         returns TlsSession* {
+                mutable Socket link = Socket.connect(host, port);
+                if (!link.isOpen()) {
+                    throw new TlsException("could not reach ".concat(host)) on heap;
+                }
+                return TlsClient.over(link, host, trusted);
+            }
+
+            // The handshake over an already-connected socket, so a caller with its own transport --
+            // a proxy, a test harness -- can use the same code.
+            public static method over(Socket link, String host, TrustStore* trusted)
+                                      throws(TlsException, CertificateException)
+                                      returns TlsSession* {
+                mutable SecureRandom rng = new SecureRandom() on heap;
+                mutable int[] privateKey = rng.nextBytes(32);
+                mutable int[] publicKey = X25519.publicKey(privateKey);
+                // A second ephemeral key, on the curve the standard calls mandatory. Generated
+                // whether or not the server ends up choosing it -- an offer with no key behind it is
+                // an offer that costs a round trip to honour.
+                mutable Curve* nist = Curve.p256();
+                mutable int[] nistSeed = rng.nextBytes(32);
+                mutable long[] nistPrivate = nist.scalarFrom(nistSeed, 32);
+                delete nistSeed;
+                mutable int[] nistPublic = nist.publicPoint(nistPrivate);
+                mutable int[] random = rng.nextBytes(32);
+                mutable int[] sessionId = rng.nextBytes(32);
+                mutable ByteWriter transcript = new ByteWriter() on heap;
+                mutable int[] empty = new int[1]();
+
+                // ClientHello, sent in the clear -- there are no keys yet.
+                mutable int[] hello = ClientHello.build(host, random, sessionId, 32, publicKey,
+                                                        nistPublic);
+                transcript.bytes(hello, hello.length());
+                TlsClient.sendPlain(link, 22, 769, hello, hello.length());
+                delete hello;
+
+                mutable Wire* wire = new Wire(link) on heap;
+                mutable int[] serverHello = wire.next();
+                if (serverHello.length() <= 1 || (serverHello[0] & 255) != 22) {
+                    // WHAT DID COME BACK, said out loud. Every non-ServerHello answer used to be the
+                    // one sentence "the server did not answer with a ServerHello", which is true and
+                    // useless: a server refusing our version, a server refusing the hostname and a
+                    // server that hung up are three different problems wearing one message, and
+                    // nothing in the sentence says which. The wire tells us -- an alert record
+                    // carries a numbered reason -- so the message carries it too.
+                    String why = Alert.explain(serverHello);
+                    delete serverHello;
+                    throw new TlsException("the server did not answer with a ServerHello: "
+                                           .concat(why)) on heap;
+                }
+                mutable KeyShare* peer = TlsClient.serverKeyShare(serverHello);
+                for (mutable int i = 5; i < serverHello.length(); i++) {
+                    transcript.u8(serverHello[i]);
+                }
+                delete serverHello;
+
+                // THE SECRET COMES OUT OF THE GROUP THE SERVER NAMED. Both were offered with a key
+                // behind them, so either answer is a working handshake; anything else is a server
+                // choosing something it was not given, which is not a case to guess through.
+                mutable int[] shared = (peer.group == 29 && peer.value.length() == 32)
+                    ? X25519.scalarMult(privateKey, peer.value)
+                    : ((peer.group == 23 && peer.value.length() == 65)
+                        ? nist.agree(peer.value, 65, nistPrivate)
+                        : new int[1]());
+                boolean agreed = shared.length() == 32;
+                delete peer;
+                delete nistPublic;
+                delete nistPrivate;
+                delete nist;
+                delete privateKey;
+                delete publicKey;
+                if (!agreed) {
+                    delete shared;
+                    throw new TlsException("the server chose a key exchange this client did not offer")
+                        on heap;
+                }
+                mutable int[] afterHellos = TlsClient.transcriptHash(transcript);
+                mutable int[] emptyHash = Sha256.digestRaw(empty, 0);
+                mutable int[] early = KeySchedule.earlySecret();
+                mutable int[] derived = KeySchedule.expandLabel(early, 32, "derived", emptyHash, 32, 32);
+                mutable int[] handshakeSecret = Hkdf.extract(derived, 32, shared, 32);
+                mutable int[] clientSecret = KeySchedule.deriveSecret(handshakeSecret, 32,
+                                                                     "c hs traffic", afterHellos, 32);
+                mutable int[] serverSecret = KeySchedule.deriveSecret(handshakeSecret, 32,
+                                                                     "s hs traffic", afterHellos, 32);
+                mutable int[] serverKey = KeySchedule.trafficKey(serverSecret, 32);
+                mutable int[] serverIv = KeySchedule.trafficIv(serverSecret, 32);
+                mutable int[] clientKey = KeySchedule.trafficKey(clientSecret, 32);
+                mutable int[] clientIv = KeySchedule.trafficIv(clientSecret, 32);
+
+                // The server's encrypted flight: its certificate, its proof of holding the key, and
+                // its Finished.
+                mutable ByteWriter flight = new ByteWriter() on heap;
+                mutable long sequence = cast<long>(0);
+                mutable boolean complete = false;
+                while (!complete) {
+                    mutable int[] chunk = wire.next();
+                    if (chunk.length() <= 1) {
+                        throw new TlsException("the connection ended during the handshake") on heap;
+                    }
+                    if ((chunk[0] & 255) == 20) { delete chunk; continue; }   // ChangeCipherSpec
+                    // An alert this early is still in the clear: the server gave up before the keys
+                    // it would need to encrypt one. Reported for what it is rather than as a failure
+                    // to decrypt, which is what it would look like on the way through Record.open.
+                    if ((chunk[0] & 255) == 21) {
+                        String why = Alert.explain(chunk);
+                        delete chunk;
+                        throw new TlsException(why) on heap;
+                    }
+                    mutable int[] inner = Record.open(serverKey, serverIv, sequence, chunk,
+                                                      chunk.length());
+                    sequence = sequence + cast<long>(1);
+                    delete chunk;
+                    if (inner.length() <= 1) {
+                        throw new TlsException("a handshake record did not authenticate") on heap;
+                    }
+                    // The real content type is the last byte inside the encrypted record: an alert
+                    // sent after the keys exist arrives disguised as application data, and treating
+                    // it as handshake bytes leaves the loop waiting for a Finished that is not
+                    // coming -- a refusal that reads as a hang.
+                    int innerKind = inner[inner.length() - 1] & 255;
+                    if (innerKind == 21) {
+                        String why = inner.length() >= 3
+                            ? ("the server refused: ".concat(Alert.describe(inner[1] & 255)))
+                            : "the server refused, without saying why";
+                        delete inner;
+                        throw new TlsException(why) on heap;
+                    }
+                    for (mutable int i = 0; i < inner.length() - 1; i++) { flight.u8(inner[i]); }
+                    delete inner;
+                    complete = TlsClient.hasFinished(flight);
+                }
+
+                mutable int[] messages = flight.toArray();
+                int total = flight.length();
+                mutable ArrayList<Certificate*> chain = new ArrayList<Certificate*>() on heap;
+                mutable boolean finishedOk = false;
+                mutable boolean verifiedIdentity = false;
+                mutable int at = 0;
+                while (at + 4 <= total) {
+                    int type = messages[at] & 255;
+                    int length = ((messages[at + 1] & 255) << 16) |
+                                 ((messages[at + 2] & 255) << 8) | (messages[at + 3] & 255);
+                    int whole = 4 + length;
+                    if (at + whole > total) { at = total; continue; }
+
+                    if (type == 11) {                            // Certificate
+                        TlsClient.readChain(messages, at + 4, length, chain);
+                    } else if (type == 15) {                     // CertificateVerify
+                        // Hashed BEFORE this message is appended: the signature covers everything up
+                        // to and including the certificate, and not itself.
+                        mutable int[] upToCertificate = TlsClient.transcriptHash(transcript);
+                        verifiedIdentity = TlsClient.checkIdentity(chain, messages, at + 4, length,
+                                                                   upToCertificate);
+                        delete upToCertificate;
+                    } else if (type == 20) {                     // Finished
+                        mutable int[] upToHere = TlsClient.transcriptHash(transcript);
+                        mutable int[] finishedKey = KeySchedule.expandLabel(serverSecret, 32,
+                                                                           "finished", empty, 0, 32);
+                        mutable int[] expected = Hmac.sha256Raw(finishedKey, 32, upToHere, 32);
+                        finishedOk = TlsClient.sameBytes(expected, messages, at + 4, 32);
+                        delete expected;
+                        delete finishedKey;
+                        delete upToHere;
+                    }
+                    for (mutable int i = 0; i < whole; i++) { transcript.u8(messages[at + i]); }
+                    at = at + whole;
+                }
+                delete messages;
+
+                // Everything the connection rests on, checked before it is used.
+                if (chain.size() == 0) {
+                    throw new CertificateException("the server sent no certificate") on heap;
+                }
+                mutable Instant now = Instant.now();
+                CertificateValidator.check(chain, host, trusted, now.toEpochSeconds());
+                delete now;
+                if (!verifiedIdentity) {
+                    throw new TlsException(
+                        "the server did not prove it holds the key for the certificate it sent")
+                        on heap;
+                }
+                if (!finishedOk) {
+                    throw new TlsException("the server's Finished did not verify") on heap;
+                }
+
+                // Our own Finished, then the application keys.
+                mutable int[] afterServer = TlsClient.transcriptHash(transcript);
+                mutable int[] ourFinishedKey = KeySchedule.expandLabel(clientSecret, 32, "finished",
+                                                                      empty, 0, 32);
+                mutable int[] ourVerify = Hmac.sha256Raw(ourFinishedKey, 32, afterServer, 32);
+                mutable ByteWriter finished = new ByteWriter() on heap;
+                finished.u8(20);
+                finished.u24(32);
+                finished.bytes(ourVerify, 32);
+                mutable int[] finishedMessage = finished.toArray();
+                mutable int[] changeCipher = new int[1]();
+                changeCipher[0] = 1;
+                TlsClient.sendPlain(link, 20, 771, changeCipher, 1);
+                mutable int[] finishedRecord = Record.seal(clientKey, clientIv, cast<long>(0), 22,
+                                                           finishedMessage, finished.length());
+                TlsClient.sendRaw(link, finishedRecord, finishedRecord.length());
+
+                mutable int[] zeros = new int[32]();
+                mutable int[] masterDerived = KeySchedule.expandLabel(handshakeSecret, 32, "derived",
+                                                                     emptyHash, 32, 32);
+                mutable int[] master = Hkdf.extract(masterDerived, 32, zeros, 32);
+                mutable int[] clientApp = KeySchedule.deriveSecret(master, 32, "c ap traffic",
+                                                                  afterServer, 32);
+                mutable int[] serverApp = KeySchedule.deriveSecret(master, 32, "s ap traffic",
+                                                                  afterServer, 32);
+                mutable TlsSession* session = new TlsSession(
+                    link, wire.leftover(),
+                    KeySchedule.trafficKey(clientApp, 32), KeySchedule.trafficIv(clientApp, 32),
+                    KeySchedule.trafficKey(serverApp, 32), KeySchedule.trafficIv(serverApp, 32))
+                    on heap;
+                delete chain;
+                delete rng;
+                return session;
+            }
+
+            // ---- the pieces ----
+
+            // The server's proof that it holds the private key for the certificate it sent. The
+            // signed content is a fixed prefix, a context string and the transcript hash -- the
+            // prefix is there so a signature made for one purpose cannot be replayed as another.
+            private static method checkIdentity(ArrayList<Certificate*> chain, int[] messages,
+                                                int at, int length, int[] transcriptHash)
+                                                returns boolean {
+                if (chain.size() == 0 || length < 4) { return false; }
+                int scheme = ((messages[at] & 255) << 8) | (messages[at + 1] & 255);
+                int sigLength = ((messages[at + 2] & 255) << 8) | (messages[at + 3] & 255);
+                mutable int[] signature = Der.copy(messages, at + 4, sigLength);
+
+                mutable ByteWriter signed = new ByteWriter() on heap;
+                for (mutable int i = 0; i < 64; i++) { signed.u8(32); }        // 64 spaces
+                String context = "TLS 1.3, server CertificateVerify";
+                for (mutable int i = 0; i < context.length(); i++) {
+                    signed.u8(cast<int>(context.charAt(i)) & 255);
+                }
+                signed.u8(0);
+                signed.bytes(transcriptHash, 32);
+                mutable int[] content = signed.toArray();
+
+                // THE SCHEME SAYS WHICH HASH AND WHICH CURVE, and the server picks the scheme from
+                // what the ClientHello offered. Every scheme offered there is answered here: an
+                // advertised scheme that lands in a final `else` is a server told "I accept this" and
+                // then refused for using it, which looks to everyone involved like a broken server.
+                mutable Sha* digest = TlsClient.schemeDigest(scheme);
+                mutable int[] hash = digest.of(content, signed.length());
+
+                Certificate* leaf = chain.get(0);
+                mutable boolean ok = false;
+                if (scheme == 1027 || scheme == 1283) {          // ecdsa_secp256r1/384r1
+                    mutable nullable Curve* known = Curve.named(scheme == 1027 ? "P-256" : "P-384");
+                    if (known != null) {
+                        Curve* curve = cast<Curve*>(known);
+                        mutable int[] point = leaf.ecPublicKey();
+                        if (point.length() == curve.pointBytes()) {
+                            ok = curve.verify(point, point.length(), signature, sigLength,
+                                              hash, digest.size());
+                        }
+                        delete point;
+                        delete curve;
+                    }
+                } else {
+                    mutable nullable RsaPublicKey* key = leaf.rsaPublicKey();
+                    if (key != null) {
+                        RsaPublicKey* rsa = cast<RsaPublicKey*>(key);
+                        if (scheme == 2052 || scheme == 2053 || scheme == 2054) {   // rsa_pss_rsae
+                            ok = Rsa.verifyPss(signature, sigLength, rsa.modulus, rsa.modLength,
+                                               rsa.exponent, hash, digest);
+                        } else {                                                    // rsa_pkcs1
+                            ok = Rsa.verifyPkcs1(signature, sigLength, rsa.modulus, rsa.modLength,
+                                                 rsa.exponent, hash, digest.size());
+                        }
+                        delete rsa;
+                    }
+                }
+                delete hash;
+                delete digest;
+                delete content;
+                delete signed;
+                delete signature;
+                return ok;
+            }
+
+            // The digest half of a TLS SignatureScheme (RFC 8446 §4.2.3). The classic schemes are a
+            // (hash, signature) pair inherited from TLS 1.2 -- 0x0403 is SHA-256 with ECDSA -- so the
+            // hash is the HIGH byte. The PSS schemes are opaque code points 0x0804..0x0806, where the
+            // same 4/5/6 sits in the LOW byte instead. Reading the wrong byte picks a wrong digest,
+            // and a wrong digest looks exactly like a bad signature.
+            private static method schemeDigest(int scheme) returns Sha* {
+                int code = (scheme >> 8) == 8 ? (scheme & 255) : (scheme >> 8);
+                if (code == 5) { return Sha.sha384(); }
+                if (code == 6) { return Sha.sha512(); }
+                return Sha.sha256();
+            }
+
+            // The certificate list: each entry is a three-byte length, the DER, then its extensions.
+            private static method readChain(int[] messages, int at, int length,
+                                            ArrayList<Certificate*> into) returns void {
+                mutable int p = at;
+                int end = at + length;
+                if (p >= end) { return; }
+                p = p + 1 + (messages[p] & 255);                  // the request context, always empty
+                p = p + 3;                                        // the list length
+                while (p + 3 <= end) {
+                    int certLength = ((messages[p] & 255) << 16) | ((messages[p + 1] & 255) << 8) |
+                                     (messages[p + 2] & 255);
+                    p = p + 3;
+                    if (certLength <= 0 || p + certLength > end) { return; }
+                    mutable int[] der = Der.copy(messages, p, certLength);
+                    into.add(new Certificate(der, certLength) on heap);
+                    p = p + certLength;
+                    if (p + 2 > end) { return; }
+                    p = p + 2 + (((messages[p] & 255) << 8) | (messages[p + 1] & 255));
+                }
+                return;
+            }
+
+            private static method transcriptHash(ByteWriter w) returns int[] {
+                mutable int[] so = w.toArray();
+                int[] h = Sha256.digestRaw(so, w.length());
+                delete so;
+                return h;
+            }
+            private static method sameBytes(int[] a, int[] b, int at, int n) returns boolean {
+                mutable boolean same = true;
+                for (mutable int i = 0; i < n; i++) {
+                    if ((a[i] & 255) != (b[at + i] & 255)) { same = false; }
+                }
+                return same;
+            }
+            // A complete Finished somewhere in the buffered flight.
+            private static method hasFinished(ByteWriter w) returns boolean {
+                mutable int[] b = w.toArray();
+                int n = w.length();
+                mutable int at = 0;
+                mutable boolean found = false;
+                while (at + 4 <= n) {
+                    int length = ((b[at + 1] & 255) << 16) | ((b[at + 2] & 255) << 8) |
+                                 (b[at + 3] & 255);
+                    if (at + 4 + length > n) { at = n; }
+                    else {
+                        if ((b[at] & 255) == 20) { found = true; }
+                        at = at + 4 + length;
+                    }
+                }
+                delete b;
+                return found;
+            }
+            // WHICH GROUP THE SERVER PICKED, together with its public value. The group used to be
+            // skipped over and only the bytes returned, which worked exactly as long as one group was
+            // offered: 32 bytes could be an x25519 point or a truncated P-256 one, and a client that
+            // guesses from the length agrees a key with nobody but itself.
+            private static method serverKeyShare(int[] wire) returns KeyShare* {
+                mutable int p = 5 + 4 + 2 + 32;
+                if (p >= wire.length()) { return new KeyShare(0, new int[1]()) on heap; }
+                p = p + 1 + (wire[p] & 255);                      // the echoed session id
+                p = p + 2 + 1;                                    // cipher suite, compression
+                if (p + 2 > wire.length()) { return new KeyShare(0, new int[1]()) on heap; }
+                int extensionsLength = ((wire[p] & 255) << 8) | (wire[p + 1] & 255);
+                p = p + 2;
+                int end = p + extensionsLength;
+                while (p + 4 <= end && p + 4 <= wire.length()) {
+                    int type = ((wire[p] & 255) << 8) | (wire[p + 1] & 255);
+                    int length = ((wire[p + 2] & 255) << 8) | (wire[p + 3] & 255);
+                    if (type == 51) {                             // key_share
+                        int group = ((wire[p + 4] & 255) << 8) | (wire[p + 5] & 255);
+                        int keyLength = ((wire[p + 6] & 255) << 8) | (wire[p + 7] & 255);
+                        if (p + 8 + keyLength > wire.length()) {
+                            return new KeyShare(0, new int[1]()) on heap;
+                        }
+                        return new KeyShare(group, Der.copy(wire, p + 8, keyLength)) on heap;
+                    }
+                    p = p + 4 + length;
+                }
+                return new KeyShare(0, new int[1]()) on heap;
+            }
+            private static method sendPlain(Socket link, int type, int version, int[] body, int n)
+                                            returns void {
+                mutable StringBuilder out = new StringBuilder() on heap;
+                out.appendChar(cast<char>(type));
+                out.appendChar(cast<char>((version >> 8) & 255));
+                out.appendChar(cast<char>(version & 255));
+                out.appendChar(cast<char>((n >> 8) & 255));
+                out.appendChar(cast<char>(n & 255));
+                for (mutable int i = 0; i < n; i++) { out.appendChar(cast<char>(body[i] & 255)); }
+                link.send(out.toString());
+                delete out;
+                return;
+            }
+            private static method sendRaw(Socket link, int[] data, int n) returns void {
+                mutable StringBuilder out = new StringBuilder() on heap;
+                for (mutable int i = 0; i < n; i++) { out.appendChar(cast<char>(data[i] & 255)); }
+                link.send(out.toString());
+                delete out;
+                return;
+            }
+        }
+
+        // Thrown when the handshake itself goes wrong -- as distinct from a certificate that does not
+        // check out, which is `CertificateException`. Two exceptions because the answers differ: one
+        // means the other end is not speaking the protocol, the other means it is speaking it and
+        // lying.
+        public class TlsException extends Exception {
+            private mutable String detail;
+            public constructor TlsException(String detail) { this.detail = detail; }
+            public override method message() returns String {
+                return "TLS handshake failed: ".concat(this.detail);
+            }
+        }
+
+        // AN ESTABLISHED CONNECTION: application data in and out, each record sealed under the
+        // traffic keys and numbered.
+        //
+        // The sequence numbers are the reason this is a class and not a pair of functions. Every
+        // record's nonce is derived from a counter that neither side transmits, so the two ends stay
+        // in step only by both counting correctly -- and a counter that lives in a local variable is
+        // a counter somebody eventually forgets to advance.
+        public class TlsSession {
+            private mutable Socket link;
+            private mutable String pending;          // bytes read from the socket, not yet a record
+            private mutable int[] sendKey;
+            private mutable int[] sendIv;
+            private mutable int[] receiveKey;
+            private mutable int[] receiveIv;
+            private mutable long sendSequence;
+            private mutable long receiveSequence;
+            private mutable boolean open;
+
+            public constructor TlsSession(Socket link, String pending, int[] sendKey, int[] sendIv,
+                                          int[] receiveKey, int[] receiveIv) {
+                this.link = link;
+                this.pending = pending;
+                this.sendKey = sendKey;
+                this.sendIv = sendIv;
+                this.receiveKey = receiveKey;
+                this.receiveIv = receiveIv;
+                this.sendSequence = cast<long>(0);
+                this.receiveSequence = cast<long>(0);
+                this.open = true;
+            }
+
+            public method isOpen() returns boolean { return this.open; }
+
+            public method send(String text) returns void {
+                mutable int[] data = new int[text.length() > 0 ? text.length() : 1]();
+                for (mutable int i = 0; i < text.length(); i++) {
+                    data[i] = cast<int>(text.charAt(i)) & 255;
+                }
+                // `framed` and not `record`, which is reserved.
+                mutable int[] framed = Record.seal(this.sendKey, this.sendIv, this.sendSequence, 23,
+                                                   data, text.length());
+                this.sendSequence = this.sendSequence + cast<long>(1);
+                mutable StringBuilder out = new StringBuilder() on heap;
+                for (mutable int i = 0; i < framed.length(); i++) {
+                    out.appendChar(cast<char>(framed[i] & 255));
+                }
+                this.link.send(out.toString());
+                delete out;
+                delete framed;
+                delete data;
+                return;
+            }
+
+            // The next chunk of application data, or "" at the end of the stream. A record that fails
+            // to authenticate ends the session rather than being skipped: after a forged record there
+            // is no way to know where the stream really is.
+            public method receive() returns String {
+                while (this.open) {
+                    mutable int[] wire = this.nextRecord();
+                    if (wire.length() <= 1) {
+                        this.open = false;
+                        delete wire;
+                        return "";
+                    }
+                    int type = wire[0] & 255;
+                    if (type == 20) { delete wire; continue; }      // ChangeCipherSpec, ignored
+                    mutable int[] inner = Record.open(this.receiveKey, this.receiveIv,
+                                                      this.receiveSequence, wire, wire.length());
+                    this.receiveSequence = this.receiveSequence + cast<long>(1);
+                    delete wire;
+                    if (inner.length() <= 1) {
+                        this.open = false;                          // forged or truncated
+                        delete inner;
+                        return "";
+                    }
+                    int contentType = inner[inner.length() - 1] & 255;
+                    if (contentType == 23) {                        // application_data
+                        mutable StringBuilder text = new StringBuilder() on heap;
+                        for (mutable int i = 0; i < inner.length() - 1; i++) {
+                            text.appendChar(cast<char>(inner[i] & 255));
+                        }
+                        delete inner;
+                        return text.toString();
+                    }
+                    if (contentType == 21) {                        // an alert: the peer is closing
+                        this.open = false;
+                        delete inner;
+                        return "";
+                    }
+                    delete inner;                                   // session tickets and the like
+                }
+                return "";
+            }
+
+            // One whole record off the socket: the five-byte header says how much more to wait for.
+            private method nextRecord() returns int[] {
+                while (this.pending.length() < 5) {
+                    String more = this.link.receive(16384);
+                    if (more.length() == 0) { return new int[1](); }
+                    this.pending = this.pending.concat(more);
+                }
+                int total = 5 + (((cast<int>(this.pending.charAt(3)) & 255) << 8) |
+                                 (cast<int>(this.pending.charAt(4)) & 255));
+                while (this.pending.length() < total) {
+                    String more = this.link.receive(16384);
+                    if (more.length() == 0) { return new int[1](); }
+                    this.pending = this.pending.concat(more);
+                }
+                int[] out = new int[total]();
+                for (mutable int i = 0; i < total; i++) {
+                    out[i] = cast<int>(this.pending.charAt(i)) & 255;
+                }
+                this.pending = this.pending.substring(total, this.pending.length());
+                return out;
+            }
+
+            public method close() returns void {
+                if (this.open) {
+                    this.open = false;
+                    this.link.close();
+                }
+                return;
+            }
+            public destructor ~TlsSession() returns void {
+                delete this.receiveIv;
+                delete this.receiveKey;
+                delete this.sendIv;
+                delete this.sendKey;
+            }
+        }
+
+        // A GROWABLE BUFFER FOR WIRE FORMATS: append big-endian integers or raw bytes, and go back to
+        // fill in a length once its content is known.
+        //
+        // That last part is why this exists rather than a StringBuilder. TLS is length-prefixed
+        // everywhere, and the length of a field is not known until the field has been written -- so
+        // either the caller counts everything twice, or it leaves a hole and patches it. Counting
+        // twice is how the two counts end up disagreeing.
+        public class ByteWriter {
+            private mutable int[] buffer;
+            private mutable int used;
+
+            public constructor ByteWriter() {
+                this.buffer = new int[64]();
+                this.used = 0;
+            }
+            public method u8(int v) returns void {
+                this.ensure(1);
+                this.buffer[this.used] = v & 255;
+                this.used = this.used + 1;
+                return;
+            }
+            public method u16(int v) returns void {
+                this.u8((v >> 8) & 255);
+                this.u8(v & 255);
+                return;
+            }
+            public method u24(int v) returns void {
+                this.u8((v >> 16) & 255);
+                this.u8((v >> 8) & 255);
+                this.u8(v & 255);
+                return;
+            }
+            public method bytes(int[] source, int n) returns void {
+                this.ensure(n);
+                for (mutable int i = 0; i < n; i++) {
+                    this.buffer[this.used + i] = source[i] & 255;
+                }
+                this.used = this.used + n;
+                return;
+            }
+            // Where the next byte will go -- captured to remember where a placeholder length sits.
+            public method position() returns int { return this.used; }
+            public method patchU16(int at, int v) returns void {
+                this.buffer[at] = (v >> 8) & 255;
+                this.buffer[at + 1] = v & 255;
+                return;
+            }
+            public method patchU24(int at, int v) returns void {
+                this.buffer[at] = (v >> 16) & 255;
+                this.buffer[at + 1] = (v >> 8) & 255;
+                this.buffer[at + 2] = v & 255;
+                return;
+            }
+            public method length() returns int { return this.used; }
+            public method toArray() returns int[] {
+                int[] out = new int[this.used > 0 ? this.used : 1]();
+                for (mutable int i = 0; i < this.used; i++) { out[i] = this.buffer[i]; }
+                return out;
+            }
+            private method ensure(int extra) returns void {
+                if (this.used + extra <= this.buffer.length()) { return; }
+                mutable int capacity = this.buffer.length();
+                while (capacity < this.used + extra) { capacity = capacity * 2; }
+                mutable int[] bigger = new int[capacity]();
+                for (mutable int i = 0; i < this.used; i++) { bigger[i] = this.buffer[i]; }
+                delete this.buffer;
+                this.buffer = bigger;
+                return;
+            }
+            public destructor ~ByteWriter() returns void {
+                delete this.buffer;
+            }
+        }
+
+        // THE FIRST MESSAGE (RFC 8446 §4.1.2): what this client offers.
+        //
+        // A ClientHello is a list of everything the client can do, and what it leaves out is as much
+        // a decision as what it puts in. This one offers x25519 for the key exchange and
+        // AES-128-GCM-SHA256 for the records -- both of which the code above actually implements --
+        // and a signature-algorithm list that includes the RSA and ECDSA variants the certificate
+        // reader can check.
+        //
+        // The SERVER NAME is in here, and it has to be: one address serves many sites, so without it
+        // the server cannot know which certificate to present, and a client would then be validating
+        // a name against a certificate chosen for somebody else.
+        public class ClientHello {
+            public static method build(String host, int[] random, int[] sessionId, int sessionLength,
+                                       int[] montgomeryKey, int[] nistKey) returns int[] {
+                mutable ByteWriter w = new ByteWriter() on heap;
+                w.u8(1);                                      // handshake type: client_hello
+                int lengthAt = w.position();
+                w.u24(0);                                     // patched once the body is written
+                int bodyStart = w.position();
+                w.u16(771);                                   // the legacy version field, always 1.2
+                w.bytes(random, 32);
+                w.u8(sessionLength);
+                if (sessionLength > 0) { w.bytes(sessionId, sessionLength); }
+                w.u16(6);                                     // three cipher suites
+                w.u16(4865);                                  // TLS_AES_128_GCM_SHA256 -- implemented
+                w.u16(4867);                                  // ChaCha20-Poly1305, offered for reach
+                w.u16(4866);                                  // AES-256-GCM-SHA384
+                w.u8(1); w.u8(0);                             // no compression, ever
+                int extensionsAt = w.position();
+                w.u16(0);
+                int extensionsStart = w.position();
+
+                // server_name: which site is being asked for.
+                int nameLength = host.length();
+                w.u16(0);
+                w.u16(5 + nameLength);
+                w.u16(3 + nameLength);
+                w.u8(0);
+                w.u16(nameLength);
+                for (mutable int i = 0; i < nameLength; i++) {
+                    w.u8(cast<int>(host.charAt(i)) & 255);
+                }
+                w.u16(65281); w.u16(1); w.u8(0);              // renegotiation_info, empty
+                // EXACTLY THE GROUPS THIS CLIENT CAN DO, with a key ready for each. The list used to
+                // name nine and carry a key for one, which asks for two different failures: a server
+                // preferring a group we cannot do, and a server picking a group we offered but sent
+                // no key for -- the second answers with a HelloRetryRequest that this client does not
+                // handle. Sending both keys costs 65 bytes and removes the round trip entirely.
+                //
+                // BOTH, and not just x25519: RFC 8446 makes secp256r1 the group a compliant
+                // implementation MUST support and x25519 only a SHOULD, so a client that speaks one
+                // curve is betting on a preference rather than on the standard.
+                // THE TWO LISTS MUST AGREE. Every group a key_share carries has to appear here as
+                // well; sending a share for a group left out of this list is a malformed ClientHello,
+                // and github.com answers it with `illegal parameter` while google.com lets it pass --
+                // which is exactly the sort of disagreement that makes a bug look like one server's
+                // fault.
+                w.u16(10);                                    // supported_groups
+                w.u16(6); w.u16(4);
+                w.u16(29);                                    // x25519, preferred
+                w.u16(23);                                    // secp256r1
+                w.u16(35); w.u16(0);                          // session_ticket, empty
+                w.u16(51);                                    // key_share
+                w.u16(107); w.u16(105);
+                w.u16(29); w.u16(32);
+                w.bytes(montgomeryKey, 32);
+                w.u16(23); w.u16(65);
+                w.bytes(nistKey, 65);
+                w.u16(43); w.u16(3); w.u8(2); w.u16(772);     // supported_versions: TLS 1.3 only
+                // EXACTLY THE SCHEMES THIS CLIENT CAN VERIFY, and no more. This list is a promise:
+                // the server picks one from it and signs with that, so a scheme offered and not
+                // implemented is a handshake that fails at CertificateVerify -- and fails looking
+                // like the server's fault. The list used to carry fifteen, including SHA-1, DSA and
+                // P-521, none of which are checked anywhere below.
+                w.u16(13);                                    // signature_algorithms
+                w.u16(18); w.u16(16);
+                w.u16(1027); w.u16(1283);                     // ecdsa over P-256 and P-384
+                w.u16(2052); w.u16(2053); w.u16(2054);        // rsa_pss_rsae, SHA-256/384/512
+                w.u16(1025); w.u16(1281); w.u16(1537);        // rsa_pkcs1, SHA-256/384/512
+                w.u16(45); w.u16(2); w.u8(1); w.u8(1);        // psk_key_exchange_modes
+                w.u16(28); w.u16(2); w.u16(16385);            // record_size_limit
+                int end = w.position();
+                w.patchU16(extensionsAt, end - extensionsStart);
+                w.patchU24(lengthAt, end - bodyStart);
+                int[] out = w.toArray();
+                delete w;
+                return out;
+            }
+        }
+
+        // THE TLS 1.3 RECORD LAYER (RFC 8446 §5): how bytes actually cross the wire.
+        //
+        // Everything after the first two messages travels as a record: a five-byte header, then an
+        // AEAD-sealed body. Three details in that sentence are load-bearing, and each of them is a
+        // known attack when it is got wrong.
+        //
+        // THE REAL CONTENT TYPE IS INSIDE the encryption, not in the header -- the header always
+        // claims `application_data`. That is what stops an observer telling a handshake message from
+        // a request by looking at the outside.
+        //
+        // THE NONCE IS DERIVED, NEVER SENT: the static IV exclusive-ORed with the record's sequence
+        // number. Two records under one key must never share a nonce -- with GCM that recovers the
+        // authentication key outright -- and deriving it from a counter neither side transmits means
+        // there is nothing for an attacker to replay or reorder.
+        //
+        // THE HEADER IS THE ASSOCIATED DATA, so the declared length is covered by the tag. Otherwise
+        // it could be altered to make the receiver read a different number of bytes.
+        public class Record {
+            // Seal `content` of the given type into a complete record, ready to write to the socket.
+            public static method seal(int[] key, int[] staticIv, long sequence, int contentType,
+                                      int[] content, int contentLength) returns int[] {
+                int innerLength = contentLength + 1;             // content || its real type
+                mutable int[] inner = new int[innerLength]();
+                for (mutable int i = 0; i < contentLength; i++) { inner[i] = content[i] & 255; }
+                inner[contentLength] = contentType & 255;
+                int encryptedLength = innerLength + 16;          // the tag
+                mutable int[] header = Record.header(encryptedLength);
+                mutable int[] nonce = Record.nonce(staticIv, sequence);
+                mutable int[] body = Gcm.seal(key, nonce, header, 5, inner, innerLength);
+                int[] out = new int[5 + encryptedLength]();
+                for (mutable int i = 0; i < 5; i++) { out[i] = header[i]; }
+                for (mutable int i = 0; i < encryptedLength; i++) { out[5 + i] = body[i] & 255; }
+                delete body;
+                delete nonce;
+                delete header;
+                delete inner;
+                return out;
+            }
+
+            // The inner plaintext -- content followed by its real type -- or an EMPTY array when the
+            // record does not authenticate. Empty means forged; it does not mean the peer sent
+            // nothing, and a caller that confuses the two has discarded the guarantee.
+            public static method open(int[] key, int[] staticIv, long sequence, int[] wire,
+                                      int wireLength) returns int[] {
+                if (wireLength < 6) { return new int[1](); }
+                int encryptedLength = ((wire[3] & 255) << 8) | (wire[4] & 255);
+                if (5 + encryptedLength > wireLength) { return new int[1](); }
+                mutable int[] header = new int[5]();
+                for (mutable int i = 0; i < 5; i++) { header[i] = wire[i] & 255; }
+                mutable int[] body = new int[encryptedLength]();
+                for (mutable int i = 0; i < encryptedLength; i++) { body[i] = wire[5 + i] & 255; }
+                mutable int[] nonce = Record.nonce(staticIv, sequence);
+                mutable int[] inner = Gcm.open(key, nonce, header, 5, body, encryptedLength);
+                delete nonce;
+                delete body;
+                delete header;
+                if (inner.length() <= 1) { return inner; }
+                // Trailing zeros are padding the sender may add to hide the true length; the last
+                // non-zero byte is the content type.
+                mutable int last = inner.length() - 1;
+                while (last >= 0 && (inner[last] & 255) == 0) { last = last - 1; }
+                int outLength = last + 1;
+                int[] out = new int[outLength > 0 ? outLength : 1]();
+                for (mutable int i = 0; i < outLength; i++) { out[i] = inner[i] & 255; }
+                delete inner;
+                return out;
+            }
+
+            // The static IV with its low eight bytes exclusive-ORed with the sequence number.
+            public static method nonce(int[] staticIv, long sequence) returns int[] {
+                int[] n = new int[12]();
+                for (mutable int i = 0; i < 12; i++) { n[i] = staticIv[i] & 255; }
+                for (mutable int j = 0; j < 8; j++) {
+                    int b = cast<int>((sequence >> ((7 - j) * 8)) & cast<long>(255));
+                    n[4 + j] = (n[4 + j] ^ b) & 255;
+                }
+                return n;
+            }
+            private static method header(int encryptedLength) returns int[] {
+                int[] h = new int[5]();
+                h[0] = 23;                                       // always application_data
+                h[1] = 3; h[2] = 3;                              // the legacy version field
+                h[3] = (encryptedLength >> 8) & 255;
+                h[4] = encryptedLength & 255;
+                return h;
             }
         }
 
@@ -1682,7 +2757,7 @@
             }
         }
 
-        // A POINT ON P-256, in Jacobian coordinates.
+        // A POINT ON A PRIME CURVE, in Jacobian coordinates.
         //
         // Affine (x, y) is what a key is written as, and it is the wrong thing to compute with:
         // adding two affine points needs a modular INVERSION, which costs about as much as 250
@@ -1711,70 +2786,140 @@
             }
         }
 
-        // THE NIST P-256 CURVE, and ECDSA verification over it.
+        // A NIST PRIME CURVE, and ECDSA verification over it.
         //
         // This is the second half of what makes a TLS certificate chain checkable. RSA alone is not
         // enough: the certificates most of the internet presents today are ECDSA, so a client that
         // verifies only RSA signatures refuses the servers people actually use, or -- worse -- has to
         // treat "I cannot check this" as "this checks out".
         //
+        // A CURVE IS AN OBJECT, not a class full of statics. It began as the second: a `P256` class
+        // whose constants were static methods and whose arithmetic assumed 256 bits everywhere -- and
+        // that shape was itself the reason a P-384 chain could not be checked. Reaching a real server
+        // showed it immediately: cloudflare's intermediate is on P-384, so `example.com` was refused
+        // by our own gap and not by anything wrong with the certificate. The curve's parameters are
+        // parameters; making them fields is what lets one piece of arithmetic answer for both.
+        //
+        // Both curves here have a = -3, which is why `twice` can use the shortcut below for either.
+        //
         // Verification only. Signing touches a private key and would need constant-time code; nothing
         // here is constant-time, because everything it touches is public.
-        public class P256 {
-            // The published constants. Hex because that is how they are published, and reading them
-            // back out in a test is how a typo in one of them is caught.
-            public static method primeHex() returns String {
-                return "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff";
+        public class Curve {
+            private mutable String curveName;
+            private mutable long[] prime;
+            private mutable long[] order;
+            private mutable long[] bValue;
+            private mutable long[] gx;
+            private mutable long[] gy;
+            private mutable Mont* fp;      // arithmetic modulo the field prime: coordinates
+            private mutable Mont* fn;      // arithmetic modulo the group order: scalars
+            private mutable int size;      // bytes per coordinate: 32 for P-256, 48 for P-384
+            private mutable int limbs;
+
+            public constructor Curve(String curveName, String primeHex, String orderHex, String bHex,
+                                     String gxHex, String gyHex, int size) {
+                this.curveName = curveName;
+                this.size = size;
+                this.limbs = U256.limbsForBytes(size);
+                this.prime = U256.fromHex(primeHex);
+                this.order = U256.fromHex(orderHex);
+                this.bValue = U256.fromHex(bHex);
+                this.gx = U256.fromHex(gxHex);
+                this.gy = U256.fromHex(gyHex);
+                this.fp = new Mont(this.prime) on heap;
+                this.fn = new Mont(this.order) on heap;
             }
-            public static method orderHex() returns String {
-                return "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551";
+            public destructor ~Curve() returns void {
+                delete this.fn;
+                delete this.fp;
+                delete this.gy;
+                delete this.gx;
+                delete this.bValue;
+                delete this.order;
+                delete this.prime;
             }
-            public static method bHex() returns String {
-                return "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b";
+
+            // The published constants, verbatim from FIPS 186-4. Hex because that is how they are
+            // published: a constant transcribed into limbs by hand is a constant nobody can check
+            // against the standard without doing the transcription again.
+            public static method p256() returns Curve* {
+                return new Curve("P-256",
+                    "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
+                    "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
+                    "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
+                    "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+                    "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+                    32) on heap;
             }
-            public static method gxHex() returns String {
-                return "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
+            public static method p384() returns Curve* {
+                return new Curve("P-384",
+                    "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe"
+                        .concat("ffffffff0000000000000000ffffffff"),
+                    "ffffffffffffffffffffffffffffffffffffffffffffffff"
+                        .concat("c7634d81f4372ddf581a0db248b0a77aecec196accc52973"),
+                    "b3312fa7e23ee7e4988e056be3f82d19181d9c6efe814112"
+                        .concat("0314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef"),
+                    "aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b98"
+                        .concat("59f741e082542a385502f25dbf55296c3a545e3872760ab7"),
+                    "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147c"
+                        .concat("e9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f"),
+                    48) on heap;
             }
-            public static method gyHex() returns String {
-                return "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+            // The curve a certificate's key names, or null when this program cannot do that curve.
+            // Null and not an exception: the caller's next move is to SAY which curve it was, and an
+            // exception carrying that would be caught only to be turned back into the same sentence.
+            public static method named(String which) returns nullable Curve* {
+                if (which.equals("P-256")) { return Curve.p256(); }
+                if (which.equals("P-384")) { return Curve.p384(); }
+                return null;
             }
+
+            public method name() returns String { return this.curveName; }
+            public method coordinateBytes() returns int { return this.size; }
+            public method pointBytes() returns int { return 1 + this.size * 2; }
 
             // The identity element. Represented by a flag rather than by z = 0, because every formula
             // below would otherwise have to notice that z is zero and none of them naturally does.
-            public static method infinity(Mont* f) returns EcPoint* {
-                return new EcPoint(U256.zero(), U256.zero(), U256.zero(), true) on heap;
+            public method infinity() returns EcPoint* {
+                return new EcPoint(U256.zeroOf(this.limbs), U256.zeroOf(this.limbs),
+                                   U256.zeroOf(this.limbs), true) on heap;
             }
 
             // An affine point (x, y) entering the computation: z = 1.
-            public static method fromAffine(Mont* f, long[] x, long[] y) returns EcPoint* {
-                mutable long[] one = U256.zero();
-                one[0] = cast<long>(1);
-                mutable long[] zm = f.toMont(one);
+            public method fromAffine(long[] x, long[] y) returns EcPoint* {
+                mutable long[] one = this.oneRaw();
+                mutable long[] zm = this.fp.toMont(one);
                 delete one;
-                return new EcPoint(f.toMont(x), f.toMont(y), zm, false) on heap;
+                return new EcPoint(this.fp.toMont(x), this.fp.toMont(y), zm, false) on heap;
+            }
+            private method oneRaw() returns long[] {
+                mutable long[] one = U256.zeroOf(this.limbs);
+                one[0] = cast<long>(1);
+                return one;
             }
 
             // Is this point actually ON the curve: y² = x³ - 3x + b. A public key that is not on the
             // curve is the invalid-curve attack, and the check costs four multiplications -- cheap
             // enough that skipping it would be a decision, and the wrong one.
-            public static method isOnCurve(Mont* f, long[] xm, long[] ym) returns boolean {
-                mutable long[] bm = f.toMont(U256.fromHex(P256.bHex()));
-                mutable long[] left = f.mul(ym, ym);
-                mutable long[] x2 = f.mul(xm, xm);
-                mutable long[] x3 = f.mul(x2, xm);
-                mutable long[] three = U256.zero();
+            public method isOnCurve(long[] xm, long[] ym) returns boolean {
+                mutable long[] bm = this.fp.toMont(this.bValue);
+                mutable long[] left = this.fp.mul(ym, ym);
+                mutable long[] x2 = this.fp.mul(xm, xm);
+                mutable long[] x3 = this.fp.mul(x2, xm);
+                mutable long[] three = U256.zeroOf(this.limbs);
                 three[0] = cast<long>(3);
-                mutable long[] threeM = f.toMont(three);
-                mutable long[] tx = f.mul(threeM, xm);
-                mutable long[] right = f.addMod(f.subMod(x3, tx), bm);
+                mutable long[] threeM = this.fp.toMont(three);
+                mutable long[] tx = this.fp.mul(threeM, xm);
+                mutable long[] right = this.fp.addMod(this.fp.subMod(x3, tx), bm);
                 boolean same = U256.compare(left, right) == 0;
                 delete three;
                 return same;
             }
 
-            // Doubling, with the a = -3 shortcut the curve was chosen to allow.
-            public static method twice(Mont* f, EcPoint* p) returns EcPoint* {
-                if (p.infinite || U256.isZero(p.y)) { return P256.infinity(f); }
+            // Doubling, with the a = -3 shortcut both NIST curves were chosen to allow.
+            public method twice(EcPoint* p) returns EcPoint* {
+                if (p.infinite || U256.isZero(p.y)) { return this.infinity(); }
+                Mont* f = this.fp;
                 mutable long[] delta = f.mul(p.z, p.z);
                 mutable long[] gamma = f.mul(p.y, p.y);
                 mutable long[] beta = f.mul(p.x, gamma);
@@ -1798,13 +2943,14 @@
             // Addition. The two special cases are the ones that make a naive implementation answer
             // nonsense: equal points need doubling (the formula divides by zero otherwise), and
             // opposite points are the identity.
-            public static method add(Mont* f, EcPoint* a, EcPoint* b) returns EcPoint* {
+            public method add(EcPoint* a, EcPoint* b) returns EcPoint* {
                 if (a.infinite) {
                     return new EcPoint(U256.copy(b.x), U256.copy(b.y), U256.copy(b.z), b.infinite) on heap;
                 }
                 if (b.infinite) {
                     return new EcPoint(U256.copy(a.x), U256.copy(a.y), U256.copy(a.z), a.infinite) on heap;
                 }
+                Mont* f = this.fp;
                 mutable long[] z1z1 = f.mul(a.z, a.z);
                 mutable long[] z2z2 = f.mul(b.z, b.z);
                 mutable long[] u1 = f.mul(a.x, z2z2);
@@ -1814,8 +2960,8 @@
                 mutable long[] h = f.subMod(u2, u1);
                 mutable long[] rr = f.subMod(s2, s1);
                 if (U256.isZero(h)) {
-                    if (U256.isZero(rr)) { return P256.twice(f, a); }
-                    return P256.infinity(f);
+                    if (U256.isZero(rr)) { return this.twice(a); }
+                    return this.infinity();
                 }
                 mutable long[] h2 = f.addMod(h, h);
                 mutable long[] i = f.mul(h2, h2);
@@ -1831,20 +2977,20 @@
             }
 
             // k*P, double-and-add from the top bit down.
-            public static method multiply(Mont* f, EcPoint* p, long[] k) returns EcPoint* {
+            public method multiply(EcPoint* p, long[] k) returns EcPoint* {
                 // The accumulator is replaced every step, and the OLD point is what gets deleted --
                 // under its own name. Writing it the other way round (`delete acc; acc = next;`) is
                 // a use of a deleted variable, and the compiler says so: a name does not come back
                 // to life by being assigned again.
-                mutable EcPoint* acc = P256.infinity(f);
-                mutable int i = 255;
+                mutable EcPoint* acc = this.infinity();
+                mutable int i = this.limbs * 16 - 1;
                 while (i >= 0) {
                     mutable EcPoint* previous = acc;
-                    acc = P256.twice(f, previous);
+                    acc = this.twice(previous);
                     delete previous;
                     if (U256.bit(k, i) == 1) {
                         mutable EcPoint* before = acc;
-                        acc = P256.add(f, before, p);
+                        acc = this.add(before, p);
                         delete before;
                     }
                     i = i - 1;
@@ -1852,26 +2998,121 @@
                 return acc;
             }
 
-            // Back to an affine x: X / Z². The one inversion the whole computation needs.
-            public static method affineX(Mont* f, EcPoint* p) returns long[] {
-                if (p.infinite) { return U256.zero(); }
-                mutable long[] zinv = f.invMont(p.z);
-                mutable long[] zinv2 = f.mul(zinv, zinv);
-                return f.fromMont(f.mul(p.x, zinv2));
+            // aP + bQ, both scalars at once -- Shamir's trick. Verification always needs exactly this
+            // sum, and doing it as two separate multiplications doubles the doublings, which is where
+            // nearly all the time goes. On P-384 that is 384 doublings saved out of 768, and P-384 is
+            // where it matters: its limbs are half again as many and each costs 2.25x as much, so the
+            // naive form is roughly three and a half times a P-256 verification.
+            public method multiplyTwo(EcPoint* p, long[] a, EcPoint* q, long[] b) returns EcPoint* {
+                mutable EcPoint* both = this.add(p, q);
+                mutable EcPoint* acc = this.infinity();
+                mutable int i = this.limbs * 16 - 1;
+                while (i >= 0) {
+                    mutable EcPoint* previous = acc;
+                    acc = this.twice(previous);
+                    delete previous;
+                    int pick = U256.bit(a, i) * 2 + U256.bit(b, i);
+                    if (pick != 0) {
+                        mutable EcPoint* before = acc;
+                        acc = this.add(before, pick == 3 ? both : (pick == 2 ? p : q));
+                        delete before;
+                    }
+                    i = i - 1;
+                }
+                delete both;
+                return acc;
             }
 
-            // ECDSA-with-SHA-256 (FIPS 186-4). `key` is the uncompressed point from the certificate:
-            // 0x04 then 32 bytes of x then 32 of y. `sig` is the DER SEQUENCE { INTEGER r, INTEGER s }.
+            // Back to an affine x: X / Z². The one inversion the whole computation needs.
+            public method affineX(EcPoint* p) returns long[] {
+                if (p.infinite) { return U256.zeroOf(this.limbs); }
+                mutable long[] zinv = this.fp.invMont(p.z);
+                mutable long[] zinv2 = this.fp.mul(zinv, zinv);
+                return this.fp.fromMont(this.fp.mul(p.x, zinv2));
+            }
+            public method affineY(EcPoint* p) returns long[] {
+                if (p.infinite) { return U256.zeroOf(this.limbs); }
+                mutable long[] zinv = this.fp.invMont(p.z);
+                mutable long[] zinv3 = this.fp.mul(this.fp.mul(zinv, zinv), zinv);
+                return this.fp.fromMont(this.fp.mul(p.y, zinv3));
+            }
+
+            // ---- Key agreement. Verification checks somebody else's arithmetic; this does our own.
+            //
+            // TLS 1.3 needs a group both ends can do, and the standard names secp256r1 as the one a
+            // compliant implementation MUST support -- x25519 is only a SHOULD. Offering x25519 alone
+            // was betting the whole client on a preference, and the same shape of bet as offering
+            // fifteen signature schemes and checking three: it works until it meets the server that
+            // took the standard literally.
+
+            // A private scalar from random bytes: reduced into [1, n-1], which is where a scalar has
+            // to live for the arithmetic to mean anything.
+            public method scalarFrom(int[] source, int length) returns long[] {
+                int useLen = length > this.size ? this.size : length;
+                mutable long[] d = U256.fromBytesOf(source, 0, useLen, this.limbs);
+                while (U256.compare(d, this.order) >= 0) { U256.subInto(d, this.order); }
+                if (U256.isZero(d)) { d[0] = cast<long>(1); }
+                return d;
+            }
+
+            // The public half: 0x04 then x then y of d*G, the uncompressed form TLS puts on the wire.
+            public method publicPoint(long[] scalar) returns int[] {
+                mutable EcPoint* g = this.fromAffine(this.gx, this.gy);
+                mutable EcPoint* q = this.multiply(g, scalar);
+                mutable long[] x = this.affineX(q);
+                mutable long[] y = this.affineY(q);
+                mutable int[] xb = U256.toBytesOf(x, this.size);
+                mutable int[] yb = U256.toBytesOf(y, this.size);
+                int[] out = new int[1 + this.size * 2]();
+                out[0] = 4;
+                for (mutable int i = 0; i < this.size; i++) {
+                    out[1 + i] = xb[i];
+                    out[1 + this.size + i] = yb[i];
+                }
+                delete yb;
+                delete xb;
+                delete y;
+                delete x;
+                delete q;
+                delete g;
+                return out;
+            }
+
+            // The shared secret: the x coordinate of scalar*peer, which both sides arrive at from
+            // opposite directions. An empty array means the peer's point was refused -- and it is
+            // refused for the same reason a signature's key is, because a point off the curve moves
+            // the whole exchange into a group the other side chose.
+            public method agree(int[] peer, int peerLen, long[] scalar) returns int[] {
+                if (peerLen != this.pointBytes() || (peer[0] & 255) != 4) { return new int[1](); }
+                mutable long[] px = U256.fromBytesOf(peer, 1, this.size, this.limbs);
+                mutable long[] py = U256.fromBytesOf(peer, 1 + this.size, this.size, this.limbs);
+                if (U256.compare(px, this.prime) >= 0 || U256.compare(py, this.prime) >= 0) {
+                    return new int[1]();
+                }
+                mutable long[] pxm = this.fp.toMont(px);
+                mutable long[] pym = this.fp.toMont(py);
+                if (!this.isOnCurve(pxm, pym)) { return new int[1](); }
+                mutable long[] one = this.oneRaw();
+                mutable EcPoint* point = new EcPoint(pxm, pym, this.fp.toMont(one), false) on heap;
+                delete one;
+                mutable EcPoint* shared = this.multiply(point, scalar);
+                mutable long[] x = this.affineX(shared);       // zeros when the product is infinity
+                mutable int[] out = shared.infinite ? new int[1]() : U256.toBytesOf(x, this.size);
+                delete x;
+                delete shared;
+                delete point;
+                return out;
+            }
+
+            // ECDSA (FIPS 186-4). `key` is the uncompressed point from the certificate: 0x04, then x,
+            // then y, each `coordinateBytes()` long. `sig` is the DER SEQUENCE { INTEGER r, INTEGER s }.
+            // `hash` is the digest of whatever was signed, of whatever length that digest is.
             //
             // Every refusal below is a real attack if it is skipped, which is why each is spelled out
             // rather than folded into one "is it valid" test.
-            public static method verify(int[] key, int keyLen, int[] sig, int sigLen,
-                                        int[] hash) returns boolean {
-                if (keyLen != 65 || (key[0] & 255) != 4) { return false; }   // only uncompressed
-                mutable long[] p = U256.fromHex(P256.primeHex());
-                mutable long[] n = U256.fromHex(P256.orderHex());
-                mutable Mont* fp = new Mont(p) on heap;
-                mutable Mont* fn = new Mont(n) on heap;
+            public method verify(int[] key, int keyLen, int[] sig, int sigLen,
+                                 int[] hash, int hashLen) returns boolean {
+                if (keyLen != this.pointBytes() || (key[0] & 255) != 4) { return false; }
 
                 // r and s out of the DER, refusing anything outside [1, n-1]: a zero or an
                 // out-of-range scalar makes the arithmetic below meaningless and some verifiers
@@ -1879,64 +3120,64 @@
                 if (Der.tag(sig, 0) != 48) { return false; }
                 int rInt = Der.contentOffset(sig, 0);
                 int sInt = Der.nextOffset(sig, rInt);
-                mutable long[] r = P256.integerAt(sig, rInt);
-                mutable long[] s = P256.integerAt(sig, sInt);
+                mutable long[] r = this.integerAt(sig, rInt);
+                mutable long[] s = this.integerAt(sig, sInt);
                 if (U256.isZero(r) || U256.isZero(s)) { return false; }
-                if (U256.compare(r, n) >= 0 || U256.compare(s, n) >= 0) { return false; }
+                if (U256.compare(r, this.order) >= 0 || U256.compare(s, this.order) >= 0) {
+                    return false;
+                }
 
-                mutable long[] qx = U256.fromBytes(key, 1, 32);
-                mutable long[] qy = U256.fromBytes(key, 33, 32);
-                if (U256.compare(qx, p) >= 0 || U256.compare(qy, p) >= 0) { return false; }
-                mutable long[] qxm = fp.toMont(qx);
-                mutable long[] qym = fp.toMont(qy);
-                if (!P256.isOnCurve(fp, qxm, qym)) { return false; }   // invalid-curve attack
+                mutable long[] qx = U256.fromBytesOf(key, 1, this.size, this.limbs);
+                mutable long[] qy = U256.fromBytesOf(key, 1 + this.size, this.size, this.limbs);
+                if (U256.compare(qx, this.prime) >= 0 || U256.compare(qy, this.prime) >= 0) {
+                    return false;
+                }
+                mutable long[] qxm = this.fp.toMont(qx);
+                mutable long[] qym = this.fp.toMont(qy);
+                if (!this.isOnCurve(qxm, qym)) { return false; }   // invalid-curve attack
 
-                // e = the hash as an integer, reduced. SHA-256 is exactly the order's width, so no
-                // truncation is needed -- only the reduction, which matters when the hash exceeds n.
-                mutable long[] e = U256.fromBytes(hash, 0, 32);
-                if (U256.compare(e, n) >= 0) { U256.subInto(e, n); }
+                // e = the LEFTMOST bits of the hash, as many as the order is wide, then reduced.
+                // A digest wider than the curve is truncated and not folded: SHA-512 under P-256 uses
+                // its first 32 bytes, which is what the standard says and what everyone else does.
+                int useLen = hashLen > this.size ? this.size : hashLen;
+                mutable long[] e = U256.fromBytesOf(hash, 0, useLen, this.limbs);
+                if (U256.compare(e, this.order) >= 0) { U256.subInto(e, this.order); }
 
-                mutable long[] w = fn.fromMont(fn.invMont(fn.toMont(s)));
-                mutable long[] u1 = fn.fromMont(fn.mul(fn.toMont(e), fn.toMont(w)));
-                mutable long[] u2 = fn.fromMont(fn.mul(fn.toMont(r), fn.toMont(w)));
+                Mont* scalars = this.fn;
+                mutable long[] w = scalars.fromMont(scalars.invMont(scalars.toMont(s)));
+                mutable long[] u1 = scalars.fromMont(
+                    scalars.mul(scalars.toMont(e), scalars.toMont(w)));
+                mutable long[] u2 = scalars.fromMont(
+                    scalars.mul(scalars.toMont(r), scalars.toMont(w)));
 
-                mutable EcPoint* g = P256.fromAffine(fp, U256.fromHex(P256.gxHex()),
-                                                        U256.fromHex(P256.gyHex()));
-                mutable EcPoint* q = new EcPoint(qxm, qym, fp.toMont(P256.oneRaw()), false) on heap;
-                mutable EcPoint* a = P256.multiply(fp, g, u1);
-                mutable EcPoint* b = P256.multiply(fp, q, u2);
-                mutable EcPoint* sum = P256.add(fp, a, b);
-                if (sum.infinite) { return false; }
-
-                mutable long[] x = P256.affineX(fp, sum);
-                if (U256.compare(x, n) >= 0) { U256.subInto(x, n); }
-                boolean ok = U256.compare(x, r) == 0;
+                mutable EcPoint* g = this.fromAffine(this.gx, this.gy);
+                mutable long[] one = this.oneRaw();
+                mutable EcPoint* q = new EcPoint(qxm, qym, this.fp.toMont(one), false) on heap;
+                delete one;
+                mutable EcPoint* sum = this.multiplyTwo(g, u1, q, u2);
+                mutable boolean ok = false;
+                if (!sum.infinite) {
+                    mutable long[] x = this.affineX(sum);
+                    if (U256.compare(x, this.order) >= 0) { U256.subInto(x, this.order); }
+                    ok = U256.compare(x, r) == 0;
+                }
 
                 delete sum;
-                delete b;
-                delete a;
                 delete q;
                 delete g;
-                delete fn;
-                delete fp;
                 return ok;
             }
 
-            private static method oneRaw() returns long[] {
-                mutable long[] one = U256.zero();
-                one[0] = cast<long>(1);
-                return one;
-            }
-            // A DER INTEGER as a 256-bit value, with the sign-preserving leading zero dropped.
-            private static method integerAt(int[] d, int off) returns long[] {
+            // A DER INTEGER at this curve's width, with the sign-preserving leading zero dropped.
+            private method integerAt(int[] d, int off) returns long[] {
                 mutable int c = Der.contentOffset(d, off);
                 mutable int len = Der.contentLength(d, off);
                 if (len > 0 && (d[c] & 255) == 0) {
                     c = c + 1;
                     len = len - 1;
                 }
-                if (len > 32) { return U256.zero(); }
-                return U256.fromBytes(d, c, len);
+                if (len > this.size) { return U256.zeroOf(this.limbs); }
+                return U256.fromBytesOf(d, c, len, this.limbs);
             }
         }
 
@@ -2148,14 +3389,17 @@
                                                    returns String {
                 int alg = cert.signatureAlgorithm();
                 if (alg == 0) {
-                    return "it is signed with an algorithm this program cannot check";
+                    return "it is signed with ".concat(cert.signatureAlgorithmName())
+                        .concat(", which this program does not check");
                 }
                 if (alg == 3 || alg == 6) {
                     String curve = issuer.ecCurveName();
-                    if (!curve.equals("P-256")) {
+                    mutable nullable Curve* known = Curve.named(curve);
+                    if (known == null) {
                         return "its issuer's key is on ".concat(curve.length() > 0 ? curve : "an unknown curve")
-                            .concat(", and this program can only check P-256");
+                            .concat(", and this program can check only P-256 and P-384");
                     }
+                    delete cast<Curve*>(known);
                 }
                 return "";
             }
@@ -2172,26 +3416,31 @@
                 // rather than a wrong acceptance, so this is not a security hole -- but it would
                 // reject every SHA-384 chain while blaming the certificate, which is the failure mode
                 // this whole class of message exists to avoid.
-                mutable int[] hash = (alg == 4 || alg == 6) ? Sha384.digestRaw(body, bodyLen)
-                                   : (alg == 5 ? Sha512.digestRaw(body, bodyLen)
-                                               : Sha256.digestRaw(body, bodyLen));
-                int hashLen = (alg == 4 || alg == 6) ? 48 : (alg == 5 ? 64 : 32);
+                mutable Sha* digest = Sha.forAlgorithm(alg);
+                mutable int[] hash = digest.of(body, bodyLen);
+                int hashLen = digest.size();
                 mutable int[] sig = cert.signature();
                 mutable boolean ok = false;
 
-                if (alg == 3 || alg == 6) {       // ECDSA, over P-256 only
-                    mutable int[] point = issuer.ecPublicKey();
-                    if (point.length() == 65) {
-                        ok = P256.verify(point, 65, sig, cert.signatureLength(), hash);
+                if (alg == 3 || alg == 6) {       // ECDSA, on whichever curve the issuer's key is on
+                    mutable nullable Curve* known = Curve.named(issuer.ecCurveName());
+                    if (known != null) {
+                        Curve* curve = cast<Curve*>(known);
+                        mutable int[] point = issuer.ecPublicKey();
+                        if (point.length() == curve.pointBytes()) {
+                            ok = curve.verify(point, point.length(), sig, cert.signatureLength(),
+                                              hash, hashLen);
+                        }
+                        delete point;
+                        delete curve;
                     }
-                    delete point;
                 } else {
                     mutable nullable RsaPublicKey* key = issuer.rsaPublicKey();
                     if (key != null) {
                         RsaPublicKey* rsa = cast<RsaPublicKey*>(key);
                         if (alg == 2) {
-                            ok = Rsa.verifyPssSha256(sig, cert.signatureLength(), rsa.modulus,
-                                                     rsa.modLength, rsa.exponent, hash);
+                            ok = Rsa.verifyPss(sig, cert.signatureLength(), rsa.modulus,
+                                               rsa.modLength, rsa.exponent, hash, digest);
                         } else {
                             ok = Rsa.verifyPkcs1(sig, cert.signatureLength(), rsa.modulus,
                                                  rsa.modLength, rsa.exponent, hash, hashLen);
@@ -2201,6 +3450,7 @@
                 }
                 delete sig;
                 delete hash;
+                delete digest;
                 delete body;
                 return ok;
             }

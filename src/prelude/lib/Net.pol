@@ -360,13 +360,7 @@
         public class HttpClient {
             public static method send(HttpRequest* request) returns HttpResponse {
                 Url u = request.url();
-                if (u.isSecure()) {
-                    // Said plainly rather than attempted: this client speaks to the socket directly,
-                    // and an https URL needs TLS between the two. Returning a synthetic response with
-                    // a status of its own is what lets a caller notice, instead of a connection that
-                    // fails somewhere further down for a reason that reads like the network.
-                    return new HttpResponse("HTTP/1.1 000 TLS not available\r\n\r\n") on heap;
-                }
+                if (u.isSecure()) { return HttpClient.sendSecure(request, u); }
                 mutable Socket s = new Socket(Net.connect(u.host(), u.port())) on heap;
                 if (!s.isOpen()) {
                     return new HttpResponse("HTTP/1.1 000 Connection failed\r\n\r\n") on heap;
@@ -380,6 +374,42 @@
                 }
                 s.close();
                 return new HttpResponse(sb.toString()) on heap;
+            }
+
+            // An https URL: the same request, over a connection that is encrypted AND authenticated.
+            //
+            // THE FAILURES BECOME STATUS LINES, and only here. Everywhere else in this library a
+            // refusal is thrown, because a boolean can be dropped and a status line the caller does
+            // not read is a certificate error treated as a page. But `send` already answers a
+            // synthetic response when a plain connection fails, and one method that sometimes throws
+            // and sometimes does not is worse than either: the caller who checks `status()` for one
+            // failure would have to also catch for the other. The distinct codes are what keeps the
+            // reason legible -- 526 is the certificate, 525 is the handshake, matching what the
+            // proxies that invented those codes mean by them.
+            private static method sendSecure(HttpRequest* request, Url u) returns HttpResponse {
+                mutable nullable TlsSession* session = null;
+                try {
+                    session = TlsClient.open(u.host(), u.port());
+                } catch (CertificateException e) {
+                    return new HttpResponse("HTTP/1.1 526 ".concat(e.message())
+                                            .concat("\r\n\r\n")) on heap;
+                } catch (TlsException e) {
+                    return new HttpResponse("HTTP/1.1 525 ".concat(e.message())
+                                            .concat("\r\n\r\n")) on heap;
+                }
+                TlsSession* live = cast<TlsSession*>(session);
+                live.send(request.toWire());
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                mutable boolean more = true;
+                while (more) {
+                    String chunk = live.receive();
+                    if (chunk.length() == 0) { more = false; } else { sb.append(chunk); }
+                }
+                live.close();
+                String text = sb.toString();
+                delete sb;
+                delete live;
+                return new HttpResponse(text) on heap;
             }
 
             // Follows 301/302/303/307/308 up to `limit` hops. Bounded because a server may point at

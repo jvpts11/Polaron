@@ -4996,6 +4996,18 @@ if(POLARON_WITH_LLVM)
             "-DCONTAINS=x25519: vector=1 agrees=1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # THE OTHER KEY EXCHANGE, on the curve RFC 8446 makes mandatory (x25519 is only a SHOULD).
+        # The vector is .NET's two ephemeral keys and the SHA-256 of the secret they agreed, so what
+        # is witnessed is that our number is THEIR number. The off-curve refusal is the same
+        # invalid-curve attack the signature verifier guards against, and in a key exchange it hands
+        # the other side control of the group the secret is computed in.
+        add_test(NAME codegen_tls_p256_ecdh COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/tls_primitives.pol"
+            "-DCONTAINS=p256 ecdh: vector=1 publicKey=1 offCurveRefused=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         # AES-GCM against NIST SP 800-38D, and the field that matters most: a flipped bit in the tag
         # must make `open` REFUSE. Decrypting first and checking after is how a program ends up acting
         # on bytes an attacker chose.
@@ -5032,6 +5044,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         set_tests_properties(codegen_trust_store PROPERTIES TIMEOUT 180)
+        # "Unsupported" used to mix two opposite things: roots a modern client is SUPPOSED to refuse,
+        # and roots this library could not reach. Six of them were P-384 — a curve, not a policy —
+        # and nothing in the count said so. Now every refusal must be an obsolete digest, so a modern
+        # algorithm falling out of reach fails here instead of hiding in a number.
+        add_test(NAME codegen_trust_store_refusals_are_policy COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/trust_store.pol"
+            "-DCONTAINS=every refusal is an obsolete digest: 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        set_tests_properties(codegen_trust_store_refusals_are_policy PROPERTIES TIMEOUT 180)
         add_test(NAME codegen_trust_store_loads COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
@@ -5040,6 +5064,39 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         set_tests_properties(codegen_trust_store_loads PROPERTIES TIMEOUT 180)
+
+        # AN https:// URL FETCHED FOR REAL. `HttpClient` used to answer one with a made-up response
+        # reading "TLS not available" — a library shipping the protocol and not the transport. These
+        # need a network, deliberately: the P-384 gap that made example.com unreachable was invisible
+        # to every offline test here, and only a real server showed it.
+        add_test(NAME codegen_https_fetch COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/https_client.pol"
+            "-DCONTAINS=status: 200"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        set_tests_properties(codegen_https_fetch PROPERTIES TIMEOUT 120)
+        # The load-bearing half. Anyone can encrypt to whoever answered the socket; with nothing
+        # trusted, every signature in the chain still checks out and the connection must still fail.
+        add_test(NAME codegen_https_refuses_untrusted COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/https_client.pol"
+            "-DCONTAINS=without a trust store: refused"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        set_tests_properties(codegen_https_refuses_untrusted PROPERTIES TIMEOUT 120)
+        # A server that will not continue says why, by number. Reporting every refusal with one
+        # sentence is how a version mismatch and a rejected hostname become the same bug report.
+        add_test(NAME codegen_tls_alert_named COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/https_client.pol"
+            "-DCONTAINS=alert 48: unknown certificate authority"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        set_tests_properties(codegen_tls_alert_named PROPERTIES TIMEOUT 120)
 
         # SIGNATURE VERIFICATION, against signatures this project did not produce. Both vectors were
         # made by .NET's own ECDSA and RSA-PSS and verified there before being written down — a
@@ -5068,6 +5125,25 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ecdsa_verify.pol"
             "-DCONTAINS=point off the curve: 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # P-384, and the reason it is not optional: connecting to example.com refused the certificate
+        # because Cloudflare's intermediate is on that curve, and twelve of this machine's sixty-eight
+        # roots are too. One curve implemented is a third of the web reported as a certificate
+        # problem. Nothing about it is a second implementation — the same limbs, the same Montgomery
+        # reduction and the same point formulas, told a different prime.
+        add_test(NAME codegen_ecdsa_p384 COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ecdsa_verify.pol"
+            "-DCONTAINS=p384 valid signature: 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_ecdsa_p384_refuses COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ecdsa_verify.pol"
+            "-DCONTAINS=p384 point off the curve: 0"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         # The budget: a handshake verifies two or three signatures, and the same work on the standard

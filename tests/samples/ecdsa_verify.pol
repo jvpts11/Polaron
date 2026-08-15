@@ -1,20 +1,25 @@
 import System.IO.Console;
-import System.Net.Tls.P256;
+import System.Net.Tls.Curve;
 import System.Net.Tls.U256;
 import System.Net.Tls.Mont;
 import System.Time.Time;
 program EcdsaVerify;
 
-// ECDSA ON P-256, CHECKED AGAINST A SIGNATURE THIS PROGRAM DID NOT MAKE.
+// ECDSA ON P-256 AND P-384, CHECKED AGAINST SIGNATURES THIS PROGRAM DID NOT MAKE.
 //
-// The key, the hash and the signature below were produced by .NET's own ECDSA and verified there
-// before being written down. That matters: a verifier tested against a signer we also wrote is a
-// verifier tested against its own misunderstanding, and elliptic-curve code fails by giving the
-// wrong answer rather than by crashing. An outside oracle is the only useful witness.
+// The keys, hashes and signatures below were produced by .NET's own ECDSA and verified there before
+// being written down. That matters: a verifier tested against a signer we also wrote is a verifier
+// tested against its own misunderstanding, and elliptic-curve code fails by giving the wrong answer
+// rather than by crashing. An outside oracle is the only useful witness.
 //
 // WHY THIS IS NEEDED AT ALL. RSA is not enough for a real chain: most of the certificates the
 // internet presents today are ECDSA, so a client that verifies only RSA either refuses the servers
 // people use or -- far worse -- treats "I cannot check this" as "this checks out".
+//
+// WHY BOTH CURVES. P-256 alone is not enough either, and that was not a guess: connecting to
+// example.com refused the certificate because Cloudflare's intermediate is on P-384. Twelve of this
+// machine's sixty-eight roots are P-384 as well. One curve implemented is a third of the web unable
+// to be checked, reported as a certificate problem.
 //
 // The three NO answers are as important as the yes. A flipped bit in the hash, a signature belonging
 // to a different message, and a point that is not on the curve must all be refused; the last is the
@@ -26,6 +31,9 @@ program EcdsaVerify;
 //   wrong hash: 0
 //   tampered signature: 0
 //   point off the curve: 0
+//   p384 valid signature: 1
+//   p384 wrong hash: 0
+//   p384 point off the curve: 0
 //   one verification: under 200 ms
 public bundle Main {
     public namespace App {
@@ -64,13 +72,37 @@ public bundle Main {
                     .concat("16e1ac3cc157b6ce383630583216ce2e4109634fcdcb4d5193712264f564ad4c"));
             }
 
+            // ---- P-384: 48-byte coordinates, a SHA-384 digest, and a signature to match. ----
+            private static method publicKey384() returns int[] {
+                return Main.hexBytes("04"
+                    .concat("3e0de4838401fcf80c79b6f198c7ee188c1619019da36b4663949ea03a3bf5ee")
+                    .concat("042c2dc7e10f869be5f7222feeb13f9a")
+                    .concat("d511e68643a4b174774a76f03b53ea519055c6e9b15ee148939bb823bb1d1241")
+                    .concat("30583719ac2b399349aa1b7f5b0699f6"));
+            }
+            private static method messageHash384() returns int[] {
+                return Main.hexBytes(
+                    "a964e01ed1e129ff0a885a3620e095910a82d6d8bd8714c31f2413323761ec92"
+                        .concat("51a1f703519c5fcfbda976c3291f96d1"));
+            }
+            private static method signature384() returns int[] {
+                return Main.hexBytes("3065"
+                    .concat("023100")
+                    .concat("fb0e8fbe86722321a138acd579cf8c797b44d9004920b3f71d828280f034b20f")
+                    .concat("2eca764a688026b38a9be8576c139dd3")
+                    .concat("0230")
+                    .concat("2952978a02c8c343a1e7ecd9f7bedcc6525af1b6c91ceb91aa5d884b8c976c95")
+                    .concat("8aa5babb45b2a1d0574db3f517feada8"));
+            }
+
             public static method main(string[] args) returns void {
+                mutable Curve* p256 = Curve.p256();
                 mutable int[] key = Main.publicKey();
                 mutable int[] sig = Main.signature();
                 mutable int[] hash = Main.messageHash();
 
                 long t0 = Time.millis();
-                mutable boolean good = P256.verify(key, 65, sig, sig.length(), hash);
+                mutable boolean good = p256.verify(key, 65, sig, sig.length(), hash, 32);
                 long t1 = Time.millis();
                 System.IO.Console.printf("valid signature: %d\n", good ? 1 : 0);
 
@@ -78,25 +110,47 @@ public bundle Main {
                 mutable int[] otherHash = Main.messageHash();
                 otherHash[0] = otherHash[0] ^ 1;
                 System.IO.Console.printf("wrong hash: %d\n",
-                    P256.verify(key, 65, sig, sig.length(), otherHash) ? 1 : 0);
+                    p256.verify(key, 65, sig, sig.length(), otherHash, 32) ? 1 : 0);
 
                 // One byte of `s` flipped.
                 mutable int[] badSig = Main.signature();
                 badSig[badSig.length() - 1] = badSig[badSig.length() - 1] ^ 1;
                 System.IO.Console.printf("tampered signature: %d\n",
-                    P256.verify(key, 65, badSig, badSig.length(), hash) ? 1 : 0);
+                    p256.verify(key, 65, badSig, badSig.length(), hash, 32) ? 1 : 0);
 
                 // A key whose y was changed: the point is no longer on the curve, and a verifier that
                 // does not check would be doing arithmetic in a group somebody else chose.
                 mutable int[] offCurve = Main.publicKey();
                 offCurve[64] = offCurve[64] ^ 1;
                 System.IO.Console.printf("point off the curve: %d\n",
-                    P256.verify(offCurve, 65, sig, sig.length(), hash) ? 1 : 0);
+                    p256.verify(offCurve, 65, sig, sig.length(), hash, 32) ? 1 : 0);
+
+                // THE SAME ARITHMETIC, ONE CURVE WIDER. Nothing below is a second implementation:
+                // the limbs, the Montgomery reduction and the point formulas are the ones above, told
+                // a different prime. That is the whole reason the curve became an object.
+                mutable Curve* p384 = Curve.p384();
+                mutable int[] key384 = Main.publicKey384();
+                mutable int[] sig384 = Main.signature384();
+                mutable int[] hash384 = Main.messageHash384();
+                System.IO.Console.printf("p384 valid signature: %d\n",
+                    p384.verify(key384, 97, sig384, sig384.length(), hash384, 48) ? 1 : 0);
+
+                mutable int[] otherHash384 = Main.messageHash384();
+                otherHash384[0] = otherHash384[0] ^ 1;
+                System.IO.Console.printf("p384 wrong hash: %d\n",
+                    p384.verify(key384, 97, sig384, sig384.length(), otherHash384, 48) ? 1 : 0);
+
+                mutable int[] offCurve384 = Main.publicKey384();
+                offCurve384[96] = offCurve384[96] ^ 1;
+                System.IO.Console.printf("p384 point off the curve: %d\n",
+                    p384.verify(offCurve384, 97, sig384, sig384.length(), hash384, 48) ? 1 : 0);
 
                 // The budget matters: a handshake verifies two or three of these, and the same work
                 // on the standard library's decimal BigInteger measured over a second EACH.
                 System.IO.Console.printf("one verification: %s\n",
                                          (t1 - t0) < cast<long>(200) ? "under 200 ms" : "too slow");
+                delete p384;
+                delete p256;
                 return;
             }
         }

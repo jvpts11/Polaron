@@ -3,6 +3,7 @@ import System.Net.Tls.Gcm;
 import System.Net.Tls.Hkdf;
 import System.Net.Tls.KeySchedule;
 import System.Net.Tls.X25519;
+import System.Net.Tls.Curve;
 import System.Security.Sha256;
 import System.Security.Sha384;
 import System.Security.Sha512;
@@ -32,6 +33,7 @@ program TlsPrimitives;
 //   hkdf: prk=1 okm=1
 //   keyschedule: earlySecret=1 keyIsSixteen=1 ivIsTwelve=1
 //   x25519: vector=1 agrees=1
+//   p256 ecdh: vector=1 publicKey=1 offCurveRefused=1
 //   gcm: vector=1 roundTrip=1 forgedTagRefused=1
 public bundle Main {
     public namespace App {
@@ -101,6 +103,45 @@ public bundle Main {
                     Sha256.toHex(shared, 32).equals("c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552") ? 1 : 0,
                     Sha256.toHex(X25519.scalarMult(alice, bobPublic), 32)
                         .equals(Sha256.toHex(X25519.scalarMult(bob, alicePublic), 32)) ? 1 : 0);
+
+                // THE OTHER KEY EXCHANGE, on the curve RFC 8446 makes mandatory. A client that offers
+                // only x25519 is betting on a preference where the standard states a requirement --
+                // and a client that offers a group without a key behind it buys a HelloRetryRequest
+                // instead of a connection. Both are offered, so both must work.
+                //
+                // The vector is .NET's: its two ephemeral keys, and the SHA-256 of the secret they
+                // agreed. Hashed because .NET Framework will not hand out the raw agreement, which
+                // costs nothing here -- what is being witnessed is that OUR number is THEIR number.
+                mutable int[] ourPrivate = Main.bytesOf(
+                    "36b5bc4f1f2e0c360ee94bbcd103490d96a22eb91f2149d2e12cb828d6af4e52");
+                mutable int[] theirPublic = Main.bytesOf("04"
+                    .concat("7478f9c59eae94dda96841973c66150ba287541753a9c1e5b93c6d44fe47bc9a")
+                    .concat("f0ef37d13ac750821f57cb5ad733759cbb8699c4b707a21f7d2f5ed8ac9b9614"));
+                mutable int[] ourPublic = Main.bytesOf("04"
+                    .concat("5165d36a16e8d3968c325ae1d34ee5e5fe50e7fb11190c03c03d69b05f3864b6")
+                    .concat("5e525ff6048340a23e62ca4f1a0d6c54d3dc8d46e6d3113205a992a114db54e0"));
+                mutable Curve* p256 = Curve.p256();
+                mutable long[] ourScalar = p256.scalarFrom(ourPrivate, 32);
+                mutable int[] agreed = p256.agree(theirPublic, 65, ourScalar);
+                // ...and the public half we would put on the wire must be the one .NET saw.
+                mutable int[] derivedPublic = p256.publicPoint(ourScalar);
+                mutable boolean samePublic = derivedPublic.length() == 65;
+                for (mutable int i = 0; i < 65 && samePublic; i++) {
+                    if (derivedPublic[i] != ourPublic[i]) { samePublic = false; }
+                }
+                // A point that is not on the curve must be refused rather than multiplied: that is
+                // the invalid-curve attack, and in a key exchange it hands the other side control of
+                // the group the secret is computed in.
+                mutable int[] bentPublic = Main.bytesOf("04"
+                    .concat("7478f9c59eae94dda96841973c66150ba287541753a9c1e5b93c6d44fe47bc9a")
+                    .concat("f0ef37d13ac750821f57cb5ad733759cbb8699c4b707a21f7d2f5ed8ac9b9615"));
+                mutable int[] refused = p256.agree(bentPublic, 65, ourScalar);
+                System.IO.Console.printf("p256 ecdh: vector=%d publicKey=%d offCurveRefused=%d\n",
+                    agreed.length() == 32 &&
+                        Sha256.toHex(Sha256.digestRaw(agreed, 32), 32)
+                        .equals("9da1a4de7ced7351d417ff79063fc1648701cf894640fc3e75c3bd46ea41adb8") ? 1 : 0,
+                    samePublic ? 1 : 0,
+                    refused.length() <= 1 ? 1 : 0);
 
                 // NIST SP 800-38D. The last field is the one that matters most: a flipped bit in the
                 // tag must make `open` refuse, because decrypting first and checking after is how a
