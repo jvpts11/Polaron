@@ -218,12 +218,26 @@ const ClassInfo* SemanticAnalyzer::lookupShared(const std::string& name) const {
     // The root of that was an import context the prelude should never have had, and is fixed where
     // it is built; stating the rule here as well is what makes it not depend on that staying fixed.
     if (currentBundle_ == "System") {
+        // ...but "its own" has to be exactly one of them. Two System types answering to one name is
+        // the same over-supply as anywhere else, and taking the first was picking in silence inside
+        // the one body of code that cannot write an import to say which it meant. It happened: a
+        // `Digest` added under Net.Tls captured `Digest.fnv1a` from Collections, and the failure
+        // surfaced as an unknown static method on a class that has it -- which sends the reader to
+        // the wrong file. Ambiguous here means unresolved here, and the caller names both paths.
+        const ClassInfo* onlyOne = nullptr;
         for (std::uint32_t id : shared->second) {
-            if (types_[id].bundle == "System") {
-                if (const ClassInfo* c = entryFor(types_[id])) {
-                    return c;
-                }
+            if (types_[id].bundle != "System") {
+                continue;
             }
+            if (const ClassInfo* c = entryFor(types_[id])) {
+                if (onlyOne != nullptr && onlyOne != c) {
+                    return nullptr;
+                }
+                onlyOne = c;
+            }
+        }
+        if (onlyOne != nullptr) {
+            return onlyOne;
         }
     }
     // AN IMPORT THAT NAMES THE PATH SETTLES IT. Checked before anything else that could guess,

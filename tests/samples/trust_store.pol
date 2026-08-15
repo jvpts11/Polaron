@@ -25,14 +25,19 @@ program TrustStoreTest;
 //
 // Prints:
 //   store: loaded=1 many=1
-//   roots: checked=12 selfVerified=12 unsupported=<varies>
+//   roots: checked=37 selfVerified=37 unsupported=<varies>
 //   every checked root verified: 1
+//   every refusal is an obsolete digest: 1
 //   unknown issuer: refused=1
 //
-// The exact counts move with the machine's store, which is why the assertion is the LINE BELOW them:
-// every root this library claims it can check must check out. The unsupported ones are counted
-// separately and on purpose — they are a measurement of what is still missing here (P-384, and the
-// old SHA-1 authorities), not a failure of anything.
+// The exact counts move with the machine's store, which is why the assertions are the two LINES
+// BELOW them. The first: every root this library claims it can check must check out. The second is
+// the one that closed a real gap — "unsupported" used to mix two opposite things, roots a modern
+// client is SUPPOSED to refuse (SHA-1, MD5, MD2) and roots this library simply could not reach.
+// Measured here: 30 checked and 36 refused, of which SIX were P-384 — a curve, not a policy. With
+// P-384 in, it reads 37 checked and 29 refused, and all 29 are obsolete digests. The line is what
+// keeps that true: a modern algorithm falling out of reach fails this test instead of hiding in a
+// count nobody can act on.
 public bundle Main {
     public namespace App {
         public class Main {
@@ -48,6 +53,7 @@ public bundle Main {
                 mutable int checked = 0;
                 mutable int verified = 0;
                 mutable int cannot = 0;
+                mutable int obsolete = 0;
                 mutable ArrayList<Certificate*> roots = system.certificates();
                 mutable int i = 0;
                 // THE WHOLE STORE, every root the machine holds. That is only affordable because the
@@ -62,8 +68,17 @@ public bundle Main {
                         // mean opposite things: the first is a gap in this library, the second is a
                         // certificate that is lying. Real stores contain both old SHA-1 authorities
                         // and P-384 ones, and refusing those IS the correct answer.
-                        if (CertificateValidator.unsupportedReason(root, root).length() > 0) {
+                        String why = CertificateValidator.unsupportedReason(root, root);
+                        if (why.length() > 0) {
                             cannot = cannot + 1;
+                            // WHY it cannot, and not merely that it cannot. An obsolete digest is a
+                            // root a modern client is SUPPOSED to refuse; anything else on that list
+                            // is a hole in this library wearing the same words. Counting them apart
+                            // is what turns "36 unsupported" from a number nobody can act on into a
+                            // claim that can fail.
+                            if (why.contains("SHA-1") || why.contains("MD5") || why.contains("MD2")) {
+                                obsolete = obsolete + 1;
+                            }
                         } else {
                             checked = checked + 1;
                             if (CertificateValidator.signedBy(root, root)) {
@@ -77,6 +92,8 @@ public bundle Main {
                                          checked, verified, cannot);
                 System.IO.Console.printf("every checked root verified: %d\n",
                                          checked > 0 && checked == verified ? 1 : 0);
+                System.IO.Console.printf("every refusal is an obsolete digest: %d\n",
+                                         cannot == obsolete ? 1 : 0);
 
                 // ...and a certificate whose issuer is in no store: the chain has nowhere to end.
                 mutable TrustStore* empty = new TrustStore() on heap;

@@ -1,0 +1,71 @@
+import System.IO.Console;
+import System.Net.HttpClient;
+import System.Net.HttpRequest;
+import System.Net.HttpResponse;
+import System.Net.Tls.Alert;
+import System.Net.Tls.CertificateException;
+import System.Net.Tls.TlsClient;
+import System.Net.Tls.TlsException;
+import System.Net.Tls.TlsSession;
+import System.Net.Tls.TrustStore;
+program HttpsClient;
+
+// AN `https://` URL FETCHED FOR REAL, and the refusals that make it worth anything.
+//
+// This is the line the whole TLS stack exists to delete. `HttpClient` used to answer an https URL
+// with a made-up response reading `HTTP/1.1 000 TLS not available` -- a client that ships the
+// protocol and not the transport, which is the position C++ and Rust take and the one this library
+// argued its way out of: complexity left out of the library does not disappear, it moves to whoever
+// is using it.
+//
+// THE REFUSAL IS THE LOAD-BEARING HALF. Anyone can encrypt to whoever answered the socket; that
+// stops eavesdropping and does nothing about impersonation, and looks identical from the inside. A
+// trust store with nothing in it is a chain that reaches no root -- and the connection must fail,
+// because "I could not check who this is" and "this is who it claims" must never be one answer.
+//
+// The live fetch needs a network. That is deliberate rather than convenient: a TLS client tested
+// only against fixtures is a TLS client tested against our own idea of what servers send, and the
+// P-384 gap that made example.com unreachable was invisible to every offline test here.
+//
+// Prints:
+//   status: 200
+//   body is html: 1
+//   without a trust store: refused
+//   alert 45: certificate expired
+//   alert 48: unknown certificate authority
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable HttpRequest* get = HttpRequest.get("https://example.com/");
+                mutable HttpResponse reply = HttpClient.send(get);
+                System.IO.Console.printf("status: %d\n", reply.status());
+                System.IO.Console.printf("body is html: %d\n",
+                                         reply.body().contains("<html") ? 1 : 0);
+
+                // The same server, with nothing trusted. Every signature in the chain still checks
+                // out and the hostname still matches -- and it must still be refused, because the
+                // chain ends nowhere.
+                mutable TrustStore* nothing = new TrustStore() on heap;
+                mutable String outcome = "connected anyway";
+                try {
+                    mutable TlsSession* s = TlsClient.connect("example.com", 443, nothing);
+                    s.close();
+                    delete s;
+                } catch (CertificateException e) {
+                    outcome = "refused";
+                } catch (TlsException e) {
+                    outcome = "refused before the certificate: ".concat(e.message());
+                }
+                System.IO.Console.printf("without a trust store: %s\n", outcome);
+                delete nothing;
+
+                // What a server says when it will not continue. Every non-ServerHello answer used to
+                // read the same way, which sent whoever was debugging in no direction at all.
+                System.IO.Console.printf("alert 45: %s\n", Alert.describe(45));
+                System.IO.Console.printf("alert 48: %s\n", Alert.describe(48));
+                return;
+            }
+        }
+    }
+}
