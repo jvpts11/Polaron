@@ -368,6 +368,40 @@
         // HMAC-SHA256 keyed message authentication (RFC 2104), pure Polaron on top of Sha256. sha256 returns the
         // lowercase hex of HMAC-SHA256(key, msg). Keys longer than the 64-byte block are hashed down first.
         public class Hmac {
+            // HMAC-SHA256 (RFC 2104) OVER RAW BYTES, which the String form cannot express: a key is
+            // key material, not text, and TLS derives its keys from bytes that are not valid in any
+            // encoding. HKDF and the TLS 1.3 key schedule are built entirely on this one.
+            //
+            //   HMAC(K, m) = SHA256((K' XOR opad) || SHA256((K' XOR ipad) || m))
+            //
+            // where K' is the key padded with zeros to the 64-byte block, or its hash when it is
+            // longer than a block.
+            public static method sha256Raw(int[] key, int keyLength, int[] msg, int msgLength)
+                                           returns int[] {
+                int block = 64;
+                mutable int[] k = new int[block]();
+                if (keyLength > block) {
+                    mutable int[] hashed = Sha256.digestRaw(key, keyLength);
+                    for (mutable int i = 0; i < 32; i++) { k[i] = hashed[i]; }
+                    delete hashed;
+                } else {
+                    for (mutable int i = 0; i < keyLength; i++) { k[i] = key[i]; }
+                }
+                mutable int[] inner = new int[block + msgLength]();
+                for (mutable int i = 0; i < block; i++) { inner[i] = (k[i] ^ 54) & 255; }   // ipad
+                for (mutable int i = 0; i < msgLength; i++) { inner[block + i] = msg[i] & 255; }
+                mutable int[] innerHash = Sha256.digestRaw(inner, block + msgLength);
+                delete inner;
+                mutable int[] outer = new int[block + 32]();
+                for (mutable int i = 0; i < block; i++) { outer[i] = (k[i] ^ 92) & 255; }   // opad
+                for (mutable int i = 0; i < 32; i++) { outer[block + i] = innerHash[i]; }
+                delete innerHash;
+                delete k;
+                int[] result = Sha256.digestRaw(outer, block + 32);
+                delete outer;
+                return result;
+            }
+
             public static method sha256(String key, String msg) returns String {
                 int B = 64;
                 int klen = key.length();
