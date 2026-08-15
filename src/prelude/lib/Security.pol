@@ -451,6 +451,192 @@
                 return Sha256.toHex(Sha1.digestRaw(data, len), 20);
             }
         }
+        // SHA-512 and SHA-384 (FIPS 180-4) -- the 64-bit members of the family, which this library did
+        // not have.
+        //
+        // That was a real hole rather than a missing convenience. Counted on this machine's own trust
+        // store, of 68 root certificates: 19 are signed with SHA-256, **12 with SHA-384** and one with
+        // SHA-512. A TLS client that can only check SHA-256 cannot follow a chain to a third of the
+        // authorities the machine trusts -- and the honest response to a signature it cannot check is
+        // to refuse the connection, so the gap is not cosmetic.
+        //
+        // The structure is SHA-256's with everything widened: 64-bit words, 80 rounds instead of 64,
+        // different rotation amounts, and a 128-byte block. SHA-384 is the same compression with a
+        // different starting state, truncated to 48 bytes -- which is what stops one being a prefix
+        // of the other and makes length-extension across the two impossible.
+        public class Sha512 {
+            private static method rotr(ulong x, int n) returns ulong {
+                return (x >> n) | (x << (64 - n));
+            }
+            // The first 64 bits of the fractional parts of the cube roots of the first eighty primes.
+            // Built once per call rather than held as a static array: a static would be initialised
+            // through a class-load hook, and this is reached from code that must work before those
+            // have run.
+            private static method roundConstants() returns ulong[] {
+                mutable ulong[] k = new ulong[80]();
+                mutable String hex = "428a2f98d728ae22"
+                    .concat("7137449123ef65cd").concat("b5c0fbcfec4d3b2f").concat("e9b5dba58189dbbc")
+                    .concat("3956c25bf348b538").concat("59f111f1b605d019").concat("923f82a4af194f9b")
+                    .concat("ab1c5ed5da6d8118").concat("d807aa98a3030242").concat("12835b0145706fbe")
+                    .concat("243185be4ee4b28c").concat("550c7dc3d5ffb4e2").concat("72be5d74f27b896f")
+                    .concat("80deb1fe3b1696b1").concat("9bdc06a725c71235").concat("c19bf174cf692694")
+                    .concat("e49b69c19ef14ad2").concat("efbe4786384f25e3").concat("0fc19dc68b8cd5b5")
+                    .concat("240ca1cc77ac9c65").concat("2de92c6f592b0275").concat("4a7484aa6ea6e483")
+                    .concat("5cb0a9dcbd41fbd4").concat("76f988da831153b5").concat("983e5152ee66dfab")
+                    .concat("a831c66d2db43210").concat("b00327c898fb213f").concat("bf597fc7beef0ee4")
+                    .concat("c6e00bf33da88fc2").concat("d5a79147930aa725").concat("06ca6351e003826f")
+                    .concat("142929670a0e6e70").concat("27b70a8546d22ffc").concat("2e1b21385c26c926")
+                    .concat("4d2c6dfc5ac42aed").concat("53380d139d95b3df").concat("650a73548baf63de")
+                    .concat("766a0abb3c77b2a8").concat("81c2c92e47edaee6").concat("92722c851482353b")
+                    .concat("a2bfe8a14cf10364").concat("a81a664bbc423001").concat("c24b8b70d0f89791")
+                    .concat("c76c51a30654be30").concat("d192e819d6ef5218").concat("d69906245565a910")
+                    .concat("f40e35855771202a").concat("106aa07032bbd1b8").concat("19a4c116b8d2d0c8")
+                    .concat("1e376c085141ab53").concat("2748774cdf8eeb99").concat("34b0bcb5e19b48a8")
+                    .concat("391c0cb3c5c95a63").concat("4ed8aa4ae3418acb").concat("5b9cca4f7763e373")
+                    .concat("682e6ff3d6b2b8a3").concat("748f82ee5defb2fc").concat("78a5636f43172f60")
+                    .concat("84c87814a1f0ab72").concat("8cc702081a6439ec").concat("90befffa23631e28")
+                    .concat("a4506cebde82bde9").concat("bef9a3f7b2c67915").concat("c67178f2e372532b")
+                    .concat("ca273eceea26619c").concat("d186b8c721c0c207").concat("eada7dd6cde0eb1e")
+                    .concat("f57d4f7fee6ed178").concat("06f067aa72176fba").concat("0a637dc5a2c898a6")
+                    .concat("113f9804bef90dae").concat("1b710b35131c471b").concat("28db77f523047d84")
+                    .concat("32caab7b40c72493").concat("3c9ebe0a15c9bebc").concat("431d67c49c100d4c")
+                    .concat("4cc5d4becb3e42b6").concat("597f299cfc657e2a").concat("5fcb6fab3ad6faec")
+                    .concat("6c44198c4a475817");
+                for (mutable int i = 0; i < 80; i++) {
+                    mutable ulong v = cast<ulong>(0);
+                    for (mutable int j = 0; j < 16; j++) {
+                        v = (v << 4) | cast<ulong>(Sha512.hexValue(hex.charAt(i * 16 + j)));
+                    }
+                    k[i] = v;
+                }
+                return k;
+            }
+            private static method hexValue(char c) returns int {
+                if (c >= '0' && c <= '9') { return cast<int>(c) - 48; }
+                return cast<int>(c) - 87;
+            }
+
+            // The compression, shared by both digests: `state` is eight words in and eight out.
+            // `internal` rather than `private` for the same reason Sha256's helpers are: SHA-384 is
+            // this compression with another starting state, and duplicating eighty rounds to keep a
+            // keyword happy is how two copies drift apart.
+            internal static method compress(ulong[] state, int[] data, int len) returns void {
+                mutable ulong[] k = Sha512.roundConstants();
+                // Padding: a 1 bit, zeros, then the length in bits as 128 bits big-endian. The block
+                // is 128 bytes and the length occupies the last 16, so the message ends at 112.
+                mutable int padded = len + 1;
+                while (padded % 128 != 112) { padded = padded + 1; }
+                mutable int total = padded + 16;
+                mutable int[] msg = new int[total]();
+                for (mutable int i = 0; i < len; i++) { msg[i] = data[i] & 255; }
+                msg[len] = 128;
+                // Only the low 64 bits of the length are written: a message of 2^61 bytes is not a
+                // thing this runs on, and the high half stays zero as the standard allows.
+                long bits = cast<long>(len) * cast<long>(8);
+                for (mutable int i = 0; i < 8; i++) {
+                    msg[total - 1 - i] = cast<int>((bits >> (i * 8)) & cast<long>(255));
+                }
+
+                mutable ulong[] w = new ulong[80]();
+                mutable int block = 0;
+                while (block < total) {
+                    for (mutable int i = 0; i < 16; i++) {
+                        mutable ulong word = cast<ulong>(0);
+                        for (mutable int b = 0; b < 8; b++) {
+                            word = (word << 8) | cast<ulong>(msg[block + i * 8 + b] & 255);
+                        }
+                        w[i] = word;
+                    }
+                    for (mutable int i = 16; i < 80; i++) {
+                        ulong s0 = Sha512.rotr(w[i - 15], 1) ^ Sha512.rotr(w[i - 15], 8) ^
+                                   (w[i - 15] >> 7);
+                        ulong s1 = Sha512.rotr(w[i - 2], 19) ^ Sha512.rotr(w[i - 2], 61) ^
+                                   (w[i - 2] >> 6);
+                        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+                    }
+                    mutable ulong a = state[0]; mutable ulong b = state[1];
+                    mutable ulong c = state[2]; mutable ulong d = state[3];
+                    mutable ulong e = state[4]; mutable ulong f = state[5];
+                    mutable ulong g = state[6]; mutable ulong h = state[7];
+                    for (mutable int i = 0; i < 80; i++) {
+                        ulong s1 = Sha512.rotr(e, 14) ^ Sha512.rotr(e, 18) ^ Sha512.rotr(e, 41);
+                        ulong ch = (e & f) ^ ((~e) & g);
+                        ulong temp1 = h + s1 + ch + k[i] + w[i];
+                        ulong s0 = Sha512.rotr(a, 28) ^ Sha512.rotr(a, 34) ^ Sha512.rotr(a, 39);
+                        ulong maj = (a & b) ^ (a & c) ^ (b & c);
+                        ulong temp2 = s0 + maj;
+                        h = g; g = f; f = e;
+                        e = d + temp1;
+                        d = c; c = b; b = a;
+                        a = temp1 + temp2;
+                    }
+                    state[0] = state[0] + a; state[1] = state[1] + b;
+                    state[2] = state[2] + c; state[3] = state[3] + d;
+                    state[4] = state[4] + e; state[5] = state[5] + f;
+                    state[6] = state[6] + g; state[7] = state[7] + h;
+                    block = block + 128;
+                }
+                delete w;
+                delete msg;
+                delete k;
+                return;
+            }
+
+            internal static method emit(ulong[] state, int words) returns int[] {
+                int[] out = new int[words * 8]();
+                for (mutable int i = 0; i < words; i++) {
+                    for (mutable int b = 0; b < 8; b++) {
+                        out[i * 8 + b] = cast<int>((state[i] >> ((7 - b) * 8)) & cast<ulong>(255));
+                    }
+                }
+                return out;
+            }
+
+            // 64 bytes.
+            public static method digestRaw(int[] data, int len) returns int[] {
+                mutable ulong[] s = new ulong[8]();
+                s[0] = cast<ulong>(7640891576956012808); s[1] = cast<ulong>(0 - 4942790177534073029);
+                s[2] = cast<ulong>(4354685564936845355); s[3] = cast<ulong>(0 - 6534734903238641935);
+                s[4] = cast<ulong>(5840696475078001361); s[5] = cast<ulong>(0 - 7276294671716946913);
+                s[6] = cast<ulong>(2270897969802886507); s[7] = cast<ulong>(6620516959819538809);
+                Sha512.compress(s, data, len);
+                int[] out = Sha512.emit(s, 8);
+                delete s;
+                return out;
+            }
+            public static method digest(String msg) returns String {
+                int[] data = new int[msg.length()]();
+                for (mutable int i = 0; i < msg.length(); i++) {
+                    data[i] = cast<int>(msg.charAt(i)) & 255;
+                }
+                return Sha256.toHex(Sha512.digestRaw(data, msg.length()), 64);
+            }
+        }
+
+        // SHA-384: the SHA-512 compression from a different starting state, truncated to 48 bytes.
+        // The different state is what stops it being a prefix of SHA-512, so knowing one tells an
+        // attacker nothing about the other.
+        public class Sha384 {
+            public static method digestRaw(int[] data, int len) returns int[] {
+                mutable ulong[] s = new ulong[8]();
+                s[0] = cast<ulong>(0 - 3766243637369397544); s[1] = cast<ulong>(7105036623409894663);
+                s[2] = cast<ulong>(0 - 7973340178411365097); s[3] = cast<ulong>(1526699215303891257);
+                s[4] = cast<ulong>(7436329637833083697);    s[5] = cast<ulong>(0 - 8163818279084223215);
+                s[6] = cast<ulong>(0 - 2662702644619276377); s[7] = cast<ulong>(5167115440072839076);
+                Sha512.compress(s, data, len);
+                int[] out = Sha512.emit(s, 6);               // 48 bytes
+                delete s;
+                return out;
+            }
+            public static method digest(String msg) returns String {
+                int[] data = new int[msg.length()]();
+                for (mutable int i = 0; i < msg.length(); i++) {
+                    data[i] = cast<int>(msg.charAt(i)) & 255;
+                }
+                return Sha256.toHex(Sha384.digestRaw(data, msg.length()), 48);
+            }
+        }
+
         // SHA-224 (FIPS 180-4), the SHA-256 compression with different initial hash values and a 28-byte
         // (56 hex char) output. Reuses Sha256.rotr/putWord/toHex; the round constants match SHA-256.
         public class Sha224 {

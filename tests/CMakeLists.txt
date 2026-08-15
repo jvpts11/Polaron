@@ -4961,6 +4961,33 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THE CERTIFICATES THIS MACHINE ALREADY TRUSTS, and a chain checked all the way to one.
+        #
+        # A root is its own issuer, so every root carries a signature by its own key: verifying a
+        # sample of them tests the whole path against certificates from real authorities -- many
+        # issuers, many encodings, RSA with SHA-256/384/512 and ECDSA -- rather than against the one
+        # certificate somebody picked for a test.
+        #
+        # The counts move with the machine, so the ASSERTION is that every root the library claims it
+        # can check does check out. Measured across the whole store once: 30 checked, 30 verified, 36
+        # unsupported -- of which 29 are SHA-1, MD5 or MD2 roots that a modern client must refuse.
+        add_test(NAME codegen_trust_store COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/trust_store.pol"
+            "-DCONTAINS=every checked root verified: 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        set_tests_properties(codegen_trust_store PROPERTIES TIMEOUT 180)
+        add_test(NAME codegen_trust_store_loads COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/trust_store.pol"
+            "-DCONTAINS=store: loaded=1 many=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        set_tests_properties(codegen_trust_store_loads PROPERTIES TIMEOUT 180)
+
         # SIGNATURE VERIFICATION, against signatures this project did not produce. Both vectors were
         # made by .NET's own ECDSA and RSA-PSS and verified there before being written down — a
         # verifier tested against a signer we also wrote is a verifier tested against its own
