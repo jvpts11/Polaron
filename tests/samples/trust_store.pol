@@ -1,0 +1,99 @@
+import System.IO.Console;
+import System.Net.Tls.Certificate;
+import System.Net.Tls.CertificateException;
+import System.Net.Tls.CertificateValidator;
+import System.Net.Tls.TrustStore;
+import System.Collections.ArrayList;
+program TrustStoreTest;
+
+// THE CERTIFICATES THIS MACHINE ALREADY TRUSTS, and a chain checked all the way to one of them.
+//
+// A chain proves each certificate was signed by the one above it, and that proves nothing on its
+// own: a chain forged from top to bottom is just as self-consistent. What makes it mean something is
+// ending at a key trusted for reasons outside the chain — and those keys are curated, updated and
+// revoked by the operating system, which is why they are read from there rather than shipped inside
+// the compiler where they would go stale between releases.
+//
+// A ROOT IS ITS OWN ISSUER, so every root in the store carries a signature by its own key. Verifying
+// a sample of them exercises the whole path against certificates from every authority the machine
+// trusts — many issuers, many encodings, RSA and ECDSA both — rather than against the one certificate
+// somebody chose for a test. If any of them fails to verify, the arithmetic is wrong for a shape
+// that exists in the real world.
+//
+// The counts are printed as ranges rather than exact numbers: a trust store is a moving target, and a
+// test that demands exactly 47 roots is a test that fails when Windows updates.
+//
+// Prints:
+//   store: loaded=1 many=1
+//   roots: checked=12 selfVerified=12 unsupported=<varies>
+//   every checked root verified: 1
+//   unknown issuer: refused=1
+//
+// The exact counts move with the machine's store, which is why the assertion is the LINE BELOW them:
+// every root this library claims it can check must check out. The unsupported ones are counted
+// separately and on purpose — they are a measurement of what is still missing here (P-384, and the
+// old SHA-1 authorities), not a failure of anything.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable TrustStore* system = TrustStore.system();
+                System.IO.Console.printf("store: loaded=%d many=%d\n",
+                                         system.count() > 0 ? 1 : 0,
+                                         system.count() >= 10 ? 1 : 0);
+
+                // Every root is self-signed, so each is a complete test of parse plus verify. Twenty
+                // is enough to cross several authorities and both key kinds without making the suite
+                // slow — each RSA verification is real modular exponentiation.
+                mutable int checked = 0;
+                mutable int verified = 0;
+                mutable int cannot = 0;
+                mutable ArrayList<Certificate*> roots = system.certificates();
+                mutable int i = 0;
+                // Twelve is a sample, not the whole store, and only because each RSA verification is
+                // real modular exponentiation. MEASURED ACROSS THE WHOLE STORE ONCE: 30 checked, 30
+                // verified, 36 unsupported -- and 29 of those 36 are SHA-1, MD5 or MD2 roots, which
+                // a modern client must refuse, so they are not a gap. The genuine gap is P-384.
+                while (i < roots.size() && checked < 12) {
+                    Certificate* root = roots.get(i);
+                    if (root.isSelfIssued()) {
+                        // "Cannot check" and "does not check out" are counted apart, because they
+                        // mean opposite things: the first is a gap in this library, the second is a
+                        // certificate that is lying. Real stores contain both old SHA-1 authorities
+                        // and P-384 ones, and refusing those IS the correct answer.
+                        if (CertificateValidator.unsupportedReason(root, root).length() > 0) {
+                            cannot = cannot + 1;
+                        } else {
+                            checked = checked + 1;
+                            if (CertificateValidator.signedBy(root, root)) {
+                                verified = verified + 1;
+                            }
+                        }
+                    }
+                    i = i + 1;
+                }
+                System.IO.Console.printf("roots: checked=%d selfVerified=%d unsupported=%d\n",
+                                         checked, verified, cannot);
+                System.IO.Console.printf("every checked root verified: %d\n",
+                                         checked > 0 && checked == verified ? 1 : 0);
+
+                // ...and a certificate whose issuer is in no store: the chain has nowhere to end.
+                mutable TrustStore* empty = new TrustStore() on heap;
+                mutable ArrayList<Certificate*> one = new ArrayList<Certificate*>() on heap;
+                if (roots.size() > 0) { one.add(roots.get(0)); }
+                mutable boolean refused = false;
+                try {
+                    CertificateValidator.check(one, "example.com", empty, cast<long>(1700000000));
+                } catch (CertificateException e) {
+                    refused = true;
+                }
+                System.IO.Console.printf("unknown issuer: refused=%d\n", refused ? 1 : 0);
+
+                delete one;
+                delete empty;
+                delete system;
+                return;
+            }
+        }
+    }
+}

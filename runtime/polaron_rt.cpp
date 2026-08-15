@@ -19,6 +19,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <io.h>         // _dup/_dup2/_close: the stdout diversion behind Test.captureOutput
+#include <wincrypt.h>   // the TYPES for the system trust store; the functions are loaded at runtime
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <arpa/inet.h>
@@ -3523,6 +3524,92 @@ int __polaron_file_set_readonly(const char* path, int value) {
                           : (st.st_mode | S_IWUSR);
     return chmod(path, m) == 0 ? 1 : 0;
 #endif
+}
+
+// THE CERTIFICATES THIS MACHINE ALREADY TRUSTS.
+//
+// A chain proves each certificate was signed by the one above it and proves nothing on its own -- a
+// chain forged from top to bottom is just as self-consistent. What makes it mean something is ending
+// at a key trusted for other reasons, and those keys are curated, updated and revoked by the
+// operating system. Shipping our own bundle inside the compiler would mean a list that goes stale
+// between releases and a revocation nobody acts on.
+//
+// Returned as PEM, concatenated: it is the one format both platforms can produce and the library
+// above already reads, and it keeps this function free of any opinion about X.509.
+//
+// Windows enumerates its ROOT store. POSIX has no API -- the roots are a file, in one of a handful of
+// places that distributions disagree about, so the known locations are tried in order and the first
+// that exists wins.
+char* __polaron_system_roots(long long* outLen) {
+    std::string pem;
+#ifdef _WIN32
+    // LOADED AT RUNTIME, not linked. Naming these symbols normally would put crypt32.lib on the link
+    // line of every Polaron program ever built, for a question almost none of them ask -- the same
+    // reason `username` reads an environment variable instead of calling into advapi32. The types
+    // come from the header, which costs nothing; only the four functions are looked up, and only when
+    // somebody asks for the roots.
+    HMODULE crypt = LoadLibraryA("crypt32.dll");
+    if (crypt == nullptr) {
+        return polaronStrOut(pem, outLen);
+    }
+    using OpenStoreFn = HCERTSTORE(WINAPI*)(HCRYPTPROV_LEGACY, LPCSTR);
+    using EnumFn = PCCERT_CONTEXT(WINAPI*)(HCERTSTORE, PCCERT_CONTEXT);
+    using CloseFn = BOOL(WINAPI*)(HCERTSTORE, DWORD);
+    using ToStringFn = BOOL(WINAPI*)(const BYTE*, DWORD, DWORD, LPSTR, DWORD*);
+    auto openStore = reinterpret_cast<OpenStoreFn>(
+        reinterpret_cast<void*>(GetProcAddress(crypt, "CertOpenSystemStoreA")));
+    auto enumCerts = reinterpret_cast<EnumFn>(
+        reinterpret_cast<void*>(GetProcAddress(crypt, "CertEnumCertificatesInStore")));
+    auto closeStore = reinterpret_cast<CloseFn>(
+        reinterpret_cast<void*>(GetProcAddress(crypt, "CertCloseStore")));
+    auto toString = reinterpret_cast<ToStringFn>(
+        reinterpret_cast<void*>(GetProcAddress(crypt, "CryptBinaryToStringA")));
+    if (openStore == nullptr || enumCerts == nullptr || closeStore == nullptr ||
+        toString == nullptr) {
+        FreeLibrary(crypt);
+        return polaronStrOut(pem, outLen);
+    }
+    HCERTSTORE store = openStore(0, "ROOT");
+    if (store != nullptr) {
+        PCCERT_CONTEXT cert = nullptr;
+        while ((cert = enumCerts(store, cert)) != nullptr) {
+            DWORD chars = 0;
+            if (toString(cert->pbCertEncoded, cert->cbCertEncoded, CRYPT_STRING_BASE64HEADER,
+                         nullptr, &chars) && chars > 0) {
+                std::string one(chars, '\0');
+                if (toString(cert->pbCertEncoded, cert->cbCertEncoded, CRYPT_STRING_BASE64HEADER,
+                             &one[0], &chars)) {
+                    one.resize(chars);
+                    pem += one;
+                }
+            }
+        }
+        closeStore(store, 0);
+    }
+    FreeLibrary(crypt);
+#else
+    static const char* kCandidates[] = {
+        "/etc/ssl/certs/ca-certificates.crt",     // Debian, Ubuntu, Alpine
+        "/etc/pki/tls/certs/ca-bundle.crt",       // Fedora, RHEL
+        "/etc/ssl/ca-bundle.pem",                 // openSUSE
+        "/etc/ssl/cert.pem",                      // macOS (via ports), FreeBSD, OpenBSD
+        "/usr/local/share/certs/ca-root-nss.crt", // FreeBSD ports
+    };
+    for (const char* path : kCandidates) {
+        std::FILE* f = std::fopen(path, "rb");
+        if (f == nullptr) {
+            continue;
+        }
+        char buf[8192];
+        size_t n = 0;
+        while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+            pem.append(buf, n);
+        }
+        std::fclose(f);
+        break;   // the first that exists is the system's answer
+    }
+#endif
+    return polaronStrOut(pem, outLen);
 }
 
 // ---- LINKS. One name for a file that is somewhere else. ----

@@ -71,6 +71,10 @@ inline constexpr SysIntrinsic kSysIntrinsics[] = {
     // answered: `exists` follows, so a link pointing at nothing reports "not there".
     {"System.IO.__isLink",        "__polaron_is_symlink",    'i', true},
     {"System.IO.__readLink",      "__polaron_readlink",      's', true},
+    // ---- The certificates this machine already trusts, as concatenated PEM. A root certificate is
+    // DATA: reading the system's curated, updated list is not delegating the protocol, and it avoids
+    // a bundle going stale inside the compiler between releases.
+    {"System.Net.__systemRoots",  "__polaron_system_roots",  's', false},
     // ---- Which instruction set this is, which is a different question from which operating system.
     {"System.OS.__cpuArch",       "__polaron_cpu_arch",      's', false},
 };

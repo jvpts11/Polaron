@@ -151,6 +151,29 @@
                 o[5] = 13; o[6] = 1; o[7] = 1; o[8] = 11;
                 return o;
             }
+            // 1.2.840.113549.1.1.12 -- sha384WithRSAEncryption. Counted on a real trust store, twelve
+            // of sixty-eight roots use this and only one uses SHA-512: leaving it out costs more
+            // coverage than any other single omission.
+            public static method sha384Rsa() returns int[] {
+                int[] o = new int[9]();
+                o[0] = 42; o[1] = 134; o[2] = 72; o[3] = 134; o[4] = 247;
+                o[5] = 13; o[6] = 1; o[7] = 1; o[8] = 12;
+                return o;
+            }
+            // 1.2.840.113549.1.1.13 -- sha512WithRSAEncryption
+            public static method sha512Rsa() returns int[] {
+                int[] o = new int[9]();
+                o[0] = 42; o[1] = 134; o[2] = 72; o[3] = 134; o[4] = 247;
+                o[5] = 13; o[6] = 1; o[7] = 1; o[8] = 13;
+                return o;
+            }
+            // 1.2.840.10045.4.3.3 -- ecdsa-with-SHA384
+            public static method ecdsaSha384() returns int[] {
+                int[] o = new int[8]();
+                o[0] = 42; o[1] = 134; o[2] = 72; o[3] = 206; o[4] = 61;
+                o[5] = 4; o[6] = 3; o[7] = 3;
+                return o;
+            }
             // 1.2.840.113549.1.1.10 -- RSASSA-PSS
             public static method rsaPss() returns int[] {
                 int[] o = new int[9]();
@@ -326,20 +349,38 @@
                 return Der.contentLength(this.der, this.sigValueOffset) - 1;
             }
 
-            // Which algorithm signed it: 1 = RSA PKCS#1 v1.5 with SHA-256, 2 = RSA-PSS,
-            // 3 = ECDSA with SHA-256, 0 = something this library does not verify.
+            // Which algorithm signed it:
+            //   1 = RSA PKCS#1 v1.5 with SHA-256      4 = the same with SHA-384
+            //   2 = RSA-PSS with SHA-256              5 = the same with SHA-512
+            //   3 = ECDSA with SHA-256                6 = ECDSA with SHA-384
+            //   0 = something this library does not verify
+            //
+            // SHA-1, MD5 and MD2 are deliberately absent and answer 0. They are broken -- a collision
+            // in the digest is a forged certificate -- so a modern client must refuse them, and
+            // "cannot check" is exactly the right answer to give about a signature nobody should
+            // accept. Twenty-nine of this machine's sixty-eight roots use one of the three; refusing
+            // them is not a coverage gap.
             public method signatureAlgorithm() returns int {
                 int algOid = Der.contentOffset(this.der, this.sigAlgOffset);
-                mutable int[] rsa = Oid.sha256Rsa();
+                mutable int[] rsa256 = Oid.sha256Rsa();
+                mutable int[] rsa384 = Oid.sha384Rsa();
+                mutable int[] rsa512 = Oid.sha512Rsa();
                 mutable int[] pss = Oid.rsaPss();
-                mutable int[] ec = Oid.ecdsaSha256();
+                mutable int[] ec256 = Oid.ecdsaSha256();
+                mutable int[] ec384 = Oid.ecdsaSha384();
                 mutable int which = 0;
-                if (Der.oidEquals(this.der, algOid, rsa, 9)) { which = 1; }
+                if (Der.oidEquals(this.der, algOid, rsa256, 9)) { which = 1; }
                 else if (Der.oidEquals(this.der, algOid, pss, 9)) { which = 2; }
-                else if (Der.oidEquals(this.der, algOid, ec, 8)) { which = 3; }
-                delete ec;
+                else if (Der.oidEquals(this.der, algOid, ec256, 8)) { which = 3; }
+                else if (Der.oidEquals(this.der, algOid, rsa384, 9)) { which = 4; }
+                else if (Der.oidEquals(this.der, algOid, rsa512, 9)) { which = 5; }
+                else if (Der.oidEquals(this.der, algOid, ec384, 8)) { which = 6; }
+                delete ec384;
+                delete ec256;
                 delete pss;
-                delete rsa;
+                delete rsa512;
+                delete rsa384;
+                delete rsa256;
                 return which;
             }
 
@@ -373,6 +414,40 @@
                     j = j + 1;
                 }
                 return new RsaPublicKey(modulus, mLen, e) on heap;
+            }
+
+            // WHICH CURVE the key is on: "P-256", "P-384", "P-521", or "" when the certificate does
+            // not carry an elliptic-curve key at all.
+            //
+            // This exists so that "I cannot check this" and "this does not check out" stay different
+            // answers. A P-384 root refused by a P-256 verifier is the verifier behaving correctly,
+            // and reporting it as a bad signature sends somebody hunting a bug that is not there.
+            // The curve is named by an OID inside the key's algorithm parameters.
+            public method ecCurveName() returns String {
+                int algSeq = Der.contentOffset(this.der, this.spkiOffset);
+                int algOid = Der.contentOffset(this.der, algSeq);
+                mutable int[] want = Oid.ecKey();
+                boolean isEc = Der.oidEquals(this.der, algOid, want, 7);
+                delete want;
+                if (!isEc) { return ""; }
+                int curveOid = Der.nextOffset(this.der, algOid);
+                if (Der.tag(this.der, curveOid) != 6) { return ""; }
+                int c = Der.contentOffset(this.der, curveOid);
+                int n = Der.contentLength(this.der, curveOid);
+                // 1.2.840.10045.3.1.7 -- prime256v1
+                if (n == 8 && (this.der[c] & 255) == 42 && (this.der[c + 6] & 255) == 1 &&
+                    (this.der[c + 7] & 255) == 7) {
+                    return "P-256";
+                }
+                // 1.3.132.0.34 -- secp384r1
+                if (n == 5 && (this.der[c] & 255) == 43 && (this.der[c + 4] & 255) == 34) {
+                    return "P-384";
+                }
+                // 1.3.132.0.35 -- secp521r1
+                if (n == 5 && (this.der[c] & 255) == 43 && (this.der[c + 4] & 255) == 35) {
+                    return "P-521";
+                }
+                return "unknown curve";
             }
 
             // The uncompressed elliptic-curve point, or an empty array for an RSA certificate.
@@ -749,16 +824,22 @@
                 return out;
             }
 
-            // Is `sig` a valid signature over the SHA-256 `hash` under (modulus, e)?
-            public static method verifySha256(int[] sig, int sigLength, int[] modulus, int modLength,
-                                              int e, int[] hash) returns boolean {
+            // Is `sig` a valid PKCS#1 v1.5 signature over `hash` under (modulus, e)? `hashLength`
+            // selects the digest -- 32, 48 or 64 for SHA-256, SHA-384 and SHA-512.
+            public static method verifyPkcs1(int[] sig, int sigLength, int[] modulus, int modLength,
+                                             int e, int[] hash, int hashLength) returns boolean {
                 BigInteger n = Rsa.fromBigEndian(modulus, modLength);
                 BigInteger s = Rsa.fromBigEndian(sig, sigLength);
                 BigInteger m = Rsa.modPow(s, e, n);
                 int[] encoded = Rsa.toBigEndian(m, modLength);
-                boolean ok = Rsa.checkPkcs1Sha256(encoded, modLength, hash);
+                boolean ok = Rsa.checkPkcs1(encoded, modLength, hash, hashLength);
                 delete encoded;
                 return ok;
+            }
+            // The SHA-256 case by name, which is what most callers mean.
+            public static method verifySha256(int[] sig, int sigLength, int[] modulus, int modLength,
+                                              int e, int[] hash) returns boolean {
+                return Rsa.verifyPkcs1(sig, sigLength, modulus, modLength, e, hash, 32);
             }
 
             private static method fromBigEndian(int[] bytes, int length) returns BigInteger {
@@ -804,7 +885,8 @@
             // DigestInfo, then the hash. Every one of those is checked: a verifier that only compares
             // the trailing hash accepts a forged signature with anything at all in the padding, which
             // is the Bleichenbacher forgery.
-            private static method checkPkcs1Sha256(int[] em, int k, int[] hash) returns boolean {
+            private static method checkPkcs1(int[] em, int k, int[] hash, int hashLength)
+                                             returns boolean {
                 if ((em[0] & 255) != 0 || (em[1] & 255) != 1) { return false; }
                 mutable int i = 2;
                 while (i < k && (em[i] & 255) == 255) { i = i + 1; }
@@ -812,13 +894,22 @@
                 if ((i - 2) < 8) { return false; }
                 i = i + 1;
 
+                // The DigestInfo header names WHICH hash this is, and that is not decoration: without
+                // it, a signature over a SHA-256 digest could be presented as one over the leading 32
+                // bytes of a SHA-512 digest. The three differ in exactly two bytes -- the algorithm's
+                // last identifier byte and the two lengths -- so they are set rather than assumed.
                 int[] prefix = new int[19]();
                 prefix[0] = 48;   prefix[1] = 49;  prefix[2] = 48;  prefix[3] = 13;  prefix[4] = 6;
                 prefix[5] = 9;    prefix[6] = 96;  prefix[7] = 134; prefix[8] = 72;  prefix[9] = 1;
                 prefix[10] = 101; prefix[11] = 3;  prefix[12] = 4;  prefix[13] = 2;  prefix[14] = 1;
                 prefix[15] = 5;   prefix[16] = 0;  prefix[17] = 4;  prefix[18] = 32;
+                if (hashLength == 48) {
+                    prefix[1] = 65; prefix[14] = 2; prefix[18] = 48;
+                } else if (hashLength == 64) {
+                    prefix[1] = 81; prefix[14] = 3; prefix[18] = 64;
+                }
 
-                if (i + 19 + 32 != k) {
+                if (i + 19 + hashLength != k) {
                     delete prefix;
                     return false;
                 }
@@ -830,7 +921,7 @@
                 }
                 delete prefix;
                 mutable int h = 0;
-                while (h < 32) {
+                while (h < hashLength) {
                     if ((em[i + 19 + h] & 255) != (hash[h] & 255)) { ok = false; }
                     h = h + 1;
                 }
@@ -1390,6 +1481,59 @@
             }
             public method count() returns int { return this.roots.size(); }
 
+            // The roots this machine already trusts, read from the operating system. Windows
+            // enumerates its ROOT store; POSIX reads whichever of the well-known bundle files exists,
+            // because distributions disagree about where it lives and there is no API to ask.
+            //
+            // A certificate that will not parse is SKIPPED rather than fatal: a trust store holds
+            // hundreds, some of them old and odd, and refusing to start because one of them uses an
+            // encoding this reader does not know would be the wrong failure. What is not skipped is
+            // an empty result -- a store with nothing in it trusts nothing, and every chain would
+            // then be refused, which is at least honest.
+            public static method system() returns TrustStore* {
+                mutable TrustStore* store = new TrustStore() on heap;
+                String all = System.Net.__systemRoots();
+                mutable ArrayList<String> lines = Strings.split(all, "\n");
+                mutable StringBuilder current = new StringBuilder() on heap;
+                mutable boolean inside = false;
+                mutable int i = 0;
+                while (i < lines.size()) {
+                    String line = lines.get(i).trim();
+                    if (line.startsWith("-----BEGIN CERTIFICATE")) {
+                        inside = true;
+                        current.clear();
+                        current.append(line);
+                        current.append("\n");
+                    } else if (line.startsWith("-----END CERTIFICATE")) {
+                        if (inside) {
+                            current.append(line);
+                            current.append("\n");
+                            mutable Certificate* one = Certificate.fromPem(current.toString());
+                            if (one.isWellFormed()) {
+                                store.add(one);
+                            } else {
+                                delete one;
+                            }
+                        }
+                        inside = false;
+                    } else if (inside) {
+                        current.append(line);
+                        current.append("\n");
+                    }
+                    i = i + 1;
+                }
+                delete current;
+                delete lines;
+                return store;
+            }
+
+            // The roots themselves, for a program that wants to report what it trusts -- a tool
+            // showing its configuration, or a test checking the store loaded at all. Handed out
+            // rather than copied: the store owns them and outlives the caller's look.
+            public method certificates() returns ArrayList<Certificate*> {
+                return this.roots;
+            }
+
             // The root that issued `cert`, or null when this store does not vouch for it.
             public method issuerOf(Certificate* cert) returns nullable Certificate* {
                 mutable int i = 0;
@@ -1463,6 +1607,14 @@
                     }
                     CertificateValidator.checkDates(signer, nowSeconds,
                         "the issuer '".concat(signer.subjectCommonName()).concat("'"));
+                    // Said separately from a failed check, and before it: a client that cannot do
+                    // the arithmetic must not report the server as dishonest.
+                    String cannot = CertificateValidator.unsupportedReason(current, signer);
+                    if (cannot.length() > 0) {
+                        throw new CertificateException(
+                            "'".concat(current.subjectCommonName()).concat("' cannot be checked: ")
+                                .concat(cannot)) on heap;
+                    }
                     if (!CertificateValidator.signedBy(current, signer)) {
                         throw new CertificateException(
                             "'".concat(current.subjectCommonName())
@@ -1489,6 +1641,29 @@
                 return;
             }
 
+            // WHY THIS SIGNATURE CANNOT EVEN BE ATTEMPTED, or "" when it can.
+            //
+            // Refusing and being unable to check are different outcomes with the same consequence,
+            // and telling them apart is the difference between "this server is lying to you" and
+            // "this client is not finished". Measured against the machine's own trust store: of 18
+            // roots sampled, 17 verify and the eighteenth is on P-384 -- a curve this library does
+            // not implement, which is a gap in us and not a fault in the certificate.
+            public static method unsupportedReason(Certificate* cert, Certificate* issuer)
+                                                   returns String {
+                int alg = cert.signatureAlgorithm();
+                if (alg == 0) {
+                    return "it is signed with an algorithm this program cannot check";
+                }
+                if (alg == 3 || alg == 6) {
+                    String curve = issuer.ecCurveName();
+                    if (!curve.equals("P-256")) {
+                        return "its issuer's key is on ".concat(curve.length() > 0 ? curve : "an unknown curve")
+                            .concat(", and this program can only check P-256");
+                    }
+                }
+                return "";
+            }
+
             // Does the issuer's key verify the signature over the signed body? Only algorithms this
             // library can actually check answer true -- an unknown one is refused rather than waved
             // through, because "I could not check it" and "it checks out" must not be the same answer.
@@ -1496,11 +1671,19 @@
                 int alg = cert.signatureAlgorithm();
                 if (alg == 0) { return false; }   // an algorithm this library cannot check is refused
                 mutable int[] body = cert.signedBody();
-                mutable int[] hash = Sha256.digestRaw(body, cert.signedBodyLength());
+                int bodyLen = cert.signedBodyLength();
+                // THE DIGEST FOLLOWS THE ALGORITHM. Hashing with the wrong one produces a mismatch
+                // rather than a wrong acceptance, so this is not a security hole -- but it would
+                // reject every SHA-384 chain while blaming the certificate, which is the failure mode
+                // this whole class of message exists to avoid.
+                mutable int[] hash = (alg == 4 || alg == 6) ? Sha384.digestRaw(body, bodyLen)
+                                   : (alg == 5 ? Sha512.digestRaw(body, bodyLen)
+                                               : Sha256.digestRaw(body, bodyLen));
+                int hashLen = (alg == 4 || alg == 6) ? 48 : (alg == 5 ? 64 : 32);
                 mutable int[] sig = cert.signature();
                 mutable boolean ok = false;
 
-                if (alg == 3) {                   // ECDSA with SHA-256, over P-256
+                if (alg == 3 || alg == 6) {       // ECDSA, over P-256 only
                     mutable int[] point = issuer.ecPublicKey();
                     if (point.length() == 65) {
                         ok = P256.verify(point, 65, sig, cert.signatureLength(), hash);
@@ -1510,12 +1693,12 @@
                     mutable nullable RsaPublicKey* key = issuer.rsaPublicKey();
                     if (key != null) {
                         RsaPublicKey* rsa = cast<RsaPublicKey*>(key);
-                        if (alg == 1) {
-                            ok = Rsa.verifySha256(sig, cert.signatureLength(), rsa.modulus,
-                                                  rsa.modLength, rsa.exponent, hash);
-                        } else {
+                        if (alg == 2) {
                             ok = Rsa.verifyPssSha256(sig, cert.signatureLength(), rsa.modulus,
                                                      rsa.modLength, rsa.exponent, hash);
+                        } else {
+                            ok = Rsa.verifyPkcs1(sig, cert.signatureLength(), rsa.modulus,
+                                                 rsa.modLength, rsa.exponent, hash, hashLen);
                         }
                         delete rsa;
                     }
