@@ -819,6 +819,42 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                                        llvm::ConstantInt::get(i64, fn == "spawnCombined" ? 1 : 0),
                                        llvm::ConstantInt::get(i64, fn == "spawnVisible" ? 1 : 0)});
         }
+        // STARTING A PROGRAM WITHOUT A SHELL. The arguments cross as ONE NUL-separated blob with a
+        // count, so an argument may hold anything at all -- a space, a quote, `&`, `$(...)` -- and
+        // still arrive as one argument, because no shell ever parses it. The blob is passed as
+        // (data, length) rather than a C string precisely so an embedded NUL is a separator instead
+        // of an end; a Polaron String carries its own length, which is what makes that work.
+        //   spawnArgv(argvBlob, argc, cwd, envBlob, envCount, mergeErr, showWindow)
+        if (fn == "spawnArgv") {
+            std::vector<llvm::Value*> a(7, nullptr);
+            for (int i = 0; i < 7; ++i) {
+                a[i] = emitExpr(*call.args[i]);
+                if (a[i] == nullptr) {
+                    return nullptr;
+                }
+            }
+            llvm::FunctionType* ft =
+                llvm::FunctionType::get(i64, {p, i64, i64, p, p, i64, i64, i64, i64}, false);
+            return builder.CreateCall(
+                module.getOrInsertFunction("__polaron_subproc_spawn_argv", ft),
+                {stringData(a[0]), stringLen(a[0]), fitInt(a[1], 64), stringData(a[2]),
+                 stringData(a[3]), stringLen(a[3]), fitInt(a[4], 64), fitInt(a[5], 64),
+                 fitInt(a[6], 64)});
+        }
+        // Wait for it to finish and answer its exit code. Separate from `kill`, which is this file's
+        // name for the disposer: that one discards the code AND terminates a child still running,
+        // which is right for a tool the parent is done with and useless for asking whether the thing
+        // worked.
+        if (fn == "wait") {
+            llvm::Value* h = emitExpr(*call.args[0]);
+            if (h == nullptr) {
+                return nullptr;
+            }
+            llvm::FunctionType* ft = llvm::FunctionType::get(i64, {i64}, false);
+            llvm::Value* r = builder.CreateCall(
+                module.getOrInsertFunction("__polaron_subproc_wait", ft), {fitInt(h, 64)});
+            return builder.CreateTrunc(r, i32);
+        }
         if (fn == "writeStr") {
             llvm::Value* h = emitExpr(*call.args[0]);
             llvm::Value* data = emitExpr(*call.args[1]);

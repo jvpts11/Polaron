@@ -302,7 +302,13 @@
     }
     public namespace OS {
         // The result of running a subprocess (spec 34): its captured stdout and exit code. Built by
-        // the `Process.run(cmd)` builtin, which runs the command through the shell.
+        // the `Process.run(cmd)` builtin, which runs the command THROUGH THE SHELL -- and by
+        // `Command.run()`, which does not.
+        //
+        // Which to use: `Process.run` when you mean a shell line and wrote every character of it
+        // yourself (a pipeline, a redirection, a glob). `Command` whenever any part comes from
+        // anywhere else -- a filename, a user, a config file -- because a string handed to a shell
+        // has no way to say "this part is data". See the note on Command.
         public class ProcessResult {
             public String output;
             public int exitCode;
@@ -315,6 +321,11 @@
         // A persistent child process (debugger/LSP support): spawn a command, then exchange bytes over its
         // stdin/stdout for its whole lifetime. Unlike Process.run (one-shot, captures stdout to EOF), this
         // stays open for request/response protocols like DAP. Require `import System.OS.Subprocess;`.
+        //
+        // `start`/`startCombined`/`startVisible` take a shell command line, with everything that
+        // implies about arguments (see ProcessResult). `Command.start()` builds the same object from
+        // a program and its arguments instead, and is the one to reach for when any part of the
+        // command came from outside the program.
         public class Subprocess {
             private mutable long handle;
             private constructor Subprocess(long h) {
@@ -362,6 +373,171 @@
             // Close pipes and terminate the child if still running.
             public method close() returns void {
                 Subproc.kill(this.handle);
+            }
+            // Wait for it to finish, and answer its exit code (-1 if that cannot be determined; on
+            // POSIX, 128+N when a signal ended it, which is what every shell reports). Distinct from
+            // `close`, which terminates it and throws the code away -- so a caller that wants to know
+            // whether the thing WORKED waits first and closes after.
+            public method wait() returns int {
+                return Subproc.wait(this.handle);
+            }
+            // Started from a Command, which is the form that does not go through a shell. Internal:
+            // `Command.start()` is the way in.
+            public static method fromHandle(long h) returns Subprocess {
+                return new Subprocess(h) on heap;
+            }
+        }
+
+        // RUNNING ANOTHER PROGRAM, WITHOUT A SHELL BETWEEN YOU AND IT.
+        //
+        // `Process.run(cmd)` and `Subprocess.start(cmd)` take ONE STRING and hand it to `cmd.exe` or
+        // `/bin/sh`. That makes every argument shell syntax, and no care at the call site can fix it,
+        // because the call site is where the string is built:
+        //
+        //     Process.run("grep " + pattern + " " + file)
+        //
+        // A `file` holding a space silently becomes two arguments. A `pattern` holding `&`, `|` or
+        // `$(...)` becomes a SECOND COMMAND, and it runs. That is not an exotic attack: it is what
+        // happens the first time somebody drags in a file called `my notes.txt`.
+        //
+        // A Command keeps the program and its arguments apart the whole way down, so nothing is ever
+        // parsed as syntax:
+        //
+        //     ProcessResult r = new Command("git") on heap
+        //         .arg("log").arg("--oneline").arg(userSupplied)
+        //         .directory(repo)
+        //         .run();
+        //
+        // It also carries the two things a command string CANNOT: the directory to run in, and the
+        // environment to run with. Both were simply impossible before -- `cd x && ...` is shell
+        // syntax, which is the thing being removed.
+        public class Command {
+            // `exe` and not `program`, which is reserved: `program Name;` opens every file.
+            private mutable String exe;
+            private mutable ArrayList<String> arguments;
+            private mutable ArrayList<String> variables;   // "NAME=VALUE"
+            private mutable String dir;                    // "" -> inherit ours
+            private mutable boolean ownEnvironment;        // false -> inherit ours
+            private mutable boolean combineStderr;
+            private mutable boolean visible;
+
+            public constructor Command(String path) {
+                this.exe = path;
+                this.arguments = new ArrayList<String>() on heap;
+                this.variables = new ArrayList<String>() on heap;
+                this.dir = "";
+                this.ownEnvironment = false;
+                this.combineStderr = false;
+                this.visible = false;
+            }
+
+            // `Command*` and not `Command`, and it has to be: assignment here is a COPY, so a fluent
+            // method returning by value would add each argument to a duplicate and hand back a
+            // command with one argument in it.
+            public method arg(String value) returns Command* {
+                this.arguments.add(value);
+                return this;
+            }
+            public method argAll(ArrayList<String> values) returns Command* {
+                for (mutable int i = 0; i < values.size(); i++) {
+                    this.arguments.add(values.get(i));
+                }
+                return this;
+            }
+            // Where to run. `directory` and not `in`, which is reserved (`new X in region`).
+            public method directory(String path) returns Command* {
+                this.dir = path;
+                return this;
+            }
+            // Add a variable to the child's environment, starting from a copy of ours. The first call
+            // takes the copy, so a caller that sets one variable does not have to rebuild the rest --
+            // which is what makes an environment usable at all.
+            public method env(String name, String value) returns Command* {
+                if (!this.ownEnvironment) {
+                    mutable HashMap<String, String> inherited = Environment.all();
+                    mutable ArrayList<String> names = inherited.keys();
+                    for (mutable int i = 0; i < names.size(); i++) {
+                        String key = names.get(i);
+                        this.variables.add(key.concat("=").concat(inherited.get(key)));
+                    }
+                    delete names;
+                    delete inherited;
+                    this.ownEnvironment = true;
+                }
+                this.variables.add(name.concat("=").concat(value));
+                return this;
+            }
+            // Start from an EMPTY environment instead of a copy of ours -- for running something that
+            // must not see what this program was given.
+            public method clearEnv() returns Command* {
+                this.variables.clear();
+                this.ownEnvironment = true;
+                return this;
+            }
+            // The child's stderr shares its stdout, so one read sees everything it printed. What you
+            // want from a compiler; what would corrupt a child speaking a framed protocol.
+            public method mergeStderr() returns Command* {
+                this.combineStderr = true;
+                return this;
+            }
+            // Give the child its own console window (Windows). For an interactive tool the user is
+            // meant to see and drive.
+            public method showWindow() returns Command* {
+                this.visible = true;
+                return this;
+            }
+
+            // The program and its arguments as one NUL-separated blob. A Polaron String carries its
+            // own length, so a NUL inside it is a separator rather than an end -- which is what lets
+            // an argument hold anything at all, including the characters a shell would act on.
+            private method argvBlob() returns String {
+                mutable StringBuilder blob = new StringBuilder() on heap;
+                blob.append(this.exe);
+                blob.appendChar(cast<char>(0));
+                for (mutable int i = 0; i < this.arguments.size(); i++) {
+                    blob.append(this.arguments.get(i));
+                    blob.appendChar(cast<char>(0));
+                }
+                return blob.toString();
+            }
+            private method envBlob() returns String {
+                mutable StringBuilder blob = new StringBuilder() on heap;
+                for (mutable int i = 0; i < this.variables.size(); i++) {
+                    blob.append(this.variables.get(i));
+                    blob.appendChar(cast<char>(0));
+                }
+                return blob.toString();
+            }
+
+            // Start it and hand back the running child, for a caller that wants to talk to it.
+            public method start() returns Subprocess {
+                return Subprocess.fromHandle(
+                    Subproc.spawnArgv(this.argvBlob(), this.arguments.size() + 1, this.dir,
+                                      this.envBlob(), this.variables.size(),
+                                      this.combineStderr ? 1 : 0, this.visible ? 1 : 0));
+            }
+
+            // Start it, read everything it prints, wait, and report both. The one-shot form, and the
+            // replacement for `Process.run` -- same answer, no shell.
+            //
+            // stdin is closed first: a child that reads it sees EOF rather than waiting forever for a
+            // parent that is itself waiting for output. That deadlock is the classic way a one-shot
+            // subprocess hangs, and it hangs the parent with it.
+            public method run() returns ProcessResult {
+                mutable Subprocess child = this.start();
+                if (!child.isValid()) {
+                    return new ProcessResult("", 0 - 1) on heap;
+                }
+                child.closeInput();
+                mutable StringBuilder output = new StringBuilder() on heap;
+                mutable String chunk = child.read();
+                while (chunk.length() > 0) {
+                    output.append(chunk);
+                    chunk = child.read();
+                }
+                int code = child.wait();
+                child.close();
+                return new ProcessResult(output.toString(), code) on heap;
             }
         }
         // A child attached to a pseudo-console (ConPTY on Windows): unlike Subprocess (a plain line pipe),

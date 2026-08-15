@@ -4916,6 +4916,61 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # RUNNING ANOTHER PROGRAM WITHOUT A SHELL BETWEEN YOU AND IT.
+        #
+        # `Process.run(cmd)` takes one string and hands it to cmd.exe or /bin/sh, so every argument is
+        # shell syntax and no care at the call site can fix it -- the call site is where the string is
+        # built. A Command keeps the program and its arguments apart the whole way down.
+        #
+        # The sample runs ITSELF (no external tool echoes its arguments on both platforms) with an
+        # argument holding `&`, `|`, `>`, quotes, `$(...)`, `%PATH%` and backslashes. Four claims, and
+        # the third is the one that makes the sample a demonstration rather than an assertion: the
+        # SAME redirection through the old path does create the file.
+        add_test(NAME codegen_process_no_shell_echo COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/process_no_shell.pol"
+            "-DCONTAINS=echoed: identical=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_process_no_shell_inert COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/process_no_shell.pol"
+            "-DCONTAINS=no shell ran: redirect file absent=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_process_shell_obeys COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/process_no_shell.pol"
+            "-DCONTAINS=through a shell: redirect obeyed=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # The two things a command STRING cannot carry at all -- `cd x && ...` is shell syntax, which
+        # is the thing being removed -- and the exit code, which `close` alone throws away.
+        add_test(NAME codegen_process_no_shell_directory COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/process_no_shell.pol"
+            "-DCONTAINS=directory: child saw the temp dir=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_process_no_shell_env COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/process_no_shell.pol"
+            "-DCONTAINS=environment: child saw POLARON_CHILD_ZZZ=passed"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_process_no_shell_exit COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/process_no_shell.pol"
+            "-DCONTAINS=exit code: ok=0 bad=3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # sortedBy (spec 34): order a collection by a comparator lambda, leaving the original untouched.
         add_test(NAME codegen_collection_sorted_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
