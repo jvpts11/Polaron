@@ -1,0 +1,89 @@
+import System.IO.Console;
+import System.App.Retry;
+import System.App.CircuitBreaker;
+import System.Text.StringBuilder;
+program RetryBackoff;
+
+// THE THIRD OF THE RESILIENCE TRIO (System.App). A circuit breaker says when to STOP calling
+// something that is failing and a token bucket says how OFTEN; neither says what to do about the one
+// call that just failed, which is the commonest question of the three and the one everybody ends up
+// writing by hand.
+//
+// Two things the hand-written version usually gets wrong, both pinned here:
+//
+//   * NO CAP. Doubling from 100 ms reaches an hour by the twelfth attempt, and a program that meant
+//     "keep trying" has quietly stopped. The curve below flattens at 2000 and stays there.
+//   * OVERFLOW. Multiplying first and capping afterwards wraps a long around on a long run and the
+//     delay comes back SMALL. Attempt 40 is checked for exactly that.
+//
+// No randomness inside, for the same reason the time is passed in: unrepeatable behaviour is what you
+// cannot afford in the code that runs when something is already going wrong. Jitter is offered with
+// the roll supplied by the caller.
+//
+// Prints:
+//   curve=100/200/400/800/1600/2000/2000 far=2000
+//   attempts: allow=1 left=3 -> allow=0 left=0 reset=3
+//   jitter: none=800 half=600 full=404   (the highest roll is 99, so 49.5% off and not 50)
+//   with breaker: tries=2 state=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // The curve, and where it flattens.
+                mutable StringBuilder curve = new StringBuilder() on heap;
+                for (mutable int i = 0; i < 7; i++) {
+                    if (i > 0) { curve.append("/"); }
+                    curve.append($"{Retry.backoff(cast<long>(100), 2, i, cast<long>(2000))}");
+                }
+                System.IO.Console.printf("curve=%s far=%d\n", curve.toString(),
+                                         cast<int>(Retry.backoff(cast<long>(100), 2, 40,
+                                                                 cast<long>(2000))));
+
+                // Three attempts means three, not four.
+                mutable Retry r = new Retry(3, cast<long>(100), 2, cast<long>(2000)) on heap;
+                mutable int a0 = 0;
+                if (r.allow()) { a0 = 1; }
+                int left0 = r.attemptsLeft();
+                r.recordFailure();
+                r.recordFailure();
+                r.recordFailure();
+                mutable int a1 = 0;
+                if (r.allow()) { a1 = 1; }
+                int left1 = r.attemptsLeft();
+                r.recordSuccess();
+                System.IO.Console.printf("attempts: allow=%d left=%d -> allow=%d left=%d reset=%d\n",
+                                         a0, left0, a1, left1, r.attemptsLeft());
+
+                // Jitter shaves, so the cap stays a cap.
+                mutable Retry j = new Retry(9, cast<long>(100), 2, cast<long>(2000)) on heap;
+                j.recordFailure();
+                j.recordFailure();
+                j.recordFailure();
+                System.IO.Console.printf("jitter: none=%d half=%d full=%d\n",
+                                         cast<int>(j.delayJittered(0, 50)),
+                                         cast<int>(j.delayJittered(50, 50)),
+                                         cast<int>(j.delayJittered(50, 99)));
+
+                // The two together, which is how they are actually used: retry until the breaker
+                // says stop.
+                mutable Retry rr = new Retry(5, cast<long>(10), 2, cast<long>(100)) on heap;
+                mutable CircuitBreaker cb = new CircuitBreaker(2, cast<long>(1000)) on heap;
+                mutable int tries = 0;
+                mutable long now = 0;
+                while (rr.allow() && cb.allow(now)) {
+                    tries = tries + 1;
+                    rr.recordFailure();          // the call failed
+                    cb.recordFailure(now);
+                    now = now + rr.delay();
+                }
+                System.IO.Console.printf("with breaker: tries=%d state=%d\n", tries, cb.getState());
+                delete cb;
+                delete rr;
+                delete j;
+                delete r;
+                delete curve;
+                return;
+            }
+        }
+    }
+}
