@@ -1,5 +1,82 @@
 # Type identity: giving a type its path
 
+## SOLVED — 2026-08-15
+
+A program may declare `Color`, `Scanner`, `Duration` or any other name the standard library also uses,
+and the compiler tells the two apart. **Nothing is renamed.** `shadow_stdlib_wide.pol` collides on
+purpose with four library names -- a class, an enum, a record and a generic argument -- uses each in
+eleven constructs, and compiles and runs with the renaming pass switched off for that case.
+
+Four things had to be true, and the fourth is the one that mattered:
+
+1. **The standard library imports itself.** It had not one `import` line in 25 files, resolving names
+   by an exemption that made it the only code in the program playing by a different rule -- and a
+   different rule needs a special case, and a special case is a second answer that has to agree with
+   the first forever. The imports are generated, not written: the compiler has just parsed the
+   declarations, so it knows every type and where it lives exactly.
+
+2. **Every analyzer pass says which namespace it is in.** Twenty walked namespaces; two recorded it.
+   Resolution asks "whose namespace is asking" and eighteen had never answered.
+
+3. **Codegen too.** It walked bundles and namespaces and kept neither, which is why the renaming had
+   to make names distinct upstream, and why every gap in that rewrite surfaced here as a failure about
+   a class the author never wrote.
+
+4. **One rule, no cases.** The first attempt let the first declaration keep the bare name and sent the
+   rest to their path. That is one rule with two cases, and every later pass had to know which case it
+   held -- the layout walk, the field fill, the body emitter. They disagreed, and the library's own
+   `Scanner` ended up with the user's fields. Now a name TWO types answer to is stored by path for
+   **both**, and a unique name stays bare. Deciding that needs a look ahead, which costs one extra
+   walk over the declarations and removes the asymmetry entirely.
+
+**The performance requirement is met by construction.** The common path is an empty-set test: a
+program where nothing collides -- which is nearly all of them -- does exactly what it did before, one
+hash of a short key. Nothing was interned, no map was rekeyed, and no name got longer.
+
+**What unblocked it was a diagnostic, for the third time in two days.** `no such field 'src'` says
+nothing about WHICH of two same-named classes was asked, which is the only interesting part when a
+program has two. Making it say `no such field 'src' on 'System.Text.Scanner'` turned a day of
+guessing into one reading. That message is kept.
+
+## The fifth thing, found the same evening: the SYMBOL
+
+Points 1–4 gave every pass the same answer to "which type is this". They left one thing still keyed by
+the bare name, and it was the loudest: **the LLVM symbol a method is emitted under.** `Scanner
+.nextWord` was one symbol for two classes, so the second registration replaced the first, and a call
+that had resolved its receiver by path then looked the function up by bare name and found nothing --
+reported as `unknown method`, against a method plainly written above the call.
+
+A symbol now carries its class's key (`Own.World.Paths.one`), by the same rule as everything else: a
+shared name gets the path, a unique name -- every name in nearly every program -- keeps exactly the
+bare symbol it always had. Measured after: 305 ms median against a 307 ms baseline, and a
+non-colliding program's emitted IR is unchanged.
+
+That closed **spec-divergences 9.5** (the library may not shadow itself) on the day it was opened, and
+with it four failures that had looked like four different bugs -- a wrong number in a field, a
+constructor never called, a generic method missing, and a consumer crashing with no output. The table
+in 9.5 lists them.
+
+**Two holes were found by probing rather than by a failing test**, and both are now pinned:
+
+- A **consumer that declares a name its library also uses** had the IMPORTED type renamed
+  (`geo__Square`), and asked the linker for a symbol the library never exported. A type from another
+  bundle is not ours to rename: its symbols were fixed by a build that had never heard of this
+  program. `bundle_shadowed_name_runs`.
+- **Imports written before `program`** -- which is where every author writes them -- were read by the
+  analyzer and by nothing else. Both the renaming pass and codegen looked only at the in-bundle list,
+  so the author's own import decided nothing in either.
+
+**What is still told apart by renaming: two generic templates of one name.** A template is erased
+before anything can key it by path, and its instance is named `Stack$int` from the base name alone --
+so two `Stack<T>`s do not merely collide, they produce the same instance. That one still goes through
+the rewrite, and `codegen_generic_stack_runs` covers it.
+
+Everything below is the investigation that led here, left because the measurements in it are what
+ruled out the alternatives.
+
+---
+
+
 *Design proposal, 2026-08-15. Written from measurement on this machine; every number below was taken
 before any of it was built, so the performance claim can be checked rather than believed.*
 

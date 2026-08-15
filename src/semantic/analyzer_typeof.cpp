@@ -643,8 +643,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return it != newtypes_.end() ? it->second : t;
         };
         const std::string src = under(srcRaw);
-        const bool dstRef = dst == "Object" || lookupClass(baseType(dst)) != nullptr;
-        const bool srcRef = src.empty() || src == "Object" || src == "Type" || src == "Method" ||
+        // THE REFERENCE TYPES THAT ARE NOT IN `classes_`. String, string and the reflection tokens
+        // are pointer-shaped values the compiler knows by name rather than by declaration, so
+        // `lookupClass` says no to all of them. As a cast SOURCE that was already handled -- the
+        // list below has said `Type`/`Method` for a long time -- but as a cast DESTINATION it was
+        // not, and the asymmetry meant `cast<String>(f.get(obj))` was refused while
+        // `cast<int>(f.get(obj))` worked. Reflection hands every field back as an Object; refusing
+        // to name it back as a String is refusing to read half the fields there are.
+        auto builtinRef = [](const std::string& t) {
+            return t == "String" || t == "string" || t == "Object" || t == "Type" ||
+                   t == "Method" || t == "Field" || t == "Annotation";
+        };
+        const bool dstRef = builtinRef(dst) || lookupClass(baseType(dst)) != nullptr;
+        const bool srcRef = src.empty() || builtinRef(src) ||
                             lookupClass(baseType(src)) != nullptr || isRefType(src) ||
                             src.rfind("funcptr<", 0) == 0;  // a bare C fn pointer reinterprets like a ptr
         const bool dstFuncptr = dst.rfind("funcptr<", 0) == 0;  // a bare C function pointer (dynamic FFI)
@@ -1990,7 +2001,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 return "Type";
             }
             const std::string t = ast::mangleGeneric(call->typeArgs[0], {});
-            if (lookupClass(t) == nullptr) {
+            // REFLECTION INSIDE A GENERIC is what makes an automatic serializer possible: the body
+            // is written once over `T` and the instantiation supplies the class. On the template
+            // pass `T` is a type parameter and not a class, and saying so would refuse the very
+            // shape reflection exists to serve -- so the check waits for the copy where T is real,
+            // which every instantiation gets. See currentTypeParams_.
+            if (currentTypeParams_.count(t) == 0 && lookupClass(t) == nullptr) {
                 error("reflect.typeOf<T>: '" + t + "' is not a class", call->loc);
             }
             return "Type";
@@ -2555,6 +2571,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     typeOf(*arg);
                 }
                 if (mem->member == "name" && call->args.empty()) {
+                    return "String";
+                }
+                // WHAT THE FIELD IS DECLARED AS. `get` hands back an Object, and without this there
+                // was no way to learn whether that Object is an int, a String or another object --
+                // so nothing generic could be written over a type's shape, which is what reflection
+                // is for. It is the one piece auto-serialization was missing.
+                if (mem->member == "typeName" && call->args.empty()) {
                     return "String";
                 }
                 if (mem->member == "get" && call->args.size() == 1) {

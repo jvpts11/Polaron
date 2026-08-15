@@ -150,6 +150,15 @@ struct ClassInfo {
     // reported against the one the author wrote, rather than wherever the displaced type happened to
     // be used -- which, when the displaced one is a stdlib type, is somewhere inside the prelude.
     SourceLocation declLoc;
+    // WHERE THIS TYPE LIVES, so a pass that walks `classes_` can say so.
+    //
+    // Resolution of a shared name asks "which namespace is asking" (see lookupShared), and a pass
+    // iterating the class map rather than the namespace tree has no answer -- it inherits whichever
+    // namespace the previous loop happened to leave behind. That is how `implements Shape` in a
+    // user's own namespace resolved to a standard-library `Shape` and reported it "is not an
+    // interface": the check was right, it was just looking at the wrong type.
+    std::string ns;
+    std::string bundle;
     bool fromPrelude = false;
 };
 
@@ -519,6 +528,11 @@ private:
         return bare;
     }
 
+    // Generic base name -> every namespace declaring one. Generics are not in `types_`: their
+    // templates are erased by monomorphization before this analyzer ever runs, so the only record of
+    // where `Stack<T>` was written is what the monomorphizer saved on the way past. Same rule as the
+    // type table, kept separately because the facts arrive from a different place.
+    std::map<std::string, std::vector<std::string>> genericHomes_;
     std::unordered_map<std::string, std::string> typeNamespace_;  // type name -> its namespace
     std::unordered_map<std::string, std::string> typeBundle_;     // type name -> its bundle (import validation)
     std::unordered_map<std::string, std::string> namespaceBundle_;  // namespace name -> its bundle
@@ -534,6 +548,10 @@ private:
     bool libraryMode_ = false;      // compiling a bundle to a .polb: a missing `main` is allowed
     bool testMode_ = false;         // `polc --test`: a missing `main` is allowed (runner is synthetic)
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
+    // The FULL paths of those imports. The set above keeps only the last segment, which answers
+    // nothing when two types share it -- `import System.Units.Angle;` beside a `System.Math.Angle`
+    // says precisely which is meant, and resolution needs to be able to read that.
+    std::unordered_set<std::string> currentImportPaths_;
     // spec 32.11: the classes that declare a [BeforeAll]/[AfterAll] fixture, and whether the method
     // being analyzed is a [Test] (or one of the per-test hooks around it). A test that reaches into
     // ANOTHER class's fixture reads state whose lifetime it does not control -- see the warning at the
@@ -542,6 +560,17 @@ private:
     std::unordered_set<std::string> fixtureWarned_;  // "Reader.method|Owner", warned once each
     bool inTestMethod_ = false;
     std::string currentClass_;  // class of the method being analyzed ("" if static/none)
+    // THE TYPE PARAMETERS IN SCOPE where this body was written -- the class's and the method's own.
+    //
+    // A generic body is analyzed TWICE: once as the template, with `T` still a name standing for a
+    // type, and again per instantiation with `T` replaced. Any check that asks "is this a class?"
+    // gets the wrong answer on the first pass, because `T` is not one and never will be. Without
+    // this set the only ways out are to skip the check on template bodies (losing it everywhere) or
+    // to spell the check's exception at each site (which is how they drift apart).
+    //
+    // So it is recorded once, where the body's owner is known, and a check that cannot mean anything
+    // yet defers to the instantiation -- where the same check runs against the real type.
+    std::unordered_set<std::string> currentTypeParams_;
     std::string enclosingClass_;  // class the current method belongs to, set even for static methods
                                   // (unlike currentClass_) -- used to point unqualified calls at their owner
 

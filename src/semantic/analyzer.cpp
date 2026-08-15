@@ -188,6 +188,16 @@ const ClassInfo* SemanticAnalyzer::lookupShared(const std::string& name) const {
             }
         }
     }
+    // AN IMPORT THAT NAMES THE PATH SETTLES IT. Checked before anything else that could guess,
+    // because writing `import System.Units.Angle;` is the author saying which one, and no preference
+    // of ours should outrank that.
+    for (std::uint32_t id : shared->second) {
+        if (currentImportPaths_.count(types_[id].canonical) > 0) {
+            if (const ClassInfo* c = entryFor(types_[id])) {
+                return c;
+            }
+        }
+    }
     // Then a bundle of your own before the standard library's, because the stdlib needs an explicit
     // import to be visible at all and so cannot be what a bare name in your own code means.
     for (std::uint32_t id : shared->second) {
@@ -667,6 +677,18 @@ void SemanticAnalyzer::validateHierarchy() {
         }
     }
     for (const auto& [name, info] : classes_) {
+        // This walk is over the class MAP, so it has to carry each class's own home with it: every
+        // `lookupClass` below resolves a name written INSIDE this class, and the answer depends on
+        // where that class is (see ClassInfo::ns). Restored after the loop by the caller's own
+        // setting; kept accurate per iteration because two adjacent entries in the map need not be
+        // in the same namespace, or even the same bundle.
+        struct Where {
+            SemanticAnalyzer& a;
+            std::string ns, bundle;
+            ~Where() { a.currentNamespace_ = ns; a.currentBundle_ = bundle; }
+        } where{*this, currentNamespace_, currentBundle_};
+        currentNamespace_ = info.ns;
+        currentBundle_ = info.bundle;
         if (!info.superclass.empty()) {
             const ClassInfo* sup = lookupClass(info.superclass);
             const std::string supBare =
@@ -769,6 +791,8 @@ void SemanticAnalyzer::collectMethodNamesInto(const std::string& className,
 void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 const ClassInfo* ci = lookupClass(cls.name);
                 if (ci == nullptr) {
@@ -1167,6 +1191,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
     }
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 // A REDECLARATION IS THE SAME NAME IN THE SAME NAMESPACE, and this asked only about
                 // the name. That was the same question while a name could exist once, and stopped
@@ -1414,6 +1440,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                     }
                 }
                 const std::uint32_t id = internType(cls.name, bundle.name, ns.name, cls.loc);
+                info.ns = ns.name;
+                info.bundle = bundle.name;
                 // A SECOND TYPE OF THE SAME NAME NO LONGER ERASES THE FIRST.
                 //
                 // `classes_[cls.name] = info` is one slot, so the second declaration overwrote the
@@ -1441,6 +1469,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
 void SemanticAnalyzer::registerNewtypes(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             // A TRANSFORMER MUST BE IMPORTABLE, or it can only be applied in the file that declares
             // it. It is not a type -- it is never instantiated and never names a value -- but
             // `applies TRoster` in another file is exactly the ordinary thing to do with one, and
@@ -1478,6 +1508,8 @@ void SemanticAnalyzer::registerNewtypes(const ast::Program& program) {
 void SemanticAnalyzer::registerAnnotations(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::AnnotationDecl& a : ns.annotationDecls) {
                 // An annotation and a CLASS may share a name: they are used in different positions and
                 // never confused (`@Test` marks a method; `Test.assertEqual(...)` calls a static method).
@@ -1558,6 +1590,8 @@ void SemanticAnalyzer::checkAnnotationUses(const std::vector<ast::AnnotationUse>
 void SemanticAnalyzer::validateAnnotations(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ClassDecl& c : ns.classes) {
                 checkAnnotationUses(c.annotations);
                 for (const ast::MemberPtr& m : c.members) {
@@ -1613,6 +1647,8 @@ void SemanticAnalyzer::collectFixtureOwners(const ast::Program& program) {
             continue;
         }
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
@@ -1669,6 +1705,8 @@ void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
             continue;
         }
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 std::map<std::string, std::string> hookOwner;  // hook kind -> the method holding it
                 for (const ast::MemberPtr& member : cls.members) {
@@ -1825,6 +1863,8 @@ void SemanticAnalyzer::validateTestCases(const ast::ClassDecl& cls, const ast::M
 void SemanticAnalyzer::registerEnums(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ExternDecl& ex : ns.externs) {  // external C functions (spec 26)
                 // A namespace-level extern is a free declaration outside a class; an extern must be a
                 // static class member (`public extern <conv> static method ...`). Still registered so
@@ -1921,6 +1961,8 @@ void SemanticAnalyzer::registerEnums(const ast::Program& program) {
 void SemanticAnalyzer::registerCatalogs(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::CatalogDecl& cat : ns.catalogs) {
                 if (catalogs_.count(cat.name) > 0 || classes_.count(cat.name) > 0 ||
                     enums_.count(cat.name) > 0) {
@@ -2019,6 +2061,8 @@ void SemanticAnalyzer::validateCatalogs(const ast::Program& program) {
         };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::EnumDecl& en : ns.enums) {
                 if (en.extendsCatalogs.empty()) {
                     if (!en.byCatalogValues.empty()) {
@@ -2099,6 +2143,8 @@ void SemanticAnalyzer::findEntryPoint(const ast::Program& program) {
             continue;
         }
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             if (ns.visibility != "public") {
                 continue;
             }
@@ -2624,6 +2670,8 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
             continue;
         }
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
@@ -2658,6 +2706,8 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                 continue;
             }
             for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
                 for (const ast::ClassDecl& cls : ns.classes) {
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
@@ -2717,17 +2767,42 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
         // accepted during migration. Collect the imported symbol names from both.
         currentBundle_ = bundle.name;  // for the stdlib-cohesion visibility check
         currentImports_.clear();
+        currentImportPaths_.clear();
         for (const ast::ImportDecl& imp : program.imports) {
             if (!imp.path.empty()) {
                 currentImports_.insert(imp.path.back());
+                // AND THE WHOLE PATH, because the last segment is not the answer when two types
+                // answer to it. `import System.Units.Angle;` beside a `System.Math.Angle` says
+                // exactly which one is meant, and keeping only "Angle" threw that away -- resolution
+                // then saw both as imported and picked the first.
+                if (imp.path.size() >= 3) {
+                    std::string full;
+                    for (const std::string& seg : imp.path) {
+                        full += (full.empty() ? "" : ".") + seg;
+                    }
+                    currentImportPaths_.insert(full);
+                }
             }
         }
         for (const ast::ImportDecl& imp : bundle.imports) {
             if (!imp.path.empty()) {
                 currentImports_.insert(imp.path.back());
+                // AND THE WHOLE PATH, because the last segment is not the answer when two types
+                // answer to it. `import System.Units.Angle;` beside a `System.Math.Angle` says
+                // exactly which one is meant, and keeping only "Angle" threw that away -- resolution
+                // then saw both as imported and picked the first.
+                if (imp.path.size() >= 3) {
+                    std::string full;
+                    for (const std::string& seg : imp.path) {
+                        full += (full.empty() ? "" : ".") + seg;
+                    }
+                    currentImportPaths_.insert(full);
+                }
             }
         }
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 currentClass_ = cls.name;  // keep accurate for checkTypeAccessible's mono exemption
@@ -2743,6 +2818,13 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         break;
                     }
                     if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
+                        // A monomorphized METHOD (`of$Player`) has the caller's types in its
+                        // signature by construction -- that is what the instantiation IS -- and the
+                        // class holding it may be the standard library's. Checked where it was
+                        // written; see the matching exemption in checkTypeAccessible.
+                        if (m->name.find('$') != std::string::npos) {
+                            continue;
+                        }
                         for (const ast::Param& p : m->params) {
                             checkTypeAccessible(typeRefStr(p.type), p.loc);
                         }
@@ -2840,6 +2922,11 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // outside one does not get attributed to whichever method ran last.
                         currentMethodKey_ = cls.name + "." + m->name;
                         methodFacts_[currentMethodKey_];  // exists even when it does nothing
+                        // Both levels: `class Box<T> { method map<R>(...) }` has T and R in scope
+                        // inside `map`, and a check meeting either must wait for the instantiation.
+                        currentTypeParams_.clear();
+                        currentTypeParams_.insert(cls.typeParams.begin(), cls.typeParams.end());
+                        currentTypeParams_.insert(m->typeParams.begin(), m->typeParams.end());
                         // A BODY THAT CAME OUT OF A `freestanding` TRANSFORMER obeys the bare-metal
                         // subset even here, in a program that is hosted. That is the whole of what
                         // the modifier buys: without it, a transformer whose body interpolates a
@@ -3125,6 +3212,8 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
         }
         bundleNames_.insert(b.name);  // every declared/imported bundle: the import path's first segment
         for (const ast::Namespace& ns : b.namespaces) {
+            currentNamespace_ = ns.name;
+            currentBundle_ = b.name;
             namespaceBundle_[ns.name] = b.name;  // namespace -> owning bundle (stdlib-cohesion check)
         }
     }
@@ -3183,6 +3272,8 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
                  b.nameLoc);
         }
         for (const ast::Namespace& ns : b.namespaces) {
+            currentNamespace_ = ns.name;
+            currentBundle_ = b.name;
             if (!ns.name.empty() && lowerInitial(ns.name)) {
                 warn("namespace '" + ns.name +
                          "' should start with a capital letter (namespace names are conventionally "
@@ -3196,8 +3287,11 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // namespace map captured before monomorphization pins each generic to its real home, so a stdlib
     // collection requires an import while a user generic in the current namespace does not. Enforcement
     // strips the $arg suffix and checks the base name (see checkTypeAccessible).
-    for (const auto& [base, ns] : program.genericNamespaces) {
-        typeNamespace_[base] = ns;
+    genericHomes_ = program.genericNamespaces;
+    for (const auto& [base, homes] : program.genericNamespaces) {
+        if (!homes.empty()) {
+            typeNamespace_[base] = homes.front();  // for messages; visibility uses genericHomes_
+        }
     }
     genericVariance_ = program.genericVariance;  // variance of generic type params (spec 15.3)
     qualifiedTypes_.insert(program.qualifiedTypes.begin(), program.qualifiedTypes.end());
@@ -3267,6 +3361,8 @@ void SemanticAnalyzer::checkProcedureTotality(const ast::Program& program) {
             continue;
         }
         for (const ast::Namespace& ns : b.namespaces) {
+            currentNamespace_ = ns.name;
+            currentBundle_ = b.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 // A value aggregate or a plain class is closed over its fields. An interface has
                 // none, and an abstract class's are somebody else's problem. A union is closed over
@@ -3536,6 +3632,8 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
     };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             // A namespace-level literal suffix is a free declaration outside a class; a suffix must
             // be a member of the class/struct it produces (spec 17.10). Still registered so its uses
             // resolve and do not cascade.
@@ -3576,6 +3674,8 @@ void SemanticAnalyzer::registerConsts(const ast::Program& program) {
     };
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             // A namespace-level const is a free declaration outside a class; Polaron is OOP-mandatory,
             // so a const must be a static class/struct member (spec 28.1). Still registered so its
             // references resolve and do not cascade into spurious errors.
@@ -3602,6 +3702,8 @@ void SemanticAnalyzer::registerConsts(const ast::Program& program) {
 void SemanticAnalyzer::registerComptimeMethods(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
@@ -3619,6 +3721,8 @@ void SemanticAnalyzer::registerComptimeMethods(const ast::Program& program) {
 void SemanticAnalyzer::registerPersistentFields(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* f = dynamic_cast<const ast::FieldDecl*>(member.get());
@@ -3724,6 +3828,8 @@ void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
     std::vector<Pending> waiting;
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             for (const ast::ConstDecl& c : ns.consts) {
                 waiting.push_back({&c, ""});
             }
@@ -3881,8 +3987,38 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
         for (std::size_t i = 1; i + 1 < imp.path.size(); ++i) {
             nsPath += (nsPath.empty() ? "" : ".") + imp.path[i];
         }
-        const std::string& realNs = nsIt->second;
-        const std::string realBundle = typeBundle_.count(symbol) ? typeBundle_[symbol] : std::string();
+        // WHICH `Scanner` IS BEING IMPORTED. `typeNamespace_`/`typeBundle_` hold one answer per bare
+        // name, so when two types share one, the import of the OTHER was judged against this one's
+        // namespace and refused: `'Color' is imported as 'Main.App.Color'; the path
+        // 'System.Spatial.Color' does not match its bundle/namespace` -- a path that is exactly right.
+        //
+        // The type table holds every one of them, so an import that names a real path is checked
+        // against THAT path rather than against whichever declaration happened to take the bare key.
+        std::string realNs = nsIt->second;
+        std::string realBundle = typeBundle_.count(symbol) ? typeBundle_[symbol] : std::string();
+        if (writtenNameCount(symbol) > 1) {
+            const std::string full = bundleSeg + (nsPath.empty() ? "" : "." + nsPath) + "." + symbol;
+            if (auto exact = typeByCanonical_.find(full); exact != typeByCanonical_.end()) {
+                realNs = types_[exact->second].ns;
+                realBundle = types_[exact->second].bundle;
+            }
+        }
+        // AND THE SAME FOR A GENERIC, whose template is gone before this runs. A program declaring
+        // its own `Stack<T>` beside the library's made `import System.Collections.Stack;` -- written
+        // by the library, about its own type -- fail against the USER's namespace, because the one
+        // slot per name held whichever was recorded last. Any declaration whose namespace the path
+        // names is the one being imported.
+        if (auto gh = genericHomes_.find(symbol); gh != genericHomes_.end()) {
+            for (const std::string& home : gh->second) {
+                if (home == nsPath) {
+                    realNs = home;
+                    if (auto nb = namespaceBundle_.find(home); nb != namespaceBundle_.end()) {
+                        realBundle = nb->second;
+                    }
+                    break;
+                }
+            }
+        }
         const std::string want =
             (realBundle.empty() ? std::string("<bundle>") : realBundle) + "." + realNs + "." + symbol;
         // The first segment is valid if it names a declared/imported bundle, or the symbol's own
@@ -3922,17 +4058,42 @@ void SemanticAnalyzer::analyzeLiteralBodies(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         currentBundle_ = bundle.name;  // for the stdlib-cohesion visibility check
         currentImports_.clear();
+        currentImportPaths_.clear();
         for (const ast::ImportDecl& imp : program.imports) {
             if (!imp.path.empty()) {
                 currentImports_.insert(imp.path.back());
+                // AND THE WHOLE PATH, because the last segment is not the answer when two types
+                // answer to it. `import System.Units.Angle;` beside a `System.Math.Angle` says
+                // exactly which one is meant, and keeping only "Angle" threw that away -- resolution
+                // then saw both as imported and picked the first.
+                if (imp.path.size() >= 3) {
+                    std::string full;
+                    for (const std::string& seg : imp.path) {
+                        full += (full.empty() ? "" : ".") + seg;
+                    }
+                    currentImportPaths_.insert(full);
+                }
             }
         }
         for (const ast::ImportDecl& imp : bundle.imports) {
             if (!imp.path.empty()) {
                 currentImports_.insert(imp.path.back());
+                // AND THE WHOLE PATH, because the last segment is not the answer when two types
+                // answer to it. `import System.Units.Angle;` beside a `System.Math.Angle` says
+                // exactly which one is meant, and keeping only "Angle" threw that away -- resolution
+                // then saw both as imported and picked the first.
+                if (imp.path.size() >= 3) {
+                    std::string full;
+                    for (const std::string& seg : imp.path) {
+                        full += (full.empty() ? "" : ".") + seg;
+                    }
+                    currentImportPaths_.insert(full);
+                }
             }
         }
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
+            currentBundle_ = bundle.name;
             currentNamespace_ = ns.name;
             // A LiteralDecl is its own AST node, not a MethodDecl, so the member loop above never set
             // `currentReturnType_` for one -- its body was analyzed carrying whatever the LAST method
@@ -4599,6 +4760,15 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     if (currentClass_.find('$') != std::string::npos) {
         return;
     }
+    // A monomorphized METHOD is the same case and was missing. `Serializer.of<Player>(p)` writes a
+    // copy of `of` named `of$Player` INTO THE LIBRARY'S CLASS, and that copy names `Player` -- a type
+    // in the caller's namespace, which the library neither declares nor imports and could not
+    // possibly import, since it is a type the library's author never saw. The reference was validated
+    // where the author wrote it, at the call site; validating it again where the compiler copied it
+    // to asks the standard library to import the user's program.
+    if (currentMethodKey_.find('$') != std::string::npos) {
+        return;
+    }
     // A monomorphized generic (ArrayList$int) is enforced on its generic base name (ArrayList): user
     // code must import the collection. The type-argument part is internal to the instantiation.
     if (const std::size_t d = n.find('$'); d != std::string::npos) {
@@ -4611,6 +4781,62 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
     }
     if (qualifiedTypes_.count(n) > 0) {
         return;  // explicitly namespace-qualified -> visible
+    }
+    // A NAME MAY BE DECLARED MORE THAN ONCE, AND ONLY ONE OF THEM HAS TO BE REACHABLE.
+    //
+    // `typeNamespace_` holds one namespace per name, so a program declaring its own `Stack` while the
+    // standard library declares `Collections.Stack` kept whichever was written last -- and the check
+    // then told an author to import a type they had just declared themselves, three lines up. The
+    // fix is not a better tie-break: there is no tie. Both types exist, the question is whether ANY
+    // of them is visible from here, and the type table already knows all of them.
+    //
+    // Costs nothing in the ordinary case: `writtenNameCount` is 1 for every name in a program with no
+    // collisions, and the loop below runs once over a one-element vector.
+    // A generic, by the same rule, from the record monomorphization left behind (see genericHomes_).
+    if (const auto gh = genericHomes_.find(n); gh != genericHomes_.end()) {
+        for (const std::string& home : gh->second) {
+            if (home == currentNamespace_) {
+                return;
+            }
+        }
+        if (currentImports_.count(n) > 0) {
+            return;
+        }
+        if (currentBundle_ == "System") {
+            for (const std::string& home : gh->second) {
+                auto nb = namespaceBundle_.find(home);
+                if (nb != namespaceBundle_.end() && nb->second == "System") {
+                    return;
+                }
+            }
+        }
+        const std::string b = typeBundle_.count(n) ? typeBundle_[n] : std::string("<bundle>");
+        error("type '" + n + "' is in namespace '" + gh->second.front() + "'; import it (import " +
+                  b + "." + gh->second.front() + "." + n + ";) to use it here",
+              loc);
+        return;
+    }
+    if (const auto shared = typesByWritten_.find(n); shared != typesByWritten_.end()) {
+        for (const std::uint32_t id : shared->second) {
+            const TypeEntry& e = types_[id];
+            if (e.ns == currentNamespace_) {
+                return;  // declared right here
+            }
+            if (currentBundle_ == "System" && e.bundle == "System") {
+                return;  // the library is internally cohesive (see below)
+            }
+        }
+        if (currentImports_.count(n) > 0) {
+            return;  // brought in by import (incl. stdlib)
+        }
+        // Not reachable by any of its declarations. Say which ones exist, because with more than one
+        // "import it" is not advice until the reader knows which `it`.
+        const TypeEntry& first = types_[shared->second.front()];
+        error("type '" + n + "' is in namespace '" + first.ns + "'; import it (import " +
+                  first.canonical + ";) to use it here" +
+                  (shared->second.size() > 1 ? " -- declared as " + sharedPathsFor(n) : ""),
+              loc);
+        return;
     }
     auto it = typeNamespace_.find(n);
     if (it == typeNamespace_.end()) {

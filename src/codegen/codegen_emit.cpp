@@ -954,7 +954,7 @@ void CodeGenerator::Impl::emitCleanupAction(const Cleanup& c) {
     }
     auto cit = classes.find(c.className);
     if (cit != classes.end() && cit->second.hasDestructor) {
-        builder.CreateCall(functions[c.className + ".~" + c.className], {objPtr});
+        builder.CreateCall(functions[dtorSym(c.className)], {objPtr});
     }
     if (c.heap) {
         builder.CreateCall(freeFn(), {objPtr});  // a heap resource is freed too
@@ -1140,7 +1140,7 @@ void CodeGenerator::Impl::emitScopeCleanup() {
         if (!it->region.empty()) {
             continue;  // region objects are destructed when the region frees
         }
-        auto fnit = functions.find(it->className + ".~" + it->className);
+        auto fnit = functions.find(dtorSym(it->className));
         const bool weak = weakRelevant(it->className);
         if (fnit == functions.end() && !weak) {
             continue;
@@ -1410,6 +1410,8 @@ void CodeGenerator::Impl::emitHeapBridge() {
     const ast::ClassDecl* heapCls = nullptr;
     for (const ast::Bundle& b : program.bundles) {
         for (const ast::Namespace& ns : b.namespaces) {
+            currentNamespace = ns.name;
+            currentBundleName = b.name;
             for (const ast::ClassDecl& c : ns.classes) {
                 if (c.isHeap) {
                     if (heapCls != nullptr) {
@@ -1572,8 +1574,8 @@ void CodeGenerator::Impl::emitPhysicalCodeOp(const std::string& className, const
             op(className + "." + md->name);
         }
     }
-    op(className + "." + className);        // constructor
-    op(className + ".~" + className);        // destructor
+    op(ctorSym(className));        // constructor
+    op(dtorSym(className));        // destructor
 }
 
 llvm::Function* CodeGenerator::Impl::unimportedTrap(const std::string& cn) {
@@ -1670,6 +1672,8 @@ std::vector<std::string> CodeGenerator::Impl::unimportGroupTargets(const ast::Un
             continue;
         }
         for (const ast::Namespace& ns : b.namespaces) {
+            currentNamespace = ns.name;
+            currentBundleName = b.name;
             if (u.granularity == 1 && ns.name != u.target) {
                 continue;
             }
@@ -1773,7 +1777,7 @@ void CodeGenerator::Impl::emitThrowNamed(const std::string& cn) {
         return;
     }
     llvm::Value* exc = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, "exc");
-    if (auto f = functions.find(cn + "." + cn); f != functions.end()) {
+    if (auto f = functions.find(ctorSym(cn)); f != functions.end()) {
         builder.CreateCall(f->second, {exc});
     }
     emitThrowObject(exc);
@@ -1975,6 +1979,8 @@ void CodeGenerator::Impl::scanLabelChainTopLevel(const ast::Block& body) {
 void CodeGenerator::Impl::collectFieldRegionKinds() {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 FieldRegionKinds k;
                 for (const ast::MemberPtr& member : cls.members) {
@@ -2013,6 +2019,8 @@ void CodeGenerator::Impl::markUnimportableDestructors() {
 void CodeGenerator::Impl::collectAbstainedLabels() {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
+            currentNamespace = ns.name;
+            currentBundleName = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 for (const ast::MemberPtr& member : cls.members) {
                     scanClass_ = cls.name;
@@ -2237,7 +2245,7 @@ bool CodeGenerator::Impl::hasUnwindCleanup() {
     }
     for (const ScopeObject& so : scopeObjects) {
         if (so.region.empty() &&
-            (functions.count(so.className + ".~" + so.className) > 0 || weakRelevant(so.className))) {
+            (functions.count(dtorSym(so.className)) > 0 || weakRelevant(so.className))) {
             return true;
         }
     }
@@ -2253,7 +2261,7 @@ bool CodeGenerator::Impl::hasUnwindCleanupAbove(std::size_t soBase, std::size_t 
     }
     for (std::size_t i = soBase; i < scopeObjects.size(); ++i) {
         if (scopeObjects[i].region.empty() &&
-            (functions.count(scopeObjects[i].className + ".~" + scopeObjects[i].className) > 0 ||
+            (functions.count(dtorSym(scopeObjects[i].className)) > 0 ||
              weakRelevant(scopeObjects[i].className))) {
             return true;
         }
@@ -2582,7 +2590,7 @@ void CodeGenerator::Impl::runRegionObjectDtors(const std::string& name) {
         if (so.region != name || so.className.empty()) {
             continue;
         }
-        auto fnit = functions.find(so.className + ".~" + so.className);
+        auto fnit = functions.find(dtorSym(so.className));
         const bool weak = weakRelevant(so.className);
         if (fnit != functions.end() || weak) {
             llvm::Value* objPtr = builder.CreateLoad(builder.getPtrTy(), so.slot);

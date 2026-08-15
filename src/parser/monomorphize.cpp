@@ -1642,6 +1642,43 @@ bool expandGenericMethods(ast::Program& program) {
     if (!anyTemplate) {
         return ok;
     }
+    // A GENERIC METHOD CALLING ANOTHER WITH ITS OWN PARAMETER is not an instantiation.
+    //
+    // `text<T>` calling `of<T>(value)` reads, to the collector below, as a call to `of` with the type
+    // argument `T` -- so it materialized a method `of$T` whose substitution maps T to T, i.e. a copy
+    // of the template with the template's own parameter still in it and no `typeParams` left to say
+    // so. Everything downstream then treats `T` as a type that ought to exist: `reflect.typeOf<T>`
+    // reports it is not a class, a `T` parameter does not convert to Object, and the errors point
+    // into the standard library at a line whose author did nothing wrong.
+    //
+    // The generic-CLASS collector has guarded against exactly this since the `Node<T>* next` case
+    // (see typeParamNames further down); generic METHODS never got the same guard, and the shape
+    // that exposes it -- one generic method delegating to another -- is common enough that the
+    // standard library hit it the first time it wrote one.
+    //
+    // Narrower than the class-level guard on purpose: a name is only ignored if it is a type
+    // parameter somewhere AND is not a real class, so a program that legitimately names a class `T`
+    // still instantiates over it.
+    std::set<std::string> methodTypeParamNames;
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                for (const auto& tp : c.typeParams) {
+                    methodTypeParamNames.insert(tp);
+                }
+                for (auto& m : c.members) {
+                    if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
+                        for (const auto& tp : meth->typeParams) {
+                            methodTypeParamNames.insert(tp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    auto isPseudoArg = [&](const std::string& a) {
+        return methodTypeParamNames.count(a) > 0 && classIndex.count(a) == 0;
+    };
 
     // 1. Collect (name, args) from every existing method body (templates included).
     MethInsts insts;
@@ -1675,6 +1712,15 @@ bool expandGenericMethods(ast::Program& program) {
                         for (const MethInst& inst : insts) {
                             if (inst.first != meth->name || inst.second.size() != meth->typeParams.size()) {
                                 continue;
+                            }
+                            bool pseudo = false;
+                            for (const std::string& a : inst.second) {
+                                if (isPseudoArg(a)) {
+                                    pseudo = true;
+                                }
+                            }
+                            if (pseudo) {
+                                continue;  // a template naming its own parameter; see isPseudoArg
                             }
                             const std::string mangled =
                                 ast::mangleGeneric(meth->name, inst.second);
@@ -2019,6 +2065,29 @@ void qualifyNamespaces(ast::Program& program) {
     // as it walks, so by the time it reaches the second namespace of a bundle the first one's class
     // is already called `World__Paths` and looking for `Paths` there finds nothing.
     std::map<std::string, std::map<std::string, std::set<std::string>>> bundleDecl;
+    // Which of those names are GENERIC. A generic template is erased by monomorphization, and the
+    // instance it produces is named from the BASE name alone -- `Stack<int>` is `Stack$int` whoever
+    // declared it. So two templates of one name do not merely collide, they produce the same
+    // instance: the monomorphizer indexes templates by name, keeps one, and every `Stack<int>` in the
+    // program is built from that one. A user's own `Stack<T>` beside the library's failed as
+    // `class 'Stack$int' has no method 'count'`, naming a method that is right there in the file.
+    //
+    // Nothing downstream can repair that, because by then there is one template and no record that
+    // there were two. It is the one case where telling the types apart by path is not enough and the
+    // rename is still the mechanism -- so generics are excluded from the exemption below.
+    std::set<std::string> genericDecl;
+    // The namespaces that live in an IMPORTED bundle. Their types are external symbols, named by the
+    // build that produced the .polb -- see the refusal to rename them below.
+    std::set<std::string> importedNs;
+    for (auto& b : program.bundles) {
+        if (!b.isImported) {
+            continue;
+        }
+        for (auto& ns : b.namespaces) {
+            importedNs.insert(ns.name);
+            importedNs.insert(b.name + "." + ns.name);
+        }
+    }
     for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             auto note = [&](const std::string& n) {
@@ -2030,6 +2099,9 @@ void qualifyNamespaces(ast::Program& program) {
             };
             for (auto& c : ns.classes) {
                 note(c.name);
+                if (!c.typeParams.empty()) {
+                    genericDecl.insert(c.name);
+                }
             }
             for (auto& e : ns.enums) {
                 note(e.name);
@@ -2134,22 +2206,41 @@ void qualifyNamespaces(ast::Program& program) {
         //
         // That number is the argument against finishing the rewrite and for replacing it: a pass that
         // is 43% incomplete is not one gap away from total. See docs/design/type-identity.md.
-        // TURNING THIS OFF FOR THE STDLIB COLLISION IS THE GOAL, AND IT IS NOT REACHED YET.
+        // A NAME SHARED ONLY WITH THE STANDARD LIBRARY IS NOT RENAMED.
         //
-        // Both halves of the replacement now exist -- the analyzer picks by namespace and imports
-        // (`lookupShared`), and codegen keeps each class's path (`classNamespace`/`classBundle`) so it
-        // can pick too. Switching the rename off for a name shared only with the standard library was
-        // tried on 2026-08-15 and surfaces one coupling at a time, each a real fix:
+        // That is THE collision -- a program declaring `Color`, `Regex`, `File`, `Scanner` -- and
+        // rewriting the whole program to invent a difference is what made three separate holes in this
+        // pass reachable by ordinary code. It is answered directly now, by the two halves that exist:
+        // the analyzer picks by namespace and imports, codegen keeps each class's path.
         //
-        //   - the class redeclaration check asked whether the NAME was taken rather than whether it
-        //     was taken in the same namespace. FIXED.
-        //   - the prelude refers to its own types unqualified, and never imports itself, so an
-        //     unqualified `Scanner` inside it has to mean System's. A preference for that was added
-        //     and is NOT yet sufficient: the prelude's own `Scanner` still loses its fields, reported
-        //     as `no such field 'src'` against a class the author never touched.
+        // What unblocked it was the standard library importing itself. It never had one `import` line,
+        // and an exemption let it through -- which made it the one body of code resolving names by a
+        // different rule, and a different rule needs a special case, and a special case is a second
+        // answer that has to agree with the first forever.
         //
-        // The remaining work is that list, not a mystery -- but it is a list, so the switch stays off
-        // until it is empty rather than being flipped with the suite red.
+        // Two of YOUR OWN namespaces sharing a name still comes through here: the qualified `ns.Type`
+        // spelling has to keep resolving, and that is a real ambiguity inside one program.
+        // A NAME SHARED ONLY WITH THE STANDARD LIBRARY IS NOT RENAMED.
+        //
+        // That is THE collision -- a program declaring `Color`, `Regex`, `File`, `Scanner` -- and
+        // rewriting the whole program to invent a difference between the two is what made three
+        // separate holes in this pass reachable by ordinary code. It is answered directly now: the
+        // analyzer picks by namespace and imports, codegen keeps each class's path.
+        //
+        // Two things had to be true first, and neither was. The standard library had to IMPORT
+        // ITSELF -- it had not one `import` line, resolving names by an exemption that made it the
+        // only code in the program playing by a different rule. And every analyzer pass had to say
+        // WHICH NAMESPACE IT IS IN: twenty of them walked namespaces and two recorded it, so
+        // `lookupShared` asked "whose namespace is asking" and eighteen had never answered.
+        //
+        // Two of YOUR OWN namespaces sharing a name still comes through here: the qualified `ns.Type`
+        // spelling has to keep resolving, and that is a real ambiguity inside one program.
+        if (nss.size() == 2 && genericDecl.count(name) == 0) {
+            auto po = preludeOwner.find(name);
+            if (po != preludeOwner.end() && nss.count(po->second) > 0) {
+                continue;
+            }
+        }
         if (nss.size() > 1) {
             ambiguous.insert(name);
         }
@@ -2201,9 +2292,15 @@ void qualifyNamespaces(ast::Program& program) {
         // prefix with its leading bundle segment stripped; the lookup below keeps whichever actually
         // declares the type.
         std::map<std::string, std::vector<std::string>> importNs;
-        for (auto& imp : b.imports) {
+        // BOTH LISTS: an import is written before `program` (spec 2.7) and lands in
+        // `program.imports`; `b.imports` is the in-bundle form. Reading only the second meant the
+        // author's own imports never reached this map -- so a program that imported `shapes.geo
+        // .Square` and also declared a `Square` of its own had the reference rewritten to ITS one,
+        // and `new Square(5)` failed as "constructor 'other__Square' expects at most 0 arguments"
+        // against a class whose name the author never wrote.
+        auto takeImport = [&](const ast::ImportDecl& imp) {
             if (imp.path.size() < 2) {
-                continue;
+                return;
             }
             std::string nsPrefix;
             for (std::size_t i = 0; i + 1 < imp.path.size(); ++i) {
@@ -2217,6 +2314,12 @@ void qualifyNamespaces(ast::Program& program) {
                 }
                 importNs[imp.path.back()].push_back(afterBundle);
             }
+        };
+        for (auto& imp : program.imports) {
+            takeImport(imp);
+        }
+        for (auto& imp : b.imports) {
+            takeImport(imp);
         }
         for (auto& ns : b.namespaces) {
             std::set<std::string> ownNames;
@@ -2281,6 +2384,19 @@ void qualifyNamespaces(ast::Program& program) {
                         }
                     }
                 }
+                // A TYPE FROM ANOTHER BUNDLE IS NOT OURS TO RENAME. Its symbols were fixed when the
+                // library was compiled, by a build that knew nothing about the names this program
+                // declares -- so rewriting `Square` to `geo__Square` here asks the linker for
+                // `geo__Square.__new`, and the library exported `Square.__new`. The link fails, on a
+                // symbol neither author wrote.
+                //
+                // Leaving it bare is what makes the two sides agree: the CONSUMER's own colliding
+                // type is renamed (it is ours, and nothing outside this compilation names it), and
+                // an unqualified use resolves to the imported one -- which is exactly what the
+                // import at the top of the file says it should.
+                if (!owner.empty() && importedNs.count(owner) > 0) {
+                    continue;
+                }
                 if (!owner.empty()) {
                     subst[amb] = qualified(owner, amb);
                     program.qualifiedTypes.insert(qualified(owner, amb));
@@ -2289,8 +2405,8 @@ void qualifyNamespaces(ast::Program& program) {
             for (const auto& [k, v] : dotted) {
                 subst[k] = v;  // explicit ns.Type -> concrete name
             }
-            if (subst.empty()) {
-                continue;
+            if (subst.empty() || b.isImported) {
+                continue;  // an imported bundle's declarations keep the names its own build gave them
             }
             for (auto& c : ns.classes) {
                 const std::string newName = subst.count(c.name) ? subst[c.name] : c.name;
@@ -2801,7 +2917,10 @@ bool monomorphize(ast::Program& program) {
                     // Record the template's namespace before it is dropped, so the analyzer can enforce
                     // imports on a generic by its base name (a stdlib collection requires an import; a
                     // user generic in the current namespace does not).
-                    program.genericNamespaces[c.name] = ns.name;
+                    auto& homes = program.genericNamespaces[c.name];
+                    if (std::find(homes.begin(), homes.end(), ns.name) == homes.end()) {
+                        homes.push_back(ns.name);
+                    }
                     // Record variance (spec 15.3) before the template is dropped, so the
                     // analyzer can apply variance subtyping to the concrete instantiations.
                     if (!c.typeParamVariance.empty()) {
