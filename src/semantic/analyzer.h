@@ -448,6 +448,11 @@ private:
     std::unordered_map<std::string, std::uint32_t> typeByCanonical_;
     // Every id sharing a written name, so "which `Color` is meant here" is a lookup rather than a scan.
     std::unordered_map<std::string, std::vector<std::uint32_t>> typesByWritten_;
+    // Just the names that are declared more than once. Usually EMPTY, which is what keeps the guard
+    // in `lookupClass` free: an empty-set test in front of the fast path, so a program with no
+    // collisions pays nothing at all for the machinery that resolves them.
+    std::unordered_set<std::string> sharedNames_;
+    const ClassInfo* lookupShared(const std::string& name) const;
 
     // Registers one declared type and returns its id. Two declarations with the same CANONICAL name
     // are a redeclaration; two with the same WRITTEN name in different namespaces are the ordinary
@@ -462,6 +467,9 @@ private:
         types_.push_back(TypeEntry{std::move(canonical), written, bundleName, nsName, loc});
         typeByCanonical_[types_.back().canonical] = id;
         typesByWritten_[written].push_back(id);
+        if (typesByWritten_[written].size() > 1) {
+            sharedNames_.insert(written);
+        }
         return id;
     }
     // How many distinct types share this written name. One is the ordinary case; more than one is

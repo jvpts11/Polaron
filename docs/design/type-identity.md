@@ -69,7 +69,72 @@ mostly symbol-table work.
 > That single fact rules out the obvious design. "Key the maps by the full path" is the first idea
 > anybody has, and it would cost a heap allocation per name per map. It has to be an integer.
 
-## The design
+## The measurement that settles it: 341 of 799
+
+*Run on 2026-08-15, and it is the most useful number in this document.*
+
+The obvious cheap fix is to keep the renaming pass and make it **unconditional** — qualify every type
+rather than only the ones that collide. It is a two-line change, it gives every type a path-derived
+name, and it kills the property that made three bugs invisible: a rewrite that runs on one program in
+a hundred is a rewrite whose gaps are found by users rather than by tests.
+
+It was tried. Four gaps surfaced in four iterations, each one invisible while the pass was
+conditional, and each one the same rule seen from a different side:
+
+> **A type the compiler names by ITSELF cannot be renamed.** A substitution map is built from what a
+> namespace declares and what it imports, so it can only contain names somebody wrote. Where the
+> compiler synthesises a reference, that name is in no source file, reaches no map, and is left
+> pointing at a declaration that has just been renamed away.
+
+| what broke | why |
+|---|---|
+| `Object` | every class gets `extends Object` attached by the compiler, in a namespace that never imported it |
+| the entry point | found by comparing against the bare `"Main"`, so a qualified one produced *"this program has no entry point"* to somebody looking straight at one |
+| `Option` / `Result` | the compiler synthesises `Option$String` behind `Some(x)`, meeting `Errors__Option$String` — the same type under two names |
+| `Bits`, `Channel`, `atomic` | their methods are builtins, and the dispatch matches on the BARE class name |
+
+The list of intrinsics was not invented for this: `ast::builtinStaticClasses()` already exists for
+exactly this reason, and its own comment records that *"two copies of it already cost a day"*.
+
+**With all four fixed, `hello_world` compiled clean with every one of the ~280 types qualified.** Then
+the suite ran: **341 of 799 tests fail, segfaults among them.**
+
+That is the result. A one-class program compiling is exactly how a change of this shape flatters
+itself, and 43% is not one gap away from total. **So the rewrite is not to be finished — it is to be
+replaced**, which is what the design below already said and now has a number behind it.
+
+The four fixes are kept regardless: they are correct under either scheme, and `Object` and the
+builtin classes must be exempt from renaming whether the renaming is conditional or not.
+
+## The design got simpler once the collisions were counted
+
+*Revised 2026-08-15, during stage 2, because two measurements changed the answer.*
+
+**`classes_` is used 30 times in the analyzer**, not the 188 the map count suggested — the blast
+radius is a tenth of what it looked like.
+
+**And no two types in the standard library share a name.** Not one. Ambiguity only ever arises
+between a user's program and the library, or between two of the user's own namespaces — so it is
+**rare**, and the design should not make the common case pay for it.
+
+That kills the plan below in its general form, and replaces it with something smaller:
+
+- A written name that is **unique** stays exactly as it is today: one hash of a short key. No
+  canonical string is built, nothing is renamed, no id is looked up. Zero cost, because that is
+  every name in almost every program.
+- A written name that is **shared** is the only case that does more work: the second and later
+  declarations are stored under their canonical name, and `lookupClass` resolves among them using
+  the current namespace and then the imports — which is what `import` already means.
+
+So the renaming pass is not replaced by another rewriting pass. It is **deleted**, and the ambiguity
+it existed to paper over is answered where the question is asked. The `TypeId` and the canonical
+string still exist, for the ambiguous entries and for diagnostics; they are simply not on the path
+that every name takes.
+
+The staging below still holds; what changed is that stage 5 (storage) is no longer needed to protect
+the performance, because the fast path never grew.
+
+## The design (as originally proposed)
 
 **A type's identity is a `TypeId` — a 32-bit index — and its canonical name is a string kept once, in
 one table, for diagnostics and for the `.polh`.**
