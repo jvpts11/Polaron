@@ -526,19 +526,39 @@ ast::Bundle Parser::parseBundle() {
              current().loc);
     }
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
-        b.namespaces.push_back(parseNamespace());
+        parseNamespaceInto(b.namespaces, "");   // appends this one plus anything nested in it
     }
     expect(TokenKind::RBrace, "'}'");
     return b;
 }
 
-ast::Namespace Parser::parseNamespace() {
+// A NAMESPACE MAY CONTAIN A NAMESPACE, and the nesting is flattened here.
+//
+// Spec 2.7 says a path is "primeiro o bundle, depois o(s) namespace(s), e por fim o tipo" --
+// namespaceS -- so `Bundle.Outer.Inner.Type` is a shape the language promises. Two spellings express
+// it, the dotted `namespace Outer.Inner` and the nested block, and only the first parsed: the member
+// loop had no arm for `namespace`, so the block form failed with "expected 'class', 'struct',
+// 'union', 'interface' or 'layout'" -- a message that never mentions nesting, for one of the two
+// obvious ways to write what the specification describes.
+//
+// FLATTENED rather than represented, and that is the point: `namespace A { namespace B { } }` becomes
+// a namespace literally named "A.B", beside "A", which is exactly what the dotted form already
+// produces. Nothing downstream learns a new shape -- not the analyzer, not the type table's canonical
+// names, not the import validator -- because after this line the two spellings are the same program.
+void Parser::parseNamespaceInto(std::vector<ast::Namespace>& out, const std::string& prefix) {
     ast::Namespace ns;
     ns.loc = current().loc;
     ns.visibility = parseVisibilityOpt();
     expect(TokenKind::KwNamespace, "'namespace'");
     ns.nameLoc = current().loc;
     ns.name = parseDottedName();
+    if (!prefix.empty()) {
+        ns.name = prefix + "." + ns.name;
+    }
+    // Its own entry goes in FIRST, so a namespace keeps its declaration order relative to its
+    // siblings and a diagnostic points at the outer one before the inner.
+    const std::size_t self = out.size();
+    out.emplace_back();
     expect(TokenKind::LBrace, "'{'");
     while (!check(TokenKind::RBrace) && !check(TokenKind::EndOfFile)) {
         // Leading annotations (spec 14.3): `[Name(...)]` applied to the declaration that follows.
@@ -550,6 +570,17 @@ ast::Namespace Parser::parseNamespace() {
             kind == TokenKind::KwProtected || kind == TokenKind::KwInternal) {
             kindAt = 1;
             kind = peek(1).kind;
+        }
+        // A NAMESPACE INSIDE A NAMESPACE. Recurses with this one's name as the prefix, so the child
+        // lands in the same flat list under its whole path. An annotation cannot precede it -- a
+        // namespace takes none -- so anything collected above belongs to a declaration that is not
+        // here, and saying so beats attaching it silently to nothing.
+        if (kind == TokenKind::KwNamespace) {
+            if (!anns.empty()) {
+                fail("a namespace takes no annotations", current().loc);
+            }
+            parseNamespaceInto(out, ns.name);
+            continue;
         }
         // ... and past `sealed`, which an ENUM may also carry. `sealed enum` is not the same
         // question as `sealed class`: a class is sealed to stop anyone extending it, and an enum's
@@ -642,7 +673,9 @@ ast::Namespace Parser::parseNamespace() {
         }
     }
     expect(TokenKind::RBrace, "'}'");
-    return ns;
+    // Into the slot reserved before the body was read, so `out` holds outer-then-inner and a nested
+    // parse that appended children in the meantime did not displace this one.
+    out[self] = std::move(ns);
 }
 
 // `[visibility] extern <cdecl|stdcall|fastcall> method name(params) returns T;` (spec 26), or the

@@ -197,12 +197,38 @@ const ClassInfo* SemanticAnalyzer::lookupShared(const std::string& name) const {
             }
         }
     }
+    // WHAT CANNOT BE PROVEN IS NOT GUESSED.
+    //
+    // Neither yours nor imported: two types answer to this name and nothing here says which. Picking
+    // one is the failure mode the whole exercise is about -- a program that compiles against a type
+    // its author did not mean, and behaves oddly somewhere else entirely. It stays unresolved, and the
+    // caller reports it with both paths so the fix is to write one of them down.
+    if (shared->second.size() > 1) {
+        return nullptr;
+    }
     for (std::uint32_t id : shared->second) {
         if (const ClassInfo* c = entryFor(types_[id])) {
             return c;
         }
     }
     return nullptr;
+}
+
+// The paths a name could have meant, for the message that says so. Empty when the name is not shared,
+// which is every ordinary name.
+std::string SemanticAnalyzer::sharedPathsFor(const std::string& name) const {
+    auto shared = typesByWritten_.find(name);
+    if (shared == typesByWritten_.end() || shared->second.size() < 2) {
+        return "";
+    }
+    std::string out;
+    for (std::uint32_t id : shared->second) {
+        if (!out.empty()) {
+            out += " or ";
+        }
+        out += "'" + types_[id].canonical + "'";
+    }
+    return out;
 }
 
 const FieldInfo* SemanticAnalyzer::findField(const std::string& className,
@@ -637,7 +663,18 @@ void SemanticAnalyzer::validateHierarchy() {
                       {});
             }
             if (sup == nullptr) {
-                error("class '" + name + "' extends unknown type '" + info.superclass + "'", {});
+                // AND IF IT IS AMBIGUOUS, SAY SO RATHER THAN "UNKNOWN". A name that resolves to two
+                // types in different namespaces is not missing -- it is over-supplied, and telling
+                // the author it is unknown sends them looking for a declaration that is right there,
+                // twice. The message names both paths, because writing one of them down is the fix.
+                if (const std::string paths = sharedPathsFor(info.superclass); !paths.empty()) {
+                    error("class '" + name + "' extends '" + info.superclass +
+                              "', and that name means two different types here: " + paths +
+                              ". Write the one you meant with its namespace, or import it",
+                          {});
+                } else {
+                    error("class '" + name + "' extends unknown type '" + info.superclass + "'", {});
+                }
             } else if (sup->isInterface) {
                 error("class '" + name + "' extends interface '" + info.superclass +
                           "' (use 'implements')",
