@@ -1,0 +1,666 @@
+    public namespace Science {
+        // SPECIAL FUNCTIONS -- the ones every distribution below is written in terms of, and which
+        // nothing in the library had. `Stats` did descriptive statistics (mean, median, percentile)
+        // and stopped there: it could tell you what a sample looked like and not whether it was
+        // surprising, which is the question statistics is for.
+        public class Special {
+            // log Gamma by the Lanczos approximation (g = 7, nine coefficients). Log rather than the
+            // value, deliberately: Gamma(171) already overflows a double, while its logarithm is a
+            // small number, and every use below is a ratio that wants the logs anyway.
+            public static method lgamma(double x) returns double {
+                if (x < 0.5) {
+                    // Reflection, which is what carries this to the left of the axis:
+                    //   Gamma(x)Gamma(1-x) = pi / sin(pi x)
+                    double pi = Numerics.pi();
+                    return Numerics.ln(pi / Numerics.abs(Numerics.sin(pi * x))) - Special.lgamma(1.0 - x);
+                }
+                mutable double a = 0.99999999999980993;
+                mutable double[] c = new double[8]();
+                c[0] = 676.5203681218851;    c[1] = 0.0 - 1259.1392167224028;
+                c[2] = 771.32342877765313;   c[3] = 0.0 - 176.61502916214059;
+                c[4] = 12.507343278686905;   c[5] = 0.0 - 0.13857109526572012;
+                c[6] = 0.0000099843695780195716; c[7] = 0.00000015056327351493116;
+                double z = x - 1.0;
+                for (mutable int i = 0; i < 8; i++) { a = a + c[i] / (z + cast<double>(i) + 1.0); }
+                delete c;
+                double t = z + 7.5;
+                double twoPi = 6.283185307179586;
+                return 0.5 * Numerics.ln(twoPi) + (z + 0.5) * Numerics.ln(t) - t + Numerics.ln(a);
+            }
+            public static method gamma(double x) returns double {
+                return Numerics.exp(Special.lgamma(x));
+            }
+            public static method lbeta(double a, double b) returns double {
+                return Special.lgamma(a) + Special.lgamma(b) - Special.lgamma(a + b);
+            }
+            public static method beta(double a, double b) returns double {
+                return Numerics.exp(Special.lbeta(a, b));
+            }
+
+            // The error function, by its series below 2 and its continued fraction above -- one form
+            // alone is accurate on one half of the axis and quietly poor on the other.
+            public static method erf(double x) returns double {
+                if (x < 0.0) { return 0.0 - Special.erf(0.0 - x); }
+                if (x > 6.0) { return 1.0; }              // 1 - erf(6) is below a double's resolution
+                // 2/sqrt(pi) * sum x^(2n+1) (-1)^n / (n! (2n+1))
+                mutable double sum = 0.0;
+                mutable double term = x;
+                mutable int n = 0;
+                while (n < 60 && Numerics.abs(term) > 0.000000000000001) {
+                    sum = sum + term / (2.0 * cast<double>(n) + 1.0);
+                    n = n + 1;
+                    term = 0.0 - term * x * x / cast<double>(n);
+                }
+                return 1.1283791670955126 * sum;          // 2/sqrt(pi)
+            }
+            public static method erfc(double x) returns double { return 1.0 - Special.erf(x); }
+
+            // The regularized lower incomplete gamma P(a, x): the series when x is small relative to
+            // a, the continued fraction otherwise. Poisson and chi-square are both this function
+            // wearing different arguments.
+            public static method lowerGamma(double a, double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                if (x < a + 1.0) {
+                    mutable double ap = a;
+                    mutable double del = 1.0 / a;
+                    mutable double sum = del;
+                    for (mutable int i = 0; i < 300; i++) {
+                        ap = ap + 1.0;
+                        del = del * x / ap;
+                        sum = sum + del;
+                        if (Numerics.abs(del) < Numerics.abs(sum) * 0.0000000000001) { i = 300; }
+                    }
+                    return sum * Numerics.exp(0.0 - x + a * Numerics.ln(x) - Special.lgamma(a));
+                }
+                // Lentz's method for the continued fraction of Q(a, x), then P = 1 - Q.
+                mutable double b = x + 1.0 - a;
+                mutable double c = 1.0 / 0.000000000000000000000000000001;
+                mutable double d = 1.0 / b;
+                mutable double h = d;
+                for (mutable int i = 1; i < 300; i++) {
+                    double an = 0.0 - cast<double>(i) * (cast<double>(i) - a);
+                    b = b + 2.0;
+                    d = an * d + b;
+                    if (Numerics.abs(d) < 0.0000000000000000000000000000001) { d = 0.0000000000000000000000000000001; }
+                    c = b + an / c;
+                    if (Numerics.abs(c) < 0.0000000000000000000000000000001) { c = 0.0000000000000000000000000000001; }
+                    d = 1.0 / d;
+                    double del = d * c;
+                    h = h * del;
+                    if (Numerics.abs(del - 1.0) < 0.0000000000001) { i = 300; }
+                }
+                double q = Numerics.exp(0.0 - x + a * Numerics.ln(x) - Special.lgamma(a)) * h;
+                return 1.0 - q;
+            }
+
+            // The regularized incomplete beta I_x(a, b) -- Student's t and the binomial in one.
+            public static method incompleteBeta(double a, double b, double x) returns double {
+                if (x <= 0.0) { return 0.0; }
+                if (x >= 1.0) { return 1.0; }
+                double front = Numerics.exp(a * Numerics.ln(x) + b * Numerics.ln(1.0 - x) -
+                                            Special.lbeta(a, b));
+                // The continued fraction converges quickly only on one side of the mean, so the other
+                // side is reached by the symmetry I_x(a,b) = 1 - I_(1-x)(b,a).
+                if (x > (a + 1.0) / (a + b + 2.0)) {
+                    return 1.0 - Special.incompleteBeta(b, a, 1.0 - x);
+                }
+                mutable double f = 1.0;
+                mutable double c = 1.0;
+                mutable double d = 0.0;
+                for (mutable int i = 0; i <= 300; i++) {
+                    int m = i / 2;
+                    mutable double num = 0.0;
+                    if (i == 0) { num = 1.0; }
+                    else {
+                        if (i % 2 == 0) {
+                            double dm = cast<double>(m);
+                            num = (dm * (b - dm) * x) / ((a + 2.0 * dm - 1.0) * (a + 2.0 * dm));
+                        } else {
+                            double dm = cast<double>(m);
+                            num = 0.0 - ((a + dm) * (a + b + dm) * x) /
+                                        ((a + 2.0 * dm) * (a + 2.0 * dm + 1.0));
+                        }
+                    }
+                    d = 1.0 + num * d;
+                    if (Numerics.abs(d) < 0.00000000000000000000000000001) { d = 0.00000000000000000000000000001; }
+                    d = 1.0 / d;
+                    c = 1.0 + num / c;
+                    if (Numerics.abs(c) < 0.00000000000000000000000000001) { c = 0.00000000000000000000000000001; }
+                    double cd = c * d;
+                    f = f * cd;
+                    if (Numerics.abs(1.0 - cd) < 0.0000000001) { i = 301; }
+                }
+                return front * (f - 1.0) / a;
+            }
+        }
+
+        // DISTRIBUTIONS. `Stats` could say what a sample looked like; none of this could say whether
+        // it was surprising. Each carries its density, its cumulative, and -- where it is the one that
+        // gets used -- its quantile, because "how extreme is this" and "what value would be extreme"
+        // are the two questions and only one of them is the cdf.
+        public class Normal {
+            public static method pdf(double x, double mean, double sd) returns double {
+                double z = (x - mean) / sd;
+                return Numerics.exp(0.0 - 0.5 * z * z) / (sd * 2.5066282746310002);   // sqrt(2 pi)
+            }
+            public static method cdf(double x, double mean, double sd) returns double {
+                double z = (x - mean) / (sd * 1.4142135623730951);                     // sqrt 2
+                return 0.5 * (1.0 + Special.erf(z));
+            }
+            // The inverse cdf by Acklam's rational approximation, then one Newton step against the
+            // cdf above -- the approximation alone is good to about 1e-9, and the refinement takes it
+            // to the double's own resolution for the cost of one evaluation.
+            public static method quantile(double p, double mean, double sd) returns double {
+                if (p <= 0.0 || p >= 1.0) { return mean; }
+                double a1 = 0.0 - 39.69683028665376; double a2 = 220.9460984245205;
+                double a3 = 0.0 - 275.9285104469687; double a4 = 138.3577518672690;
+                double a5 = 0.0 - 30.66479806614716; double a6 = 2.506628277459239;
+                double b1 = 0.0 - 54.47609879822406; double b2 = 161.5858368580409;
+                double b3 = 0.0 - 155.6989798598866; double b4 = 66.80131188771972;
+                double b5 = 0.0 - 13.28068155288572;
+                double c1 = 0.0 - 0.007784894002430293; double c2 = 0.0 - 0.3223964580411365;
+                double c3 = 0.0 - 2.400758277161838; double c4 = 0.0 - 2.549732539343734;
+                double c5 = 4.374664141464968; double c6 = 2.938163982698783;
+                double d1 = 0.007784695709041462; double d2 = 0.3224671290700398;
+                double d3 = 2.445134137142996; double d4 = 3.754408661907416;
+                double lo = 0.02425;
+                mutable double q = 0.0;
+                mutable double z = 0.0;
+                if (p < lo) {
+                    q = Numerics.sqrt(0.0 - 2.0 * Numerics.ln(p));
+                    z = (((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) /
+                        ((((d1 * q + d2) * q + d3) * q + d4) * q + 1.0);
+                } else {
+                    if (p <= 1.0 - lo) {
+                        q = p - 0.5;
+                        double r = q * q;
+                        z = (((((a1 * r + a2) * r + a3) * r + a4) * r + a5) * r + a6) * q /
+                            (((((b1 * r + b2) * r + b3) * r + b4) * r + b5) * r + 1.0);
+                    } else {
+                        q = Numerics.sqrt(0.0 - 2.0 * Numerics.ln(1.0 - p));
+                        z = 0.0 - (((((c1 * q + c2) * q + c3) * q + c4) * q + c5) * q + c6) /
+                                  ((((d1 * q + d2) * q + d3) * q + d4) * q + 1.0);
+                    }
+                }
+                double e = Normal.cdf(z, 0.0, 1.0) - p;
+                double u = e * 2.5066282746310002 * Numerics.exp(z * z / 2.0);
+                z = z - u / (1.0 + z * u / 2.0);
+                return mean + sd * z;
+            }
+        }
+
+        public class Exponential {
+            public static method pdf(double x, double rate) returns double {
+                if (x < 0.0) { return 0.0; }
+                return rate * Numerics.exp(0.0 - rate * x);
+            }
+            public static method cdf(double x, double rate) returns double {
+                if (x < 0.0) { return 0.0; }
+                return 1.0 - Numerics.exp(0.0 - rate * x);
+            }
+            public static method quantile(double p, double rate) returns double {
+                if (p <= 0.0) { return 0.0; }
+                return 0.0 - Numerics.ln(1.0 - p) / rate;
+            }
+        }
+
+        public class Poisson {
+            // Through logs, so a mean of 500 does not overflow on the way to a probability of 0.01.
+            public static method pmf(int k, double mean) returns double {
+                if (k < 0) { return 0.0; }
+                double dk = cast<double>(k);
+                return Numerics.exp(dk * Numerics.ln(mean) - mean - Special.lgamma(dk + 1.0));
+            }
+            public static method cdf(int k, double mean) returns double {
+                if (k < 0) { return 0.0; }
+                return 1.0 - Special.lowerGamma(cast<double>(k) + 1.0, mean);
+            }
+        }
+
+        public class Binomial {
+            public static method pmf(int k, int n, double p) returns double {
+                if (k < 0 || k > n) { return 0.0; }
+                double dk = cast<double>(k);
+                double dn = cast<double>(n);
+                double logC = Special.lgamma(dn + 1.0) - Special.lgamma(dk + 1.0) -
+                              Special.lgamma(dn - dk + 1.0);
+                return Numerics.exp(logC + dk * Numerics.ln(p) + (dn - dk) * Numerics.ln(1.0 - p));
+            }
+            public static method cdf(int k, int n, double p) returns double {
+                if (k < 0) { return 0.0; }
+                if (k >= n) { return 1.0; }
+                return Special.incompleteBeta(cast<double>(n - k), cast<double>(k) + 1.0, 1.0 - p);
+            }
+        }
+
+        public class ChiSquare {
+            public static method cdf(double x, int df) returns double {
+                if (x <= 0.0) { return 0.0; }
+                return Special.lowerGamma(cast<double>(df) / 2.0, x / 2.0);
+            }
+            // The upper tail, which is the one a test reports -- and computing it as 1 - cdf loses
+            // every digit that matters exactly when the result is small, which is exactly when a
+            // p-value is interesting.
+            public static method pValue(double x, int df) returns double {
+                return 1.0 - ChiSquare.cdf(x, df);
+            }
+        }
+
+        public class StudentT {
+            public static method cdf(double t, int df) returns double {
+                double dv = cast<double>(df);
+                double x = dv / (dv + t * t);
+                double ib = Special.incompleteBeta(dv / 2.0, 0.5, x);
+                if (t > 0.0) { return 1.0 - 0.5 * ib; }
+                return 0.5 * ib;
+            }
+            // Two-tailed, which is what a t-test asks for.
+            public static method pValue(double t, int df) returns double {
+                double c = StudentT.cdf(Numerics.abs(t), df);
+                return 2.0 * (1.0 - c);
+            }
+        }
+
+        // ROOT FINDING. Four methods rather than one, because they fail differently: Newton is fastest
+        // and needs a derivative and a good start, the secant needs neither and is nearly as fast,
+        // bisection cannot fail on a bracket and is slow, and Brent is bisection's guarantee with the
+        // secant's speed. A library with only one of these is a library that is wrong for most
+        // problems.
+        public class Roots {
+            public static method bisect(function<double, double> f, double lo, double hi,
+                                        double tolerance) returns double {
+                mutable double a = lo;
+                mutable double b = hi;
+                mutable double fa = f(a);
+                if (fa * f(b) > 0.0) { return a; }          // no sign change: no root to find here
+                for (mutable int i = 0; i < 200; i++) {
+                    double m = 0.5 * (a + b);
+                    double fm = f(m);
+                    if (Numerics.abs(b - a) < tolerance || fm == 0.0) { return m; }
+                    if (fa * fm < 0.0) { b = m; } else { a = m; fa = fm; }
+                }
+                return 0.5 * (a + b);
+            }
+            public static method newton(function<double, double> f, function<double, double> df,
+                                        double start, double tolerance) returns double {
+                mutable double x = start;
+                for (mutable int i = 0; i < 100; i++) {
+                    double d = df(x);
+                    if (Numerics.abs(d) < 0.000000000000001) { return x; }   // flat: nowhere to step
+                    double next = x - f(x) / d;
+                    if (Numerics.abs(next - x) < tolerance) { return next; }
+                    x = next;
+                }
+                return x;
+            }
+            public static method secant(function<double, double> f, double a, double b,
+                                        double tolerance) returns double {
+                mutable double x0 = a;
+                mutable double x1 = b;
+                mutable double f0 = f(x0);
+                mutable double f1 = f(x1);
+                for (mutable int i = 0; i < 100; i++) {
+                    double denom = f1 - f0;
+                    if (Numerics.abs(denom) < 0.000000000000001) { return x1; }
+                    double x2 = x1 - f1 * (x1 - x0) / denom;
+                    if (Numerics.abs(x2 - x1) < tolerance) { return x2; }
+                    x0 = x1; f0 = f1; x1 = x2; f1 = f(x2);
+                }
+                return x1;
+            }
+            // Brent: inverse quadratic interpolation where it helps, the secant where it does not, and
+            // bisection whenever either would step outside the bracket -- which is what makes it
+            // impossible for it to be slower than bisection while usually being much faster.
+            public static method brent(function<double, double> f, double lo, double hi,
+                                       double tolerance) returns double {
+                mutable double a = lo;
+                mutable double b = hi;
+                mutable double fa = f(a);
+                mutable double fb = f(b);
+                if (fa * fb > 0.0) { return a; }
+                if (Numerics.abs(fa) < Numerics.abs(fb)) {
+                    double t = a; a = b; b = t;
+                    double tf = fa; fa = fb; fb = tf;
+                }
+                mutable double c = a;
+                mutable double fc = fa;
+                mutable boolean usedBisection = true;
+                mutable double d = 0.0;
+                for (mutable int i = 0; i < 200; i++) {
+                    if (Numerics.abs(b - a) < tolerance || fb == 0.0) { return b; }
+                    mutable double s = 0.0;
+                    if (fa != fc && fb != fc) {
+                        s = a * fb * fc / ((fa - fb) * (fa - fc)) +
+                            b * fa * fc / ((fb - fa) * (fb - fc)) +
+                            c * fa * fb / ((fc - fa) * (fc - fb));
+                    } else {
+                        s = b - fb * (b - a) / (fb - fa);
+                    }
+                    double lower = (3.0 * a + b) / 4.0;
+                    boolean outside = !((s > lower && s < b) || (s > b && s < lower));
+                    boolean tooSmall = usedBisection &&
+                                       Numerics.abs(s - b) >= Numerics.abs(b - c) / 2.0;
+                    if (outside || tooSmall) {
+                        s = 0.5 * (a + b);
+                        usedBisection = true;
+                    } else {
+                        usedBisection = false;
+                    }
+                    double fs = f(s);
+                    d = c;
+                    c = b;
+                    fc = fb;
+                    if (fa * fs < 0.0) { b = s; fb = fs; } else { a = s; fa = fs; }
+                    if (Numerics.abs(fa) < Numerics.abs(fb)) {
+                        double t = a; a = b; b = t;
+                        double tf = fa; fa = fb; fb = tf;
+                    }
+                }
+                return b;
+            }
+        }
+
+        // NUMERIC CALCULUS. The derivative is CENTRAL and not forward, which costs one extra
+        // evaluation and buys an order of accuracy; and the step is scaled to the point rather than
+        // fixed, because a fixed 1e-8 is far too large near 1e6 and far too small near 1e-6.
+        public class Calculus {
+            public static method derivative(function<double, double> f, double x) returns double {
+                double h = Calculus.spacing(x);
+                return (f(x + h) - f(x - h)) / (2.0 * h);
+            }
+            public static method secondDerivative(function<double, double> f, double x) returns double {
+                double h = Calculus.spacing(x);
+                return (f(x + h) - 2.0 * f(x) + f(x - h)) / (h * h);
+            }
+            // `spacing` and not `step`: `step` is a hard keyword (it is the third clause of a range,
+            // `0..10 step 2`, and cannot be soft because it would collide with a unit suffix), and a
+            // method by that name did not resolve to this one -- the call was typed against something
+            // else entirely, so a double argument was sign-extended to an integer and the module
+            // verifier refused the result.
+            private static method spacing(double x) returns double {
+                mutable double scale = Numerics.abs(x);
+                if (scale < 1.0) { scale = 1.0; }
+                return 0.000001 * scale;             // cube root of the double epsilon, near enough
+            }
+            // Adaptive Simpson: it splits where the estimate disagrees with itself and leaves smooth
+            // stretches alone, so a function with one sharp feature does not pay for that feature
+            // everywhere. The depth bound is what keeps a discontinuity from becoming a hang.
+            public static method integrate(function<double, double> f, double a, double b,
+                                           double tolerance) returns double {
+                double c = 0.5 * (a + b);
+                double whole = Calculus.simpson(f, a, b);
+                return Calculus.adapt(f, a, b, tolerance, whole, 24);
+            }
+            private static method simpson(function<double, double> f, double a, double b) returns double {
+                double c = 0.5 * (a + b);
+                return (b - a) / 6.0 * (f(a) + 4.0 * f(c) + f(b));
+            }
+            private static method adapt(function<double, double> f, double a, double b,
+                                        double tolerance, double whole, int depth) returns double {
+                double c = 0.5 * (a + b);
+                double left = Calculus.simpson(f, a, c);
+                double right = Calculus.simpson(f, c, b);
+                double delta = left + right - whole;
+                if (depth <= 0 || Numerics.abs(delta) <= 15.0 * tolerance) {
+                    return left + right + delta / 15.0;      // Richardson: the error term, reused
+                }
+                return Calculus.adapt(f, a, c, tolerance / 2.0, left, depth - 1) +
+                       Calculus.adapt(f, c, b, tolerance / 2.0, right, depth - 1);
+            }
+        }
+
+        // ORDINARY DIFFERENTIAL EQUATIONS, y' = f(t, y). Euler is here to be compared against rather
+        // than used: it is the one everybody writes by hand, and seeing its error beside RK4's on the
+        // same problem is the fastest way to learn why nobody ships it.
+        public class Ode {
+            public static method euler(function<double, double, double> f, double t0, double y0,
+                                       double t1, int steps) returns double {
+                double h = (t1 - t0) / cast<double>(steps);
+                mutable double t = t0;
+                mutable double y = y0;
+                for (mutable int i = 0; i < steps; i++) {
+                    y = y + h * f(t, y);
+                    t = t + h;
+                }
+                return y;
+            }
+            // Classical fourth-order Runge-Kutta: four slopes per step, weighted 1/6, 1/3, 1/3, 1/6.
+            public static method rk4(function<double, double, double> f, double t0, double y0,
+                                     double t1, int steps) returns double {
+                double h = (t1 - t0) / cast<double>(steps);
+                mutable double t = t0;
+                mutable double y = y0;
+                for (mutable int i = 0; i < steps; i++) {
+                    double k1 = f(t, y);
+                    double k2 = f(t + h / 2.0, y + h * k1 / 2.0);
+                    double k3 = f(t + h / 2.0, y + h * k2 / 2.0);
+                    double k4 = f(t + h, y + h * k3);
+                    y = y + h * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0;
+                    t = t + h;
+                }
+                return y;
+            }
+        }
+
+        // ONE-DIMENSIONAL MINIMISATION by golden section: no derivative, no failure mode worse than
+        // slowness, and the interval shrinks by a fixed ratio every step so the cost is known in
+        // advance. Gradient descent is the multi-dimensional one and lives below it.
+        public class Optimize {
+            public static method minimize(function<double, double> f, double lo, double hi,
+                                          double tolerance) returns double {
+                double phi = 0.6180339887498949;
+                mutable double a = lo;
+                mutable double b = hi;
+                mutable double c = b - phi * (b - a);
+                mutable double d = a + phi * (b - a);
+                for (mutable int i = 0; i < 300; i++) {
+                    if (Numerics.abs(b - a) < tolerance) { return 0.5 * (a + b); }
+                    if (f(c) < f(d)) { b = d; } else { a = c; }
+                    c = b - phi * (b - a);
+                    d = a + phi * (b - a);
+                }
+                return 0.5 * (a + b);
+            }
+            // Gradient descent over a vector, with the gradient taken numerically so the caller
+            // supplies only the objective. `rate` too large diverges and too small crawls, which is
+            // the method's own nature rather than a defect of this one.
+            public static method descend(function<double, double[]> f, double[] start, double rate,
+                                         int steps) returns double[] {
+                int n = start.length();
+                mutable double[] x = new double[n]();
+                for (mutable int i = 0; i < n; i++) { x[i] = start[i]; }
+                mutable double[] probe = new double[n]();
+                for (mutable int s = 0; s < steps; s++) {
+                    for (mutable int i = 0; i < n; i++) { probe[i] = x[i]; }
+                    for (mutable int i = 0; i < n; i++) {
+                        double h = 0.000001;
+                        probe[i] = x[i] + h;
+                        double up = f(probe);
+                        probe[i] = x[i] - h;
+                        double down = f(probe);
+                        probe[i] = x[i];
+                        x[i] = x[i] - rate * (up - down) / (2.0 * h);
+                    }
+                }
+                delete probe;
+                return x;
+            }
+        }
+
+        // LINEAR ALGEBRA beyond `Matrix.multiply` and `GaussSolver`. Matrices are FLAT row-major
+        // `double[]` with the width passed alongside, which is what the rest of this namespace speaks
+        // and what keeps a decomposition from allocating a row object per row.
+        public class Decompose {
+            // LU with partial pivoting, in place. `perm` receives the row order and the return is the
+            // sign of that permutation, which the determinant needs. Returns 0 for a singular matrix,
+            // which is the honest answer rather than a division that produces an infinity.
+            public static method lu(double[] a, int n, int[] perm) returns double {
+                for (mutable int i = 0; i < n; i++) { perm[i] = i; }
+                mutable double sign = 1.0;
+                for (mutable int col = 0; col < n; col++) {
+                    // The largest pivot available, which is the whole point of pivoting: without it a
+                    // matrix with a small leading entry loses most of its digits to rounding.
+                    mutable int best = col;
+                    mutable double bestVal = Numerics.abs(a[col * n + col]);
+                    for (mutable int r = col + 1; r < n; r++) {
+                        double v = Numerics.abs(a[r * n + col]);
+                        if (v > bestVal) { bestVal = v; best = r; }
+                    }
+                    if (bestVal < 0.000000000000001) { return 0.0; }
+                    if (best != col) {
+                        for (mutable int k = 0; k < n; k++) {
+                            double t = a[col * n + k];
+                            a[col * n + k] = a[best * n + k];
+                            a[best * n + k] = t;
+                        }
+                        int tp = perm[col]; perm[col] = perm[best]; perm[best] = tp;
+                        sign = 0.0 - sign;
+                    }
+                    double pivot = a[col * n + col];
+                    for (mutable int r = col + 1; r < n; r++) {
+                        double factor = a[r * n + col] / pivot;
+                        a[r * n + col] = factor;                    // L below the diagonal
+                        for (mutable int k = col + 1; k < n; k++) {
+                            a[r * n + k] = a[r * n + k] - factor * a[col * n + k];
+                        }
+                    }
+                }
+                return sign;
+            }
+            public static method determinant(double[] matrix, int n) returns double {
+                mutable double[] a = new double[n * n]();
+                for (mutable int i = 0; i < n * n; i++) { a[i] = matrix[i]; }
+                mutable int[] perm = new int[n]();
+                double sign = Decompose.lu(a, n, perm);
+                mutable double det = sign;
+                if (sign != 0.0) {
+                    for (mutable int i = 0; i < n; i++) { det = det * a[i * n + i]; }
+                }
+                delete a;
+                delete perm;
+                return det;
+            }
+            // Ax = b, by decomposing once and substituting twice. Separate from `GaussSolver` because
+            // the decomposition can be REUSED: solving for a second right-hand side costs the two
+            // substitutions and not the elimination again.
+            public static method solve(double[] matrix, int n, double[] b) returns double[] {
+                mutable double[] a = new double[n * n]();
+                for (mutable int i = 0; i < n * n; i++) { a[i] = matrix[i]; }
+                mutable int[] perm = new int[n]();
+                mutable double[] x = new double[n]();
+                if (Decompose.lu(a, n, perm) == 0.0) { delete a; delete perm; return x; }
+                mutable double[] y = new double[n]();
+                for (mutable int i = 0; i < n; i++) {
+                    mutable double sum = b[perm[i]];
+                    for (mutable int k = 0; k < i; k++) { sum = sum - a[i * n + k] * y[k]; }
+                    y[i] = sum;
+                }
+                for (mutable int i = n - 1; i >= 0; i--) {
+                    mutable double sum = y[i];
+                    for (mutable int k = i + 1; k < n; k++) { sum = sum - a[i * n + k] * x[k]; }
+                    x[i] = sum / a[i * n + i];
+                }
+                delete a; delete perm; delete y;
+                return x;
+            }
+            // Cholesky, for a symmetric positive-definite matrix: half the work of LU and numerically
+            // the better answer when it applies. Returns false when it does not apply, which is also
+            // the cheapest test for positive-definiteness there is.
+            public static method cholesky(double[] matrix, int n, double[] lower) returns boolean {
+                for (mutable int i = 0; i < n * n; i++) { lower[i] = 0.0; }
+                for (mutable int i = 0; i < n; i++) {
+                    for (mutable int j = 0; j <= i; j++) {
+                        mutable double sum = matrix[i * n + j];
+                        for (mutable int k = 0; k < j; k++) {
+                            sum = sum - lower[i * n + k] * lower[j * n + k];
+                        }
+                        if (i == j) {
+                            if (sum <= 0.0) { return false; }     // not positive definite
+                            lower[i * n + j] = Numerics.sqrt(sum);
+                        } else {
+                            lower[i * n + j] = sum / lower[j * n + j];
+                        }
+                    }
+                }
+                return true;
+            }
+            // Eigenvalues of a SYMMETRIC matrix by the cyclic Jacobi rotation: repeatedly zero the
+            // largest off-diagonal entry until none is left. Symmetric only, and that is stated rather
+            // than assumed -- run on a non-symmetric matrix it returns numbers that are not
+            // eigenvalues of anything.
+            public static method symmetricEigenvalues(double[] matrix, int n) returns double[] {
+                mutable double[] a = new double[n * n]();
+                for (mutable int i = 0; i < n * n; i++) { a[i] = matrix[i]; }
+                for (mutable int sweep = 0; sweep < 100; sweep++) {
+                    mutable double off = 0.0;
+                    for (mutable int i = 0; i < n; i++) {
+                        for (mutable int j = i + 1; j < n; j++) { off = off + a[i * n + j] * a[i * n + j]; }
+                    }
+                    if (off < 0.000000000000000001) { sweep = 100; continue; }
+                    for (mutable int p = 0; p < n; p++) {
+                        for (mutable int q = p + 1; q < n; q++) {
+                            if (Numerics.abs(a[p * n + q]) > 0.0000000000000001) {
+                                double theta = (a[q * n + q] - a[p * n + p]) / (2.0 * a[p * n + q]);
+                                mutable double t = 1.0 / (Numerics.abs(theta) +
+                                                          Numerics.sqrt(theta * theta + 1.0));
+                                if (theta < 0.0) { t = 0.0 - t; }
+                                double c = 1.0 / Numerics.sqrt(t * t + 1.0);
+                                double s = t * c;
+                                for (mutable int k = 0; k < n; k++) {
+                                    double akp = a[k * n + p];
+                                    double akq = a[k * n + q];
+                                    a[k * n + p] = c * akp - s * akq;
+                                    a[k * n + q] = s * akp + c * akq;
+                                }
+                                for (mutable int k = 0; k < n; k++) {
+                                    double apk = a[p * n + k];
+                                    double aqk = a[q * n + k];
+                                    a[p * n + k] = c * apk - s * aqk;
+                                    a[q * n + k] = s * apk + c * aqk;
+                                }
+                            }
+                        }
+                    }
+                }
+                mutable double[] eig = new double[n]();
+                for (mutable int i = 0; i < n; i++) { eig[i] = a[i * n + i]; }
+                delete a;
+                return eig;
+            }
+        }
+
+        // HYPOTHESIS TESTS. The point of everything above: a number, and how surprised to be by it.
+        public class Hypothesis {
+            // One-sample t: is this sample's mean consistent with `expected`? Returns the two-tailed
+            // p-value, which is the number a reader wants rather than the statistic.
+            public static method tTestOneSample(double[] sample, double expected) returns double {
+                int n = sample.length();
+                if (n < 2) { return 1.0; }
+                mutable double sum = 0.0;
+                for (mutable int i = 0; i < n; i++) { sum = sum + sample[i]; }
+                double mean = sum / cast<double>(n);
+                mutable double ss = 0.0;
+                for (mutable int i = 0; i < n; i++) {
+                    double d = sample[i] - mean;
+                    ss = ss + d * d;
+                }
+                double sd = Numerics.sqrt(ss / cast<double>(n - 1));
+                if (sd == 0.0) { return mean == expected ? 1.0 : 0.0; }
+                double t = (mean - expected) / (sd / Numerics.sqrt(cast<double>(n)));
+                return StudentT.pValue(t, n - 1);
+            }
+            // Pearson's chi-square goodness of fit. `df` is one less than the number of categories,
+            // which is the degree of freedom the totals already spent.
+            public static method chiSquareGoodness(double[] observed, double[] expected) returns double {
+                int n = observed.length();
+                mutable double stat = 0.0;
+                for (mutable int i = 0; i < n; i++) {
+                    if (expected[i] > 0.0) {
+                        double d = observed[i] - expected[i];
+                        stat = stat + d * d / expected[i];
+                    }
+                }
+                return ChiSquare.pValue(stat, n - 1);
+            }
+        }
+    }

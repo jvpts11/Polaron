@@ -34,7 +34,7 @@
 # the assembled file is what a diagnostic points into.
 set(PRELUDE_ORDER
     Runtime Memory Memory.Units Errors Collections Algorithms Text Codecs Math Time
-    IO OS Net Concurrency Ipc Json Formats Compress Security Events Ecs App Test)
+    IO OS Net Concurrency Ipc Json Formats Compress Science Security Events Ecs App Test)
 
 # Required -D args: PRELUDE_DIR, PRELUDE_OUT
 # TWELVE THOUSAND, AND THE 65 535 ABOVE IS THE WRONG NUMBER FOR A RAW STRING.

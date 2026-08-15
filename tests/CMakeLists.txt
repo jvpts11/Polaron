@@ -2646,6 +2646,34 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `Stats` could say what a sample LOOKED like and nothing could say whether it was SURPRISING.
+        # Distributions, special functions, root finding, integration, ODE solvers, optimisation and
+        # matrix decompositions were all absent. Every number is checked against a closed form or a
+        # value that can be looked up, because an approximation that is subtly wrong returns a
+        # plausible number on every input and there is nothing to notice.
+        add_test(NAME codegen_science_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/science.pol"
+            "-DEXPECTED=gamma=24.0000 erf=0.842701 ncdf=0.841345 nq=1.000000 pois=0.676676 binom=0.623047 root=1.414214 deriv=12.000000 integral=9.000000 ode=2.718282 min=3.000000 det=-6.000000 solve=1.000000,3.000000 eig=1.000000,3.000000 p=0.000009"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # THE COMPILER BUG THE SCIENCE SLICE FOUND, pinned on its own. Calling a `function<>` value has
+        # the function's return type, and codegen's `typeName` had no rule for it -- so `f(x)` typed as
+        # an integer. Invisible until two such calls met in ONE expression: `f(a) - f(b)` emitted an
+        # integer subtraction over two doubles, sign-extending each and converting back, which the
+        # module verifier refuses. One call per statement was fine, which is why every existing use of
+        # a lambda in the library (map/filter/sortedBy, all of which hand the value straight back)
+        # never showed it.
+        add_test(NAME codegen_function_value_return_type COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/function_value_arithmetic.pol"
+            "-DEXPECTED=diff=0.500000 both=7.500000"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A URL YOU CAN TAKE APART, AND A REQUEST YOU CAN BUILD. `Http.get(host, port, path)` was the
         # entire client -- one verb, no headers, no body -- and there was no Url type at all, so every
         # caller had already split the host from the path by hand. Opens no socket on purpose: building

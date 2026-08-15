@@ -263,18 +263,7 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         if (lit != locals.end() && lit->second.type.rfind("function<", 0) == 0) {
             const std::string& ft = lit->second.type;
             const std::string inner = ft.substr(9, ft.size() - 10);  // strip "function<" ">"
-            std::vector<std::string> parts;
-            int depth = 0;
-            for (std::size_t i = 0, s = 0; i <= inner.size(); i++) {
-                if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
-                    parts.push_back(inner.substr(s, i - s));
-                    s = i + 1;
-                } else if (inner[i] == '<') {
-                    depth++;
-                } else if (inner[i] == '>') {
-                    depth--;
-                }
-            }
+            std::vector<std::string> parts = splitTypeList(inner);
             std::vector<llvm::Type*> pts;
             pts.push_back(builder.getPtrTy());  // arg 0: env
             for (std::size_t i = 1; i < parts.size(); i++) {
@@ -313,18 +302,7 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         const std::string ft = typeName(*call.callee);
         if (ft.rfind("function<", 0) == 0) {
             const std::string inner = ft.substr(9, ft.size() - 10);
-            std::vector<std::string> parts;
-            int depth = 0;
-            for (std::size_t i = 0, s = 0; i <= inner.size(); i++) {
-                if (i == inner.size() || (inner[i] == ',' && depth == 0)) {
-                    parts.push_back(inner.substr(s, i - s));
-                    s = i + 1;
-                } else if (inner[i] == '<') {
-                    depth++;
-                } else if (inner[i] == '>') {
-                    depth--;
-                }
-            }
+            std::vector<std::string> parts = splitTypeList(inner);
             std::vector<llvm::Type*> pts;
             pts.push_back(builder.getPtrTy());  // arg 0: env
             for (std::size_t i = 1; i < parts.size(); i++) {

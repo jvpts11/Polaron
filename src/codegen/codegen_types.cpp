@@ -214,6 +214,42 @@ std::string CodeGenerator::Impl::typeName(const ast::Expr& expr) {
         return isArrayType(at) ? at.substr(0, at.size() - 2) : std::string("int");
     }
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+        // CALLING A FUNCTION VALUE HAS THE FUNCTION'S RETURN TYPE, and this arm had no rule for it at
+        // all -- so `f(x)` where `f` is a `function<double, double>` fell through every case below to
+        // the default, and was typed as an integer.
+        //
+        // The consequence was invisible until two such calls met in one expression: `f(a) - f(b)`
+        // emitted an INTEGER subtraction over two doubles, sign-extending each to i32 and converting
+        // the result back. One call per statement was fine, because nothing then had to agree with it
+        // about a type -- which is why this survived every use of a lambda the library already had
+        // (`ArrayList.map`, `filter`, `sortedBy` all take a value and hand it straight back) and
+        // surfaced only on a numerical derivative.
+        //
+        // The analyzer was right all along; this is codegen's own second opinion, and the two have to
+        // agree because the analyzer decides whether the program is legal and codegen decides what it
+        // means.
+        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
+            if (auto lit = locals.find(cid->name);
+                lit != locals.end() && lit->second.type.rfind("function<", 0) == 0) {
+                const std::string inner =
+                    lit->second.type.substr(9, lit->second.type.size() - 10);
+                std::vector<std::string> parts = splitTypeList(inner);
+                if (!parts.empty()) {
+                    return parts[0];                     // function<Ret, Params...>
+                }
+            }
+        }
+        // The same for a function held in a FIELD -- `this.compare(a, b)` where `compare` is a
+        // `function<int, T, T>` -- which reaches here as a member callee rather than an identifier.
+        if (const auto* cmem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+            const std::string mt = typeName(*cmem);
+            if (mt.rfind("function<", 0) == 0) {
+                std::vector<std::string> parts = splitTypeList(mt.substr(9, mt.size() - 10));
+                if (!parts.empty()) {
+                    return parts[0];
+                }
+            }
+        }
         if (int w = vecWidth(flattenCallee(*call->callee)); w > 0) {
             return flattenCallee(*call->callee);  // vec2/3/4 construction
         }
