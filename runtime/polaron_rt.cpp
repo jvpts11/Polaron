@@ -35,6 +35,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>   // statvfs: free/total bytes on the volume holding a path
+#include <sys/time.h>      // utimes: set a file's modification time to now (`touch`)
 #include <sys/types.h>
 #include <sys/un.h>        // AF_UNIX (cross-program IPC transport, spec 2.8)
 #include <sys/wait.h>      // waitpid (subprocess liveness/teardown)
@@ -3196,6 +3197,217 @@ long long __polaron_file_mtime(const char* path) {
         return -1;
     }
     return static_cast<long long>(st.st_mtime);
+#endif
+}
+
+// WHEN IT WAS MADE -- and -1 when the filesystem does not record that, which is the whole reason
+// this is a separate function rather than a third field on the one above.
+//
+// `st_ctime` IS NOT THE CREATION TIME. It is the inode's status-change time, and it moves when
+// permissions change or a link is added. Every library that answered "created" with it is wrong on
+// Linux in a way nothing reports: a file that was chmod'd yesterday claims to have been made
+// yesterday. So the honest answers are the three below -- Windows records it, macOS and FreeBSD keep
+// `st_birthtime`, and Linux has it only through `statx` on a filesystem that stores it -- and -1
+// where it genuinely is not known. A caller can then say "unknown" instead of printing a date that
+// means something else.
+long long __polaron_file_ctime(const char* path) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d)) {
+        return -1;
+    }
+    unsigned long long t = (static_cast<unsigned long long>(d.ftCreationTime.dwHighDateTime) << 32) |
+                           d.ftCreationTime.dwLowDateTime;
+    return static_cast<long long>(t / 10000000ULL) - 11644473600LL;
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+#if defined(__APPLE__)
+    return static_cast<long long>(st.st_birthtimespec.tv_sec);
+#else
+    return static_cast<long long>(st.st_birthtim.tv_sec);
+#endif
+#elif defined(STATX_BTIME)
+    struct statx sx;
+    if (statx(AT_FDCWD, path, 0, STATX_BTIME, &sx) != 0 || (sx.stx_mask & STATX_BTIME) == 0) {
+        return -1;   // the kernel has statx but this filesystem does not store a birth time
+    }
+    return static_cast<long long>(sx.stx_btime.tv_sec);
+#else
+    static_cast<void>(path);
+    return -1;
+#endif
+}
+
+long long __polaron_file_atime(const char* path) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA d;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d)) {
+        return -1;
+    }
+    unsigned long long t = (static_cast<unsigned long long>(d.ftLastAccessTime.dwHighDateTime) << 32) |
+                           d.ftLastAccessTime.dwLowDateTime;
+    return static_cast<long long>(t / 10000000ULL) - 11644473600LL;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    return static_cast<long long>(st.st_atime);
+#endif
+}
+
+// Whether a write would be refused, and the switch for it. Windows has a read-only ATTRIBUTE; POSIX
+// has permission bits, so "read-only" there means the owner's write bit is off -- close enough to the
+// same question that one call is better than making every caller ask it twice, and different enough
+// to be worth saying so here.
+int __polaron_file_readonly(const char* path) {
+#ifdef _WIN32
+    DWORD a = GetFileAttributesA(path);
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        return -1;
+    }
+    return (a & FILE_ATTRIBUTE_READONLY) != 0 ? 1 : 0;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    return (st.st_mode & S_IWUSR) == 0 ? 1 : 0;
+#endif
+}
+
+int __polaron_file_set_readonly(const char* path, int value) {
+#ifdef _WIN32
+    DWORD a = GetFileAttributesA(path);
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        return 0;
+    }
+    a = value != 0 ? (a | FILE_ATTRIBUTE_READONLY) : (a & ~FILE_ATTRIBUTE_READONLY);
+    return SetFileAttributesA(path, a) ? 1 : 0;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return 0;
+    }
+    mode_t m = value != 0 ? (st.st_mode & ~static_cast<mode_t>(S_IWUSR | S_IWGRP | S_IWOTH))
+                          : (st.st_mode | S_IWUSR);
+    return chmod(path, m) == 0 ? 1 : 0;
+#endif
+}
+
+// ---- LINKS. One name for a file that is somewhere else. ----
+//
+// A symbolic link is a path stored in place of a file, and everything that follows from that is why
+// it needs its own calls: `exists` follows it, so a link pointing at nothing reports "not there"
+// while the link itself is plainly sitting in the directory; and `mtime` reports the TARGET's, so a
+// build that compares timestamps compares the wrong file.
+//
+// WINDOWS MAY REFUSE. Creating one needs SeCreateSymbolicLinkPrivilege, which an ordinary account
+// does not have unless Developer Mode is on -- so the answer is reported rather than assumed, and
+// `FLAG_ALLOW_UNPRIVILEGED_SYMLINK_CREATE` is passed for the case where it is.
+int __polaron_symlink(const char* target, const char* linkPath, int isDir) {
+#ifdef _WIN32
+    DWORD flags = isDir != 0 ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0;
+#ifdef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+    flags |= SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+#endif
+    return CreateSymbolicLinkA(linkPath, target, flags) ? 1 : 0;
+#else
+    static_cast<void>(isDir);   // POSIX links do not distinguish; the target decides
+    return symlink(target, linkPath) == 0 ? 1 : 0;
+#endif
+}
+
+// A second NAME for the same file -- not a path stored in place of one. Deleting either leaves the
+// data reachable through the other, which is the difference a caller is choosing between.
+int __polaron_hardlink(const char* target, const char* linkPath) {
+#ifdef _WIN32
+    return CreateHardLinkA(linkPath, target, nullptr) ? 1 : 0;
+#else
+    return link(target, linkPath) == 0 ? 1 : 0;
+#endif
+}
+
+// Is this path itself a link -- asked WITHOUT following it, which is the only way the question can
+// be answered. `stat` follows, so it reports on the target and says nothing about the name.
+int __polaron_is_symlink(const char* path) {
+#ifdef _WIN32
+    DWORD a = GetFileAttributesA(path);
+    if (a == INVALID_FILE_ATTRIBUTES) {
+        return 0;
+    }
+    return (a & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ? 1 : 0;
+#else
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        return 0;
+    }
+    return S_ISLNK(st.st_mode) ? 1 : 0;
+#endif
+}
+
+// What the link points AT, as stored -- which may be relative, and may name nothing at all. Empty
+// when the path is not a link or cannot be read.
+char* __polaron_readlink(const char* path, long long* outLen) {
+#ifdef _WIN32
+    // The final path, which is what Windows can answer: opening with FILE_FLAG_BACKUP_SEMANTICS lets
+    // this work for a directory link as well as a file one.
+    HANDLE h = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        return polaronStrOut(std::string(), outLen);
+    }
+    DWORD n = GetFinalPathNameByHandleA(h, nullptr, 0, FILE_NAME_NORMALIZED);
+    if (n == 0) {
+        CloseHandle(h);
+        return polaronStrOut(std::string(), outLen);
+    }
+    std::string s(n, '\0');
+    DWORD got = GetFinalPathNameByHandleA(h, &s[0], n, FILE_NAME_NORMALIZED);
+    CloseHandle(h);
+    s.resize(got);
+    // The `\\?\` prefix is an extended-length marker, not part of the path anybody wants to read.
+    if (s.rfind("\\\\?\\", 0) == 0) {
+        s = s.substr(4);
+    }
+    return polaronStrOut(s, outLen);
+#else
+    std::string s(4096, '\0');
+    const ssize_t n = readlink(path, &s[0], s.size());
+    if (n < 0) {
+        return polaronStrOut(std::string(), outLen);
+    }
+    s.resize(static_cast<size_t>(n));
+    return polaronStrOut(s, outLen);
+#endif
+}
+
+// Set a file's modification time to now, creating it empty if it is not there -- `touch`. What a
+// build tool does to say "this is current" without rewriting the contents.
+int __polaron_file_touch(const char* path) {
+#ifdef _WIN32
+    HANDLE h = CreateFileA(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    FILETIME ft;
+    SystemTimeToFileTime(&st, &ft);
+    const BOOL ok = SetFileTime(h, nullptr, nullptr, &ft);
+    CloseHandle(h);
+    return ok ? 1 : 0;
+#else
+    int fd = open(path, O_WRONLY | O_CREAT, 0666);
+    if (fd < 0) {
+        return 0;
+    }
+    close(fd);
+    return utimes(path, nullptr) == 0 ? 1 : 0;
 #endif
 }
 

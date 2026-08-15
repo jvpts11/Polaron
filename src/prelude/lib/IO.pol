@@ -106,6 +106,49 @@
                 return File.appendAll(path, content);
             }
 
+            // ---- WHOLE FILES AS BYTES. ----
+            //
+            // Everything above moves a String, which carries its own length and so survives a NUL --
+            // but a String is TEXT, and every method on it (`split`, `charAt`, the Utf8 helpers)
+            // reads it as text. A PNG is not text, and treating it as such is how a program that
+            // "works" corrupts the one file that happens to hold a byte no encoding allows.
+            //
+            // THE CALLER OWNS THE BUFFER, and that is the design rather than an omission. A Buffer
+            // frees itself when it goes out of scope, and assignment here is a COPY -- so a method
+            // returning one by value would hand back a duplicate holding the SAME address, and both
+            // would free it. Polaron has `move` for exactly this, but Buffer is not declared movable,
+            // and inventing an owning return that quietly double-frees is worse than two lines at
+            // the call site:
+            //
+            //     mutable Buffer* bytes = new Buffer(cast<int>(Files.size(path))) on heap;
+            //     int n = Files.readInto(path, bytes);
+            //
+            // Answers how many bytes were read, which is 0 for a file that is not there -- and the
+            // caller already knows the size it asked for, so short means something went wrong.
+            public static method readInto(String path, Buffer* into) returns int {
+                mutable FileStream stream = FileStream.read(path);
+                if (!stream.isOpen()) { return 0; }
+                int n = stream.readBytes(into, into.length());
+                stream.close();
+                return n;
+            }
+            // `count` rather than the whole buffer, because a buffer is usually bigger than what is
+            // in it -- a read of 300 bytes into a 4096-byte one should write 300.
+            public static method writeBytes(String path, Buffer* from, int count) returns boolean {
+                mutable FileStream stream = FileStream.write(path);
+                if (!stream.isOpen()) { return false; }
+                int n = stream.writeBytes(from, count);
+                stream.close();
+                return n == count;
+            }
+            public static method appendBytes(String path, Buffer* from, int count) returns boolean {
+                mutable FileStream stream = FileStream.append(path);
+                if (!stream.isOpen()) { return false; }
+                int n = stream.writeBytes(from, count);
+                stream.close();
+                return n == count;
+            }
+
             // ---- Metadata. Asking is not the same as trying and failing. ----
             public static method exists(String path) returns boolean {
                 return File.exists(path);
@@ -131,6 +174,68 @@
             // question a build asks, phrased the way it asks it.
             public static method isNewerThan(String path, String other) returns boolean {
                 return File.mtime(path) > File.mtime(other);
+            }
+            // WHEN IT WAS MADE, or -1 WHEN THE FILESYSTEM DOES NOT RECORD THAT -- which is most Linux
+            // ones, and is the reason this answers -1 rather than a number.
+            //
+            // `st_ctime` is the inode's STATUS-CHANGE time: it moves when permissions change or a
+            // link is added. Every library that answers "created" with it reports a file chmod'd
+            // yesterday as made yesterday, and nothing complains. Windows records a real creation
+            // time; macOS and FreeBSD keep `st_birthtime`; Linux has it only through `statx` on a
+            // filesystem that stores it. A caller that gets -1 can print "unknown" instead of a date
+            // that means something else.
+            public static method createdAt(String path) returns long {
+                return System.IO.__fileCreated(path);
+            }
+            // Last read. -1 when the path is not there. Worth knowing that many systems mount with
+            // `relatime` or `noatime`, so this may be stale by design rather than wrong.
+            public static method accessedAt(String path) returns long {
+                return System.IO.__fileAccessed(path);
+            }
+            // Whether a write would be refused. Windows has a read-only ATTRIBUTE and POSIX has
+            // permission bits, so this asks the same question of two different things: on POSIX it
+            // reports the owner's write bit.
+            public static method isReadOnly(String path) returns boolean {
+                return System.IO.__fileReadOnly(path) == 1;
+            }
+            public static method setReadOnly(String path, boolean value) returns boolean {
+                return System.IO.__setReadOnly(path, value ? 1 : 0) != 0;
+            }
+            // Mark it current without rewriting it, creating it empty if absent -- `touch`. What a
+            // build tool does to say a target is up to date.
+            public static method touch(String path) returns boolean {
+                return System.IO.__fileTouch(path) != 0;
+            }
+
+            // ---- LINKS: one name for a file that lives somewhere else. ----
+            //
+            // These need their own calls because the ordinary ones FOLLOW a link and so answer about
+            // the target: `exists` on a link pointing at nothing says "not there" while the link is
+            // plainly in the directory, and `modifiedAt` reports the target's time, so a build
+            // comparing timestamps compares the wrong file.
+            public static method isSymbolicLink(String path) returns boolean {
+                return System.IO.__isLink(path) != 0;
+            }
+            // What it points at, as stored -- which may be relative, and may name nothing. Empty when
+            // the path is not a link.
+            public static method linkTarget(String path) returns String {
+                return System.IO.__readLink(path);
+            }
+            // A link to a FILE. Answers whether it was made: Windows needs a privilege for this that
+            // an ordinary account does not have unless Developer Mode is on, so a program that treats
+            // success as given is a program that breaks on somebody else's machine.
+            public static method createSymbolicLink(String target, String linkPath) returns boolean {
+                return System.IO.__symLink(target, linkPath) != 0;
+            }
+            // A link to a DIRECTORY. Separate because Windows must be told at creation which kind it
+            // is -- it cannot look at a target that does not exist yet.
+            public static method createDirectoryLink(String target, String linkPath) returns boolean {
+                return System.IO.__symLinkDir(target, linkPath) != 0;
+            }
+            // A second NAME for the same file, rather than a path stored in place of one. Deleting
+            // either leaves the data reachable through the other; a symbolic link left dangling.
+            public static method createHardLink(String target, String linkPath) returns boolean {
+                return System.IO.__hardLink(target, linkPath) != 0;
             }
 
             // ---- Mutating the tree. Each answers whether it worked, rather than trapping: a
@@ -567,6 +672,128 @@
                 return result.length() == 0 ? "." : result;
             }
         }
+        // WHAT CHANGED UNDER A DIRECTORY, between one look and the next.
+        //
+        // The three lists a watcher exists to produce, kept apart because a caller does different
+        // things with each: a build recompiles what changed, drops what was removed, and indexes
+        // what appeared.
+        public class DirectoryChanges {
+            public mutable ArrayList<String> added;
+            public mutable ArrayList<String> removed;
+            public mutable ArrayList<String> changed;
+            public constructor DirectoryChanges() {
+                this.added = new ArrayList<String>() on heap;
+                this.removed = new ArrayList<String>() on heap;
+                this.changed = new ArrayList<String>() on heap;
+            }
+            public method any() returns boolean {
+                return this.added.size() + this.removed.size() + this.changed.size() > 0;
+            }
+            public method count() returns int {
+                return this.added.size() + this.removed.size() + this.changed.size();
+            }
+            public destructor ~DirectoryChanges() returns void {
+                delete this.changed;
+                delete this.removed;
+                delete this.added;
+            }
+        }
+
+        // WATCHING A DIRECTORY FOR CHANGES.
+        //
+        // BY COMPARING SNAPSHOTS, not by asking the kernel -- and that is a decision, so here is the
+        // reasoning. Every platform has a native notifier and no two agree: ReadDirectoryChangesW,
+        // inotify, FSEvents, kqueue. Four bodies of code with four sets of edge cases (inotify's
+        // per-watch descriptors and its queue overflow; FSEvents' coalescing; ReadDirectoryChangesW's
+        // buffer that silently drops events when it fills), of which exactly ONE can be run and
+        // tested from here. A library whose behaviour differs per platform in ways nobody can
+        // exercise is worse than one that behaves identically everywhere.
+        //
+        // A snapshot is a path and its (size, modification time). Diffing two of them gives the same
+        // three answers with no platform code at all, and it is what a great many real build tools
+        // do. What it costs is honest and worth stating: it sees changes when ASKED rather than when
+        // they happen, it walks the tree each time, and a file changed twice within one clock tick
+        // and back to the same size can slip past. For a build, a reloader, or a test runner --
+        // which is what people watch directories for -- that is the right trade.
+        //
+        //     mutable DirectoryWatcher* w = new DirectoryWatcher(root) on heap;
+        //     mutable DirectoryChanges c = w.poll();     // whatever moved since the last look
+        public class DirectoryWatcher {
+            private mutable String root;
+            private mutable ArrayList<String> paths;
+            private mutable ArrayList<String> marks;   // "<size>:<mtime>", parallel to `paths`
+
+            // The first snapshot is taken here, so the first `poll` reports what changed since the
+            // watcher was made rather than announcing every file as new.
+            public constructor DirectoryWatcher(String root) {
+                this.root = root;
+                this.paths = new ArrayList<String>() on heap;
+                this.marks = new ArrayList<String>() on heap;
+                this.take();
+            }
+
+            private method take() returns void {
+                this.paths.clear();
+                this.marks.clear();
+                mutable ArrayList<String> found = Files.walk(this.root);
+                for (mutable int i = 0; i < found.size(); i++) {
+                    String p = found.get(i);
+                    mutable StringBuilder mark = new StringBuilder() on heap;
+                    mark.appendLong(Files.size(p));
+                    mark.append(":");
+                    mark.appendLong(Files.modifiedAt(p));
+                    this.paths.add(p);
+                    this.marks.add(mark.toString());
+                }
+                delete found;
+                return;
+            }
+
+            private method markOf(String path) returns String {
+                int at = this.paths.indexOf(path);
+                return at < 0 ? "" : this.marks.get(at);
+            }
+
+            // What moved since the last look. Takes a new snapshot, so two polls in a row report the
+            // second as empty -- a change is reported ONCE, which is what a caller acting on it needs.
+            public method poll() returns DirectoryChanges {
+                mutable DirectoryChanges changes = new DirectoryChanges() on heap;
+                mutable ArrayList<String> now = Files.walk(this.root);
+                for (mutable int i = 0; i < now.size(); i++) {
+                    String p = now.get(i);
+                    String was = this.markOf(p);
+                    if (was.length() == 0) {
+                        changes.added.add(p);
+                    } else {
+                        mutable StringBuilder mark = new StringBuilder() on heap;
+                        mark.appendLong(Files.size(p));
+                        mark.append(":");
+                        mark.appendLong(Files.modifiedAt(p));
+                        if (!mark.toString().equals(was)) { changes.changed.add(p); }
+                    }
+                }
+                for (mutable int i = 0; i < this.paths.size(); i++) {
+                    if (now.indexOf(this.paths.get(i)) < 0) {
+                        changes.removed.add(this.paths.get(i));
+                    }
+                }
+                delete now;
+                this.take();
+                return changes;
+            }
+
+            // How many files are being watched -- for a caller that wants to say so, and for a test
+            // that wants to know the snapshot was taken at all.
+            public method watching() returns int {
+                return this.paths.size();
+            }
+
+            public destructor ~DirectoryWatcher() returns void {
+                delete this.marks;
+                delete this.paths;
+            }
+        }
+
         // A FILE THAT CLEANS ITSELF UP.
         //
         // Every program that writes a scratch file writes the same three things wrong: a name that

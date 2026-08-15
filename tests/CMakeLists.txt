@@ -4916,6 +4916,53 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # WHAT A FILE RECORDS, WHAT ITS BYTES ARE, WHAT A LINK POINTS AT, AND WHAT CHANGED.
+        #   metadata -- the read-only switch, `touch`, and whether a CREATION time is recorded at
+        #               all. `st_ctime` is not it: that is the status-change time, and answering
+        #               "created" with it reports a chmod as a creation. -1 means not recorded.
+        #   bytes    -- four bytes including a NUL and 0xFF, out and back unchanged, and a file four
+        #               bytes long: a writer that stopped at the NUL would have produced one.
+        #   hardlink -- a second NAME for the same file. Checked here because it needs no privilege
+        #               anywhere; the symbolic-link half prints `permitted=0` on a Windows without
+        #               Developer Mode and runs in full on POSIX, so the line is matched by prefix.
+        #   watch    -- the three answers, and that a change is reported ONCE: a second poll with
+        #               nothing in between must be empty, or every caller acting on it acts twice.
+        add_test(NAME codegen_file_metadata COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_metadata_links.pol"
+            "-DCONTAINS=metadata: readOnly=1 backToWritable=1 touched=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_bytes COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_metadata_links.pol"
+            "-DCONTAINS=bytes: wrote=4 read=4 identical=1 zeroByteSurvived=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_hardlink COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_metadata_links.pol"
+            "-DCONTAINS=hardlink: sameContent=1 survivesDelete=1 notASymlink=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_file_symlink_reports COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_metadata_links.pol"
+            "-DCONTAINS=symlink: permitted="
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_directory_watch COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/file_metadata_links.pol"
+            "-DCONTAINS=watch: added=1 changed=1 removed=1 secondPollEmpty=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # RUNNING ANOTHER PROGRAM WITHOUT A SHELL BETWEEN YOU AND IT.
         #
         # `Process.run(cmd)` takes one string and hands it to cmd.exe or /bin/sh, so every argument is
