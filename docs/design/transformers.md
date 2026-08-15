@@ -543,7 +543,200 @@ This is what forces the parallel interface in almost every case. `satisfies` clo
 run-time, polymorphic half. The compile-time half is still open, and it is the half generic code
 lives in. **No new keyword: the word is already `applies`.**
 
-### 2. Structural procedures — one body over the applying type's FIELDS
+**BUILT 2026-08-16.** `<T applies TComparer>` parses on a generic class and a generic method, and is
+checked at monomorphization beside the `extends`/`implements` bounds. `tests/samples/
+transformer_constraint.pol` runs; `transformer_constraint_bad.pol` is refused with *type argument
+'Stone' does not satisfy constraint 'T applies TComparer'*. 911 tests.
+
+**And the constraint turned out to be a GUARD, not a key.** By monomorphization `T` is concrete and
+the transformer's procedures were copied into it long before, so `a.isAbove(b)` inside the generic
+body already resolved without any constraint at all. What was missing was never the ability to call —
+it was the ability to REQUIRE, and to say so at the call site instead of somewhere downstream in a
+body the caller did not write. That is why this was small: the checking machinery existed, and only
+the question was missing.
+
+Two things had to be stored rather than deduced, both for the same reason. The bound now records its
+KIND (`TypeBound::applies`) instead of being told apart by looking the name up — a class and a
+transformer may share a name, and then a declaration in another file would decide what this one
+means. And the applied set is closed over `transformer A applies B` by the expansion pass and left
+on the declaration (`ClassDecl::appliedClosure`), because the constraint is checked long after
+transformers are gone from the tree.
+
+**A second index had not learned the lesson, and writing the test found it.** The sample declares its
+own `TComparer` while the standard library has one in `System.Collections` with a different socket.
+The transformer index was a flat name → declaration map, so it kept whichever came last: the
+library's won, and the failure did not name the collision — it reported the user's `Coin` for not
+implementing `compareTo`, a socket belonging to a transformer that file never mentions. Exactly the
+`Digest` collision found in class lookup the same day, in the one place that had not been fixed. A
+transformer name is now resolved against WHERE THE ASKER STANDS — own namespace, own bundle, then the
+standard library, and refused rather than guessed when two remain.
+
+**Decided 2026-08-16: the constraint is NOMINAL.** `T` must name the transformer in its own `applies`
+clause, transitively through `transformer A applies B` — the mirror of how `implements` is checked,
+and a set membership to test.
+
+The structural reading — *T merely has the procedures, however it came by them* — was refused for the
+reason already written into the `each` rule: a type that satisfies a relation by accident satisfies
+it silently, and a declaration in another file then decides what this one means. `applies` is a
+sentence the author writes, and a constraint on it must read the same sentence.
+
+The third position, *do not build it — `satisfies` already covers this*, was refused on cost. A
+transformer that declares `satisfies I` can be demanded today as `<T implements I>`, but an interface
+means a vtable and a virtual call: that is paying at RUN TIME to express a COMPILE-TIME requirement,
+inside the one feature whose whole claim is no vtable and no indirection. It also brings back the
+parallel interface this was meant to remove.
+
+### 2. The target as a BOUND VARIABLE — `procedure into<Fahrenheit f>`
+
+*Author's proposal, 2026-08-16. Decisions below are his; the reasoning is kept because it is the
+useful part.*
+
+The per-target family names its target as a TYPE and nothing else, so the only way to produce one is
+to conjure it:
+
+```polaron
+public procedure into<Fahrenheit>() returns Fahrenheit {
+    return new Fahrenheit(itself.degrees * 9 / 5 + 32);
+}
+```
+
+The proposal is that the slot may also DECLARE the target, so the body has it to work on:
+
+```polaron
+public procedure into<Fahrenheit f>() returns Fahrenheit {
+    f.degrees = itself.degrees * 9 / 5 + 32;
+    return f;
+}
+```
+
+**Why it is structural and not ergonomic.** Look at the pair as it stands: `static procedure
+from<Other>(Other value) returns itself` gives the SOURCE a name; `procedure into<Other>() returns
+Other` gives the target none. One side can read its counterpart and the other can only conjure it.
+A transformer is a relation between two types, and until now only one end of it was nameable.
+
+**It is also the missing half of the item below.** A structural body — *assign every field* — needs
+something to assign INTO. Today there is nothing but a constructor whose parameter list the author
+must already know, which is why `TCloner`, `TEquator` and `TSerializer` are unwritable rather than
+merely unwritten. With a bound target they become writable, and `clone`/`equals` can leave the
+compiler, where `record` has them hard-coded, and move into the language.
+
+And it removes a real ceiling: today a conversion can only say what the target's constructor accepts.
+A target with eight fields needs an eight-parameter constructor or the conversion does not exist.
+
+#### Open: who creates it, and how completeness is proven
+
+**Not decided.** Three ways, and the choice is not cosmetic — it decides what `entrusts` below can
+honestly mean.
+
+*(i) Raw storage, plus the check a constructor already passes.* The compiler proves every field of a
+class is assigned in its constructor; a bound target would be a constructor body written for a
+foreign type, so the same analysis applies to `f` — every field assigned by the end, or refused.
+Three things fall out at no cost: the target needs no default constructor; no half-built object is
+ever observable, which is the no-UB principle; and branches work because they already work in a
+constructor. A field with an inline initializer counts as assigned, which keeps a target with
+self-initializing privates bindable.
+
+*(ii) The target's no-argument constructor runs first, and the body adjusts.* Far less work, and
+weaker: every target must have a blank state, so a type whose invariants forbid one cannot be a
+target.
+
+*(iii) The author writes `f = new Fahrenheit(...)` and the binding is only a name for it.* Then the
+binding buys nothing a local variable does not.
+
+**The choice may already be forced by `entrusts`.** Under (ii) the target's own constructor has
+already established its invariants, and the body then writes its private fields — which is precisely
+the encapsulation breach option (b) was refused for. `entrusts` says *I trust you with my
+construction*, and only (i) makes that a checkable promise: under (i) the target did not exist before
+the body, and the body IS its construction. Under (ii) the same word would have to mean *I trust you
+to mutate my privates*, which is a different sentence and a much larger grant.
+
+#### Decided 2026-08-16: the target consents, and the word is `entrusts`
+
+```polaron
+public class Fahrenheit entrusts TConverter {
+    private mutable int degrees;
+}
+```
+
+**What the class is deciding is not access — it is whether its invariants may be established from
+outside.** That reframing came from measuring, and it changed the question. A bound target is not
+another object whose private fields are being written; it is an object being CONSTRUCTED, and a
+constructor is exactly where private fields are legitimately assigned. So the question stopped being
+*may Celsius write Fahrenheit's privates* (no) and became *may Celsius construct a Fahrenheit* (yes —
+that is what `new` does; the only difference is who fixes the field list). The real cost is therefore
+not encapsulation but INVARIANT BYPASS: a Fahrenheit assembled field by field by a stranger may reach
+a state its own constructor would never produce. That is a thing only Fahrenheit can agree to, so the
+word goes on Fahrenheit.
+
+`entrusts` is a fourth clause on the class line, and it sits where the existing progression puts it:
+`extends` is identity, `implements` is a promise to the outside world, `applies` is equipment nobody
+outside needs to know about — and `entrusts` is trust, the most intimate of the four, because it is
+the only one that hands over the constructor.
+
+**`entrusts` implies `applies`**, and the two are never written for the same transformer: it is
+`applies` with consent, and a class writing both would state one relation twice.
+
+The alternatives, and why they lost: `applies open TConverter` turns consent into an adjective on
+another clause and `open` does not say what is open; `binds` is the wrong voice, since the procedure
+binds and the class is bound; `accepts` and `permits` already mean other things (regions, and
+`sealed`), and two meanings for one word is the thing this language refuses; `trusts` reads well but
+is vague — trusted with what?
+
+#### The positions this replaced, and the measurement that killed the first
+
+*(a) Ordinary visibility.* `f.degrees` legal exactly when `degrees` is visible from Celsius. The rule
+is self-enforcing — a body that cannot SEE a field cannot assign it, so the completeness proof cannot
+close and the refusal lands at the declaration.
+
+**Counted before choosing, and the count is what settled it.** Polaron's `private` is class-private,
+not namespace-private (`analyzer.cpp`: `here == there` or nothing), so two classes side by side in
+one file cannot reach each other. In the standard library, **471 fields are private and 111 public**
+— and the public ones are nearly all structure nodes (`LinkedNode`, `TreeNode`, `TreeSetNode`),
+plumbing that is public only because its container must reach it. `internal` exists and is used on
+**zero** fields.
+
+So (a) means, in practice: *the target's fields must be public*. And this note's own flagship —
+Celsius/Fahrenheit — works only because the sample wrote `public mutable int degrees`. Rewrite it the
+way the library writes classes, `private` with a getter, and the feature evaporates. A capability
+whose flagship example works only in the demonstration spelling is the exact failure this project
+keeps finding: it works in the case somebody tried.
+
+(The samples invert the ratio — 475 public against 183 private — which is not a fact about the
+language but about demos: example code widens fields because it is convenient. That is the pressure
+(a) would have made into a habit.)
+
+*(b) `mutual` grants it.* Both types applied the same transformer, so both consented to be filled in
+by the other. Against: `applies TConverter` on a class line would then silently mean *any other
+applier may write my private fields*, and whoever reads that class could no longer tell who writes
+it — action at a distance in the worst place. Granting access later is cheap; withdrawing it is not.
+
+*(c) The target opts in by name*, with a word on its own declaration. Costs a keyword and makes the
+consent local and readable, which is the objection to (b) answered directly.
+
+#### Decided
+
+**`returns` stays, always.** Not because it carries information the binding lacks, but because
+Polaron's member grammar is meant to be READ IN NATURAL-LANGUAGE ORDER, and it is a rule with no
+exceptions or it is not a rule. `public static method sum(int a, int b) returns int` reads *this is a
+public method, it is static, it takes two integers and it returns an integer* — where the C spelling
+reads *this is an int, which is public and static, called sum*. A member that ends without saying
+what it answers would be the one sentence in the language that stops mid-thought.
+
+So the body ends with `return f;`. Ceremony was the argument against it and consistency wins:
+the reader who scans a column of members for what each one answers must never find a hole.
+
+**The binding takes the modifiers a local takes.** Not implicitly mutable. `mutable Fahrenheit f`
+when the body reassigns it, `nullable` when it may be absent, and whatever else a local may carry.
+This follows the rule that runs through the whole language: mutability and nullability are decisions
+the author states, and the point is not only safety — it is that stating them forces the thought.
+
+#### Raised, not asked
+
+Whether the two forms may be mixed on one procedure — the bound form and the `new`-and-return form
+being two ways to write one thing. Nobody has asked for the mixture; the note records it only because
+a rule of one-form-per-procedure costs nothing to add now and is expensive once programs exist.
+
+### 3. Structural procedures — one body over the applying type's FIELDS
 
 A transformer can supply a fixed body or a socket. What it cannot supply is a body **derived from the
 shape** of the type that applies it: clone every field, compare every field, serialise every field.
@@ -561,7 +754,7 @@ The note's finding that "derivation needed no implementation, it is a property o
 remains true about **when** to derive. It says nothing about the machinery to actually do it, and
 there is none.
 
-### 3. ~~Operators from a transformer~~ — **it already worked. Tested 2026-08-14.**
+### 4. ~~Operators from a transformer~~ — **it already worked. Tested 2026-08-14.**
 
 One `compare` socket yielding `<`, `>`, `<=`, `>=` is the canonical case — it is Rust's `PartialOrd`.
 Operators are already `MethodDecl`s named `operator+`, so the guess written here was that it might
@@ -572,7 +765,7 @@ operators answer (`codegen_transformer_operators_runs`).
 Nothing was built for this; what was missing was the test, which is the difference between a feature
 and an accident that has not been broken yet. It is now the flagship example this note said it lacked.
 
-### 4. The LAW of the relation
+### 5. The LAW of the relation
 
 This note rejected the bidirectional-codec transformer on the grounds that *"the only thing it adds
 over a class with two static methods is the round-trip check, and that is a contract, not a new kind
@@ -591,7 +784,7 @@ has had a subject that is a relation rather than an object. It would be checked 
 property test, not at run time. A round-trip law is the only thing separating a conversion that is
 right from a conversion that compiles.
 
-### 5. Conditional procedures — the one new word
+### 6. Conditional procedures — the one new word
 
 ```polaron
 procedure sorted() returns itself when Other applies TComparer;
@@ -600,7 +793,7 @@ procedure sorted() returns itself when Other applies TComparer;
 Rust's `where`. Today `applies` is all-or-nothing: a transformer cannot give more to a type that has
 more. Real value, smaller than the four above, and **the only item here that needs a new keyword**.
 
-### 6. An initializer on an applied field
+### 7. An initializer on an applied field
 
 A transformer that brings a field forces every applier's constructor to assign something its class
 never declared. An `=` on the field solves it with no weaving — and the argument against weaving the
@@ -612,6 +805,8 @@ which has no order at all.
 | capability | word | new? |
 |---|---|---|
 | generic constraint | `applies` | no |
+| bound target | a declaration inside `<>` | no |
+| consent to be assembled | `entrusts` | **yes** |
 | compile-time predicate | `demand ... applies ...` | no |
 | law of the relation | `invariant` | no |
 | structural body | `comptime` over `itself`'s fields | no (needs a way to name the fields) |

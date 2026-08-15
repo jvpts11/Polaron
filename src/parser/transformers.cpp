@@ -77,13 +77,63 @@ bool followsConvention(const std::string& name) {
 
 using Index = std::map<std::string, const ast::ClassDecl*>;
 
-Index indexTransformers(const ast::Program& program) {
-    Index out;
+// EVERY transformer of a given name, and where each was declared.
+//
+// A flat name -> declaration map was wrong and wrong silently: it kept whichever came last, so a
+// program declaring its own `TComparer` beside the standard library's had one of them quietly
+// discarded. The failure did not name the collision -- it reported the user's class for not
+// implementing `compareTo`, a socket belonging to a transformer that class never mentioned.
+//
+// The same shape as the `Digest` collision found the same day in class lookup, in a second index
+// that had not learned the lesson. A name is resolved against WHERE THE ASKER IS, so the candidates
+// have to survive indexing.
+struct TransformerEntry {
+    const ast::ClassDecl* decl = nullptr;
+    std::string ns;
+    std::string bundle;
+};
+using AllTransformers = std::map<std::string, std::vector<TransformerEntry>>;
+
+AllTransformers indexAllTransformers(const ast::Program& program) {
+    AllTransformers out;
     for (const ast::Bundle& b : program.bundles) {
         for (const ast::Namespace& ns : b.namespaces) {
             for (const ast::ClassDecl& t : ns.transformers) {
-                out[t.name] = &t;
+                out[t.name].push_back({&t, ns.name, b.name});
             }
+        }
+    }
+    return out;
+}
+
+// The flat view one namespace sees, so the rest of this pass goes on asking a plain question.
+//
+// Precedence is the one class lookup settled on, and for the same reasons: your own namespace, then
+// your own bundle, then the standard library -- which is last because it is the one body of code
+// everybody can see and so the one least likely to be what a bare name meant. A name that is still
+// ambiguous after all three is left OUT of the view rather than guessed at, and the `applies` clause
+// that named it reports it as unknown.
+Index viewFor(const AllTransformers& all, const std::string& nsName, const std::string& bundleName) {
+    Index out;
+    for (const auto& [name, entries] : all) {
+        const TransformerEntry* best = nullptr;
+        int bestRank = 99;
+        bool tied = false;
+        for (const TransformerEntry& e : entries) {
+            const int rank = (e.ns == nsName && e.bundle == bundleName) ? 0
+                             : (e.bundle == bundleName)                 ? 1
+                             : (e.bundle == "System")                   ? 3
+                                                                        : 2;
+            if (rank < bestRank) {
+                best = &e;
+                bestRank = rank;
+                tied = false;
+            } else if (rank == bestRank && best != nullptr && best->decl != e.decl) {
+                tied = true;
+            }
+        }
+        if (best != nullptr && !tied) {
+            out[name] = best->decl;
         }
     }
     return out;
@@ -642,9 +692,23 @@ void expandCore(const std::string& targetName, std::vector<ast::MemberPtr>& memb
                 const std::vector<SourceLocation>& appliesLocs, const SourceLocation& declLoc,
                 bool hasLayout, std::vector<std::string>* interfaces,
                 const std::vector<ast::ClassDecl::ProcCall>& procCalls, const Index& index,
-                const std::map<std::string, std::set<std::string>>& ifaceMethods) {
+                const std::map<std::string, std::set<std::string>>& ifaceMethods,
+                std::vector<std::string>* closureOut) {
     std::vector<std::string> order;
     std::set<std::string> seen;
+    // Whatever this pass works out about what the type applies, it hands back before returning --
+    // by every exit, including the empty one. A `<T applies TComparer>` constraint is checked long
+    // after transformers have left the tree, so the closure computed here is the only record that
+    // survives, and a path that forgets to write it reports a type as applying nothing.
+    struct HandBack {
+        std::vector<std::string>* out;
+        const std::vector<std::string>& order;
+        ~HandBack() {
+            if (out != nullptr) {
+                *out = order;
+            }
+        }
+    } handBack{closureOut, order};
     // Provenance runs even with NO `applies`, and that half is the one that keeps the word honest:
     // a `procedure` on a type that applies nothing has no transformer to complete its signature, so
     // without this check `procedure` would quietly decay into a synonym for `method`.
@@ -710,7 +774,8 @@ void expandInto(ast::ClassDecl& target, const Index& index, const std::set<std::
         }
     }
     expandCore(target.name, target.members, target.applies, target.appliesLocs, target.loc,
-               hasLayout, &target.interfaces, target.procCalls, index, ifaceMethods);
+               hasLayout, &target.interfaces, target.procCalls, index, ifaceMethods,
+               &target.appliedClosure);
 }
 
 // An ENUM is the flagship of the totality rule -- `Errno -> int` is total because the constants are
@@ -745,7 +810,8 @@ void expandIntoEnum(ast::EnumDecl& target, const Index& index,
         }
     }
     expandCore(target.name, target.members, target.applies, target.appliesLocs, target.loc,
-               /*hasLayout=*/false, /*interfaces=*/nullptr, target.procCalls, index, ifaceMethods);
+               /*hasLayout=*/false, /*interfaces=*/nullptr, target.procCalls, index, ifaceMethods,
+               /*closureOut=*/nullptr);
 }
 
 // A declaration that can apply a transformer, seen uniformly. A class and an enum are different
@@ -1216,11 +1282,17 @@ void synthesizeErrorTypes(ast::Namespace& ns) {
 
 bool expandTransformers(ast::Program& program) {
     g_errors = 0;
-    const Index index = indexTransformers(program);
+    const AllTransformers all = indexAllTransformers(program);
+    // The whole-program view, for the two relation checks at the end: they range over types in
+    // different namespaces at once, so there is no single asker to resolve against.
+    const Index index = viewFor(all, "", "");
     const std::set<std::string> layouts = indexLayouts(program);
     const std::map<std::string, std::set<std::string>> ifaceMethods = indexInterfaceMethods(program);
     for (ast::Bundle& b : program.bundles) {
         for (ast::Namespace& ns : b.namespaces) {
+            // Resolved from where this namespace stands, so a program's own transformer wins over a
+            // standard-library one of the same name -- and the library's own code still sees its own.
+            const Index here = viewFor(all, ns.name, b.name);
             // Before expansion: a procedure may name its own error type. NOT for an imported bundle
             // -- its error class was synthesized where the transformer was written and crossed the
             // header as an ordinary class, so doing it again would collide with itself and report
@@ -1229,9 +1301,9 @@ bool expandTransformers(ast::Program& program) {
                 synthesizeErrorTypes(ns);
             }
             for (ast::ClassDecl& t : ns.transformers) {
-                checkTransport(t, index);
+                checkTransport(t, here);
                 if (!b.isPrelude && !b.isImported) {
-                    checkTransformerShape(t, index);
+                    checkTransformerShape(t, here);
                 }
                 // A WARNING, not an error, for the same reason the PascalCase one is: it nudges the
                 // convention without breaking code that predates it.
@@ -1244,10 +1316,10 @@ bool expandTransformers(ast::Program& program) {
                 }
             }
             for (ast::ClassDecl& c : ns.classes) {
-                expandInto(c, index, layouts, ifaceMethods);
+                expandInto(c, here, layouts, ifaceMethods);
             }
             for (ast::EnumDecl& e : ns.enums) {
-                expandIntoEnum(e, index, ifaceMethods);
+                expandIntoEnum(e, here, ifaceMethods);
             }
         }
     }
