@@ -76,6 +76,34 @@
                 }
                 return this;
             }
+            // The same for a `long`, which was missing -- and a file size, a byte count, a timestamp
+            // and an id are all longs, so the shortest way to put one in a builder was
+            // `append(value.toString())`: an allocation and two copies for at most twenty digits.
+            // The arithmetic runs in NEGATIVES for the same reason as above: the most negative long
+            // has no positive counterpart, so negating first would overflow on exactly one input.
+            public method appendLong(long value) returns StringBuilder {
+                this.ensure(21);                       // "-9223372036854775808" is 20 characters
+                if (value == cast<long>(0)) { return this.appendChar('0'); }
+                mutable long v = value;
+                if (v > cast<long>(0)) { v = cast<long>(0) - v; } else { this.appendChar('-'); }
+                int start = this.count;                // digits begin after any sign
+                while (v != cast<long>(0)) {
+                    long d = cast<long>(0) - (v % cast<long>(10));   // 0..9, since v is negative
+                    this.appendChar(cast<char>(48 + cast<int>(d)));
+                    v = v / cast<long>(10);
+                }
+                mutable int a = start;                 // written least-significant first: reverse
+                mutable int b = this.count - 1;
+                while (a < b) {
+                    byte t = Raw.read<byte>(this.buf + cast<address>(a));
+                    Raw.write<byte>(this.buf + cast<address>(a),
+                                    Raw.read<byte>(this.buf + cast<address>(b)));
+                    Raw.write<byte>(this.buf + cast<address>(b), t);
+                    a = a + 1;
+                    b = b - 1;
+                }
+                return this;
+            }
             public method length() returns int { return this.count; }
             public method toString() returns String {
                 return Raw.readString(this.buf, this.count);

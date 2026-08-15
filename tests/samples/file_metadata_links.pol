@@ -1,0 +1,180 @@
+import System.IO.Console;
+import System.IO.Files;
+import System.IO.Paths;
+import System.IO.TempDirectory;
+import System.IO.DirectoryChanges;
+import System.IO.DirectoryWatcher;
+import System.Memory.Buffer;
+import System.Collections.ArrayList;
+program FileMetadataLinks;
+
+// WHAT A FILE RECORDS ABOUT ITSELF, WHAT ITS BYTES ARE, WHAT A LINK POINTS AT, AND WHAT CHANGED.
+//
+// The four things left in this area, and each carries one rule worth stating out loud.
+//
+// CREATION TIME IS NOT ALWAYS RECORDED, and `st_ctime` is not it. That field is the inode's
+// STATUS-CHANGE time -- it moves when permissions change or a link is added -- so every library that
+// answers "created" with it reports a file chmod'd yesterday as made yesterday, and nothing
+// complains. Windows records a real creation time; macOS and FreeBSD keep `st_birthtime`; Linux has
+// it only through `statx` on a filesystem that stores it. So `createdAt` answers **-1** where it
+// genuinely is not known, and this sample prints whether it is known rather than the number, which
+// would differ every run.
+//
+// BYTES ARE NOT TEXT. Everything else here moves a String, which carries its own length and so
+// survives an embedded NUL -- but every method ON a String reads it as text. A PNG is not text. The
+// CALLER owns the buffer, deliberately: a Buffer frees itself, assignment is a copy, so a method
+// returning one by value would hand back a duplicate holding the same address and both would free it.
+//
+// A LINK IS NOT WHAT IT POINTS AT. `exists` FOLLOWS a link, so one pointing at nothing reports "not
+// there" while the link sits plainly in the directory -- which is why `isSymbolicLink` asks without
+// following. Creating one may be REFUSED on Windows (it needs a privilege an ordinary account lacks
+// unless Developer Mode is on), so the program is told rather than left assuming; this sample prints
+// what it observed either way, and the dangling-link rule is checked only where a link could be made.
+//
+// A WATCHER REPORTS A CHANGE ONCE. Polling twice in a row must give an empty second answer, or every
+// caller acting on the result acts twice.
+//
+// Prints:
+//   metadata: readOnly=1 backToWritable=1 touched=1 createdKnown=1
+//   bytes: wrote=4 read=4 identical=1 zeroByteSurvived=1
+//   hardlink: sameContent=1 survivesDelete=1 notASymlink=1
+//   symlink: permitted=0            (permitted=1 and four more fields where it is allowed)
+//   watch: added=1 changed=1 removed=1 secondPollEmpty=1
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                using (TempDirectory work = new TempDirectory("polaron-meta") on stack) {
+                    Main.metadata(work.path());
+                    Main.bytes(work.path());
+                    Main.links(work.path());
+                    Main.watching(work.path());
+                }
+                return;
+            }
+
+            private static method metadata(String root) returns void {
+                String path = Paths.join(root, "note.txt");
+                Files.write(path, "hello");
+                Files.setReadOnly(path, true);
+                mutable boolean locked = Files.isReadOnly(path);
+                Files.setReadOnly(path, false);
+                mutable boolean writable = !Files.isReadOnly(path);
+                // `touch` marks it current without rewriting it -- what a build tool does to say a
+                // target is up to date.
+                mutable boolean touched = Files.touch(path) && Files.size(path) == cast<long>(5);
+                // Printed as KNOWN or not, because the number is different on every run, and because
+                // "not recorded" is a real and correct answer on most Linux filesystems.
+                System.IO.Console.printf(
+                    "metadata: readOnly=%d backToWritable=%d touched=%d createdKnown=%d\n",
+                    locked ? 1 : 0, writable ? 1 : 0, touched ? 1 : 0,
+                    Files.createdAt(path) >= cast<long>(0) ? 1 : 0);
+            }
+
+            // Four bytes, one of which is a NUL and one of which is 0xFF -- a pair no text encoding
+            // would carry unchanged.
+            private static method bytes(String root) returns void {
+                String path = Paths.join(root, "raw.bin");
+                mutable Buffer* out = new Buffer(4) on heap;
+                out.writeByte(0, cast<byte>(0));
+                out.writeByte(1, cast<byte>(255));
+                out.writeByte(2, cast<byte>(10));
+                out.writeByte(3, cast<byte>(65));
+                mutable boolean wrote = Files.writeBytes(path, out, 4);
+
+                mutable Buffer* back = new Buffer(4) on heap;
+                int n = Files.readInto(path, back);
+                mutable boolean same = true;
+                for (mutable int i = 0; i < 4; i++) {
+                    if (back.readByte(i) != out.readByte(i)) { same = false; }
+                }
+                // ...and the size on disk is four, not three: a writer that stopped at the NUL would
+                // have produced one byte of file.
+                mutable boolean survived = Files.size(path) == cast<long>(4);
+                System.IO.Console.printf("bytes: wrote=%d read=%d identical=%d zeroByteSurvived=%d\n",
+                                         wrote ? 4 : 0, n, same ? 1 : 0, survived ? 1 : 0);
+                delete back;
+                delete out;
+            }
+
+            // A HARD LINK is a second NAME for the same file, and it needs no privilege anywhere --
+            // which is why the checked half of this test is here. Deleting one name leaves the data
+            // reachable through the other: the difference from a symbolic link, stated as a
+            // measurement rather than a claim.
+            private static method links(String root) returns void {
+                String target = Paths.join(root, "target.txt");
+                String second = Paths.join(root, "second.txt");
+                Files.write(target, "pointed at");
+                if (!Files.createHardLink(target, second)) {
+                    System.IO.Console.print("hardlink: not supported here\n");
+                } else {
+                    mutable boolean same = Files.read(second).equals("pointed at");
+                    // A hard link is a name, not a reparse point -- so it is NOT a symbolic link, and
+                    // asking must say so.
+                    mutable boolean notSymbolic = !Files.isSymbolicLink(second);
+                    Files.delete(target);
+                    mutable boolean survives = Files.exists(second) &&
+                                               Files.read(second).equals("pointed at");
+                    System.IO.Console.printf(
+                        "hardlink: sameContent=%d survivesDelete=%d notASymlink=%d\n",
+                        same ? 1 : 0, survives ? 1 : 0, notSymbolic ? 1 : 0);
+                    Files.delete(second);
+                }
+                Main.symbolicLinks(root);
+            }
+
+            // A SYMBOLIC LINK is a path stored in place of a file, and Windows may REFUSE to create
+            // one: it needs a privilege an ordinary account does not have unless Developer Mode is
+            // on. So the first thing printed is whether it was permitted, and the rest follows only
+            // if it was -- a program that treats success as given is one that breaks on somebody
+            // else's machine, silently, with a link that is simply not there.
+            private static method symbolicLinks(String root) returns void {
+                String target = Paths.join(root, "sym-target.txt");
+                String link = Paths.join(root, "sym-link.txt");
+                Files.write(target, "pointed at");
+                if (!Files.createSymbolicLink(target, link)) {
+                    System.IO.Console.print("symlink: permitted=0\n");
+                    return;
+                }
+                // Three questions a single `exists` cannot tell apart: is this name a link, what does
+                // it hold, and does following it reach a file.
+                mutable boolean isLink = Files.isSymbolicLink(link);
+                mutable boolean reads = Files.linkTarget(link).length() > 0;
+                mutable boolean follows = Files.read(link).equals("pointed at");
+                // ...and once the target is gone the link is still THERE, while `exists` -- which
+                // follows -- says no. That gap is the reason `isSymbolicLink` exists.
+                Files.delete(target);
+                mutable boolean dangling = Files.isSymbolicLink(link) && !Files.exists(link);
+                System.IO.Console.printf(
+                    "symlink: permitted=1 isLink=%d target=%d follows=%d dangling=%d\n",
+                    isLink ? 1 : 0, reads ? 1 : 0, follows ? 1 : 0, dangling ? 1 : 0);
+            }
+
+            // The three answers a watcher exists to give, and the rule that a change is reported once.
+            private static method watching(String root) returns void {
+                String sub = Paths.join(root, "watched");
+                Files.createDirectory(sub);
+                Files.write(Paths.join(sub, "keep.txt"), "one");
+                Files.write(Paths.join(sub, "goes.txt"), "two");
+                mutable DirectoryWatcher* watcher = new DirectoryWatcher(sub) on heap;
+
+                Files.write(Paths.join(sub, "new.txt"), "three");
+                // Longer content, so the size differs -- a change within one clock tick that leaves
+                // the size identical is the case a snapshot watcher cannot see, and the comment on
+                // the class says so rather than pretending otherwise.
+                Files.write(Paths.join(sub, "keep.txt"), "one, extended");
+                Files.delete(Paths.join(sub, "goes.txt"));
+
+                mutable DirectoryChanges first = watcher.poll();
+                mutable DirectoryChanges second = watcher.poll();
+                System.IO.Console.printf(
+                    "watch: added=%d changed=%d removed=%d secondPollEmpty=%d\n",
+                    first.added.size(), first.changed.size(), first.removed.size(),
+                    second.any() ? 0 : 1);
+                delete second;
+                delete first;
+                delete watcher;
+            }
+        }
+    }
+}

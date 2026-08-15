@@ -408,6 +408,26 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         llvm::FunctionType* ft = llvm::FunctionType::get(ret, params, false);
         return builder.CreateCall(module.getOrInsertFunction(si->symbol, ft), args, "sys.r");
     }
+    // ...and the two-argument ones: (String, String) or (String, int), some with a constant third
+    // that distinguishes two spellings sharing one runtime call.
+    if (const sysint::SysIntrinsic2* si = sysint::findSysIntrinsic2(name); si != nullptr) {
+        llvm::Value* a = emitExpr(*call.args[0]);
+        llvm::Value* b = emitExpr(*call.args[1]);
+        if (a == nullptr || b == nullptr) {
+            return nullptr;
+        }
+        llvm::Type* p = builder.getPtrTy();
+        llvm::Type* i32 = builder.getInt32Ty();
+        std::vector<llvm::Type*> params{p, si->secondIsInt ? i32 : p};
+        std::vector<llvm::Value*> args{stringData(a),
+                                       si->secondIsInt ? fitInt(b, 32) : stringData(b)};
+        if (si->trailing >= 0) {
+            params.push_back(i32);
+            args.push_back(builder.getInt32(si->trailing));
+        }
+        llvm::FunctionType* ft = llvm::FunctionType::get(i32, params, false);
+        return builder.CreateCall(module.getOrInsertFunction(si->symbol, ft), args, "sys.r2");
+    }
     // Mutex lock builtins (used by System.Concurrency.Mutex) -> runtime CRITICAL_SECTION.
     if (name == "System.Concurrency.__lockCreate") {
         llvm::FunctionType* ft = llvm::FunctionType::get(builder.getInt64Ty(), {}, false);

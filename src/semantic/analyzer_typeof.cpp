@@ -1562,6 +1562,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             return sysint::sysIntrinsicType(*si);
         }
+        if (const sysint::SysIntrinsic2* si = sysint::findSysIntrinsic2(name); si != nullptr) {
+            if (call->args.size() != 2) {
+                error(std::string(si->name).substr(std::string(si->name).rfind('.') + 1) +
+                          " takes two arguments",
+                      call->loc);
+            }
+            for (const auto& a : call->args) {
+                typeOf(*a);
+            }
+            return si->result == 's' ? "String" : "int";
+        }
         // Console I/O (spec 4): System.IO.Console.{printf,println,print,readInt}. The pre-F10
         // names (System.IO.printf/println/readInt, bare Console.*) are kept as aliases until the
         // samples are migrated. Requires `import System.IO.Console;`.
