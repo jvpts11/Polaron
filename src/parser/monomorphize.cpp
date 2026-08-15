@@ -731,6 +731,19 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         auto n = std::make_unique<ast::ReleaseStmt>();
         n->loc = x->loc;
         n->region = x->region;
+        // ...AND THE OTHER THREE FIELDS, which this dropped. `release persistent obj.field` carries
+        // its target in `target` and says so with `isPersistent`; copying only `region` turned it
+        // into `release region ""` the moment its class was cloned -- which happens to every generic
+        // instance and to every class the disambiguating rename rewrites. It surfaced as
+        // `unknown region ''` pointing into the standard library, on a line that names a field.
+        //
+        // Same failure as the `delete` two cases below, which lost `from region` for the same reason:
+        // a clone that copies one field of four, silently. The rule this file already states is that
+        // a member the cloner does not know about must not become a null entry -- it holds for a
+        // FIELD of a statement just as much as for a statement of a class.
+        n->isPersistent = x->isPersistent;
+        n->target = cloneExpr(x->target.get(), s);
+        n->allKeys = x->allKeys;
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::RollbackStmt*>(st)) {

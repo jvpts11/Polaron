@@ -4590,14 +4590,26 @@ ast::ExprPtr Parser::parseUnary() {
             c->targetVolatile = true;  // cast<volatile T*>: MMIO (spec 37.5)
         }
         const Token& tt = current();
+        // A GENERIC TARGET carries its own angle brackets, exactly like `function<...>` below, and had
+        // to be read the same way: this branch used to take ONE identifier and an optional `*`, so
+        // `cast<ArrayList<int>*>(x)` failed at the inner `<` with "expected '>' to close cast<...>".
+        // Casting to a generic is not exotic -- it is how anything read back as an `Object` becomes a
+        // collection again, which is what reflection and any persistent field hand you.
+        //
+        // `parseTypeRef` is the language's own type grammar (generics, pointers, arrays, nullable, and
+        // the `>>` split), and `canonicalType` spells the result the way every other type reaches the
+        // rest of the compiler. Reading a type any other way here is how the two drift apart.
         if (tt.kind == TokenKind::KwFunction || tt.kind == TokenKind::KwUnknown ||  // [unknown-abi]
-            (tt.kind == TokenKind::Identifier &&
-             (tt.lexeme == "methodptr" || tt.lexeme == "funcptr") &&
-             peek(1).kind == TokenKind::Lt)) {
-            // A function<...> / funcptr<...> / unknown-world-funcptr target carries its own angle
-            // brackets: parse the full
-            // type (it also splits the trailing '>>', leaving one '>' for the cast to close).
-            c->targetType = parseTypeRef().name;
+            (tt.kind == TokenKind::Identifier && peek(1).kind == TokenKind::Lt)) {
+            // A function<...> / funcptr<...> / generic target carries its own angle brackets: parse
+            // the full type (it also splits the trailing '>>', leaving one '>' for the cast to close).
+            const ast::TypeRef tr = parseTypeRef();
+            // `.name` alone loses the type arguments and every decoration -- right for a
+            // `function<...>`, whose name already holds them, and wrong for `ArrayList<int>*`.
+            c->targetType = tr.typeArgs.empty() ? tr.name : ast::canonicalType(tr);
+            if (match(TokenKind::Star)) {
+                c->targetType += "*";   // parseTypeRef stops at the closing '>' of the type arguments
+            }
         } else if (isTypeKeyword(tt.kind) || tt.kind == TokenKind::Identifier) {
             c->targetType = tt.lexeme;
             advance();

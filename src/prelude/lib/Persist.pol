@@ -1,0 +1,182 @@
+    public namespace Persist {
+        // STATE THAT OUTLIVES THE OBJECT HOLDING IT.
+        //
+        // A `persistent` field lives outside its instance, keyed by the binding that created it, so it
+        // survives `delete` and REATTACHES when an object is created at that binding again (spec 18).
+        // Nothing else in this library needs that; these two do, and they are the reason it exists.
+        //
+        // What it buys, said plainly: a cache that does not die with the cache object, and a log that
+        // does not die with the writer. In every other language both are static/global state, which is
+        // the same lifetime with none of the identity -- one cache for the whole program, whether or
+        // not that is what you meant. A persistent is keyed by the BINDING, so two of them are two.
+        //
+        // NOT `eternal`, DELIBERATELY, and this is the part a library has to get right. `eternal`
+        // (spec 18.13) tells the compiler the block is meant to live for the whole run and that no
+        // release is owed -- which is a promise the AUTHOR of a program can make about their own
+        // state, and one a LIBRARY cannot make on their behalf. A stdlib class declared `eternal`
+        // leaks by construction in every program that uses it, and leaves the user nothing to hold:
+        // the obligation was waived before they saw it.
+        //
+        // So both classes here keep ordinary persistents and expose `discard()`. It hands the storage
+        // back -- the heap objects the fields point at, then the blocks themselves -- and a program
+        // that never calls it has a leak it can see, in its own code, rather than one buried in ours.
+        //
+        // (`release persistent` is not a destructor's job. The whole point of the state is that it
+        // outlives the object, so destroying a Memo must NOT forget its answers -- discarding them is
+        // a separate decision, and it belongs to whoever made the state.)
+
+        // A MEMO WHOSE ANSWERS OUTLIVE IT.
+        //
+        // The point is not the map -- any language has a map. It is that the answers survive the
+        // memo being destroyed and rebuilt: a request handler that is created per request keeps its
+        // table, without the table being a global that every handler shares.
+        //
+        // Keyed by `int` and answering `long`, because a memo's whole value is being cheaper than the
+        // thing it stands in for and a generic key would put hashing of an arbitrary type on the hot
+        // path. A caller that needs another key hashes it down to an int, which is the same thing it
+        // would be doing inside.
+        public class Memo {
+            private persistent mutable nullable HashMap<int, long>* answers;
+            private persistent mutable int hitCount;
+            private persistent mutable int missCount;
+
+            public constructor Memo() { }
+
+            // HANDS THE STORAGE BACK: the table, then the three blocks. Call it when the answers are
+            // no longer wanted -- which is a decision about the STATE, not about this object, and is
+            // why it is not the destructor's job.
+            public method discard() returns void {
+                if (this.answers != null) {
+                    HashMap<int, long>* t = cast<HashMap<int, long>*>(this.answers);
+                    delete t;
+                    this.answers = null;
+                }
+                release persistent this.answers;
+                release persistent this.hitCount;
+                release persistent this.missCount;
+            }
+
+            // The remembered answer, or `fallback` computed and remembered. The caller passes the
+            // value rather than a function because a lambda that captures is an allocation per call,
+            // which is the cost this class exists to avoid -- and because the caller is the one that
+            // knows whether computing it was expensive.
+            public method remember(int key, long value) returns long {
+                mutable HashMap<int, long> table = this.table();
+                if (table.containsKey(key)) {
+                    this.hitCount = this.hitCount + 1;
+                    return table.get(key);
+                }
+                this.missCount = this.missCount + 1;
+                table.put(key, value);
+                return value;
+            }
+            public method has(int key) returns boolean { return this.table().containsKey(key); }
+            public method get(int key) returns long { return this.table().get(key); }
+            public method size() returns int { return this.table().size(); }
+            public method hits() returns int { return this.hitCount; }
+            public method misses() returns int { return this.missCount; }
+            // Everything forgotten, counters included: what a program does when the answers it
+            // remembered are about a world that has since changed.
+            public method forget() returns void {
+                this.table().clear();
+                this.hitCount = 0;
+                this.missCount = 0;
+            }
+            private method table() returns HashMap<int, long> {
+                if (this.answers == null) {
+                    this.answers = new HashMap<int, long>() on heap;
+                }
+                return cast<HashMap<int, long>*>(this.answers);
+            }
+        }
+
+        // AN APPEND-ONLY LOG, AND THE STATE REBUILT FROM IT.
+        //
+        // Event sourcing: instead of keeping what a thing IS, keep everything that happened to it and
+        // replay. What makes it awkward elsewhere is that the log has to outlive the object that
+        // writes to it and be shared by everything that reads -- so it becomes a global, or a service,
+        // or a file. Here it is a persistent field: the log outlives the writer by construction, and
+        // two writers at two bindings have two logs.
+        //
+        // An event is `(kind, value)`, two ints, because a log entry that is a class is an allocation
+        // per event and a log exists to be cheap to append to. A program with richer events keeps them
+        // in its own store and logs the index -- which is what a real event store does anyway.
+        public class EventLog {
+            private persistent mutable nullable ArrayList<int>* kinds;
+            private persistent mutable nullable ArrayList<int>* values;
+            // The SCHEMA the entries were written under. A log that outlives the program that wrote
+            // it outlives the shape of its events too -- see `migrate`.
+            private persistent mutable int schema;
+
+            public constructor EventLog() { }
+
+            // The log's storage back: both lists, then the three blocks. See the note on Memo.discard
+            // -- destroying the writer must not forget the log, so this is a separate act.
+            public method discard() returns void {
+                if (this.kinds != null) {
+                    ArrayList<int>* k = cast<ArrayList<int>*>(this.kinds);
+                    delete k;
+                    this.kinds = null;
+                }
+                if (this.values != null) {
+                    ArrayList<int>* v = cast<ArrayList<int>*>(this.values);
+                    delete v;
+                    this.values = null;
+                }
+                release persistent this.kinds;
+                release persistent this.values;
+                release persistent this.schema;
+            }
+
+            public method append(int kind, int value) returns void {
+                this.kindList().add(kind);
+                this.valueList().add(value);
+            }
+            public method size() returns int { return this.kindList().size(); }
+            public method kindAt(int i) returns int { return this.kindList().get(i); }
+            public method valueAt(int i) returns int { return this.valueList().get(i); }
+            public method version() returns int { return this.schema; }
+
+            // REPLAY: fold the log into a state. This is the operation the whole idea is for -- the
+            // current value is not stored anywhere, it is what the events add up to.
+            public method replay(function<int, int, int, int> combine, int initial) returns int {
+                mutable int state = initial;
+                for (mutable int i = 0; i < this.size(); i++) {
+                    state = combine(state, this.kindAt(i), this.valueAt(i));
+                }
+                return state;
+            }
+
+            // SCHEMA MIGRATION. Events written under an older shape are rewritten once, in place, and
+            // the version is moved up. This is the half of event sourcing that is usually a project:
+            // the log is the system of record, so it outlives every version of the code that reads it,
+            // and something has to bring the old entries forward.
+            //
+            // The rewrite runs only when the stored version is BEHIND, so calling it at startup every
+            // time is correct and costs one comparison after the first run.
+            public method migrate(int toVersion, function<int, int, int> kindRewrite) returns int {
+                if (this.schema >= toVersion) { return 0; }
+                mutable ArrayList<int> ks = this.kindList();
+                mutable int changed = 0;
+                for (mutable int i = 0; i < ks.size(); i++) {
+                    int before = ks.get(i);
+                    int after = kindRewrite(before, this.schema);
+                    if (after != before) {
+                        ks.set(i, after);
+                        changed = changed + 1;
+                    }
+                }
+                this.schema = toVersion;
+                return changed;
+            }
+
+            private method kindList() returns ArrayList<int> {
+                if (this.kinds == null) { this.kinds = new ArrayList<int>() on heap; }
+                return cast<ArrayList<int>*>(this.kinds);
+            }
+            private method valueList() returns ArrayList<int> {
+                if (this.values == null) { this.values = new ArrayList<int>() on heap; }
+                return cast<ArrayList<int>*>(this.values);
+            }
+        }
+    }

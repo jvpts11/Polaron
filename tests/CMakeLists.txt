@@ -3329,6 +3329,20 @@ if(POLARON_WITH_LLVM)
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/reachability_oracle.cmake")
         endforeach()
 
+        # STATE THAT OUTLIVES THE OBJECT HOLDING IT (System.Persist), which no other language's standard
+        # library can offer: a memo whose answers survive the memo, and an append-only log that
+        # survives its writer, both destroyed and rebuilt on every call. Also pins the property a
+        # SCHEMA MIGRATION must have -- rewriting the old entries does not change what they add up to.
+        # Neither class is `eternal`: that waives the release obligation, which is not a promise a
+        # library may make for its user.
+        add_test(NAME codegen_persist_memo_events_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/persist_memo_events.pol"
+            "-DEXPECTED=memo: size=5 misses=5 hits=6 answer=25 log: events=6 balance=140 migrated=2 balance=140 version=2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Reflection over annotations (spec 31): Type.annotations() lists a class's applied annotations.
         add_test(NAME codegen_reflect_annotations_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

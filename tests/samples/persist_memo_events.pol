@@ -1,0 +1,110 @@
+import System.IO.Console;
+import System.Persist.Memo;
+import System.Persist.EventLog;
+program PersistMemoEvents;
+
+// STATE THAT OUTLIVES THE OBJECT HOLDING IT (System.Persist) -- which no other language's standard
+// library can offer, because it needs `persistent`: a field that lives outside its instance, keyed by
+// the BINDING SITE that created it, so it survives `delete` and reattaches when an object is created
+// at that same site again.
+//
+// Both classes below are destroyed and rebuilt on every call, and both keep what they had. In every
+// other language these are static state -- the same lifetime with none of the identity: one cache for
+// the whole program whether or not that is what you meant.
+//
+// EVERY TOUCH GOES THROUGH ONE SITE, and that is the model rather than an awkwardness of this sample:
+// a block belongs to the `new` that made it, so a second `new Memo()` somewhere else is a second memo.
+// Measured, not assumed: two methods creating one at a variable of the same name get separate blocks.
+//
+//   * MEMO: the answers survive the memo. The second pass over the same inputs is all hits.
+//   * EVENT LOG: the log survives the writer, and the balance is not stored anywhere -- it is what the
+//     events add up to. Then a SCHEMA MIGRATION rewrites the old entries once and the balance holds,
+//     which is the property a migration must have.
+//
+// Neither is `eternal`: that would tell the compiler no release is owed, which is a promise a library
+// cannot make for its user. `discard()` hands the storage back, and it is called at the same site.
+//
+// Prints:
+//   memo: size=5 misses=5 hits=6 answer=25
+//   log: events=6 balance=140
+//   migrated=2 balance=140 version=2
+public bundle Main {
+    public namespace App {
+
+        public class Fees {
+            // ONE site for the memo. `report` and `done` are how the caller reaches the state, since
+            // reaching it from anywhere else would reach a different block.
+            public static method charge(int n, boolean report, boolean done) returns long {
+                Memo memo = new Memo() on heap;
+                long got = memo.remember(n, cast<long>(n * n));
+                if (report) {
+                    System.IO.Console.printf("memo: size=%d misses=%d hits=%d answer=%d\n",
+                                             memo.size(), memo.misses(), memo.hits(),
+                                             cast<int>(got));
+                }
+                if (done) { memo.discard(); }
+                delete memo;
+                return got;
+            }
+        }
+
+        public class Ledger {
+            // kind 1 = deposit, kind 2 = withdrawal. Under schema 2 a withdrawal is kind 3, because
+            // withdrawals and fees came to be told apart -- so the old entries have to be brought
+            // forward, which is what `migrate` is.
+            //
+            // `op`: 0 append, 1 replay, 2 migrate + replay, 3 discard. One site, so one log.
+            public static method ledger(int op, int kind, int amount) returns int {
+                EventLog log = new EventLog() on heap;
+                mutable int result = 0;
+                if (op == 0) {
+                    log.append(kind, amount);
+                }
+                if (op == 1) {
+                    System.IO.Console.printf("log: events=%d balance=%d\n", log.size(),
+                                             Ledger.balance(log));
+                }
+                if (op == 2) {
+                    int changed = log.migrate(2, lambda(int k, int from) returns int {
+                        if (k == 2) { return 3; }
+                        return k;
+                    });
+                    System.IO.Console.printf("migrated=%d balance=%d version=%d\n",
+                                             changed, Ledger.balance(log), log.version());
+                }
+                if (op == 3) {
+                    log.discard();
+                }
+                delete log;
+                return result;
+            }
+            // A deposit adds and anything else takes away, whichever kind the withdrawals are
+            // currently called -- which is why the migration does not change the answer.
+            private static method balance(EventLog log) returns int {
+                return log.replay(lambda(int state, int kind, int amount) returns int {
+                    if (kind == 1) { return state + amount; }
+                    return state - amount;
+                }, 0);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                for (mutable int i = 1; i <= 5; i++) { Fees.charge(i, false, false); }
+                for (mutable int i = 1; i <= 5; i++) { Fees.charge(i, false, false); }
+                Fees.charge(5, true, true);   // reports, then hands the storage back
+
+                Ledger.ledger(0, 1, 100);
+                Ledger.ledger(0, 1, 50);
+                Ledger.ledger(0, 2, 30);
+                Ledger.ledger(0, 1, 20);
+                Ledger.ledger(0, 2, 10);
+                Ledger.ledger(0, 1, 10);
+                Ledger.ledger(1, 0, 0);
+                Ledger.ledger(2, 0, 0);
+                Ledger.ledger(3, 0, 0);
+                return;
+            }
+        }
+    }
+}
