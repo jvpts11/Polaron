@@ -2907,6 +2907,33 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A TRANSFORMER DEMANDED, not merely given: `method larger<T applies TComparer>`.
+        #
+        # Until this existed a transformer was a second-class citizen beside an interface — it could
+        # equip a type and could not be required of one, so generic code routed through a parallel
+        # interface. That is not a spelling inconvenience: an interface means a vtable and a virtual
+        # call, so the workaround paid at RUN TIME to state a COMPILE-TIME requirement, inside the one
+        # construct whose whole claim is that it costs neither.
+        #
+        # `Card` proves the transitive half: it applies TOrderer, which applies TComparer, and
+        # satisfies a constraint naming either — the closure the expansion pass already computes.
+        add_test(NAME codegen_transformer_constraint_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_constraint.pol"
+            "-DEXPECTED=larger of 5 and 9: 9 larger of 40 and 12: 40 ordered pick: 7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # ...and the half that makes it mean something. `Stone` has a `compare` of the right shape and
+        # never says `applies`, so it is refused. Under a structural reading it would qualify by
+        # accident — and then adding a method named `compare` to any class, for any reason, would
+        # silently enrol it in a relation nobody wrote, while removing one would break a constraint in
+        # a file that never mentioned it.
+        add_test(NAME sema_rejects_unapplied_constraint COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_constraint_bad.pol")
+        set_tests_properties(sema_rejects_unapplied_constraint PROPERTIES
+            WILL_FAIL TRUE)
+
         # ONE SOCKET, FOUR OPERATORS. The design note listed this as an improvement to build, with the
         # guess that it might already work because operators are ordinary `MethodDecl`s -- and it does.
         # What was missing was the test, which is the difference between a feature and an accident that

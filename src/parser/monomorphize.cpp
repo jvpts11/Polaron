@@ -1666,6 +1666,8 @@ bool isSubtypeOf(const std::string& sub, const std::string& base,
 // spec 15.2: a constraint's own type arguments count (see their definitions below).
 bool satisfiesBound(const std::string& sub, const std::string& bound,
                     const std::map<std::string, const ast::ClassDecl*>& idx, int depth = 0);
+bool satisfiesTypeBound(const std::string& sub, const std::string& bound, bool applies,
+                        const std::map<std::string, const ast::ClassDecl*>& idx);
 std::string substBound(const std::string& bound, const std::vector<std::string>& typeParams,
                        const std::vector<std::string>& args);
 std::string spellBound(const std::string& bound);
@@ -1790,19 +1792,22 @@ bool expandGenericMethods(ast::Program& program) {
                             // satisfy its bound, exactly as for a generic class.
                             for (const auto& pb : meth->typeParamBounds) {
                                 std::size_t pi = 0;
-                                while (pi < meth->typeParams.size() && meth->typeParams[pi] != pb.first) {
+                                while (pi < meth->typeParams.size() && meth->typeParams[pi] != pb.param) {
                                     ++pi;
                                 }
                                 if (pi >= inst.second.size()) {
                                     continue;
                                 }
                                 const std::string bound =
-                                    substBound(pb.second, meth->typeParams, inst.second);
-                                if (!satisfiesBound(inst.second[pi], bound, classIndex)) {
-                                    monoError(meth->loc, "type argument '" + inst.second[pi] +
-                                                             "' does not satisfy constraint '" + pb.first +
-                                                             " extends " + spellBound(bound) +
-                                                             "' of method '" + meth->name + "'");
+                                    substBound(pb.bound, meth->typeParams, inst.second);
+                                if (!satisfiesTypeBound(inst.second[pi], bound, pb.applies,
+                                                        classIndex)) {
+                                    monoError(meth->loc,
+                                              "type argument '" + inst.second[pi] +
+                                                  "' does not satisfy constraint '" + pb.param +
+                                                  (pb.applies ? " applies " : " extends ") +
+                                                  spellBound(bound) + "' of method '" + meth->name +
+                                                  "'");
                                     ok = false;
                                 }
                             }
@@ -1953,6 +1958,34 @@ bool satisfiesBound(const std::string& sub, const std::string& bound,
             return true;
         }
         if (satisfiesBound(c.superclass, bound, idx, depth + 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A constraint of either kind, against one concrete type argument.
+//
+// `extends`/`implements` ask about the type GRAPH and answer by walking it. `applies` asks a
+// different question and must not be answered by walking anything: a transformer is not a supertype
+// and confers no subtyping, so the only truthful test is whether this type NAMED it -- transitively
+// through `transformer A applies B`, which is precisely the closure the expansion pass already
+// worked out and left behind on the declaration.
+//
+// NOMINAL, DECIDED 2026-08-16. The structural reading -- *it has the procedures, however it came by
+// them* -- was refused for the reason the `each` marker was: a relation satisfied by accident is
+// satisfied silently, and a declaration in another file then decides what this one means.
+bool satisfiesTypeBound(const std::string& sub, const std::string& bound, bool applies,
+                        const std::map<std::string, const ast::ClassDecl*>& idx) {
+    if (!applies) {
+        return satisfiesBound(sub, bound, idx);
+    }
+    auto it = idx.find(sub);
+    if (it == idx.end()) {
+        return false;   // a primitive, or a type nothing declared: it applies nothing
+    }
+    for (const std::string& t : it->second->appliedClosure) {
+        if (t == bound) {
             return true;
         }
     }
@@ -3112,17 +3145,18 @@ bool monomorphize(ast::Program& program) {
         // Constraints (spec 15.2): each type argument must satisfy its bound.
         for (const auto& pb : tit->second->typeParamBounds) {
             std::size_t pi = 0;
-            while (pi < tit->second->typeParams.size() && tit->second->typeParams[pi] != pb.first) {
+            while (pi < tit->second->typeParams.size() && tit->second->typeParams[pi] != pb.param) {
                 ++pi;
             }
             if (pi >= args.size()) {
                 continue;
             }
-            const std::string bound = substBound(pb.second, tit->second->typeParams, args);
-            if (!satisfiesBound(args[pi], bound, classIndex)) {
-                monoError(tit->second->loc, "type argument '" + args[pi] + "' does not satisfy constraint '" +
-                                                pb.first + " extends " + spellBound(bound) + "' in '" + m +
-                                                "'");
+            const std::string bound = substBound(pb.bound, tit->second->typeParams, args);
+            if (!satisfiesTypeBound(args[pi], bound, pb.applies, classIndex)) {
+                monoError(tit->second->loc,
+                          "type argument '" + args[pi] + "' does not satisfy constraint '" + pb.param +
+                              (pb.applies ? " applies " : " extends ") + spellBound(bound) + "' in '" + m +
+                              "'");
                 ok = false;
             }
         }

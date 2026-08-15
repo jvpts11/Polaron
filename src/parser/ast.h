@@ -999,6 +999,19 @@ struct MemberDecl {
 };
 using MemberPtr = std::unique_ptr<MemberDecl>;
 
+// A constraint on a type parameter (spec 15.2): `<T extends Base>`, `<T implements Iface>` or
+// `<T applies TComparer>`.
+//
+// THE KIND IS STORED, NOT DEDUCED FROM THE NAME. A class and a transformer may share a name, and a
+// rule that decides which one a bound meant by looking it up lets a declaration in another file
+// change what this one says -- the same reason `each` is written on the socket rather than inferred
+// from whether the name inside `<>` happens to already be a type.
+struct TypeBound {
+    std::string param;     // the type parameter being constrained
+    std::string bound;     // the bound, in canonical mangled form ("Comparable$T")
+    bool applies = false;  // `applies` -- equipment, checked against the applied closure
+};
+
 struct MethodDecl : MemberDecl {
     std::string visibility;  // "" when none
     bool isStatic = false;
@@ -1074,7 +1087,7 @@ struct MethodDecl : MemberDecl {
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
     // spec 15.2: constraints on those parameters -- `clamp<T extends Numeric>` -> [{"T","Numeric"}].
     // Checked against the type arguments at monomorphization, like the class-level ones.
-    std::vector<std::pair<std::string, std::string>> typeParamBounds;
+    std::vector<TypeBound> typeParamBounds;
     std::vector<Param> params;
     TypeRef returnType;
     std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)
@@ -1152,8 +1165,8 @@ struct ClassDecl {
     std::vector<std::string> typeParams;  // generic parameters, e.g. Box<T> -> ["T"]
     // Variance per type param (spec 15.3): "out" covariant, "in" contravariant, "" invariant.
     std::vector<std::string> typeParamVariance;
-    // Constraint per type param, if any: (param, bound) from `<T extends X>` / `<T implements I>`.
-    std::vector<std::pair<std::string, std::string>> typeParamBounds;
+    // Constraint per type param, if any, from `<T extends X>` / `<T implements I>` / `<T applies T2>`.
+    std::vector<TypeBound> typeParamBounds;
     bool isInterface = false;             // declared with `interface`
     // VALUE AGGREGATE. Set by `struct`, and ALSO by `record` and `union`, which are the same thing
     // under three field-arrangement policies: in sequence, in sequence with generated identity, and
@@ -1210,6 +1223,12 @@ struct ClassDecl {
     // world; `applies` is equipment, purely additive, and nobody outside needs to know about it.
     std::vector<std::string> applies;
     std::vector<SourceLocation> appliesLocs;  // per entry, so a diagnostic points at the right name
+    // The same set closed over `transformer A applies B`, filled in by the expansion pass, which
+    // already computes it to know what to copy. Kept BESIDE `applies` and not folded into it because
+    // `applies` is what the author wrote and is printed back as such by the documentation generator.
+    // It is what a `<T applies TComparer>` constraint is checked against, long after transformers
+    // themselves are gone from the tree.
+    std::vector<std::string> appliedClosure;
     // Every `call T.p()` written inside this type, recorded at the parse site. Kept as a list rather
     // than found by walking the bodies later: the expansion pass needs to check that T is applied
     // here and that `p` is reachable, and a second full traversal to rediscover what the parser had

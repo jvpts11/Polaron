@@ -1,0 +1,99 @@
+import System.IO.Console;
+program TransformerConstraint;
+
+// `<T applies TComparer>` -- a transformer DEMANDED, not merely given.
+//
+// Until this existed a transformer was a second-class citizen beside an interface: it could equip a
+// type and could not be required of one, so generic code had to route through a parallel interface.
+// That is not a spelling inconvenience. An interface means a vtable and a virtual call, so the
+// workaround paid at RUN TIME to state a COMPILE-TIME requirement -- inside the one construct whose
+// whole claim is that it costs neither.
+//
+// THE CONSTRAINT IS NOMINAL. `Coin` satisfies it because it WRITES `applies TComparer`, not because
+// it happens to have a `compare`. A relation satisfied by accident is satisfied silently, and then a
+// declaration in another file decides what this one means -- the same reason `each` is marked on the
+// socket rather than inferred.
+//
+// Transitivity is the closure the expansion pass already computes: a type that applies TOrderer gets
+// TComparer with it, and satisfies a constraint that names either.
+//
+// AND THIS FILE DECLARES ITS OWN `TComparer` ON PURPOSE. The standard library has one too, in
+// System.Collections, with a different socket (`compareTo`). Writing this sample is what found that
+// the transformer index kept whichever came last: the library's won, and the failure did not name
+// the collision -- it reported `Coin` for not implementing `compareTo`, a socket belonging to a
+// transformer this file never mentions. A name now resolves against where the asker stands, so a
+// program's own transformer wins in its own namespace and the library still sees its own.
+//
+// Prints:
+//   larger of 5 and 9: 9
+//   larger of 40 and 12: 40
+//   ordered pick: 7
+public bundle Main {
+    public namespace App {
+        public transformer TComparer {
+            public procedure compare(itself other) returns int;
+
+            public procedure isAbove(itself other) returns boolean {
+                return itself.compare(other) > 0;
+            }
+        }
+
+        // A transformer that carries another: applying this one applies both, and the closure is
+        // what a constraint naming either is checked against.
+        public transformer TOrderer applies TComparer {
+            public procedure ranksFirst(itself other) returns boolean {
+                return itself.isAbove(other);
+            }
+        }
+
+        public class Coin applies TComparer {
+            public mutable int value;
+            public constructor Coin(int value) { this.value = value; }
+            public procedure compare(Coin other) returns int {
+                if (itself.value > other.value) { return 1; }
+                if (itself.value < other.value) { return 0 - 1; }
+                return 0;
+            }
+        }
+
+        public class Card applies TOrderer {
+            public mutable int rank;
+            public constructor Card(int rank) { this.rank = rank; }
+            public procedure compare(Card other) returns int {
+                return itself.rank - other.rank;
+            }
+        }
+
+        public class Pick {
+            // The demand. `T` is not a class here and has no supertype to name -- what it must be is
+            // EQUIPPED, and this is the clause that says so.
+            public static method larger<T applies TComparer>(T a, T b) returns T {
+                if (a.isAbove(b)) { return a; }
+                return b;
+            }
+            // ...and one naming the carrier, satisfied through the closure.
+            public static method first<T applies TOrderer>(T a, T b) returns T {
+                if (a.ranksFirst(b)) { return a; }
+                return b;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Coin small = new Coin(5);
+                Coin big = new Coin(9);
+                System.IO.Console.printf("larger of 5 and 9: %d\n", Pick.larger<Coin>(small, big).value);
+
+                Coin forty = new Coin(40);
+                Coin twelve = new Coin(12);
+                System.IO.Console.printf("larger of 40 and 12: %d\n",
+                                         Pick.larger<Coin>(forty, twelve).value);
+
+                Card seven = new Card(7);
+                Card three = new Card(3);
+                System.IO.Console.printf("ordered pick: %d\n", Pick.first<Card>(seven, three).rank);
+                return;
+            }
+        }
+    }
+}

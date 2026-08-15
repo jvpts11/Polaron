@@ -1,0 +1,49 @@
+import System.IO.Console;
+program TransformerConstraintBad;
+
+// THE HALF THAT MAKES THE OTHER HALF WORTH ANYTHING. `Stone` has a `compare` with the right
+// signature and does not APPLY the transformer, so it must be refused.
+//
+// This is the nominal rule stated as a failing program. Under a structural reading Stone would
+// satisfy `<T applies TComparer>` by accident -- and then adding a method named `compare` to any
+// class, for any reason, would silently enrol it in a relation nobody wrote down, while REMOVING one
+// would break a constraint in a file that never mentioned it. `applies` is a sentence the author
+// writes, and a demand for it reads that same sentence.
+//
+// Expected: 'Stone' does not satisfy constraint 'T applies TComparer'
+public bundle Main {
+    public namespace App {
+        public transformer TComparer {
+            public procedure compare(itself other) returns int;
+
+            public procedure isAbove(itself other) returns boolean {
+                return itself.compare(other) > 0;
+            }
+        }
+
+        public class Stone {
+            public mutable int weight;
+            public constructor Stone(int weight) { this.weight = weight; }
+            // The right shape, and no claim to the relation.
+            public method compare(Stone other) returns int {
+                return itself.weight - other.weight;
+            }
+        }
+
+        public class Pick {
+            public static method larger<T applies TComparer>(T a, T b) returns T {
+                if (a.isAbove(b)) { return a; }
+                return b;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Stone light = new Stone(2);
+                Stone heavy = new Stone(9);
+                System.IO.Console.printf("%d\n", Pick.larger<Stone>(light, heavy).weight);
+                return;
+            }
+        }
+    }
+}

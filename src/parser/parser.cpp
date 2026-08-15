@@ -1334,8 +1334,15 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             // arguments count: `<T implements Comparable<T>>` demands Comparable OF T, not of anything.
             // The bound is stored in its canonical mangled form ("Comparable$T"), so the constraint check
             // at instantiation can substitute T and compare the whole thing.
+            //
+            // ...and `<T applies TComparer>`, which is the same clause the class line uses. Without it
+            // a transformer can only be GIVEN and never DEMANDED, so generic code had to route through
+            // a parallel interface -- paying a vtable at run time to state a compile-time requirement,
+            // in the one construct whose whole claim is that it costs neither.
             if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
-                c.typeParamBounds.push_back({tp, parseBoundName()});
+                c.typeParamBounds.push_back({tp, parseBoundName(), false});
+            } else if (match(TokenKind::KwApplies)) {
+                c.typeParamBounds.push_back({tp, parseBoundName(), true});
             }
         } while (match(TokenKind::Comma));
         expect(TokenKind::Gt, "'>' to close type parameters");
@@ -2174,10 +2181,12 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
             }
             const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
             m->typeParams.push_back(tp);
-            // Constraint (spec 15.2): `<T extends Numeric>` / `<T implements Comparable<T>>`, exactly like
-            // the class-level form, type arguments included.
+            // Constraint (spec 15.2): `<T extends Numeric>` / `<T implements Comparable<T>>` /
+            // `<T applies TComparer>`, exactly like the class-level form, type arguments included.
             if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
-                m->typeParamBounds.push_back({tp, parseBoundName()});
+                m->typeParamBounds.push_back({tp, parseBoundName(), false});
+            } else if (match(TokenKind::KwApplies)) {
+                m->typeParamBounds.push_back({tp, parseBoundName(), true});
             }
         } while (match(TokenKind::Comma));
         expect(TokenKind::Gt, "'>' to close type parameters");
