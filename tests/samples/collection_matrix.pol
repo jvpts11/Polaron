@@ -1,0 +1,116 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+import System.Collections.HashSet;
+import System.Collections.TreeMap;
+import System.Collections.TreeSet;
+import System.Collections.Stack;
+import System.Collections.Queue;
+import System.Collections.Deque;
+import System.Collections.PriorityQueue;
+import System.Collections.LinkedList;
+program CollectionMatrix;
+
+// EVERY COLLECTION OVER EVERY ELEMENT TYPE AN ORDINARY PROGRAM USES.
+//
+// Written as a probe and kept as a test, because it found three holes that had nothing to do with
+// each other on the surface and everything in common underneath: a collection asks `equalsKey` (and
+// a map asks `hash`) of its element type, and three primitives could not answer.
+//
+//   * `ArrayList<boolean>` -- left out as "not a useful map key", which is true of a MAP and says
+//     nothing about a list.
+//   * `HashMap<char, int>` -- counting how often each character appears is the first program anybody
+//     writes over text.
+//   * `ArrayList<double>` -- a list of measurements, which is most of what a numeric program holds.
+//
+// Each failed from INSIDE the standard library, on a line the author of the list never saw. None of
+// them was a decision anybody made; they were three gaps in one list nobody had walked.
+//
+// Prints: counts=21 chars=2 doubles=1 bools=1 front=first
+public bundle Main {
+    public namespace App {
+
+        public record Point(int x, int y) { }
+
+        public class Node {
+            public mutable int v;
+            public constructor Node() { this.v = 0; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> li = new ArrayList<int>() on heap;
+                mutable ArrayList<long> ll = new ArrayList<long>() on heap;
+                mutable ArrayList<double> ld = new ArrayList<double>() on heap;
+                mutable ArrayList<char> lc = new ArrayList<char>() on heap;
+                mutable ArrayList<boolean> lb = new ArrayList<boolean>() on heap;
+                mutable ArrayList<String> ls = new ArrayList<String>() on heap;
+                mutable ArrayList<Point> lp = new ArrayList<Point>() on heap;
+                mutable ArrayList<Node> ln = new ArrayList<Node>() on heap;
+                li.add(1);
+                ll.add(cast<long>(2));
+                ld.add(3.5);
+                lc.add('x');
+                lb.add(true);
+                ls.add("s");
+                lp.add(new Point(1, 2) on heap);
+                ln.add(new Node() on heap);
+
+                mutable HashMap<String, int> msi = new HashMap<String, int>() on heap;
+                mutable HashMap<int, String> mis = new HashMap<int, String>() on heap;
+                mutable HashMap<int, double> mid = new HashMap<int, double>() on heap;
+                mutable HashMap<char, boolean> mcb = new HashMap<char, boolean>() on heap;
+                msi.put("a", 1);
+                mis.put(1, "a");
+                mid.put(1, 1.5);
+                mcb.put('a', true);
+
+                mutable HashSet<String> ss = new HashSet<String>() on heap;
+                mutable HashSet<int> si = new HashSet<int>() on heap;
+                ss.add("a");
+                si.add(1);
+
+                mutable TreeMap<String, int> tm = new TreeMap<String, int>() on heap;
+                mutable TreeSet<int> ts = new TreeSet<int>() on heap;
+                tm.put("a", 1);
+                ts.add(1);
+
+                mutable Stack<int> st = new Stack<int>() on heap;
+                mutable Queue<String> q = new Queue<String>() on heap;
+                mutable Deque<int> dq = new Deque<int>() on heap;
+                mutable PriorityQueue<int> pq = new PriorityQueue<int>() on heap;
+                mutable LinkedList<String> lk = new LinkedList<String>() on heap;
+                st.push(1);
+                q.enqueue("a");
+                dq.addLast(1);
+                pq.add(1);
+                lk.add("second");
+
+                System.IO.Console.printf("counts=%d",
+                    li.size() + ll.size() + ld.size() + lc.size() + lb.size() + ls.size() +
+                    lp.size() + ln.size() + msi.size() + mis.size() + mid.size() + mcb.size() +
+                    ss.size() + si.size() + tm.size() + ts.size() + st.size() + q.size() +
+                    dq.size() + pq.size() + lk.size());
+
+                // ...and the three that could not answer, now answering. A char-keyed count, a
+                // lookup in a list of doubles, a lookup in a list of booleans.
+                mutable HashMap<char, int> freq = new HashMap<char, int>() on heap;
+                String text = "banana";
+                for (mutable int i = 0; i < text.length(); i++) {
+                    char c = text.charAt(i);
+                    freq.put(c, freq.getOrDefault(c, 0) + 1);
+                }
+                ld.add(9.25);
+                lb.add(false);
+                System.IO.Console.printf(" chars=%d doubles=%d bools=%d",
+                                         freq.get('n'), ld.indexOf(9.25), lb.indexOf(false));
+
+                // A linked list can now put one at the front, which is the one thing it can do that
+                // an ArrayList cannot.
+                lk.addFirst("first");
+                System.IO.Console.printf(" front=%s\n", lk.get(0));
+                return;
+            }
+        }
+    }
+}

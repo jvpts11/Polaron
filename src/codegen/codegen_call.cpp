@@ -1566,11 +1566,42 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         // Integer keys satisfy Hashable<T>/Comparable<T> via builtins (collections). Gate on the
         // builtin member names so this never intercepts ClassName.staticMethod() (whose receiver
         // typeName falls back to "int").
-        // `boolean` is in the list because a collection requires these of its ELEMENT type, and a
-        // list of booleans is an ordinary list. It lowers as an i32 like the others, so `equalsKey`
-        // and `compareTo` are the same comparison (false < true, the only order there is).
+        // FLOATING-POINT: the same three, on the floating-point instructions. A list of measurements
+        // is most of what a numeric program holds, and it did not compile.
+        if (const std::string ft = typeName(*mem->object);
+            isFloatType(ft) && (mem->member == "hash" || mem->member == "equalsKey" ||
+                                mem->member == "compareTo")) {
+            llvm::Value* a = emitExpr(*mem->object);
+            if (a == nullptr) {
+                return nullptr;
+            }
+            if (mem->member == "hash") {
+                // The bit pattern, widened to 64. Equal doubles have equal bits (the one exception,
+                // -0.0 against 0.0, is a distinction no map should be resolving anyway).
+                llvm::Value* d = a->getType()->isDoubleTy()
+                                     ? a
+                                     : builder.CreateFPExt(a, builder.getDoubleTy());
+                return builder.CreateBitCast(d, builder.getInt64Ty());
+            }
+            llvm::Value* b = emitExpr(*call.args[0]);
+            if (b == nullptr) {
+                return nullptr;
+            }
+            b = coerceToType(b, a->getType());
+            if (mem->member == "equalsKey") {
+                return builder.CreateZExt(builder.CreateFCmpOEQ(a, b), builder.getInt32Ty());
+            }
+            llvm::Value* gt = builder.CreateZExt(builder.CreateFCmpOGT(a, b), builder.getInt32Ty());
+            llvm::Value* lt = builder.CreateZExt(builder.CreateFCmpOLT(a, b), builder.getInt32Ty());
+            return builder.CreateSub(gt, lt);   // 1, 0 or -1
+        }
+        // `boolean` and `char` are in the list because a collection requires these of its ELEMENT or
+        // KEY type: a list of booleans is an ordinary list, and counting how often each character
+        // appears is the first program anybody writes over text. Both lower as an i32 like the rest,
+        // so `equalsKey` and `compareTo` are the same comparison (for a boolean, false < true, the
+        // only order there is).
         if (const std::string ot = typeName(*mem->object);
-            (isIntName(ot) || ot == "boolean") &&
+            (isIntName(ot) || ot == "boolean" || ot == "char") &&
             (mem->member == "hash" || mem->member == "toString" ||
              mem->member == "equalsKey" || mem->member == "compareTo" ||
              isIntOverflowMethod(mem->member))) {
