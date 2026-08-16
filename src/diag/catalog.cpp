@@ -141,7 +141,10 @@ constexpr Row kCatalog[] = {
         "Return a value of the declared type, convert it with `cast<T>(...)` if intended, or change the "
         "method's declared return type to match what it actually returns.",
         "State return types explicitly (Polaron requires them on methods) so the promise is visible. Forge's "
-        "hover shows the expression's type next to the declared one." }},
+        "hover shows the expression's type next to the declared one. When the mismatch is really \"sometimes "
+        "there is no value to return\", say that in the type rather than reaching for a sentinel: "
+        "`Option<T>` for an absence and `Result<T, E>` for a failure both make the caller deal with the "
+        "case, and `try?` forwards it in one character." }},
 
     {Code::ArgType, {
         "Polaron-0304", "argument type does not match the parameter",
@@ -150,7 +153,11 @@ constexpr Row kCatalog[] = {
         "Pass a value of the parameter's type, or convert with `cast<T>(...)`. If you passed arguments in "
         "the wrong order, reorder them to match the declaration.",
         "Signature help shows each parameter's type as you fill the call in. Naming variables after what "
-        "they hold makes an out-of-order or wrong-type argument obvious at the call site." }},
+        "they hold makes an out-of-order or wrong-type argument obvious at the call site. For the "
+        "signatures where that is not enough -- three booleans in a row, four numbers of the same type "
+        "-- `requires named` on a parameter forces callers to write `repeat: false`, so a call cannot "
+        "be silently wrong about which argument is which. It is worth spending on exactly the "
+        "parameters whose order nobody will remember." }},
 
     {Code::BadCast, {
         "Polaron-0305", "this cast is not allowed",
@@ -159,7 +166,10 @@ constexpr Row kCatalog[] = {
         "Cast only between convertible types. To treat an object as a related type, cast up or down its own "
         "hierarchy; to reinterpret raw memory, do it in freestanding with pointer/address casts.",
         "Prefer designs where a value already has the type you need over casting to it. Where a cast is "
-        "genuinely needed, a comment on why keeps the intent (and its safety) clear." }},
+        "genuinely needed, a comment on why keeps the intent (and its safety) clear. A downcast to ask "
+        "\"which kind is this\" has a better form: `match` over a `sealed` hierarchy binds the answer as "
+        "the right type in each arm, and the compiler refuses the match if a case is missing -- so a new "
+        "variant is a build error rather than a cast that starts failing at runtime." }},
 
     {Code::BadIndex, {
         "Polaron-0306", "cannot index this",
@@ -168,7 +178,11 @@ constexpr Row kCatalog[] = {
         "Index an array value, and use an integer index. If the value is a collection like ArrayList, use "
         "its `get(i)` method rather than `[]`.",
         "Give arrays and indices names that say so. Forge's hover shows a value's type, so indexing a "
-        "non-array is caught before you build; `.length()` bounds a loop safely." }},
+        "non-array is caught before you build; `.length()` bounds a loop safely. Where the code is "
+        "walking the whole thing, the index was never the point: `foreach` over an `Iterable<T>` reads "
+        "as what it does and cannot go out of range, and `Slice<T>` is how a method takes PART of an "
+        "array -- a window with a length, rather than a pointer and an integer the caller has to keep "
+        "agreeing about." }},
 
     {Code::BadOperand, {
         "Polaron-0307", "operator applied to the wrong type",
@@ -195,7 +209,10 @@ constexpr Row kCatalog[] = {
         "Use the destination of the move instead, or reassign the moved-from variable before using it "
         "again. If you meant to keep both, take a reference (`&`) or a deep copy rather than moving.",
         "Move only at the point ownership really transfers, and let the moved-from name go out of scope "
-        "soon after. Prefer references for sharing and copies for independent values." }},
+        "soon after. Prefer `T&` for sharing and plain assignment -- which deep-copies -- for independent "
+        "values. If the type is `unique`, moving is the only way it travels and the compiler will keep "
+        "telling you so; if it should be splittable instead, `partitionable` lets its fields move one at "
+        "a time while the object stays usable." }},
 
     {Code::MoveMisuse, {
         "Polaron-0403", "this cannot be moved",
@@ -244,7 +261,10 @@ constexpr Row kCatalog[] = {
         "Rename one of them, or remove the duplicate if they were meant to be the same thing. Shadowing an "
         "outer variable is rejected on purpose; pick a distinct name for the inner one.",
         "Distinct, descriptive names avoid collisions. The structure panel and workspace symbols (Ctrl+T) "
-        "show what names already exist before you add another." }},
+        "show what names already exist before you add another. Where two areas of a program genuinely "
+        "want the same word, that is what a `namespace` is for: `Geometry.Point` and `Chart.Point` are "
+        "two types, each named well, and an `import` at the top of a file decides which one that file "
+        "means." }},
 
     {Code::DuplicateField, {
         "Polaron-0602", "duplicate field",
@@ -253,7 +273,10 @@ constexpr Row kCatalog[] = {
         "Rename one field, or remove the duplicate if it was pasted by mistake. If a subclass field is "
         "meant to be separate from a superclass one, give it a distinct name.",
         "Keep a class small enough to see its fields at once; the structure panel lists them. One concern "
-        "per class keeps the field set short and collision-free." }},
+        "per class keeps the field set short and collision-free. When a group of fields keeps travelling "
+        "together -- `x`, `y`, `width`, `height` -- they are a type: a `record` names them once, copies "
+        "as a value, and turns four fields into one, which is how a class stays small enough that a "
+        "duplicate name is visible." }},
 
     {Code::DuplicateMember, {
         "Polaron-0603", "duplicate member",
@@ -262,7 +285,10 @@ constexpr Row kCatalog[] = {
         "Remove or rename the duplicate. For a named argument passed twice, pass it once; for an enum or "
         "catalog, each constant/value appears a single time.",
         "List members in a deliberate order and scan for repeats, or let the structure panel show them. "
-        "Short, meaningful names make an accidental duplicate stand out." }},
+        "Short, meaningful names make an accidental duplicate stand out. When one long enum is being "
+        "kept in step with another -- the same constants repeated so two families can be asked the "
+        "same question -- a `catalog` is what removes the repetition: it declares the contract once, "
+        "and each enum extends it with only its own constants." }},
 
     {Code::InheritanceCycle, {
         "Polaron-0604", "inheritance cycle",
@@ -271,7 +297,10 @@ constexpr Row kCatalog[] = {
         "Break the cycle -- one of the `extends`/`implements` links is wrong. Point the type at a real "
         "base, or introduce a shared base both were trying to be.",
         "Sketch the hierarchy as a tree before writing it; a tree has no cycles by construction. Prefer "
-        "shallow hierarchies and interfaces over deep chains that are easy to tangle." }},
+        "shallow hierarchies and interfaces over deep chains that are easy to tangle. A cycle usually "
+        "means the chain was being used to share code rather than to model a kind-of relationship, and "
+        "there is a declaration for that: a `transformer` is expanded into every type that `applies` it, "
+        "so the shared behaviour costs no place in the hierarchy at all." }},
 
     {Code::LiteralSuffix, {
         "Polaron-0701", "bad literal suffix",
@@ -280,7 +309,11 @@ constexpr Row kCatalog[] = {
         "Use a defined suffix for the type you want, or drop the suffix and let the literal take its "
         "default type. Check the spec's literal table for the exact spellings.",
         "Reach for a suffix only when the default type is not what you need; a plain literal is clearest. "
-        "The stdlib browser (F1) documents the numeric types and their suffixes." }},
+        "The stdlib browser (F1) documents the numeric types and their suffixes. And a suffix is not a "
+        "fixed list you are stuck with: `public comptime literal kilobytes(int x) returns ByteSize` is "
+        "how the standard library declares one, and a program can declare its own the same way -- so a "
+        "quantity that keeps being written as a bare number with a comment beside it can become "
+        "`64 kilobytes`, checked by the type system and folded before the program runs." }},
 
     {Code::StringInterp, {
         "Polaron-0702", "cannot interpolate this value",
@@ -289,7 +322,10 @@ constexpr Row kCatalog[] = {
         "Interpolate a numeric/char/boolean value, or convert the value to one first (e.g. call a method "
         "that returns an int). The real String type and its formatting arrive with the stdlib (F10).",
         "Keep interpolation for scalars and build richer text through methods that return printable values. "
-        "Forge's hover shows a hole's type, so an unprintable one is visible before you build." }},
+        "Forge's hover shows a hole's type, so an unprintable one is visible before you build. When many "
+        "types need to be printable, do not write the same method on each of them: a `transformer` that "
+        "declares a description `procedure` gives every type that `applies` it one, expanded at compile "
+        "time, and then a hole holding any of them has something to call." }},
 
     {Code::PrintfFormat, {
         "Polaron-0703", "printf needs a literal format string",
@@ -320,7 +356,11 @@ constexpr Row kCatalog[] = {
         "Add `import reflect;`, and call the reflection API as documented (e.g. `reflect.typeOf<T>()` with "
         "exactly one type argument). Reflection is unavailable in freestanding mode.",
         "Reach for reflection sparingly -- direct method calls are faster and clearer. When you do use it, "
-        "keep the reflective code in one place so its import and shape are easy to keep correct." }},
+        "keep the reflective code in one place so its import and shape are easy to keep correct. Two "
+        "things often mistaken for reflection are not: annotations (`[Name(...)]`) attach data to a "
+        "declaration and are read without walking anything, and a `transformer` writes the per-type code "
+        "at compile time instead of discovering the type at run time -- which is faster, checked, and "
+        "cannot fail on a shape it did not expect." }},
 
     {Code::RegionMisuse, {
         "Polaron-0803", "region used incorrectly",
@@ -456,7 +496,11 @@ constexpr Row kCatalog[] = {
         "Build the condition from literals, `fixed` values and comptime calls, and make it true for the "
         "targets you compile. The `otherwise` text is the reason, and it is what the failure reports.",
         "Write the reason, not a restatement of the condition: `== 20` says the number, \"three to a "
-        "cache line\" says why 20. A demand costs nothing at runtime -- it is gone by then." }},
+        "cache line\" says why 20. A demand costs nothing at runtime -- it is gone by then. When the "
+        "claim is about a type's SIZE rather than about a number, a `layout` says it in the place that "
+        "owns the answer: `itself.fitWithin(20 bytes)` with `itself.refuse(\"three to a cache line\")` "
+        "holds the same line, on the declaration, and keeps holding it when a field is added later by "
+        "someone who never read the demand." }},
 
     {Code::TryContext, {
         "Polaron-0503", "`try?` needs a Result/Option method",
@@ -542,7 +586,10 @@ constexpr Row kCatalog[] = {
         "Keep static field initializers to plain arithmetic over other constants. Reach for `lazy` when "
         "the value is expensive or self-referential but still just a value, and `onClassLoad` when the "
         "setup genuinely needs to run. The split is the one the language draws everywhere else: what the "
-        "compiler can know goes in the declaration, what needs the machine goes in code." }},
+        "compiler can know goes in the declaration, what needs the machine goes in code. And if what "
+        "you actually wanted is state that survives the run rather than state that starts it, that is "
+        "a `persistent`: it is created once, found again by its key on the next run, and released "
+        "where you say -- none of which a static field can do, however its initializer is written." }},
 
     {Code::MoveRequired, {
         "Polaron-0405", "a movable value is transferred, never copied -- say so",
@@ -683,7 +730,9 @@ constexpr Row kCatalog[] = {
         "`nullable` and assign `null` here -- that makes the absence part of the type, and every reader "
         "of the field then has to deal with it.",
         "Write each field's initial value where the field is declared unless the constructor's argument "
-        "decides it. Then a new constructor cannot forget one." }},
+        "decides it. Then a new constructor cannot forget one. A `record` removes the question "
+        "altogether where it fits: its fields are all set by the construction, there is nowhere for one "
+        "to be missed, and it copies as a value so nobody has to reason about who owns it either." }},
 
     {Code::WeakNeedsPointer, {
         "Polaron-0406", "`weak` describes a reference, and this is not one",
@@ -726,7 +775,9 @@ constexpr Row kCatalog[] = {
         "can touch it between two instructions.",
         "Give a handler one job: record what happened somewhere pre-allocated and return. Everything "
         "that interprets, formats, or allocates belongs in the ordinary code that reads the record "
-        "afterwards." }},
+        "afterwards. A `ring region` is the shape that fits: fixed storage taken once at startup, "
+        "oldest entry evicted when it fills, and no allocation at the moment of writing -- which is "
+        "exactly the guarantee a handler needs and the one a growable structure cannot make." }},
 
     {Code::TransformerMisuse, {
         "Polaron-0811", "this transformer's contract is not met here",
@@ -741,7 +792,12 @@ constexpr Row kCatalog[] = {
         "should not be bound by that contract, do not apply the transformer -- `applies` is the whole "
         "of the commitment.",
         "Keep a transformer small and its contract explicit. The narrower the set of procedures it "
-        "requires, the fewer types it can be wrong about." }},
+        "requires, the fewer types it can be wrong about. The words that make the contract explicit "
+        "are worth knowing before they are needed: `final procedure` says an applying type may not "
+        "replace this one, `collective` binds every type that applies it to the same answer, `mutual` "
+        "says a conversion must exist in both directions, and `entrusts` is how a type consents to "
+        "being assembled field by field rather than through its own constructor. Each of them turns a "
+        "convention into something the compiler checks." }},
 
     {Code::TestDeclaration, {
         "Polaron-0812", "this annotation cannot go on this method",
@@ -756,7 +812,10 @@ constexpr Row kCatalog[] = {
         "parameters, give it a `[Cases]` source: a public static method returning the rows to run it "
         "with.",
         "One annotation per method and one job per method. A method that wants two of these labels is "
-        "two methods." }},
+        "two methods. When the same test should run over many inputs, that is not two methods either: "
+        "a `[Cases]` source is a public static method returning the rows, and the `[Test]` takes them "
+        "as parameters -- one body, one name in the report per row, and no copied-and-edited tests to "
+        "drift apart." }},
 
     {Code::NamingConvention, {
         "Polaron-0B01", "this name reads against the convention the rest of the language follows",
@@ -870,7 +929,9 @@ constexpr Row kCatalog[] = {
         "rebuilding an equal object finds the same persistent. If identity really is what you want -- "
         "one per live object, not one per logical thing -- then this is correct and can be ignored.",
         "Decide what makes two of these 'the same thing' when you declare the persistent, and put "
-        "exactly that in value fields." }},
+        "exactly that in value fields. A `record` is the natural way to say it: it holds values, it "
+        "copies rather than aliases, and using one as the key makes 'the same identity' a statement "
+        "about contents that a later run can reproduce." }},
 
     {Code::FixtureLifecycle, {
         "Polaron-0B0A", "this test reads a fixture whose setup it does not run",
@@ -956,7 +1017,12 @@ constexpr Row kCatalog[] = {
         "Remove the feature from freestanding code, or drop `freestanding` if this program actually runs on "
         "a host. Use the freestanding-safe equivalents: Result/Option for errors, raw Memory for I/O.",
         "Decide up front whether a program is freestanding; keep host-only features out of the modules it "
-        "compiles. The restriction is the compiler guaranteeing your kernel pulls in no runtime." }},
+        "compiles. The restriction is the compiler guaranteeing your kernel pulls in no runtime. What "
+        "remains available is most of the language and the parts of it built for this: `address` for a "
+        "raw machine word, the `Memory` API for reading and writing one, `region ... at address` for "
+        "memory the hardware maps rather than the allocator hands out, and `extern` for anything the "
+        "firmware already provides. A freestanding program is not a subset of Polaron with the "
+        "interesting parts removed; it is the same language with the host taken away." }},
 };
 // clang-format on
 
