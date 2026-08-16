@@ -169,16 +169,24 @@ std::optional<std::string> installDep(const fs::path& packagesDir, const fs::pat
 
 }  // namespace
 
-int plug(const fs::path& manifestPath, const fs::path& packagesDir, const fs::path& sourcesToml,
+int plug(const fs::path& manifestPath, const fs::path& librariesDir, const fs::path& sourcesToml,
          const std::string& spec, const std::string& polc) {
     std::set<std::string> visited;
     std::string recordedSource;
     LockMap installed;
-    const auto name = installDep(packagesDir, sourcesToml, spec, polc, visited, &recordedSource, &installed);
+    const auto name = installDep(librariesDir, sourcesToml, spec, polc, visited, &recordedSource, &installed);
     if (!name) {
         return 1;
     }
-    addDependency(manifestPath, *name, recordedSource);
+    // Where it went, written relative to the manifest and with forward slashes, because a manifest is
+    // read on machines other than the one that wrote it.
+    std::error_code rel;
+    fs::path where = fs::relative(librariesDir / *name, manifestPath.parent_path(), rel);
+    if (rel || where.empty()) {
+        where = fs::path(kLibrariesDir) / *name;
+    }
+    std::string recordedPath = where.generic_string();
+    addDependency(manifestPath, *name, recordedSource, recordedPath);
 
     const fs::path lockPath = manifestPath.parent_path() / "polaron.lock";
     LockMap lock = readLock(lockPath);
@@ -191,8 +199,17 @@ int plug(const fs::path& manifestPath, const fs::path& packagesDir, const fs::pa
     return 0;
 }
 
-int unplug(const fs::path& manifestPath, const fs::path& packagesDir, const std::string& name) {
-    const fs::path dest = packagesDir / name;
+int unplug(const fs::path& manifestPath, const fs::path& librariesDir, const std::string& name) {
+    // Remove the directory the MANIFEST names, not the one the default would have chosen. The entry
+    // records where the library was put, so a project that keeps its libraries somewhere else is not
+    // left with the directory still there and the entry gone.
+    fs::path dest = librariesDir / name;
+    for (const auto& d : readManifest(manifestPath).dependencies) {
+        if (d.name == name && d.isPlugged() && !d.path.empty()) {
+            dest = manifestPath.parent_path() / d.path;
+            break;
+        }
+    }
     std::error_code ec;
     const bool existed = fs::exists(dest);
     fs::remove_all(dest, ec);

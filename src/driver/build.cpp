@@ -196,9 +196,18 @@ std::vector<std::string> generatedSourceArgs(const std::string& triple, const fs
 }
 
 // Collect the transitive closure of dependency bundles reachable from `direct`, walking each installed
-// package's own manifest. Appends each package's .polb to `out`. On a missing package, sets `missing`.
-void collectClosure(const fs::path& packagesDir, const std::vector<std::string>& direct,
-                    std::set<std::string>& visited, std::vector<fs::path>& out, std::string& missing) {
+// library's own manifest. Appends each library's .polb to `out`. On a missing one, sets `missing`.
+//
+// Installed libraries live FLAT in one directory, so a library shared by two dependencies is installed
+// once and linked once. That is why the walk is by name here rather than by the path each manifest
+// records: a transitive dependency's manifest names a location inside ITS project, and the copy that
+// exists is the one beside it.
+// `locations` holds the directories the consumer's manifest recorded for the libraries it names, so a
+// project that keeps one somewhere other than the default is followed rather than guessed at. Anything
+// not in it -- every transitive library -- resolves to `librariesDir / name`.
+void collectClosure(const fs::path& librariesDir, const std::vector<std::string>& direct,
+                    const std::map<std::string, fs::path>& locations, std::set<std::string>& visited,
+                    std::vector<fs::path>& out, std::string& missing) {
     for (const auto& name : direct) {
         if (!missing.empty()) {
             return;
@@ -207,23 +216,27 @@ void collectClosure(const fs::path& packagesDir, const std::vector<std::string>&
             continue;
         }
         visited.insert(name);
-        const fs::path pkgDir = packagesDir / name;
-        const fs::path polb = pkgDir / (name + ".polb");
+        const auto where = locations.find(name);
+        const fs::path libDir = (where == locations.end()) ? (librariesDir / name) : where->second;
+        const fs::path polb = libDir / (name + ".polb");
         if (!fs::is_regular_file(polb)) { missing = name; return; }
         out.push_back(polb);
-        const fs::path mf = pkgDir / "polaron.toml";
+        const fs::path mf = libDir / "polaron.toml";
         if (fs::is_regular_file(mf)) {
             std::vector<std::string> children;
             for (const auto& d : readManifest(mf).dependencies) {
+                if (d.isPathDependency()) {
+                    continue;  // built with the library, not installed beside it
+                }
                 children.push_back(d.name);
             }
-            collectClosure(packagesDir, children, visited, out, missing);
+            collectClosure(librariesDir, children, locations, visited, out, missing);
         }
     }
 }
 
 // Gather the [libraries] mappings that apply to this link: this project's, then every dependency's --
-// path dependencies and installed packages, transitively, walked the same way the bundles are.
+// path dependencies and installed libraries, transitively, walked the same way the bundles are.
 //
 // A dependency's classes say which foreign library they come from (`class Wgl library OpenGL`), and the
 // file that name means on this platform is the dependency's own knowledge. Consulting only the program's
@@ -234,22 +247,24 @@ void collectClosure(const fs::path& packagesDir, const std::vector<std::string>&
 //
 // The FIRST writer of a name wins and this project is asked first, so a program can still override a
 // dependency that mapped a name badly, without editing the dependency.
-void collectForeignLibraries(const Manifest& m, const fs::path& projectDir, const fs::path& packagesDir,
+void collectForeignLibraries(const Manifest& m, const fs::path& projectDir, const fs::path& librariesDir,
                              ForeignLibraryMap& out, std::set<fs::path>& seen) {
     for (const auto& logical : m.foreignLibraries) {
         out.emplace(logical.first, logical.second);
     }
     for (const auto& d : m.dependencies) {
-        // A path dependency keeps its own packages/; a registry dependency's own registry dependencies
-        // are installed beside it, in the consumer's packages/ -- which is where collectClosure looks.
-        const bool byPath = !d.path.empty();
-        const fs::path depDir = byPath ? fs::absolute(projectDir / d.path) : (packagesDir / d.name);
+        // A path dependency is a project with its own libraries/. A plugged library's own plugged
+        // libraries are installed FLAT, beside it in the same libraries/ -- which is where
+        // collectClosure looks for them, and so this walk looks there too.
+        const bool byPath = d.isPathDependency();
+        const fs::path depDir =
+            d.path.empty() ? (librariesDir / d.name) : fs::absolute(projectDir / d.path);
         const fs::path depMf = depDir / "polaron.toml";
         if (!fs::is_regular_file(depMf) || !seen.insert(depMf).second) {
             continue;
         }
-        collectForeignLibraries(readManifest(depMf), depDir, byPath ? (depDir / "packages") : packagesDir,
-                                out, seen);
+        collectForeignLibraries(readManifest(depMf), depDir,
+                                byPath ? (depDir / kLibrariesDir) : librariesDir, out, seen);
     }
 }
 
@@ -258,8 +273,8 @@ void collectForeignLibraries(const Manifest& m, const fs::path& projectDir, cons
 int collectPathClosure(const Manifest& m, const fs::path& projectDir, std::vector<fs::path>& closure,
                        std::set<fs::path>& seen) {
     for (const auto& d : m.dependencies) {
-        if (d.path.empty()) {
-            continue;
+        if (!d.isPathDependency()) {
+            continue;  // a plugged library is already compiled; only a sibling project is built here
         }
         const fs::path depDir = fs::absolute(projectDir / d.path);
         const fs::path depMf = depDir / "polaron.toml";
@@ -285,8 +300,8 @@ int buildPathDeps(const Manifest& m, const fs::path& projectDir, bool checkOnly,
                   std::vector<fs::path>& direct, std::vector<fs::path>& closure,
                   std::set<fs::path>& seen) {
     for (const auto& d : m.dependencies) {
-        if (d.path.empty()) {
-            continue;  // registry dependencies come from packages/ (handled elsewhere)
+        if (!d.isPathDependency()) {
+            continue;  // a plugged library is compiled by `plug`, into libraries/ (handled elsewhere)
         }
         const fs::path depDir = fs::absolute(projectDir / d.path);
         const fs::path depMf = depDir / "polaron.toml";
@@ -375,7 +390,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     const fs::path exe = outDir / (m.name + exeSuffix());
 
     // A [library] project compiles to a distributable bundle (.polb + .polh) with no entry point, ready
-    // to be consumed as a path dependency or installed into a packages/ directory.
+    // to be consumed as a path dependency or installed into a project's libraries/ directory.
     if (m.isLibrary) {
         const fs::path polbOut = outDir / (m.name + ".polb");
         // A library may itself depend on other libraries: build them and type-check against their .polh.
@@ -421,8 +436,8 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
 
     // Resolve dependency bundles. The consumer compiles against its *direct* dependencies only (a bundle's
     // .polh already embeds its own transitive dependencies, so re-using them would redeclare types), but
-    // links the *full transitive closure* of their code. Both the project's packages/ and, if declared, the
-    // shared environment's packages/ contribute; a project may use both at once.
+    // links the *full transitive closure* of their code. Both the project's libraries/ and, if declared,
+    // the shared environment's libraries/ contribute; a project may use both at once.
     std::vector<fs::path> directPolbs;  // for --use at compile time
     std::vector<fs::path> allPolbs;     // full closure, for linking
     {
@@ -432,18 +447,22 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         if (int rc = buildPathDeps(m, projectDir, opts.checkOnly, directPolbs, allPolbs, pathSeen); rc != 0) {
             return rc;
         }
-        // Registry dependencies (installed under packages/).
+        // Plugged libraries (installed under libraries/). The manifest records where each one lives,
+        // so a project that keeps them somewhere else is followed rather than guessed at; the closure
+        // walk below still resolves the transitive ones by name, flat.
         std::set<std::string> visited;
         std::vector<std::string> direct;
+        std::map<std::string, fs::path> locations;
         for (const auto& d : m.dependencies) {
-            if (!d.path.empty()) {
+            if (!d.isPlugged()) {
                 continue;  // path deps handled above
             }
             direct.push_back(d.name);
-            directPolbs.push_back(projectDir / "packages" / d.name / (d.name + ".polb"));
+            locations[d.name] = projectDir / d.path;
+            directPolbs.push_back(projectDir / d.path / (d.name + ".polb"));
         }
         std::string missing;
-        collectClosure(projectDir / "packages", direct, visited, allPolbs, missing);
+        collectClosure(projectDir / kLibrariesDir, direct, locations, visited, allPolbs, missing);
         if (!missing.empty()) {
             std::fprintf(stderr, "polaron: dependency '%s' is not installed; run 'polaron plug'\n", missing.c_str());
             return 1;
@@ -458,12 +477,15 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         }
         std::set<std::string> visited;
         std::vector<std::string> direct;
+        std::map<std::string, fs::path> locations;
         for (const auto& d : readManifest(envDir / "polaron.toml").dependencies) {
             direct.push_back(d.name);
-            directPolbs.push_back(envDir / "packages" / d.name / (d.name + ".polb"));
+            const fs::path where = d.path.empty() ? (envDir / kLibrariesDir / d.name) : (envDir / d.path);
+            locations[d.name] = where;
+            directPolbs.push_back(where / (d.name + ".polb"));
         }
         std::string missing;
-        collectClosure(envDir / "packages", direct, visited, allPolbs, missing);
+        collectClosure(envDir / kLibrariesDir, direct, locations, visited, allPolbs, missing);
         if (!missing.empty()) {
             std::fprintf(stderr, "polaron: environment dependency '%s' is not installed; run 'polaron plug -e'\n",
                          missing.c_str());
@@ -1744,12 +1766,12 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         ForeignLibraryMap foreignLibs;
         {
             std::set<fs::path> seenManifests;
-            collectForeignLibraries(m, projectDir, projectDir / "packages", foreignLibs, seenManifests);
+            collectForeignLibraries(m, projectDir, projectDir / kLibrariesDir, foreignLibs, seenManifests);
             if (!m.environment.empty()) {
                 const fs::path envDir = polaronHomeDir() / "environments" / m.environment;
                 if (fs::is_regular_file(envDir / "polaron.toml")) {
                     collectForeignLibraries(readManifest(envDir / "polaron.toml"), envDir,
-                                            envDir / "packages", foreignLibs, seenManifests);
+                                            envDir / kLibrariesDir, foreignLibs, seenManifests);
                 }
             }
         }

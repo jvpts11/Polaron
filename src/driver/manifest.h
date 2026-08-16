@@ -9,10 +9,33 @@ namespace polaron::driver {
 
 // A single declared dependency. Either a registry package (name + version, a Git tag) or a local
 // path dependency (`name = { path = "../lib" }`) — a sibling library project built from source.
+// Where a plugged library is installed inside the project that plugged it. One spelling, because the
+// directory is named in the manifest the plug writes, in the .gitignore the scaffold writes, and in
+// every walk that has to skip it.
+inline constexpr const char* kLibrariesDir = "libraries";
+
+// One entry under [dependencies]. Two kinds, told apart by which fields are set:
+//
+//   Polaron-OpenGL = { path = "libraries/Polaron-OpenGL", source = "https://.../Polaron-OpenGL@v1.0.1" }
+//   somelib        = { path = "../somelib" }
+//
+// The first is a PLUGGED library: `source` says where it came from and `path` says where it now lives,
+// which is a directory inside this project. The second is a PATH dependency -- a sibling project on
+// disk, built from source as part of the build -- and has no source to record.
+//
+// The bare form `name = "<spec>"` is the first kind with the location left to its default: it says the
+// link and nothing else, which is also all a command line says. `plug` rewrites it in full.
 struct Dependency {
     std::string name;
     std::string version;
-    std::string path;   // local path dependency, relative to the manifest; when set, version is ignored
+    std::string path;    // where it lives: relative to the manifest for a plugged library, or a sibling
+    std::string source;  // the spec it was fetched from ("<url>[@<version>]"); empty for a path dep
+
+    // A plugged library is INSTALLED: `plug` fetched it, compiled it, and put a .polb beside its
+    // sources. A path dependency is a project being developed next door and is built from source with
+    // the program. Both now carry a path, so the source is what tells them apart.
+    bool isPlugged() const { return !source.empty(); }
+    bool isPathDependency() const { return source.empty() && !path.empty(); }
 };
 
 // A resolved project manifest. Fields not present in the file keep their defaults.
@@ -122,10 +145,12 @@ std::optional<std::filesystem::path> findManifest(const std::filesystem::path& s
 // Synthesize a manifest for a single loose file (name = stem, entry = the file).
 Manifest ephemeralManifest(const std::filesystem::path& file);
 
-// Add or update a `name = "version"` entry under [dependencies], creating the section if needed.
-// Only that section is touched; every other line is preserved. Returns false on I/O failure.
+// Add or update an entry under [dependencies], creating the section if needed. The entry is written as
+// `name = { path = "<path>", source = "<version>" }` -- what the library is, where it lives, and the
+// link it came from. Only that section is touched; every other line is preserved. Returns false on I/O
+// failure.
 bool addDependency(const std::filesystem::path& manifestPath, const std::string& name,
-                   const std::string& version);
+                   const std::string& version, const std::string& path);
 
 // Remove a dependency line under [dependencies]. Absent entry is a no-op (still returns true).
 bool removeDependency(const std::filesystem::path& manifestPath, const std::string& name);

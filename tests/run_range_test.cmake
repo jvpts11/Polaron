@@ -54,7 +54,7 @@ if(NOT rc EQUAL 0)
     message(FATAL_ERROR "plug failed (exit ${rc}): ${err}")
 endif()
 
-execute_process(COMMAND git -C "${app}/packages/mathlib" describe --tags --exact-match HEAD
+execute_process(COMMAND git -C "${app}/libraries/mathlib" describe --tags --exact-match HEAD
     OUTPUT_VARIABLE tag RESULT_VARIABLE rc OUTPUT_STRIP_TRAILING_WHITESPACE)
 message(STATUS "resolved tag: ${tag}")
 if(NOT tag STREQUAL "v1.3.5")

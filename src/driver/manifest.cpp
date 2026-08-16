@@ -175,15 +175,25 @@ Manifest parseManifestText(const std::string& text) {
             Dependency d;
             d.name = key;
             const std::string raw = trim(s.substr(eq + 1));
-            if (!raw.empty() && raw.front() == '{') {  // inline table: { path = "../lib" }
-                const auto pp = raw.find("path");
-                const auto q1 = (pp == std::string::npos) ? std::string::npos : raw.find('"', pp);
-                const auto q2 = (q1 == std::string::npos) ? std::string::npos : raw.find('"', q1 + 1);
-                if (q1 != std::string::npos && q2 != std::string::npos) {
-                    d.path = raw.substr(q1 + 1, q2 - q1 - 1);
+            if (!raw.empty() && raw.front() == '{') {
+                // { path = "libraries/X", source = "https://...@v1.0.1" } or { path = "../sibling" }
+                const std::map<std::string, std::string> fields = parseInlineTable(raw);
+                const auto p = fields.find("path");
+                const auto src = fields.find("source");
+                if (p != fields.end()) {
+                    d.path = p->second;
+                }
+                if (src != fields.end()) {
+                    d.source = src->second;
+                    d.version = src->second;  // the spec `plug` re-resolves from
                 }
             } else {
+                // The bare form is the link alone; the location takes its default.
+                d.source = val;
                 d.version = val;
+            }
+            if (!d.source.empty() && d.path.empty()) {
+                d.path = std::string(kLibrariesDir) + "/" + d.name;
             }
             m.dependencies.push_back(d);
             m.hasDependencies = true;
@@ -331,9 +341,14 @@ Manifest ephemeralManifest(const std::filesystem::path& file) {
 }
 
 bool addDependency(const std::filesystem::path& manifestPath, const std::string& name,
-                   const std::string& version) {
+                   const std::string& version, const std::string& path) {
     std::vector<std::string> lines = readLines(manifestPath);
-    const std::string newLine = name + " = \"" + version + "\"";
+    // A dependency is recorded as WHAT IT IS AND WHERE IT IS, with the link it came from beside it.
+    // The whole entry used to be the URL, which said where the library had been fetched from and
+    // nothing about the thing now sitting in the project -- so a reader could not tell, from the
+    // manifest, what was installed or where it lived.
+    const std::string newLine =
+        name + " = { path = \"" + path + "\", source = \"" + version + "\" }";
 
     int header = -1;
     for (size_t i = 0; i < lines.size(); ++i) {
