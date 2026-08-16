@@ -1,0 +1,74 @@
+import System.IO.Console;
+program TransformerBoundTarget;
+
+// `procedure into<Fahrenheit f> returns Fahrenheit` -- the slot DECLARES the target.
+//
+// The pair was asymmetric until now. `static procedure from<Other>(Other value) returns itself` gives
+// the SOURCE a name; `procedure into<Other>() returns Other` gave the target none, so one side could
+// read its counterpart and the other could only conjure it with a constructor whose parameter list it
+// had to know already. A transformer is a relation between two types, and a relation is not one until
+// both ends can be named.
+//
+// IT IS NOT WRITING ANOTHER OBJECT'S FIELDS -- IT IS CONSTRUCTING ONE. The bound target is storage
+// with no constructor of its own run over it, so the body IS its construction. That is why the target
+// says `entrusts` rather than `applies`: what it hands over is the right to establish its invariants,
+// which is a thing only it can agree to.
+//
+// And the promise is checked. Every field of `f` must be assigned before the body ends -- the same
+// dataflow a constructor already passes, for the same reason: uninitialised storage does not read
+// empty, it reads whatever was last there.
+//
+// Prints:
+//   100C is 212F
+//   212F is 100C
+//   round trip: 100
+//   fields kept: 212 and 100
+public bundle Main {
+    public namespace App {
+        public mutual transformer TConverter {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Celsius entrusts TConverter {
+            private mutable int degrees;
+            public constructor Celsius(int degrees) { this.degrees = degrees; }
+            public method reading() returns int { return this.degrees; }
+
+            // The target is filled in, not conjured. `f.degrees` reaches a PRIVATE field of another
+            // class and that is not a hole: Fahrenheit entrusted this transformer, and what is being
+            // assigned is storage that is not a Fahrenheit yet.
+            public procedure into<Fahrenheit f>() returns Fahrenheit {
+                f.degrees = itself.degrees * 9 / 5 + 32;
+                return f;
+            }
+        }
+
+        public class Fahrenheit entrusts TConverter {
+            private mutable int degrees;
+            public constructor Fahrenheit(int degrees) { this.degrees = degrees; }
+            public method reading() returns int { return this.degrees; }
+
+            public procedure into<Celsius f>() returns Celsius {
+                f.degrees = (itself.degrees - 32) * 5 / 9;
+                return f;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Celsius boiling = new Celsius(100);
+                Fahrenheit hot = boiling.into<Fahrenheit>();
+                System.IO.Console.printf("100C is %dF\n", hot.reading());
+
+                Celsius back = hot.into<Celsius>();
+                System.IO.Console.printf("212F is %dC\n", back.reading());
+                System.IO.Console.printf("round trip: %d\n", back.reading());
+
+                // The assembled objects are ordinary objects afterwards: nothing about them says
+                // they were built from outside.
+                System.IO.Console.printf("fields kept: %d and %d\n", hot.reading(), back.reading());
+                return;
+            }
+        }
+    }
+}

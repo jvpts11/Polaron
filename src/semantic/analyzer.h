@@ -416,6 +416,19 @@ private:
     // The class being analyzed, so a delegating call inside a constructor can be followed into the
     // callee's own body and discharge only the fields it really assigns.
     const ast::ClassDecl* currentClassDecl_ = nullptr;
+    // Every class by name, for the questions that are about SOMEBODY ELSE's declaration. The field
+    // table (`classes_`) answers most of them and cannot answer this one: a bound target's
+    // completeness needs the fields in declaration order and needs to know which already carry a
+    // value, and neither survives into an unordered map of types.
+    std::map<std::string, const ast::ClassDecl*> declsByName_;
+    const ast::ClassDecl* classDeclOf(const std::string& name) const {
+        auto it = declsByName_.find(name);
+        return it == declsByName_.end() ? nullptr : it->second;
+    }
+    // The name a procedure's target is bound to, empty outside one. Assignments to `<name>.field`
+    // discharge that field the way `this.field` does inside a constructor.
+    std::string boundTargetName_;
+    std::vector<std::pair<std::string, SourceLocation>> pendingBoundFields_;
     const ast::Block* methodBodyInCurrentClass(const std::string& name) const;
     void collectFieldsAssigned(const ast::Block* body, std::set<std::string>& assigned,
                                std::set<std::string>& visited) const;

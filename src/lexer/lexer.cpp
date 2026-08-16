@@ -40,6 +40,7 @@ TokenKind keywordKind(std::string_view text) {
         {"interrupt", TokenKind::KwInterrupt},
         {"transformer", TokenKind::KwTransformer},
         {"applies", TokenKind::KwApplies},
+        {"entrusts", TokenKind::KwEntrusts},
         {"procedure", TokenKind::KwProcedure},
         {"call", TokenKind::KwCall},
         {"returns", TokenKind::KwReturns},

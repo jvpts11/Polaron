@@ -1,0 +1,44 @@
+program BoundIncomplete;
+
+// A BOUND TARGET LEFT HALF-BUILT. `Metres.into<Feet f>` assigns `f.whole` and never `f.fraction`,
+// so the object it hands back is not a Feet -- it is storage that looks like one.
+//
+// This is the obligation `entrusts` bought. A type consents to being assembled from outside on the
+// understanding that the assembly is COMPLETE, and the check is the one a constructor already
+// passes: the same dataflow, the same map, the same join at a branch. Two ways of proving one thing
+// is how one of them ends up weaker.
+//
+// Why it matters more than an uninitialised local: an uninitialised local reads stack garbage, which
+// is usually absurd and fails loudly. An unassigned field reads whatever was last in that storage --
+// so the wrong value is plausible and stable, and everything downstream works perfectly with it.
+//
+// Expected: binds 'Feet f' and never assigns its field 'fraction'
+public bundle Main {
+    public namespace App {
+        public transformer TConverter {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Metres applies TConverter {
+            private mutable int whole;
+            public constructor Metres(int whole) { this.whole = whole; }
+            public procedure into<Feet f>() returns Feet {
+                f.whole = itself.whole * 3;
+                return f;
+            }
+        }
+
+        public class Feet entrusts TConverter {
+            private mutable int whole;
+            private mutable int fraction;
+            public constructor Feet(int whole, int fraction) {
+                this.whole = whole;
+                this.fraction = fraction;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

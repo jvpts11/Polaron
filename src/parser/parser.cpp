@@ -1097,21 +1097,40 @@ ast::ClassDecl Parser::parseClassForSynthesis() { return parseClassOrInterface()
 // `applies A, B` on a declaration line. Shared by class/interface and record, because a record can
 // gain things too -- the design says so, and a record is exactly where a derived `clone` belongs.
 void Parser::parseAppliesOpt(ast::ClassDecl& c) {
-    parseAppliesList(c.applies, c.appliesLocs);
+    parseAppliesList(c.applies, c.appliesLocs, &c.entrusts);
 }
 
 // The clause itself, over whichever declaration's two vectors. An ENUM takes it as well as a class:
 // `Errno -> int` is the flagship of the totality rule and Errno is an enum, so the kind that carries
 // the conversion has to be able to take the clause that declares it.
-void Parser::parseAppliesList(std::vector<std::string>& names,
-                              std::vector<SourceLocation>& locs) {
-    if (!match(TokenKind::KwApplies)) {
-        return;
+void Parser::parseAppliesList(std::vector<std::string>& names, std::vector<SourceLocation>& locs,
+                              std::vector<std::string>* entrusted) {
+    // `entrusts` IS `applies` with consent, so both fill the same list and a type never writes the
+    // two clauses for one transformer -- that would state one relation twice. What `entrusts` adds
+    // is recorded beside it: permission for a procedure of that transformer to assemble this type
+    // field by field, instead of going through a constructor of its own.
+    for (;;) {
+        const bool trusts = check(TokenKind::KwEntrusts);
+        if (!trusts && !check(TokenKind::KwApplies)) {
+            return;
+        }
+        advance();
+        do {
+            locs.push_back(current().loc);
+            const std::string name = expect(TokenKind::Identifier, "a transformer name").lexeme;
+            for (const std::string& already : names) {
+                if (already == name) {
+                    fail("'" + name + "' is named twice on this class line. `entrusts` is `applies` "
+                                      "with consent, so a type writes one or the other and never both",
+                         locs.back());
+                }
+            }
+            names.push_back(name);
+            if (trusts && entrusted != nullptr) {
+                entrusted->push_back(name);
+            }
+        } while (match(TokenKind::Comma));
     }
-    do {
-        locs.push_back(current().loc);
-        names.push_back(expect(TokenKind::Identifier, "a transformer name").lexeme);
-    } while (match(TokenKind::Comma));
 }
 
 // `public [mutual] [explicit] [collective] [freestanding] transformer Name [satisfies I] { ... }`
@@ -2179,8 +2198,32 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
                 advance();
                 m->isEachFamily = true;
             }
+            // A BOUND TARGET may say `mutable`, and it means what it means on a local: whether the
+            // NAME may be re-bound. Filling the target in -- `f.degrees = ...` -- never needs it, for
+            // the same reason `this.x = ...` does not.
+            const bool boundMutable = m->isProcedure && check(TokenKind::KwMutable) &&
+                                      peek(1).kind == TokenKind::Identifier &&
+                                      peek(2).kind == TokenKind::Identifier;
+            if (boundMutable) {
+                advance();
+            }
             const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
             m->typeParams.push_back(tp);
+            // `procedure into<Fahrenheit f>` -- the slot also DECLARES the target, so the body has it
+            // to work on rather than having to conjure it through a constructor whose parameter list
+            // it must already know. The source of a conversion has always had a name (`from<Other>(
+            // Other value)`); this is what gives the target one, and a relation between two types is
+            // not a relation until both ends can be named.
+            if (m->isProcedure && check(TokenKind::Identifier)) {
+                m->boundTarget = current().lexeme;
+                m->boundTargetLoc = current().loc;
+                m->boundTargetMutable = boundMutable;
+                advance();
+            } else if (boundMutable) {
+                fail("`mutable` here belongs to a bound target, and none was named -- write "
+                     "`<mutable " + tp + " name>`",
+                     current().loc);
+            }
             // Constraint (spec 15.2): `<T extends Numeric>` / `<T implements Comparable<T>>` /
             // `<T applies TComparer>`, exactly like the class-level form, type arguments included.
             if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {

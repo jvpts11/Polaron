@@ -402,6 +402,10 @@ struct NewExpr : Expr {
     // tell them apart, because it must refuse a placement it was given and quietly take the one it was
     // not. Refusing what the author wrote and overriding it without a word are not the same act.
     bool locationWritten = false;
+    // Storage with no constructor run over it: what a bound target starts as. Never written by an
+    // author -- it is synthesized for `procedure into<Fahrenheit f>`, where the body IS the
+    // construction and the analyzer proves it assigns every field before the end.
+    bool blank = false;
     std::string region;    // "in region R" target; empty when none
     void dump(std::string& out, int indent) const override;
 };
@@ -1088,6 +1092,15 @@ struct MethodDecl : MemberDecl {
     // spec 15.2: constraints on those parameters -- `clamp<T extends Numeric>` -> [{"T","Numeric"}].
     // Checked against the type arguments at monomorphization, like the class-level ones.
     std::vector<TypeBound> typeParamBounds;
+    // `procedure into<Fahrenheit f>` -- the name the target is bound to inside the body, empty when
+    // the slot names only a type. The target is raw storage the body must fill: every field assigned
+    // by the end, proven by the same dataflow a constructor already passes, so no half-built object
+    // is ever observable. The type it binds is `typeParams[0]`.
+    std::string boundTarget;
+    SourceLocation boundTargetLoc;
+    bool boundTargetMutable = false;   // whether the NAME may be re-bound, as on a local
+    std::string boundTargetType;       // the type bound, kept once the type parameter is cleared
+    std::string boundTargetVia;        // the transformer whose family this is: what must be entrusted
     std::vector<Param> params;
     TypeRef returnType;
     std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)
@@ -1229,6 +1242,11 @@ struct ClassDecl {
     // It is what a `<T applies TComparer>` constraint is checked against, long after transformers
     // themselves are gone from the tree.
     std::vector<std::string> appliedClosure;
+    // Of those, the ones written with `entrusts` rather than `applies`: this type consents to being
+    // ASSEMBLED by their procedures -- storage handed over field by field, with no constructor of its
+    // own running first. It is the one grant a class cannot be given from outside, because what is
+    // being handed over is the right to establish its invariants.
+    std::vector<std::string> entrusts;
     // Every `call T.p()` written inside this type, recorded at the parse site. Kept as a list rather
     // than found by walking the bodies later: the expansion pass needs to check that T is applied
     // here and that `p` is reachable, and a second full traversal to rediscover what the parser had

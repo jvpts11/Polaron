@@ -136,7 +136,8 @@ private:
     ast::ClassDecl parseTransformer();          // `public [mutual|explicit|collective|freestanding] transformer N { }`
     void parseAppliesOpt(ast::ClassDecl& c);    // the `applies A, B` clause on a declaration line
     // The same clause over any declaration's two vectors -- an enum takes it as well as a class.
-    void parseAppliesList(std::vector<std::string>& names, std::vector<SourceLocation>& locs);
+    void parseAppliesList(std::vector<std::string>& names, std::vector<SourceLocation>& locs,
+                          std::vector<std::string>* entrusted = nullptr);
     // The raw text between two locations, inclusive of the character at `to`. Empty when no source
     // was handed in, which is every synthesis path -- generated declarations have no file to quote.
     std::string sliceSource(const SourceLocation& from, const SourceLocation& to) const;

@@ -546,7 +546,8 @@ void checkProcCalls(const std::string& targetName,
 
 // The `each` families an applied transformer declares, and the socket that declares each one.
 std::map<std::string, const ast::MethodDecl*> eachFamilies(const std::vector<std::string>& applied,
-                                                           const Index& index) {
+                                                           const Index& index,
+                                                           std::map<std::string, std::string>* owner) {
     std::map<std::string, const ast::MethodDecl*> out;
     for (const std::string& tn : applied) {
         auto it = index.find(tn);
@@ -556,6 +557,13 @@ std::map<std::string, const ast::MethodDecl*> eachFamilies(const std::vector<std
         for (const ast::MemberPtr& m : it->second->members) {
             if (const ast::MethodDecl* md = asMethod(m); md != nullptr && md->isEachFamily) {
                 out[md->name] = md;
+                // WHICH transformer declared the family, recorded because a bound target's consent
+                // is given to a named transformer and not to assembly in general. Without it the
+                // check could only ask "does this type entrust ANYBODY", which is a different and
+                // much weaker sentence than the one on the class line.
+                if (owner != nullptr) {
+                    (*owner)[md->name] = tn;
+                }
             }
         }
     }
@@ -570,7 +578,8 @@ std::map<std::string, const ast::MethodDecl*> eachFamilies(const std::vector<std
 // `each` family: the socket that says so lives in a transformer, possibly in another file. That is
 // the whole reason the marker is on the socket rather than inferred from the argument's spelling.
 void bindEachTargets(std::vector<ast::MemberPtr>& members,
-                     const std::map<std::string, const ast::MethodDecl*>& families) {
+                     const std::map<std::string, const ast::MethodDecl*>& families,
+                     const std::map<std::string, std::string>& familyOwner) {
     if (families.empty()) {
         return;
     }
@@ -587,6 +596,30 @@ void bindEachTargets(std::vector<ast::MemberPtr>& members,
             report(md->loc, "`procedure " + md->name + "` implements a per-target family, so it "
                             "binds exactly one target type");
             continue;
+        }
+        // A BOUND TARGET BECOMES A LOCAL, and the storage it starts as is the point. Prepended here,
+        // where the target type is still known -- the name is about to be mangled into `into$X` and
+        // the type parameter cleared, and after that nothing downstream could work out what `f` is.
+        //
+        // No constructor runs over it. The body IS the construction, which is what `entrusts` on the
+        // target agreed to, and the analyzer holds it to the same completeness the target's own
+        // constructor would owe.
+        if (!md->boundTarget.empty()) {
+            md->boundTargetType = md->typeParams[0];
+            auto owner = familyOwner.find(md->name);
+            md->boundTargetVia = owner == familyOwner.end() ? std::string() : owner->second;
+            auto storage = std::make_unique<ast::NewExpr>();
+            storage->loc = md->boundTargetLoc;
+            storage->className = md->boundTargetType;
+            storage->location = "stack";
+            storage->blank = true;
+            auto decl = std::make_unique<ast::VarDeclStmt>();
+            decl->loc = md->boundTargetLoc;
+            decl->name = md->boundTarget;
+            decl->type.name = md->boundTargetType;
+            decl->isMutable = md->boundTargetMutable;
+            decl->init = std::move(storage);
+            md->body.statements.insert(md->body.statements.begin(), std::move(decl));
         }
         md->name = ast::mangleGeneric(md->name, md->typeParams);
         md->typeParams.clear();      // the argument is already concrete
@@ -728,8 +761,10 @@ void expandCore(const std::string& targetName, std::vector<ast::MemberPtr>& memb
     }
     // BEFORE anything reads the member names: after this, `into<Fahrenheit>` IS `into$Fahrenheit`,
     // and provenance, socket satisfaction and `mutual` all read one consistent set of names.
-    const std::map<std::string, const ast::MethodDecl*> families = eachFamilies(order, index);
-    bindEachTargets(members, families);
+    std::map<std::string, std::string> familyOwner;
+    const std::map<std::string, const ast::MethodDecl*> families =
+        eachFamilies(order, index, &familyOwner);
+    bindEachTargets(members, families, familyOwner);
     checkProvenance(members, order, index);
     checkProcCalls(targetName, procCalls, order, index);
     const std::vector<std::string> satisfied = applySatisfies(
@@ -1320,6 +1355,56 @@ bool expandTransformers(ast::Program& program) {
             }
             for (ast::EnumDecl& e : ns.enums) {
                 expandIntoEnum(e, here, ifaceMethods);
+            }
+        }
+    }
+    // CONSENT, checked after everything is expanded, because it is about somebody else's class line.
+    //
+    // A bound target is assembled field by field with no constructor of its own running, so what is
+    // being handed over is the right to establish that type's invariants. Only the type can agree to
+    // that, and it agrees by writing `entrusts` instead of `applies`. Without this check the binding
+    // form would be a way for any type to build any other from the outside -- which is not a
+    // permission the language grants anywhere else.
+    std::map<std::string, const ast::ClassDecl*> byName;
+    for (const ast::Bundle& b : program.bundles) {
+        for (const ast::Namespace& ns : b.namespaces) {
+            for (const ast::ClassDecl& c : ns.classes) {
+                byName[c.name] = &c;
+            }
+        }
+    }
+    for (ast::Bundle& b : program.bundles) {
+        for (ast::Namespace& ns : b.namespaces) {
+            for (ast::ClassDecl& c : ns.classes) {
+                for (const ast::MemberPtr& m : c.members) {
+                    const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+                    if (md == nullptr || md->boundTarget.empty()) {
+                        continue;
+                    }
+                    auto target = byName.find(md->boundTargetType);
+                    if (target == byName.end()) {
+                        report(md->boundTargetLoc,
+                               "'" + md->boundTargetType + "' is not a class this program declares, "
+                               "so it cannot be bound as a target");
+                        continue;
+                    }
+                    bool trusted = false;
+                    for (const std::string& t : target->second->entrusts) {
+                        if (t == md->boundTargetVia) {
+                            trusted = true;
+                        }
+                    }
+                    if (!trusted) {
+                        report(md->boundTargetLoc,
+                               "'" + md->boundTargetType + "' does not entrust '" + md->boundTargetVia +
+                                   "', so binding it as a target is not allowed. Binding assembles the "
+                                   "target field by field with no constructor of its own running, so "
+                                   "it is that type's invariants being established from outside -- "
+                                   "write `entrusts " + md->boundTargetVia + "` on '" +
+                                   md->boundTargetType + "' if that is intended, or build it with a "
+                                   "constructor instead");
+                    }
+                }
             }
         }
     }
