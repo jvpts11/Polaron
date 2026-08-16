@@ -23,6 +23,20 @@
 #include <utility>
 #include <vector>
 
+// Terminal detection, for whether diagnostics should be coloured.
+//
+// NOMINMAX first, always: <windows.h> defines `min` and `max` as macros, and LLVM's headers below
+// use `std::numeric_limits<T>::max()` -- which the preprocessor rewrites into a syntax error a
+// hundred lines deep in someone else's file.
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <io.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "lexer/lexer.h"
 #include "lexer/token.h"
 #include "parser/ast.h"
@@ -152,6 +166,30 @@ std::string preludePlace(int line) {
         return "<prelude>";
     }
     return std::string("<prelude:") + file + ":" + std::to_string(line - firstLine + 1) + ">";
+}
+
+// IS THERE A TERMINAL ON THE OTHER END. Escape codes in a build log are noise that outlives the
+// terminal that would have rendered them, so colour follows the destination rather than a guess --
+// and `--color` / `--no-color` / `NO_COLOR` override it for the cases the check cannot see, like a
+// CI that does render them.
+bool stderrIsTerminal() {
+#ifdef _WIN32
+    return _isatty(_fileno(stderr)) != 0;
+#else
+    return isatty(fileno(stderr)) != 0;
+#endif
+}
+
+// Windows consoles do not interpret ANSI until asked. Without this the escapes print as literal
+// `<-[31m` -- worse than no colour, and exactly what a naive port does.
+void enableTerminalColor() {
+#ifdef _WIN32
+    const HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD mode = 0;
+    if (h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode) != 0) {
+        SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
+#endif
 }
 
 // The two things only the driver knows, handed to the renderer once so that EVERY reporting site
@@ -522,7 +560,12 @@ int printUsage(const char* prog) {
                  "\n"
                  "  --no-region-binder   turn OFF the escape checks that stop a pointer to a dead\n"
                  "                       frame from leaving the frame. They are on by default; this\n"
-                 "                       is the way to write one deliberately.\n",
+                 "                       is the way to write one deliberately.\n"
+                 "  --noVerbose          diagnostics print the headline, the place and the caret,\n"
+                 "                       without the why/fix/prevent write-up. `polc --explain\n"
+                 "                       <code>` still has it.\n"
+                 "  --color / --no-color force colour on or off. The default follows the output:\n"
+                 "                       a terminal gets it, a pipe or a file does not.\n",
                  prog, prog, prog, prog, prog, prog, prog, prog);
     return 2;
 }
@@ -1513,6 +1556,24 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
 int main(int argc, char** argv) {
     installSourceResolver();   // before anything can report
     const std::vector<std::string_view> args(argv + 1, argv + argc);
+    // Colour and verbosity are read before anything else, because a diagnostic can come from the
+    // very first thing the compiler does and the flags must already be in effect.
+    {
+        bool color = stderrIsTerminal() && std::getenv("NO_COLOR") == nullptr;
+        for (const std::string_view a : args) {
+            if (a == "--color") {
+                color = true;
+            } else if (a == "--no-color") {
+                color = false;
+            } else if (a == "--noVerbose") {
+                polaron::diag::setVerbose(false);
+            }
+        }
+        if (color) {
+            enableTerminalColor();
+        }
+        polaron::diag::setColor(color);
+    }
     if (args.empty()) {
         return printUsage(argv[0]);
     }
@@ -1581,6 +1642,10 @@ int main(int argc, char** argv) {
                 cHeaderOut = std::string(args[i].substr(std::string("--emit-c-header=").size()));
             } else if (args[i] == "--region-binder") {
                 regionBinder = true;
+            } else if (args[i] == "--color" || args[i] == "--no-color" ||
+                       args[i] == "--noVerbose") {
+                // Read before any of this, in main, because a diagnostic can come from the first
+                // thing the compiler does. Named here so they are not mistaken for input files.
             } else if (args[i] == "--no-region-binder") {
                 regionBinder = false;
             } else if (args[i] == "--strict-regions") {
@@ -1766,6 +1831,8 @@ int main(int argc, char** argv) {
             regionBinder = false;
         } else if (args[i] == "--concise" || args[i] == "-q") {
             g_concise = true;  // one machine-parseable line per diagnostic (CI / huge broken builds)
+        } else if (args[i] == "--color" || args[i] == "--no-color" || args[i] == "--noVerbose") {
+            // Read in main before anything can report; named here so they are not taken for inputs.
         } else {
             inputs.emplace_back(args[i]);
         }

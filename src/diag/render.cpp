@@ -37,6 +37,27 @@ int caretWidth(const std::string& line, int col) {
     return end - col;
 }
 
+// ANSI, and only where it will be rendered. Red for an error, yellow for a warning -- the two things
+// severity has to answer at a glance, before any of the words are read.
+//
+// The escape sequences go OUTSIDE the token, never inside it: `error[Polaron-0102]` stays one
+// unbroken substring, so a build log grep and every PASS_REGULAR_EXPRESSION in the suite keep
+// matching whether colour is on or off.
+constexpr std::string_view kRed = "\033[31m";
+constexpr std::string_view kYellow = "\033[33m";
+constexpr std::string_view kReset = "\033[0m";
+
+std::string_view severityColor(std::string_view severity) {
+    return severity == "warning" ? kYellow : kRed;
+}
+
+std::string paint(std::string_view severity, const std::string& text, bool color) {
+    if (!color) {
+        return text;
+    }
+    return std::string(severityColor(severity)) + text + std::string(kReset);
+}
+
 // The severity token with its code, e.g. "error[Polaron-0101]" or, for an un-coded diagnostic, just "error".
 std::string severityToken(std::string_view severity, Code code) {
     std::string s(severity);
@@ -103,8 +124,13 @@ std::set<std::string>& explainedCodes() {
 
 namespace {
 SourceResolver g_resolver;
+bool g_color = false;
+bool g_verbose = true;
 }
 void setSourceResolver(SourceResolver r) { g_resolver = r; }
+void setColor(bool on) { g_color = on; }
+bool colorEnabled() { return g_color; }
+void setVerbose(bool on) { g_verbose = on; }
 
 std::string render(std::string_view severity, const std::string& path, int line, int col,
                    const std::string& message, Code code, const std::string& sourceLineIn,
@@ -120,13 +146,13 @@ std::string render(std::string_view severity, const std::string& path, int line,
 
     // Concise: the one line CI and Forge's live-check parse.
     if (concise) {
-        return shown + ":" + std::to_string(line) + ":" + std::to_string(col) + ": " + sev + ": " +
-               message + "\n";
+        return shown + ":" + std::to_string(line) + ":" + std::to_string(col) + ": " +
+               paint(severity, sev, g_color) + ": " + message + "\n";
     }
 
     const Entry& e = entry(code);
     std::string out;
-    out += sev + ": " + message + "\n";
+    out += paint(severity, sev, g_color) + ": " + message + "\n";
     out += "  --> " + shown + ":" + std::to_string(line) + ":" + std::to_string(col) + "\n";
 
     // The snippet: the offending line with a caret beneath it. `line`/`col` are 1-based.
@@ -137,30 +163,34 @@ std::string render(std::string_view severity, const std::string& path, int line,
         out += "   " + num + " | " + sourceLine + "\n";
         const int col0 = col > 0 ? col - 1 : 0;
         const int w = caretWidth(sourceLine, col0);
-        std::string carets = "   " + gutter + " | " + std::string(col0, ' ') + std::string(w, '^');
+        std::string marker(w, '^');
         if (!e.caret.empty()) {
-            carets += " " + std::string(e.caret);
+            marker += " " + std::string(e.caret);
         }
-        out += carets + "\n";
+        // The caret and its label share the severity's colour: the eye lands on the place before it
+        // starts reading, which is the whole job of a caret.
+        out += "   " + gutter + " | " + std::string(col0, ' ') + paint(severity, marker, g_color) +
+               "\n";
     }
 
     // The rich sections (only for coded diagnostics; an un-coded one stops at the snippet).
     //
-    // ONCE PER CODE PER RUN. The write-up is worth reading the first time and is noise the tenth: a
-    // file with two naming warnings printed the same fifteen lines twice, and a real program with a
-    // dozen of them would bury everything else under repeated prose. That is how output stops being
-    // read at all -- and a diagnostic nobody reads has failed, however good it is.
+    // EVERY TIME, BY DEFAULT. An earlier version printed the write-up once per code per run and gave
+    // later occurrences a pointer to it, on the theory that repetition trains people to skim. The
+    // theory is wrong about who is reading: someone fixing the fourth of four errors is looking at
+    // that error, not scrolling up to the first, and a compiler that decides they have had enough
+    // explaining is rationing the one thing it is uniquely able to give them.
     //
-    // The rule is per RUN rather than per file, because a build is one thing to a reader. Later
-    // occurrences keep their headline, location and caret, and say where the rest went.
+    // `--noVerbose` is how a reader who already knows says so -- once, on the command line, rather
+    // than being decided for.
     if (code != Code::None) {
         out += "   " + std::string(std::to_string(line).size(), ' ') + " |\n";
-        if (explainedCodes().insert(codeString(code)).second) {
+        if (g_verbose) {
             section(out, "why", e.why);
             section(out, "fix", e.fix);
             section(out, "prevent", e.prevent);
         } else {
-            section(out, "see", "the write-up above, or `polc --explain " + codeString(code) + "`");
+            section(out, "see", "`polc --explain " + codeString(code) + "`");
         }
     }
     return out;
