@@ -40,6 +40,12 @@ bool expandDelegates(ast::Program& program);
 ast::ExprPtr cloneExprDeep(const ast::Expr* e);
 ast::StmtPtr cloneStmtDeep(const ast::Stmt* s);
 
+// One copy of a structural body for one field: `field.name` and `field.typeName` fold to literals,
+// and `x.[expr]` becomes the member that names. Used by `expandTransformers` to unroll
+// `comptime foreach (field in itself.fields)` over the type that applies the transformer.
+ast::Block cloneBlockForField(const ast::Block& b, const std::string& var, const std::string& name,
+                              const std::string& typeName);
+
 // Deep-clone of a MEMBER with type-name substitution -- the same machinery that copies a generic
 // class per instantiation. `expandTransformers` uses it to copy a transformer's members into every
 // type that applies it, binding `itself` to that type's name. Two features, one copier: a

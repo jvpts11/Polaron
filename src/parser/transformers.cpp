@@ -394,6 +394,12 @@ void applyOne(const ast::ClassDecl& t, const std::string& targetName,
             tm->name = t.name + "$" + name;
             tm->isProcedure = false;   // it is reached by `call`, never written by hand
             tm->visibility = "private";
+            // The `call` alias is a second copy of the same body, so it carries the same bound target
+            // and owes the same consent. Missed once, and the symptom said nothing about a second
+            // copy: the type was reported as not entrusting the empty string.
+            if (!tm->boundTarget.empty() && tm->boundTargetVia.empty()) {
+                tm->boundTargetVia = t.name;
+            }
             if (t.isFreestandingTransformer) {
                 tm->freestandingFrom = t.name;
             }
@@ -445,6 +451,14 @@ void applyOne(const ast::ClassDecl& t, const std::string& targetName,
             if (auto* cm = dynamic_cast<ast::MethodDecl*>(copy.get())) {
                 cm->freestandingFrom = t.name;
             }
+        }
+        // WHOSE PROCEDURE THIS WAS, kept on the copy. A bound target's consent is given to a NAMED
+        // transformer, and after the copy the body is an ordinary member of the type with nothing
+        // left saying where it came from -- so the one thing the consent check needs is stamped here,
+        // at the only moment both facts are in hand.
+        if (auto* cm = dynamic_cast<ast::MethodDecl*>(copy.get());
+            cm != nullptr && !cm->boundTarget.empty() && cm->boundTargetVia.empty()) {
+            cm->boundTargetVia = t.name;
         }
         members.push_back(std::move(copy));
         own.insert(name);
@@ -798,6 +812,172 @@ void expandCore(const std::string& targetName, std::vector<ast::MemberPtr>& memb
     }
     // AFTER the copies exist, so the members it marks are there to mark.
     markSatisfiedOverrides(members, firstCopy, satisfied, ifaceMethods);
+}
+
+// ---- Structural bodies: `comptime foreach (field in itself.fields) { ... }` -----------------------
+
+// The fields of a type, INHERITED FIRST and then its own, which is the order a constructor fills
+// them and therefore the order anything derived from the shape should walk them.
+void collectFields(const ast::ClassDecl& c,
+                   const std::map<std::string, const ast::ClassDecl*>& index,
+                   std::vector<const ast::FieldDecl*>& out, int depth = 0) {
+    if (depth > 32) {
+        return;   // a cyclic hierarchy is reported elsewhere; do not spin here
+    }
+    if (!c.superclass.empty()) {
+        auto sup = index.find(c.superclass);
+        if (sup != index.end()) {
+            collectFields(*sup->second, index, out, depth + 1);
+        }
+    }
+    for (const ast::MemberPtr& m : c.members) {
+        if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(m.get()); fd != nullptr && !fd->isStatic) {
+            out.push_back(fd);
+        }
+    }
+}
+
+// A field's DECLARED type as the author wrote it -- `int`, `String`, `Point*`, `int[]`. Written here
+// rather than borrowed, because what a structural body branches on is the SPELLING the reader sees
+// in the class, and the mangling the compiler uses internally would leak names nobody wrote.
+std::string declaredTypeName(const ast::TypeRef& t) {
+    std::string out = t.name;
+    for (int i = 0; i < t.pointerDepth; ++i) {
+        out += "*";
+    }
+    for (int i = 0; i < t.arrayDims; ++i) {
+        out += "[]";
+    }
+    return out;
+}
+
+// A CONDITION THAT IS ALREADY DECIDED, and the arm that did not survive.
+//
+// After unrolling, `if (field.typeName == "int")` reads `if ("int" == "int")` -- a question with an
+// answer. Folding it here rather than leaving it to the optimizer is not about speed: the arm that
+// does not apply is written for a DIFFERENT type and need not type-check for this one, so it has to
+// be gone before the analyzer sees it. Branching on the field's type is the whole reason a
+// serializer can be written structurally.
+int foldCondition(const ast::Expr* e) {
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) {
+        const auto* l = dynamic_cast<const ast::StringLiteralExpr*>(b->lhs.get());
+        const auto* r = dynamic_cast<const ast::StringLiteralExpr*>(b->rhs.get());
+        if (l != nullptr && r != nullptr && (b->op == "==" || b->op == "!=")) {
+            const bool same = l->value == r->value;
+            return (b->op == "==" ? same : !same) ? 1 : 0;
+        }
+        if (b->op == "&&" || b->op == "||") {
+            const int lv = foldCondition(b->lhs.get());
+            const int rv = foldCondition(b->rhs.get());
+            if (lv < 0 || rv < 0) {
+                return -1;
+            }
+            return b->op == "&&" ? (lv && rv ? 1 : 0) : (lv || rv ? 1 : 0);
+        }
+    }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e); u != nullptr && u->op == "!") {
+        const int v = foldCondition(u->operand.get());
+        return v < 0 ? -1 : (v == 0 ? 1 : 0);
+    }
+    // `"a".equals("b")` -- the same question in the spelling a String comparison usually takes.
+    if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+        const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+        if (mem != nullptr && mem->member == "equals" && call->args.size() == 1) {
+            const auto* l = dynamic_cast<const ast::StringLiteralExpr*>(mem->object.get());
+            const auto* r = dynamic_cast<const ast::StringLiteralExpr*>(call->args[0].get());
+            if (l != nullptr && r != nullptr) {
+                return l->value == r->value ? 1 : 0;
+            }
+        }
+    }
+    return -1;   // not decidable here, and left alone
+}
+
+// Drop the arms that cannot be taken, wherever they are nested.
+void foldDecided(ast::Block& block);
+
+void foldDecidedStmt(std::vector<ast::StmtPtr>& out, ast::StmtPtr st) {
+    if (auto* ifs = dynamic_cast<ast::IfStmt*>(st.get())) {
+        const int v = foldCondition(ifs->cond.get());
+        if (v == 1) {
+            foldDecided(ifs->thenBlock);
+            for (auto& s : ifs->thenBlock.statements) {
+                out.push_back(std::move(s));
+            }
+            return;
+        }
+        if (v == 0) {
+            if (ifs->elseBlock != nullptr) {
+                foldDecided(*ifs->elseBlock);
+                for (auto& s : ifs->elseBlock->statements) {
+                    out.push_back(std::move(s));
+                }
+            }
+            return;
+        }
+        foldDecided(ifs->thenBlock);
+        if (ifs->elseBlock != nullptr) {
+            foldDecided(*ifs->elseBlock);
+        }
+    }
+    out.push_back(std::move(st));
+}
+
+void foldDecided(ast::Block& block) {
+    std::vector<ast::StmtPtr> out;
+    for (auto& st : block.statements) {
+        foldDecidedStmt(out, std::move(st));
+    }
+    block.statements = std::move(out);
+}
+
+// The unroll itself: one copy of the body per field, with the field's name and declared type
+// substituted as literals during the CLONE -- reusing the walker that already visits every node,
+// rather than a second visitor that would go quietly out of date the first time a node kind is added.
+void unrollStructural(ast::Block& body, const ast::ClassDecl& owner,
+                      const std::map<std::string, const ast::ClassDecl*>& index) {
+    bool any = false;
+    for (const auto& st : body.statements) {
+        if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st.get());
+            fe != nullptr && fe->isComptime) {
+            any = true;
+        }
+    }
+    // Nested first, so a `comptime foreach` inside an ordinary loop or branch is reached too.
+    for (auto& st : body.statements) {
+        if (auto* ifs = dynamic_cast<ast::IfStmt*>(st.get())) {
+            unrollStructural(ifs->thenBlock, owner, index);
+            if (ifs->elseBlock != nullptr) {
+                unrollStructural(*ifs->elseBlock, owner, index);
+            }
+        } else if (auto* wh = dynamic_cast<ast::WhileStmt*>(st.get())) {
+            unrollStructural(wh->body, owner, index);
+        } else if (auto* fe = dynamic_cast<ast::ForeachStmt*>(st.get()); fe != nullptr && !fe->isComptime) {
+            unrollStructural(fe->body, owner, index);
+        }
+    }
+    if (!any) {
+        return;
+    }
+    std::vector<const ast::FieldDecl*> fields;
+    collectFields(owner, index, fields);
+    std::vector<ast::StmtPtr> out;
+    for (auto& st : body.statements) {
+        auto* fe = dynamic_cast<ast::ForeachStmt*>(st.get());
+        if (fe == nullptr || !fe->isComptime) {
+            out.push_back(std::move(st));
+            continue;
+        }
+        for (const ast::FieldDecl* fd : fields) {
+            ast::Block copy = cloneBlockForField(fe->body, fe->varName, fd->name,
+                                                 declaredTypeName(fd->type));
+            foldDecided(copy);
+            for (auto& s : copy.statements) {
+                out.push_back(std::move(s));
+            }
+        }
+    }
+    body.statements = std::move(out);
 }
 
 void expandInto(ast::ClassDecl& target, const Index& index, const std::set<std::string>& layouts,
@@ -1355,6 +1535,60 @@ bool expandTransformers(ast::Program& program) {
             }
             for (ast::EnumDecl& e : ns.enums) {
                 expandIntoEnum(e, here, ifaceMethods);
+            }
+        }
+    }
+    // STRUCTURAL BODIES, unrolled once every copy is in place.
+    //
+    // A transformer could supply a fixed body or a socket, and could not supply a body derived from
+    // the SHAPE of the type applying it -- clone every field, compare every field, write every field.
+    // That is exactly what `record` does for `equals` and `clone`, hard-coded in the compiler because
+    // it was not expressible in the language. So `TCloner` and `TEquator` were not unwritten, they
+    // were unwritable.
+    //
+    // Done here, at the end, because only now is every member in place and every applying type known
+    // -- and the fields being iterated are the APPLYING type's, which the transformer cannot see.
+    {
+        std::map<std::string, const ast::ClassDecl*> forFields;
+        for (const ast::Bundle& b : program.bundles) {
+            for (const ast::Namespace& ns : b.namespaces) {
+                for (const ast::ClassDecl& c : ns.classes) {
+                    forFields[c.name] = &c;
+                }
+            }
+        }
+        for (ast::Bundle& b : program.bundles) {
+            for (ast::Namespace& ns : b.namespaces) {
+                for (ast::ClassDecl& c : ns.classes) {
+                    for (ast::MemberPtr& m : c.members) {
+                        auto* md = dynamic_cast<ast::MethodDecl*>(m.get());
+                        if (md == nullptr) {
+                            continue;
+                        }
+                        // A BOUND TARGET COPIED OUT OF A TRANSFORMER arrives here still holding its
+                        // type parameter, because it is not an `each` family and `bindEachTargets`
+                        // never saw it. `itself` has already become this type's name on the way in,
+                        // so the storage it starts as can be declared now.
+                        if (!md->boundTarget.empty() && md->boundTargetType.empty() &&
+                            !md->typeParams.empty()) {
+                            md->boundTargetType = md->typeParams[0];
+                            md->typeParams.clear();
+                            auto storage = std::make_unique<ast::NewExpr>();
+                            storage->loc = md->boundTargetLoc;
+                            storage->className = md->boundTargetType;
+                            storage->location = "stack";
+                            storage->blank = true;
+                            auto decl = std::make_unique<ast::VarDeclStmt>();
+                            decl->loc = md->boundTargetLoc;
+                            decl->name = md->boundTarget;
+                            decl->type.name = md->boundTargetType;
+                            decl->isMutable = md->boundTargetMutable;
+                            decl->init = std::move(storage);
+                            md->body.statements.insert(md->body.statements.begin(), std::move(decl));
+                        }
+                        unrollStructural(md->body, c, forFields);
+                    }
+                }
             }
         }
     }

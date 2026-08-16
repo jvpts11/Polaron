@@ -2966,6 +2966,28 @@ if(POLARON_WITH_LLVM)
             --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_bound_incomplete_bad.pol")
         set_tests_properties(sema_rejects_incomplete_bound_target PROPERTIES WILL_FAIL TRUE)
 
+        # A BODY DERIVED FROM THE SHAPE OF THE APPLYING TYPE — the capability that changes what a
+        # transformer IS, from a mixin facility into a metaprogramming one.
+        #
+        # `record` already does this for `equals` and `clone`, hard-coded in the compiler because it
+        # was not expressible in the language; `TCloner` and `TEquator` were not unwritten but
+        # UNWRITABLE. And the capability existed at run time and we paid for it: `System.Serialize`
+        # walks `t.fields()` / `f.name()` / `f.typeName()` with reflection metadata, allocation and
+        # dispatch. The words in the sample are deliberately the same — what changes is when it
+        # happens and what it costs, because `comptime foreach` is unrolled.
+        #
+        # `described:` is the one that matters most: the body BRANCHES on the field's type, and the
+        # arm that does not apply is written for a different type and need not type-check for this
+        # one — so a decided condition and its dead arm are gone before the analyzer sees them.
+        # `inherited too:` proves the shape includes what came from above, base-most first.
+        add_test(NAME codegen_transformer_structural_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_structural.pol"
+            "-DEXPECTED=copy: 7 42 same as original: 1 changed one field: 0 described: whole=7 tag=hello ratio=2 inherited too: base=3 own=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # ONE SOCKET, FOUR OPERATORS. The design note listed this as an improvement to build, with the
         # guess that it might already work because operators are ordinary `MethodDecl`s -- and it does.
         # What was missing was the test, which is the difference between a feature and an accident that

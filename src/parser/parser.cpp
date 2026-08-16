@@ -2207,7 +2207,16 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
             if (boundMutable) {
                 advance();
             }
-            const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
+            // `<itself f>` -- a procedure may bind a target of the APPLYING type, which is what a
+            // structural copier is: `copy<itself f>` builds another one of whatever this turns out
+            // to be. `itself` is a keyword and so never reached the identifier this slot expected.
+            std::string tp;
+            if (m->isProcedure && check(TokenKind::KwItself)) {
+                tp = "itself";
+                advance();
+            } else {
+                tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
+            }
             m->typeParams.push_back(tp);
             // `procedure into<Fahrenheit f>` -- the slot also DECLARES the target, so the body has it
             // to work on rather than having to conjure it through a constructor whose parameter list
@@ -3278,6 +3287,14 @@ ast::StmtPtr Parser::parseStatement() {
         advance();  // consume 'comptime'
         return parseIfStatement(/*isComptime=*/true);
     }
+    // `comptime foreach (field in itself.fields) { ... }` -- the loop that is UNROLLED rather than
+    // run: one line written once, becoming one statement per field of whatever type applies the
+    // transformer. Checked here, beside `comptime if`, because the `comptime <type> name` form below
+    // takes anything that follows the word and would read `foreach` as a type.
+    if (check(TokenKind::KwComptime) && peek(1).kind == TokenKind::KwForeach) {
+        advance();  // consume 'comptime'
+        return parseForeachStatement(/*isComptime=*/true);
+    }
     // `comptime <type> name = <constexpr>;` (spec 28.3): a local computed at compile time.
     if (check(TokenKind::KwComptime)) {
         advance();  // consume 'comptime'
@@ -4063,17 +4080,23 @@ ast::StmtPtr Parser::parseForStatement() {
 // `foreach (index i, T v in coll)` (spec 7.6). Identical in effect to the `for (T v in coll)` form --
 // Polaron keeps both spellings so C# and Java/C++ programmers each find the one they expect; they lower
 // to the same ForeachStmt.
-ast::StmtPtr Parser::parseForeachStatement() {
+ast::StmtPtr Parser::parseForeachStatement(bool isComptime) {
     const SourceLocation loc = current().loc;
     expect(TokenKind::KwForeach, "'foreach'");
     expect(TokenKind::LParen, "'('");
     auto fe = std::make_unique<ast::ForeachStmt>();
     fe->loc = loc;
+    fe->isComptime = isComptime;
     if (match(TokenKind::KwIndex)) {  // optional index variable: `foreach (index i, T v in coll)`
         fe->indexName = expect(TokenKind::Identifier, "an index variable name").lexeme;
         expect(TokenKind::Comma, "',' after the index variable");
     }
-    if (match(TokenKind::KwVar)) {
+    // A COMPTIME LOOP VARIABLE HAS NO TYPE TO WRITE. It is not a value the program holds: it is the
+    // field the copy is being made for, and it exists only while unrolling. Writing `var` would say
+    // "infer the type of a thing that has one", which is the wrong sentence.
+    if (isComptime) {
+        fe->isVar = true;
+    } else if (match(TokenKind::KwVar)) {
         fe->isVar = true;  // infer the element type
     } else {
         fe->elemType = parseTypeRef();
@@ -4781,6 +4804,25 @@ ast::ExprPtr Parser::parsePostfix() {
 ast::ExprPtr Parser::parsePostfixOps(ast::ExprPtr base) {
     ast::ExprPtr expr = std::move(base);
     for (;;) {
+        // `obj.[expr]` -- THE MEMBER WHOSE NAME IS THIS, resolved at compile time. Written only
+        // inside a structural procedure, where the field being touched is not known when the body is
+        // written: `f.[field.name] = itself.[field.name]` is one line that becomes one assignment per
+        // field of whatever type applies the transformer.
+        //
+        // A notation rather than `obj.field` with a magic binding, because that spelling cannot be
+        // told from reaching a member actually CALLED `field` -- the decidable-but-poisonous rule
+        // this language has refused twice (the `each` marker, the nominal constraint).
+        if (check(TokenKind::Dot) && peek(1).kind == TokenKind::LBracket) {
+            auto sp = std::make_unique<ast::MemberSpliceExpr>();
+            sp->loc = current().loc;
+            advance();  // '.'
+            advance();  // '['
+            sp->name = parseExpression();
+            expect(TokenKind::RBracket, "']' to close a member splice");
+            sp->object = std::move(expr);
+            expr = std::move(sp);
+            continue;
+        }
         if (check(TokenKind::Dot) || check(TokenKind::QuestionDot)) {
             auto m = std::make_unique<ast::MemberExpr>();
             m->loc = current().loc;

@@ -214,6 +214,17 @@ struct MemberExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// `obj.[expr]` -- the member whose NAME is the compile-time string `expr`.
+//
+// It never survives into a program. A structural procedure is unrolled once per field of the type
+// that applies it, and each copy resolves its splices to ordinary `MemberExpr`s; anything left after
+// that is an error, because a name that is not known at compile time is not a member access at all.
+struct MemberSpliceExpr : Expr {
+    ExprPtr object;
+    ExprPtr name;   // must fold to a string: `field.name`
+    void dump(std::string& out, int indent) const override;
+};
+
 // `a ?? b` (spec 3.7): null-coalescing -- evaluates to `a` if non-null, else `b`. `b` is only
 // evaluated when `a` is null. The result is non-null when `b` is non-null.
 struct NullCoalesceExpr : Expr {
@@ -958,6 +969,11 @@ struct ForeachStmt : Stmt {
     std::string varName;
     std::string indexName;   // `for (index i, T v in ...)` (spec 7.6); empty when absent
     ExprPtr iterable;
+    // `comptime foreach (field in itself.fields)`: UNROLLED, not run. The expansion pass replaces it
+    // with one copy of the body per field of the applying type, each with the field's name and type
+    // substituted as literals. Nothing reaches the analyzer -- a comptime foreach that survives is an
+    // error, because it means nothing knew what to unroll it over.
+    bool isComptime = false;
     Block body;
     void dump(std::string& out, int indent) const override;
 };

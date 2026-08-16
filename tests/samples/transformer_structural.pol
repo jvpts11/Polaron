@@ -1,0 +1,130 @@
+import System.IO.Console;
+program TransformerStructural;
+
+// A BODY DERIVED FROM THE SHAPE OF THE TYPE THAT APPLIES IT.
+//
+// A transformer could supply a fixed body or a socket, and could not supply this: clone every field,
+// compare every field, describe every field. That is exactly what `record` does for `equals` and
+// `clone` -- hard-coded in the compiler because it was not expressible in the language. So `TCloner`
+// and `TEquator` were not merely unwritten, they were unwritable, and every structural transformer
+// was written per type or not at all.
+//
+// THE CAPABILITY ALREADY EXISTED AT RUN TIME AND WE PAID FOR IT. `System.Serialize` walks fields with
+// `t.fields()`, `f.name()`, `f.typeName()`, `f.get(obj)` -- reflection metadata, allocation, dispatch.
+// The words below are deliberately the same; what changes is when it happens and what it costs.
+// `comptime foreach` is unrolled at compile time, so what runs is exactly the code you would have
+// written by hand.
+//
+// `x.[expr]` is the member whose NAME is that string. A notation rather than a magic binding, because
+// `f.field` cannot be told from reaching a member actually called `field` -- the decidable-but-
+// poisonous rule this language has refused three times now.
+//
+// AND THE BODY BRANCHES ON THE FIELD'S TYPE. The arm that does not apply is written for a different
+// type and need not type-check for this one, so a decided condition and its dead arm are gone before
+// the analyzer sees them. That is what makes a describer writable rather than only a copier.
+//
+// Prints:
+//   copy: 7 42
+//   same as original: 1
+//   changed one field: 0
+//   described: whole=7 tag=hello ratio=2
+//   inherited too: base=3 own=9
+public bundle Main {
+    public namespace App {
+        public transformer TCloner {
+            // One line, one statement per field of whoever applies it.
+            public procedure copy<itself f>() returns itself {
+                comptime foreach (field in itself.fields) {
+                    f.[field.name] = itself.[field.name];
+                }
+                return f;
+            }
+        }
+
+        public transformer TEquator {
+            public procedure matches(itself other) returns boolean {
+                mutable boolean same = true;
+                comptime foreach (field in itself.fields) {
+                    if (itself.[field.name] != other.[field.name]) { same = false; }
+                }
+                return same;
+            }
+        }
+
+        public transformer TDescriber {
+            // The type-directed one: an int is printed with %d and a String with %s, and only the
+            // arm that applies survives into each copy.
+            public procedure describe() returns void {
+                comptime foreach (field in itself.fields) {
+                    if (field.typeName == "String") {
+                        System.IO.Console.printf(" %s=%s", field.name, itself.[field.name]);
+                    } else {
+                        System.IO.Console.printf(" %s=%d", field.name, itself.[field.name]);
+                    }
+                }
+                return;
+            }
+        }
+
+        public class Point entrusts TCloner applies TEquator {
+            public mutable int whole;
+            public mutable int part;
+            public constructor Point(int whole, int part) {
+                this.whole = whole;
+                this.part = part;
+            }
+        }
+
+        public class Record applies TDescriber {
+            public mutable int whole;
+            public mutable String tag;
+            public mutable int ratio;
+            public constructor Record(int whole, String tag, int ratio) {
+                this.whole = whole;
+                this.tag = tag;
+                this.ratio = ratio;
+            }
+        }
+
+        // Inherited fields count: the shape of a type includes what it got from above, walked
+        // base-most first -- the order a constructor fills them. Only the derived class applies the
+        // transformer, which is the point: the base knows nothing about it and its field is still
+        // part of the shape.
+        public class Base {
+            public mutable int base;
+            public constructor Base(int base) { this.base = base; }
+        }
+
+        public class Derived extends Base applies TDescriber {
+            public mutable int own;
+            public constructor Derived(int base, int own) {
+                super(base);
+                this.own = own;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point original = new Point(7, 42);
+                Point twin = original.copy();
+                System.IO.Console.printf("copy: %d %d\n", twin.whole, twin.part);
+                System.IO.Console.printf("same as original: %d\n", original.matches(twin) ? 1 : 0);
+
+                mutable Point moved = original.copy();
+                moved.part = 43;
+                System.IO.Console.printf("changed one field: %d\n", original.matches(moved) ? 1 : 0);
+
+                Record row = new Record(7, "hello", 2);
+                System.IO.Console.print("described:");
+                row.describe();
+                System.IO.Console.print("\n");
+
+                Derived d = new Derived(3, 9);
+                System.IO.Console.print("inherited too:");
+                d.describe();
+                System.IO.Console.print("\n");
+                return;
+            }
+        }
+    }
+}
