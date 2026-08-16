@@ -25,6 +25,14 @@ using namespace semutil;   // NOLINT(google-build-using-namespace): a deliberate
 // linkage means no symbol, so a second translation unit could not call them at all.
 
 void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
+    // ASKING A QUESTION MUST NOT PRODUCE A COMPLAINT. The region binder needs the type of a receiver
+    // to know whose field it is looking at, and `typeOf` reports as it goes -- so computing a
+    // lifetime over `Date.now()` reported `Date` as an undeclared variable, from inside an analysis
+    // that was only trying to read. The whole standard library failed to compile the first time this
+    // ran, on names nobody had touched.
+    if (quiet_ > 0) {
+        return;
+    }
     // A body copied out of a `freestanding` transformer is checked against the bare-metal subset even
     // in a hosted program, so without this the reader gets "not available in freestanding mode" about
     // a program that is nothing of the sort. The test is on the phrase every one of those messages
@@ -48,6 +56,9 @@ void SemanticAnalyzer::warn(std::string message, SourceLocation loc) {
 }
 
 void SemanticAnalyzer::error(diag::Code code, std::string message, SourceLocation loc) {
+    if (quiet_ > 0) {
+        return;   // see the note on the other `error`: a lifetime query must not report
+    }
     errors_.push_back(SemaError{std::move(message), loc, code});
 }
 
@@ -2735,6 +2746,23 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
             if (p >= 0 && p < static_cast<int>(esc.size())) {
                 if (slot == -1) {
                     esc[p] = true;  // escapes into the receiver
+                    // ...AND INTO WHICH FIELD, which is what decides whether this is a borrow or a
+                    // handover. A store into a field the class FREES is ownership: `list.add(item)`
+                    // is the most ordinary line in the language and must not be a diagnostic. Without
+                    // the name, the region rule at a call site could only say "it is kept", and
+                    // warned on every collection insertion in the standard library -- 808 of 925
+                    // tests, which is not a measurement, it is noise.
+                    // Through an index, because that is how a collection actually stores:
+                    // `this.data[this.count] = item`. Reading only `this.field = param` missed every
+                    // container in the language, so `list.add(x)` had no field name and could not be
+                    // recognised as the handover it is.
+                    const ast::Expr* t = as->target.get();
+                    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(t)) {
+                        t = ix->array.get();
+                    }
+                    if (const auto* tmem = dynamic_cast<const ast::MemberExpr*>(t)) {
+                        escapeScanFieldFor_[p] = tmem->member;
+                    }
                 } else if (p < static_cast<int>(escapeScanParamTargets_.size()) &&
                            std::find(escapeScanParamTargets_[p].begin(), escapeScanParamTargets_[p].end(),
                                      slot) == escapeScanParamTargets_[p].end()) {
@@ -2892,6 +2920,7 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                             escapeScanClass_ = baseType(cls.name);
                             escapeScanParams_ = &m->params;
                             escapeScanParamTargets_.assign(m->params.size(), {});
+                            escapeScanFieldFor_.clear();
                             std::unordered_map<std::string, int> alias;   // param/alias name -> param index
                             for (std::size_t i = 0; i < m->params.size(); ++i) {
                                 alias[m->params[i].name] = static_cast<int>(i);
@@ -2902,6 +2931,9 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                                                         : std::vector<bool>(m->params.size(), false);
                             scanEscapes(m->body, alias, esc);
                             escapesToReceiver_[key] = esc;
+                            for (const auto& [param, field] : escapeScanFieldFor_) {
+                                escapesToReceiverField_[key + "#" + std::to_string(param)] = field;
+                            }
                             escapesToParam_[key] = escapeScanParamTargets_;  // param -> param slots it escapes to
                             // write the summary back onto the AST so the .polh emitter can serialize it for
                             // downstream compilation units (an `escapes(i>slot, ...)` clause).
@@ -3569,6 +3601,10 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     // §8: compute the interprocedural escape summary before checking. Also run it when emitting a library
     // (even without --region-binder) so the summary is serialized into the .polh for downstream consumers.
     if (regionBinder_ || libraryMode_) {
+        // WHO OWNS WHAT, before anything asks where a value lives. Read off the destructors, which
+        // is where the author already wrote it -- and without it every `T*` field is ambiguous
+        // between ownership and a borrow, which is why the analysis could only ever see the frame.
+        computeOwnership(program);
         computeEscapeSummaries(program);
     }
     collectFixtureOwners(program);  // spec 32.11: known before the bodies that reach into them
