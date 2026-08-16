@@ -7855,6 +7855,24 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A DEFERRED CLEANUP RUNS AT SCOPE EXIT, AND THE FLOW ANALYSIS HAS TO SAY SO.
+        #
+        # `defer { delete b; }` followed by any read of `b` was refused as a use-after-delete: the
+        # deferred body was analyzed inline, so the delete was recorded as having happened AT the
+        # defer. That is the canonical two lines of the feature — allocate, then say next to the
+        # allocation how it ends — so `defer` could not be used for the one thing it is for.
+        #
+        # Found by writing a real program rather than by a checklist: a SQL engine's entry point
+        # allocates four things that all die with the call, and by hand that was a try, a catch
+        # freeing three in order, and the same three frees repeated on the success path.
+        add_test(NAME codegen_defer_then_use_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/defer_then_use.pol"
+            "-DEXPECTED=value 7 pair 3 and 4 done"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `defer within <budget>` (spec 32.10): a cleanup with a time budget. Under budget it is silent;
         # over budget the cleanup still completes and the runtime alerts on stderr (checked via
         # ERRCONTAINS -- the alert is a diagnostic, so it is deliberately not on stdout).
