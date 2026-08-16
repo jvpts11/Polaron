@@ -1,0 +1,48 @@
+program TransformerConditionalBad;
+
+// THE MEMBER IS ABSENT, and that is the point of the clause rather than a side effect.
+//
+// `Plain` does not apply `TComparer`, so `largest` was never copied into it. Calling it is an
+// ordinary "no such method" -- reported at the call, in the caller's own file, naming a member that
+// genuinely is not there.
+//
+// The alternative would be a body that exists and fails: available to autocomplete, callable, and
+// wrong at run time or broken inside somebody else's transformer. That is the shape this language
+// keeps refusing -- a thing that looks available and is not.
+//
+// Expected: class 'Plain' has no method 'largest'
+public bundle Main {
+    public namespace App {
+        public transformer TComparer {
+            public procedure isAbove(itself other) returns boolean;
+        }
+
+        public transformer TCollector {
+            public mutable int[] items = new int[8]();
+            public mutable int used = 0;
+
+            public procedure take(int value) returns void {
+                itself.items[itself.used] = value;
+                itself.used = itself.used + 1;
+                return;
+            }
+            public procedure largest() returns int when itself applies TComparer {
+                return itself.items[0];
+            }
+        }
+
+        public class Plain applies TCollector {
+            public mutable int tag;
+            public constructor Plain(int tag) { this.tag = tag; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Plain p = new Plain(1);
+                p.take(10);
+                p.largest();
+                return;
+            }
+        }
+    }
+}

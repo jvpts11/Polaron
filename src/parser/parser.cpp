@@ -2270,6 +2270,26 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     if (match(TokenKind::KwComptime)) {
         m->isComptime = true;  // suffix form (spec 28.3)
     }
+    // `... returns itself when itself applies TComparer` -- A CONDITIONAL PROCEDURE.
+    //
+    // `applies` is otherwise all-or-nothing: a transformer gives every applier the same equipment
+    // and cannot give MORE to a type that has more. This is the clause that lets it, and the
+    // condition is the constraint form built the same day, read here rather than at a call site.
+    //
+    // A SOFT KEYWORD, checked only in this position and only on a procedure, so `when` stays usable
+    // as an ordinary name everywhere else -- which matters, because it is a good name for a field.
+    if (m->isProcedure && check(TokenKind::Identifier) && current().lexeme == "when") {
+        advance();
+        m->whenSubject = current().kind == TokenKind::KwItself
+                             ? "itself"
+                             : expect(TokenKind::Identifier, "a type the condition is about").lexeme;
+        if (m->whenSubject == "itself" && current().kind == TokenKind::KwItself) {
+            advance();
+        }
+        m->whenLoc = current().loc;
+        expect(TokenKind::KwApplies, "'applies' (a condition reads `when itself applies TName`)");
+        m->whenTransformer = expect(TokenKind::Identifier, "a transformer name").lexeme;
+    }
     // region-binder escape summary carried in the .polh: `escapes(i:slot, ...)`, slot -1 = receiver, j = param
     // j. A soft keyword (only meaningful here); harmless elsewhere. Round-trips a library method's summary.
     if (check(TokenKind::Identifier) && current().lexeme == "escapes" &&
@@ -3754,7 +3774,7 @@ bool Parser::looksLikeGenericVarDecl() const {
             }
         } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
                    k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
-                   k != TokenKind::Dot && !isTypeKeyword(k)) {
+                   k != TokenKind::Dot && k != TokenKind::KwItself && !isTypeKeyword(k)) {
             // A pure type-argument list may hold pointer/ref/array/qualified args (Box<Point*>,
             // Box<int[]>, Box<app.Foo>); anything else means it's a comparison.
             return false;
@@ -3884,7 +3904,7 @@ bool Parser::looksLikeGenericCall() const {
             }
         } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
                    k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
-                   k != TokenKind::Dot && !isTypeKeyword(k)) {
+                   k != TokenKind::Dot && k != TokenKind::KwItself && !isTypeKeyword(k)) {
             // A pure type-argument list may hold pointer/ref/array/qualified args (Box<Point*>,
             // Box<int[]>, Box<app.Foo>); anything else means it's a comparison.
             return false;

@@ -1122,6 +1122,12 @@ struct MethodDecl : MemberDecl {
     // need to tell them apart -- whose consent a bound target needs, and who was there to write
     // `override`.
     std::string fromTransformer;
+    // `when itself applies TComparer` -- this procedure is only copied into a type that satisfies the
+    // condition. Empty when unconditional, which is nearly all of them. The subject is `itself`, the
+    // applying type; the answer is read from the closure the expansion pass computes anyway.
+    std::string whenSubject;
+    std::string whenTransformer;
+    SourceLocation whenLoc;
     std::vector<Param> params;
     TypeRef returnType;
     std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)

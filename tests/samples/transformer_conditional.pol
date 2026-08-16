@@ -1,0 +1,83 @@
+import System.IO.Console;
+program TransformerConditional;
+
+// `when itself applies TComparer` -- MORE FOR A TYPE THAT HAS MORE.
+//
+// `applies` was all-or-nothing: every applier got the same equipment. So a transformer that could do
+// better for a type with an ordering had to demand the ordering of everybody, or give it to nobody.
+// `TCollection` here gives `largest` only to elements that can be compared; a type without an
+// ordering still gets `count` and `first`, and simply does not have `largest`.
+//
+// THE MEMBER IS ABSENT, not present-and-broken. That is the whole difference: a conditional body
+// that existed and failed at run time, or refused to compile inside somebody else's transformer,
+// would be the failure this language keeps refusing -- a thing that looks available and is not.
+//
+// The condition is the constraint form built the same day, read at the declaration instead of at a
+// call site: `applies` is a sentence the author wrote, so a condition on it reads that same sentence
+// and nothing is decided by accident.
+//
+// Prints:
+//   plain: count=3 first=10
+//   ranked: count=3 first=10 largest=30
+public bundle Main {
+    public namespace App {
+        public transformer TComparer {
+            public procedure isAbove(itself other) returns boolean;
+        }
+
+        public transformer TCollector {
+            public mutable int[] items = new int[8]();
+            public mutable int used = 0;
+
+            public procedure take(int value) returns void {
+                itself.items[itself.used] = value;
+                itself.used = itself.used + 1;
+                return;
+            }
+            public procedure count() returns int { return itself.used; }
+            public procedure first() returns int { return itself.items[0]; }
+
+            // ...and this one only where there is an ordering to use.
+            public procedure largest() returns int when itself applies TComparer {
+                mutable int best = itself.items[0];
+                for (mutable int i = 1; i < itself.used; i++) {
+                    if (itself.items[i] > best) { best = itself.items[i]; }
+                }
+                return best;
+            }
+        }
+
+        // No ordering: gets the collection, does not get `largest`.
+        public class Plain applies TCollector {
+            public mutable int tag;
+            public constructor Plain(int tag) { this.tag = tag; }
+        }
+
+        // Has one: gets both.
+        public class Ranked applies TCollector, TComparer {
+            public mutable int tag;
+            public constructor Ranked(int tag) { this.tag = tag; }
+            public procedure isAbove(Ranked other) returns boolean {
+                return itself.tag > other.tag;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Plain p = new Plain(1);
+                p.take(10);
+                p.take(20);
+                p.take(30);
+                System.IO.Console.printf("plain: count=%d first=%d\n", p.count(), p.first());
+
+                mutable Ranked r = new Ranked(2);
+                r.take(10);
+                r.take(20);
+                r.take(30);
+                System.IO.Console.printf("ranked: count=%d first=%d largest=%d\n",
+                                         r.count(), r.first(), r.largest());
+                return;
+            }
+        }
+    }
+}
