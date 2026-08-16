@@ -1,6 +1,8 @@
-# Build output
-/build/
-/build-*/
+# Build output. `/build*/` and not `/build/` plus `/build-*/`: the second pattern needs a hyphen, so
+# `build2/` matched neither and 1432 files of generated .vcxproj, CMake cache and MSBuild logs -- 3.9 MB,
+# every one of them holding this machine's absolute paths -- were committed for months. Every `git
+# status` opened with dozens of them, which is how the ones that mattered stopped being read.
+/build*/
 /out/
 out.ll
 
