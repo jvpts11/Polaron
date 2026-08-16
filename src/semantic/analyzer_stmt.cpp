@@ -475,7 +475,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // nothing can outlive it. Each borrow stored into it lowers that bound (see `acquired_`).
         if (const auto* fresh = dynamic_cast<const ast::NewExpr*>(vd->init.get());
             fresh != nullptr && fresh->region.empty() && fresh->location == "heap") {
-            acquired_[vd->name] = Lifetime{RegionKind::Root, ""};
+            // Not Root unconditionally: a constructor that keeps a borrow has already bounded this
+            // object, and starting the accumulator above that bound would throw the bound away.
+            acquired_[vd->name] = lifetimeOf(*vd->init);
         }
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
             nw != nullptr && nw->region.empty() && nw->location != "heap") {
@@ -594,8 +596,23 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                     }
                     const bool ownChainTail =
                         !owns && !valueName.empty() && alreadyOwnedHere_.count(ownedKey) > 0;
+                    // STORING WHAT THE CALLER HANDED US IS THE CALLER'S QUESTION. `Parser(tokens) {
+                    // this.tokens = tokens; }` is how one object is given another, and whether those
+                    // tokens outlive the parser is knowable exactly where both are named -- at the
+                    // `new`. Answering it here put the complaint inside the constructor, on a line
+                    // that has no way to be written differently, which is the worst place a
+                    // diagnostic can land: true, and useless.
+                    //
+                    // The obligation is not dropped, it MOVES: the escape summary carries "parameter
+                    // i is kept in field f" to every call site, constructors included now.
+                    const bool callersQuestion =
+                        !valueName.empty() &&
+                        currentParamNames_.count(valueName.substr(0, valueName.find('.'))) > 0 &&
+                        source.kind != RegionKind::Activation && source.kind != RegionKind::Region &&
+                        dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()) != nullptr &&
+                        dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())->name == "this";
                     const bool refused =
-                        ownChainTail ? false
+                        (ownChainTail || callersQuestion) ? false
                         : owns ? (source.kind == RegionKind::Activation ||
                                   source.kind == RegionKind::Region)
                                : !outlivesOrEqual(source, target);
@@ -1044,6 +1061,21 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                               "', which names an object living in this method's own frame; the frame "
                               "is gone by the time the caller reads it. Allocate it with 'on heap' so "
                               "it outlives the call, or return it by value so the caller gets a copy",
+                          rs->loc);
+                } else if (const Lifetime given = lifetimeOf(*rs->value);
+                           given.kind == RegionKind::Activation ||
+                           given.kind == RegionKind::Region) {
+                    // ...AND ANY VALUE BOUND TO THIS FRAME, not only a name that obviously is one.
+                    //
+                    // `return new Keeper(&scratch) on heap` says `on heap` and is a frame-local
+                    // object all the same: the keeper reads that item for as long as it exists, so
+                    // its lifetime is the item's. The word in the source and the truth disagree, and
+                    // the old check read the word. It saw a `new`, not a name, and said nothing.
+                    error("region-binder: this returns something that does not outlive the call -- " +
+                              describeRegion(given) +
+                              " ends here, and the caller would be reading it afterwards. Give it a "
+                              "lifetime that leaves the frame: allocate what it keeps with 'on heap', "
+                              "hand back a copy, or take ownership with `move`",
                           rs->loc);
                 }
             }

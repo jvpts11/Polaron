@@ -884,8 +884,52 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
     }
     // `new T()` -- the allocation says where it lives, which is the one case that needs no inference.
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
+        // AN OBJECT IS NO LONGER-LIVED THAN WHAT ITS CONSTRUCTOR KEEPS. `new Parser(tokens)` gives
+        // something that reads those tokens for as long as it exists, so its lifetime is bounded by
+        // theirs whatever the allocation says -- a `on heap` parser built over a frame-local list is
+        // a frame-local parser wearing the wrong word.
+        //
+        // Read as a REFUSAL at the `new` this was wrong twice over: it flagged `new Some(row)`,
+        // where the wrapper dies with what it wraps and always did, and it flagged a keeper that
+        // never leaves the frame it was built in. Nothing goes wrong AT the construction; it goes
+        // wrong where the object then travels, and that is already checked. So the constructor's
+        // summary lowers the answer instead of raising a diagnostic, and the diagnostic lands
+        // wherever the object is stored, returned, or kept past what it points at.
+        auto boundByArguments = [this, nw](Lifetime made) {
+            auto sit = escapesToReceiver_.find(baseType(nw->className) + ".<new>");
+            if (sit == escapesToReceiver_.end()) {
+                return made;
+            }
+            const ClassInfo* built = lookupClass(baseType(nw->className));
+            for (std::size_t i = 0; i < nw->args.size() && i < sit->second.size(); ++i) {
+                if (!sit->second[i]) {
+                    continue;
+                }
+                // ONLY A REFERENCE BINDS ANYTHING. `new BstNode(k)` with an `int` stores a copy, and
+                // a copy cannot outlive anything -- reading the summary without this gate made every
+                // node in a tree as short-lived as an integer parameter.
+                const bool aliases = built != nullptr && i < built->ctorParamTypes.size()
+                                         ? isRefType(built->ctorParamTypes[i])
+                                         : isRefType(typeOf(*nw->args[i]));
+                if (!aliases) {
+                    continue;
+                }
+                auto fit = escapesToReceiverField_.find(baseType(nw->className) + ".<new>#" +
+                                                        std::to_string(i));
+                if (fit != escapesToReceiverField_.end() &&
+                    anyFieldOwns(baseType(nw->className), fit->second)) {
+                    continue;   // taken, not borrowed: the new object is the owner now
+                }
+                const Lifetime arg = lifetimeOf(*nw->args[i]);
+                if (arg.kind == RegionKind::Unknown) {
+                    continue;
+                }
+                made = outlivesOrEqual(made, arg) ? arg : made;
+            }
+            return made;
+        };
         if (!nw->region.empty()) {
-            return regionLifetime(nw->region);
+            return boundByArguments(regionLifetime(nw->region));
         }
         if (nw->location == "heap") {
             // A FRESH HEAP ALLOCATION HAS NO REGION YET, and giving it one would be the wrong
@@ -893,14 +937,14 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
             // ownership of something, and it must not be an error. It outlives everything until
             // somebody takes it, so it goes in anywhere -- and what happens after is the target's
             // business, which is where the destructor is read.
-            return Lifetime{RegionKind::Root, ""};
+            return boundByArguments(Lifetime{RegionKind::Root, ""});
         }
         // A `region class` PLACES ITS OWN INSTANCES, and not in this frame: `new Node(k, v)` inside
         // one is an allocation in the class's region, which is why the declaration exists. Reading
         // the missing `on heap` as "stack" refused a binary tree linking its own children -- the
         // shape the feature was added for.
         if (const ClassInfo* ci = lookupClass(nw->className); ci != nullptr && ci->isRegionClass) {
-            return Lifetime{RegionKind::Object, "this"};
+            return boundByArguments(Lifetime{RegionKind::Object, "this"});
         }
         return Lifetime{RegionKind::Activation, ""};   // `on stack`, the default for an object
     }
