@@ -1545,6 +1545,10 @@ int main(int argc, char** argv) {
                 regionBinder = true;
             } else if (args[i] == "--no-region-binder") {
                 regionBinder = false;
+            } else if (args[i] == "--strict-regions") {
+                // Refuse what cannot be proven, instead of allowing it. See the design note: this is
+                // the difference between a checker that finds bugs and one that states a guarantee.
+                polaron::SemanticAnalyzer::setStrictRegions(true);
             } else if (args[i] == "--use" && i + 1 < args.size()) {
                 deps.emplace_back(args[++i]);
             } else if (args[i] == "--overlay" && i + 1 < args.size()) {
@@ -1714,6 +1718,8 @@ int main(int argc, char** argv) {
         } else if (args[i] == "--region-binder") {
             regionBinder = true;  // accepted and a no-op: it is the default. Kept so build scripts
                                   // written while it was opt-in keep working.
+        } else if (args[i] == "--strict-regions") {
+            polaron::SemanticAnalyzer::setStrictRegions(true);
         } else if (args[i] == "--no-region-binder") {
             // The escape hatch. There is no dialect of "safe" that lets you deliberately hand out a
             // pointer to a dead frame, so the way to do it is to turn the analysis off for the

@@ -3,6 +3,68 @@
 *Measured 2026-08-14, by probing the compiler — not by reading the spec. The region binder is **on by
 default** since 1.0.18, so nothing below is explained by it being switched off.*
 
+---
+
+## BUILT — 2026-08-16
+
+**Everything below the line was the plan; this section is what happened to it.** Steps 1, 2 and 3 are
+built, and step 4 exists behind a flag with the measurement it needed. 929 tests.
+
+**The name is true now.** Four regions, ordered as the model states, with §3 generating every error:
+
+    Root  ⊒  Object ◇o  ⊒  Region R  ⊒  Activation ◇m
+
+**Lifetime is a property of a VALUE** (`lifetimeOf`, beside `typeOf`), which is the structural change
+and what closes cases (b) and (d) of the experiment below — an escape nobody named, and an object in
+a region. All four now report.
+
+**Ownership is read off the DESTRUCTOR.** This is the piece that makes `object ◇o` decidable with no
+annotation on any field, and it is the model's own first sentence made good: regions come from
+structure the language already has. A `T*` field may be ownership or a borrow and the type says
+nothing — but the destructor does, because the author already had to write it. A field it frees is a
+handover; a field it leaves alone is somebody else's.
+
+Getting that half wrong is worth recording: without it the check reported every constructor, setter
+and `list.add` in the language — **808 of 925 tests**. That is not a measurement, it is noise, and a
+checker that cries at `add` gets switched off and then checks nothing.
+
+**A proof and an absence of proof are different diagnostics.** Frame-local or region storage escaping
+is a proof — the release is a point the program states — and errors. Two different objects are merely
+incomparable, and warns.
+
+**`release` kills every pointer into the region**, flow-sensitively, with its own message. The one
+shape that must stay legal is next door and the first version refused it: `cascade move` relocates
+the object, so the map that says where things live has to follow the move.
+
+**A virtual call reads the union over every override.** The one place inheritance costs this analysis
+anything — and not because ownership and inheritance conflict. Inheritance is an *identity* relation
+and the region tree is a *containment* one: a Derived is not inside a Base, it IS one, so a hierarchy
+adds no nodes to the region tree at all. What it adds is several callees behind one call.
+
+### The number nobody had
+
+Step 4 says the default must flip — refuse what cannot be proven — and that the size of the output is
+the real measurement of how far the language is from the guarantee. `--strict-regions` is that flip,
+behind a flag because it is a decision and not an implementation detail. Measured:
+
+| | as it ships | `--strict-regions` |
+|---|---|---|
+| the standard library (20 439 lines, 338 types) | **10** | **35** |
+| the SQL engine (20 files, written to be measured) | **3** | **9** |
+| 120 compiler samples | **8** | — |
+
+**Thirty-five sites in the whole standard library.** The flip is affordable, and that was the thing
+nobody could say before.
+
+### What is still not built
+
+`§10 sub-regions and nesting` — two explicit regions are compared by identity only, so a region
+inside a region is not ordered. And `&mut` exclusivity, which is a separate question about aliasing
+and should stay one: steps 1–3 reach **temporal** safety, which is what the region model was designed
+to promise.
+
+---
+
 > Its name is **region binder**, both words. Calling it "the binder" is not shorthand, it is the
 > mistake this whole note is about: what it binds is supposed to be **regions**, and that is precisely
 > the part that was never built.

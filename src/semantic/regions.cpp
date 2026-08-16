@@ -29,13 +29,22 @@ using namespace semutil;   // NOLINT(google-build-using-namespace): as in analyz
 
 // ---- The order -------------------------------------------------------------------------------
 
+bool SemanticAnalyzer::strictRegions_ = false;
+
 bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) {
     // Unknown is the open question of the model (§4): today it answers "yes" so that a shape the
     // analysis cannot place is allowed rather than refused. That is what makes this a checker that
     // FINDS rather than one that GUARANTEES, and flipping it is a decision with a measurement
     // attached, not a switch to throw quietly.
     if (a.kind == RegionKind::Unknown || b.kind == RegionKind::Unknown) {
-        return true;
+        // A checker whose default is ALLOWED can find bugs and can never state a guarantee, and it
+        // will be quiet on any codebase whose idioms it does not happen to match. Rust's refuses what
+        // it cannot prove; this one accepts it, and that difference is the whole story.
+        //
+        // `--strict-regions` is the flip, behind a flag rather than in the default, because it is a
+        // decision and not an implementation detail: every existing program has to be re-examined
+        // against it. The measurement that makes it decidable now exists -- see the design note.
+        return !strictRegions_;
     }
     // THE ORDER THE MODEL STATES (§1.3), as ranks:
     //
