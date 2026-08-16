@@ -2290,6 +2290,22 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         expect(TokenKind::KwApplies, "'applies' (a condition reads `when itself applies TName`)");
         m->whenTransformer = expect(TokenKind::Identifier, "a transformer name").lexeme;
     }
+    // THE LAW OF THE RELATION, written on the procedure that IS the relation.
+    //
+    // `invariant` in a transformer's body is about the state it brings, and is checked the way any
+    // class invariant is. This one has a different subject and cannot be checked the same way: a
+    // round-trip law as a class invariant would convert on entry to every method, and the conversion
+    // calls methods, which check the invariant, which converts. Unbounded recursion.
+    //
+    // The POSITION is what tells them apart -- no new word, and no rule that reads the expression to
+    // guess what it is about. On the transformer: state. On a procedure: that procedure's relation.
+    //
+    // The law's expression ends where the member does, and the `;` that follows is the member's --
+    // a socket carrying a law is still a socket. Consuming it here left the parser demanding a body
+    // for a procedure that deliberately has none.
+    if (m->isProcedure && match(TokenKind::KwInvariant)) {
+        m->law = parseExpression();
+    }
     // region-binder escape summary carried in the .polh: `escapes(i:slot, ...)`, slot -1 = receiver, j = param
     // j. A soft keyword (only meaningful here); harmless elsewhere. Round-trips a library method's summary.
     if (check(TokenKind::Identifier) && current().lexeme == "escapes" &&

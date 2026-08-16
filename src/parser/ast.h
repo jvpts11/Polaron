@@ -1128,6 +1128,11 @@ struct MethodDecl : MemberDecl {
     std::string whenSubject;
     std::string whenTransformer;
     SourceLocation whenLoc;
+    // `invariant <expr>;` on a per-target procedure -- the LAW OF THE RELATION, as opposed to a
+    // transformer-level `invariant`, which is about state. It becomes a `<name>Law$<Target>` method
+    // on each applying type, answering true when the law holds AT THE RECEIVER: checkable rather
+    // than checked, because a property test needs values and the compiler cannot invent them.
+    ExprPtr law;
     std::vector<Param> params;
     TypeRef returnType;
     std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)

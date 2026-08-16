@@ -625,10 +625,14 @@ std::map<std::string, const ast::MethodDecl*> eachFamilies(const std::vector<std
 // the whole reason the marker is on the socket rather than inferred from the argument's spelling.
 void bindEachTargets(std::vector<ast::MemberPtr>& members,
                      const std::map<std::string, const ast::MethodDecl*>& families,
-                     const std::map<std::string, std::string>& familyOwner) {
+                     const std::map<std::string, std::string>& familyOwner,
+                     const std::string& owner) {
     if (families.empty()) {
         return;
     }
+    // Generated beside the loop and appended after it: appending to `members` while walking it
+    // would invalidate what the walk is standing on.
+    std::vector<ast::MemberPtr> laws;
     for (const ast::MemberPtr& m : members) {
         auto* md = dynamic_cast<ast::MethodDecl*>(m.get());
         if (md == nullptr || !md->isProcedure || md->typeParams.empty()) {
@@ -667,10 +671,37 @@ void bindEachTargets(std::vector<ast::MemberPtr>& members,
             decl->init = std::move(storage);
             md->body.statements.insert(md->body.statements.begin(), std::move(decl));
         }
+        // THE LAW, MADE CALLABLE. The socket carries it; here both halves are in hand -- the type
+        // that answers and the target it answers for -- so the law becomes an ordinary method whose
+        // receiver IS the sample. `c.intoLaw<Fahrenheit>()` asks whether the round trip holds at c.
+        //
+        // Checkable rather than checked, and that is the honest shape: a property test needs VALUES,
+        // and the compiler cannot invent them for an arbitrary type. Whoever tests has them.
+        if (f->second->law != nullptr) {
+            std::map<std::string, std::string> subst;
+            subst["Other"] = md->typeParams[0];
+            if (!f->second->typeParams.empty()) {
+                subst[f->second->typeParams[0]] = md->typeParams[0];
+            }
+            subst["itself"] = owner;
+            auto ret = std::make_unique<ast::ReturnStmt>();
+            ret->loc = md->loc;
+            ret->value = cloneExprSubst(f->second->law.get(), subst);
+            auto law = std::make_unique<ast::MethodDecl>();
+            law->loc = md->loc;
+            law->visibility = "public";
+            law->name = ast::mangleGeneric(md->name + "Law", md->typeParams);
+            law->returnType.name = "boolean";
+            law->body.statements.push_back(std::move(ret));
+            laws.push_back(std::move(law));
+        }
         md->name = ast::mangleGeneric(md->name, md->typeParams);
         md->typeParams.clear();      // the argument is already concrete
         md->typeParamBounds.clear();
         md->isEachFamily = true;     // remembered for `mutual` and for provenance
+    }
+    for (auto& l : laws) {
+        members.push_back(std::move(l));
     }
 }
 
@@ -810,7 +841,7 @@ void expandCore(const std::string& targetName, std::vector<ast::MemberPtr>& memb
     std::map<std::string, std::string> familyOwner;
     const std::map<std::string, const ast::MethodDecl*> families =
         eachFamilies(order, index, &familyOwner);
-    bindEachTargets(members, families, familyOwner);
+    bindEachTargets(members, families, familyOwner, targetName);
     checkProvenance(members, order, index);
     checkProcCalls(targetName, procCalls, order, index);
     const std::vector<std::string> satisfied = applySatisfies(

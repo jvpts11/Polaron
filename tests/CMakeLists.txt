@@ -3069,6 +3069,29 @@ if(POLARON_WITH_LLVM)
             --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_conditional_bad.pol")
         set_tests_properties(sema_conditional_procedure_absent PROPERTIES WILL_FAIL TRUE)
 
+        # THE LAW OF THE RELATION, written on the procedure that is the relation. A conversion that
+        # compiles and one that is RIGHT are different things, and nothing in the declaration used to
+        # say which you had.
+        #
+        # `invariant` on a procedure is not the transformer-level one doing double duty: that one is
+        # about state and is checked on entry to every method, which a round-trip law cannot be —
+        # it would convert on every call, and the conversion calls methods, which check the
+        # invariant, which converts. The POSITION tells them apart, with no new word and no rule that
+        # reads the expression to guess its subject.
+        #
+        # Checkable rather than checked, and honestly so: a property test needs VALUES the compiler
+        # cannot invent for an arbitrary type, so the law becomes a method whose RECEIVER is the
+        # sample. And it earns its keep on the first try — 100C round-trips, 37C does not, because
+        # integer division loses the remainder both ways. A conversion that compiles, runs, and is
+        # wrong for most inputs.
+        add_test(NAME codegen_transformer_law_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_law.pol"
+            "-DEXPECTED=100 degrees: 212F, law holds 1 37 degrees: 98F, law holds 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # ONE SOCKET, FOUR OPERATORS. The design note listed this as an improvement to build, with the
         # guess that it might already work because operators are ordinary `MethodDecl`s -- and it does.
         # What was missing was the test, which is the difference between a feature and an accident that
