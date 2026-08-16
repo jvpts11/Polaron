@@ -1,0 +1,68 @@
+import System.IO.Console;
+program TransformerHierarchy;
+
+// A TRANSFORMER APPLIED TO A BASE AND TO ITS DERIVED CLASS.
+//
+// It puts a member on each, and the derived one overrides -- which was refused for not saying
+// `override`, a word nobody was there to write, since the compiler made the member. The same
+// sentence already governed the copy that answers a `satisfies` interface, and the argument
+// transfers unchanged: what `override` exists to make VISIBLE is visible here, because
+// `applies TDescriber` is on the class line in the reader's own file.
+//
+// The structural case is where it earns its keep. `describe` is one body over `itself.fields`, so
+// the copy in the base walks the base's shape and the copy in the derived walks the derived's --
+// base fields first, then its own. One line written once, two different bodies, and the right one
+// runs through the vtable.
+//
+// Prints:
+//   base: one=1
+//   derived: one=2 two=3
+//   through the base type: one=4 two=5
+public bundle Main {
+    public namespace App {
+        public transformer TDescriber {
+            public procedure describe() returns void {
+                comptime foreach (field in itself.fields) {
+                    System.IO.Console.printf(" %s=%d", field.name, itself.[field.name]);
+                }
+                return;
+            }
+        }
+
+        public class Base applies TDescriber {
+            public mutable int one;
+            public constructor Base(int one) { this.one = one; }
+        }
+
+        public class Derived extends Base applies TDescriber {
+            public mutable int two;
+            public constructor Derived(int one, int two) {
+                super(one);
+                this.two = two;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Base b = new Base(1);
+                System.IO.Console.print("base:");
+                b.describe();
+                System.IO.Console.print("\n");
+
+                Derived d = new Derived(2, 3);
+                System.IO.Console.print("derived:");
+                d.describe();
+                System.IO.Console.print("\n");
+
+                // ...and the override is a real one: reached through the base type, the derived
+                // body runs, which is the whole reason the word matters.
+                Base* asBase = new Derived(4, 5) on heap;
+                System.IO.Console.print("through the base type:");
+                asBase.describe();
+                System.IO.Console.print("\n");
+                delete asBase;
+                return;
+            }
+        }
+    }
+}

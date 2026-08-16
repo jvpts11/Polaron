@@ -1117,6 +1117,11 @@ struct MethodDecl : MemberDecl {
     bool boundTargetMutable = false;   // whether the NAME may be re-bound, as on a local
     std::string boundTargetType;       // the type bound, kept once the type parameter is cleared
     std::string boundTargetVia;        // the transformer whose family this is: what must be entrusted
+    // The transformer this member was copied out of, empty when the type wrote it. Kept because
+    // after expansion a copy is indistinguishable from a member somebody typed, and two questions
+    // need to tell them apart -- whose consent a bound target needs, and who was there to write
+    // `override`.
+    std::string fromTransformer;
     std::vector<Param> params;
     TypeRef returnType;
     std::vector<TypeRef> throwsTypes;  // `throws(...)` declared exceptions (spec 21.1)

@@ -1,0 +1,60 @@
+import System.IO.Console;
+program TransformerAppliedField;
+
+// AN INITIALIZER ON A FIELD A TRANSFORMER BRINGS.
+//
+// The design note listed this as an improvement to build, with the argument: a transformer that
+// brings a field forces every applier's constructor to assign something its class never declared,
+// and an `=` on the field solves it with no weaving -- the objection to weaving a destructor (an
+// implicit order, invisible on the class line) does not apply to an initial value, which has no
+// order at all.
+//
+// IT ALREADY WORKED. Like the operators before it, what was missing was the test -- which is the
+// difference between a feature and an accident that has not been broken yet.
+//
+// Both halves are checked here, because the second is what makes the first mean anything. WITHOUT
+// the `= 0`, `Door`'s constructor is required to assign `hits`, and the diagnostic lands on the
+// `applies` line rather than inside somebody else's transformer:
+//
+//   constructor of 'Door' never assigns field 'hits'
+//
+// ...which is `transformer_applied_field_bad.pol`. With it, nobody writes anything.
+//
+// The field is per-INSTANCE, not per-transformer: two doors count separately, which is the
+// difference between equipment a type gains and state a transformer keeps.
+//
+// Prints:
+//   front: 2 wide 80
+//   back: 1 wide 90
+public bundle Main {
+    public namespace App {
+        public transformer TCounter {
+            public mutable int hits = 0;
+
+            public procedure hit() returns void {
+                itself.hits = itself.hits + 1;
+                return;
+            }
+            public procedure count() returns int { return itself.hits; }
+        }
+
+        public class Door applies TCounter {
+            public mutable int width;
+            // Nothing here mentions `hits`, and nothing has to.
+            public constructor Door(int width) { this.width = width; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Door front = new Door(80);
+                front.hit();
+                front.hit();
+                mutable Door back = new Door(90);
+                back.hit();
+                System.IO.Console.printf("front: %d wide %d\n", front.count(), front.width);
+                System.IO.Console.printf("back: %d wide %d\n", back.count(), back.width);
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,38 @@
+program TransformerAppliedFieldBad;
+
+// THE OBLIGATION AN APPLIED FIELD CARRIES, with no initializer to discharge it.
+//
+// `TCounter` brings `hits`, `Door` never mentions it, and `Door`'s constructor is required to assign
+// it -- because an unassigned field does not start empty, it starts as whatever was last in that
+// storage. The field being somebody else's does not soften that: it is `Door`'s storage now.
+//
+// This is the half that makes the initializer worth having. Without this refusal, an `=` on the
+// transformer's field would be a convenience; with it, the `=` is the transformer author saying what
+// their field starts as, so no applier has to know.
+//
+// The location matters as much as the message. It lands on the `applies` line, in the reader's own
+// file, rather than inside a transformer they may not have opened.
+//
+// Expected: constructor of 'Door' never assigns field 'hits'
+public bundle Main {
+    public namespace App {
+        public transformer TCounter {
+            public mutable int hits;
+
+            public procedure hit() returns void {
+                itself.hits = itself.hits + 1;
+                return;
+            }
+            public procedure count() returns int { return itself.hits; }
+        }
+
+        public class Door applies TCounter {
+            public mutable int width;
+            public constructor Door(int width) { this.width = width; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}
