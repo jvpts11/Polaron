@@ -4,21 +4,22 @@
 # unit tests (doctest) over the lexer/parser/semantic libraries.
 
 # ---- Integration tests (driver) ----
-# The toolchain version lives in SIX places and every bump has to touch all of them:
-#   src/cli/main.cpp (kVersion)      src/driver/polaron_main.cpp (kVersion)
-#   installer/build-msi.ps1          installer/polaron.wxs
-#   docs/reference/README.md         and the two tests below.
-# The two compilers had already drifted apart before this was written down -- polc said 1.0.0
-# while polaron said 1.0.13 -- because only one test pinned a version and it pinned the stale one.
-# Both are pinned now, so a half-done bump fails here instead of shipping.
+# The toolchain version lives in six places and every bump has to touch all of them. Pinning them
+# one at a time is what let them drift -- polc said 1.0.0 while polaron said 1.0.13, and the language
+# reference's stamp sat 30 versions behind because no test looked at it. `version_sites` below reads
+# polc's kVersion as the canonical version and requires every other site to repeat it, so a
+# half-done bump fails there rather than shipping.
+add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
+    "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/.."
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.46")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.124")
 
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.46")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.124")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
