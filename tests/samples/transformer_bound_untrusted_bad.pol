@@ -1,0 +1,44 @@
+program BoundUntrusted;
+
+// BINDING A TARGET THAT NEVER AGREED. `Yards` applies the transformer and does not entrust it, so
+// `Metres.into<Yards y>` is refused.
+//
+// The distinction is the whole reason `entrusts` is a separate word. `applies` is equipment and is
+// nobody else's business; being ASSEMBLED is different in kind, because the body that binds you runs
+// where your constructor would have run and your constructor does not. What is handed over is the
+// right to establish your invariants, and only you can hand that over.
+//
+// A bound target is not another object whose private fields are being written -- it is an object
+// being CONSTRUCTED, which is exactly where private fields are legitimately assigned. That is why
+// the refusal is not about visibility, and why the word is `entrusts` rather than `open`.
+//
+// Expected: 'Yards' does not entrust 'TConverter'
+public bundle Main {
+    public namespace App {
+        public transformer TConverter {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Metres applies TConverter {
+            private mutable int whole;
+            public constructor Metres(int whole) { this.whole = whole; }
+            public procedure into<Yards y>() returns Yards {
+                y.whole = itself.whole;
+                return y;
+            }
+        }
+
+        public class Yards applies TConverter {
+            public mutable int whole;
+            public constructor Yards(int whole) { this.whole = whole; }
+            public procedure into<Metres m>() returns Metres {
+                m.whole = itself.whole;
+                return m;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

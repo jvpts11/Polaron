@@ -586,10 +586,24 @@ means a vtable and a virtual call: that is paying at RUN TIME to express a COMPI
 inside the one feature whose whole claim is no vtable and no indirection. It also brings back the
 parallel interface this was meant to remove.
 
-### 2. The target as a BOUND VARIABLE — `procedure into<Fahrenheit f>`
+### 2. The target as a BOUND VARIABLE — `procedure into<Fahrenheit f>` — **BUILT 2026-08-16**
 
 *Author's proposal, 2026-08-16. Decisions below are his; the reasoning is kept because it is the
 useful part.*
+
+**Built and running.** `tests/samples/transformer_bound_target.pol` converts 100C to 212F and back
+through bound targets whose fields are PRIVATE, which is the point: the body is filling in storage,
+not reaching into a finished object. Both refusals are tests of their own —
+`transformer_bound_untrusted_bad.pol` (a target that never said `entrusts`) and
+`transformer_bound_incomplete_bad.pol` (a target left half-built). 914 tests.
+
+How it is put together, in one line each: the parser reads the optional name in the slot; the
+expansion pass, which is the last place that still knows the target type, prepends
+`Fahrenheit f = <blank>` to the body and records which transformer the family belongs to; a final
+pass over the whole program checks the target's class line for `entrusts`; the analyzer seeds the
+target's fields into the SAME `init_` map a constructor uses and reports what the body left unset;
+and codegen skips the constructor call for blank storage. Nothing downstream learned a new concept —
+after expansion it is a method with a local.
 
 The per-target family names its target as a TYPE and nothing else, so the only way to produce one is
 to conjure it:
@@ -623,12 +637,12 @@ compiler, where `record` has them hard-coded, and move into the language.
 And it removes a real ceiling: today a conversion can only say what the target's constructor accepts.
 A target with eight fields needs an eight-parameter constructor or the conversion does not exist.
 
-#### Open: who creates it, and how completeness is proven
+#### Decided 2026-08-16: raw storage, and the check a constructor already passes
 
-**Not decided.** Three ways, and the choice is not cosmetic — it decides what `entrusts` below can
-honestly mean.
+Of the three below, **(i)**. The choice was not cosmetic — it decides what `entrusts` can honestly
+mean, and the other two make it mean something else or nothing.
 
-*(i) Raw storage, plus the check a constructor already passes.* The compiler proves every field of a
+*(i) Raw storage, plus the check a constructor already passes.* **Chosen.** The compiler proves every field of a
 class is assigned in its constructor; a bound target would be a constructor body written for a
 foreign type, so the same analysis applies to `f` — every field assigned by the end, or refused.
 Three things fall out at no cost: the target needs no default constructor; no half-built object is

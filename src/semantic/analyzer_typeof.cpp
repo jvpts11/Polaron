@@ -1120,6 +1120,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // type reachable only through its own static maker. Checked here because `new` is the only
         // place a constructor is named by a caller; the class's own static maker passes, since it is
         // inside the owner.
+        // BLANK STORAGE NAMES NO CONSTRUCTOR, so there is none to check the call against. This is the
+        // bound target of `procedure into<Fahrenheit f>`: the body is the construction, and the
+        // obligation a constructor would carry -- every field assigned -- is carried by the body and
+        // checked below. Nothing is waived; it is owed by somebody else.
+        if (nw->blank) {
+            return cn;
+        }
         checkMemberAccessible("constructor", cn, ci->ctorVisibility, cn, nw->loc);
         // Full construction: arguments align 1:1 with parameters, so type-check them. Fewer
         // arguments is a partial constructor (spec 18.9) -- omitted params come from persistent

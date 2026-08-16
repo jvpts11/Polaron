@@ -1594,7 +1594,13 @@ llvm::Value* CodeGenerator::Impl::emitNew(const ast::NewExpr& nw) {
         pendingPersistKey.clear();
         pendingPersistIndex = nullptr;
     }
-    auto fnit = functions.find(ctorSym(cn));
+    // A BOUND TARGET IS STORAGE, and no constructor of its own runs over it. That is the whole
+    // difference between `entrusts` and ordinary construction: the type has handed the establishing
+    // of its invariants to the procedure that binds it, and running its own constructor first would
+    // mean the body was mutating a finished object instead of building one. Nothing is skipped
+    // silently -- the analyzer proves every field is assigned before the body ends, which is the
+    // same obligation a constructor carries and the reason this is safe.
+    auto fnit = nw.blank ? functions.end() : functions.find(ctorSym(cn));
     if (fnit != functions.end()) {
         std::vector<llvm::Value*> args;
         args.push_back(objPtr);

@@ -41,6 +41,11 @@ enum class TokenKind : std::uint8_t {
     // declarations say. A noun, never instantiated; `applies` is the clause that takes it, and
     // `procedure` is the member kind whose signature is completed at the type that applies it.
     KwTransformer, KwApplies, KwProcedure,
+    // `entrusts` is `applies` with consent: a type that lets a transformer's procedure ASSEMBLE it
+    // field by field, instead of building it through a constructor of its own. It is a fourth clause
+    // on the class line and the most intimate of them -- `extends` is identity, `implements` is a
+    // promise to the outside, `applies` is equipment, and this one hands over the constructor.
+    KwEntrusts,
     // `call T.p()` -- reach the TRANSFORMER's body rather than this type's override. It exists
     // because there is no receiver to write to the left of the dot: a transformer is not a value.
     //

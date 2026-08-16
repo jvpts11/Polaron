@@ -560,14 +560,21 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             // and is the ordinary way to fill a value-struct field. Marking only on a direct
             // `this.<name>` would report `cap` as unset in a constructor that plainly sets it -- and a
             // check that rejects correct code gets switched off rather than obeyed.
-            if (inConstructor_) {
+            // ...and the same for a BOUND TARGET, which is the same obligation wearing another name:
+            // `f.degrees = ...` inside `procedure into<Fahrenheit f>` discharges `f`'s promise to
+            // assign that field, exactly as `this.degrees = ...` discharges a constructor's.
+            if (inConstructor_ || !boundTargetName_.empty()) {
                 const ast::MemberExpr* root = mem;
                 while (const auto* outer = dynamic_cast<const ast::MemberExpr*>(root->object.get())) {
                     root = outer;
                 }
                 if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(root->object.get());
-                    oid != nullptr && oid->name == "this") {
-                    markInitialized("this." + root->member);
+                    oid != nullptr) {
+                    if (inConstructor_ && oid->name == "this") {
+                        markInitialized("this." + root->member);
+                    } else if (!boundTargetName_.empty() && oid->name == boundTargetName_) {
+                        markInitialized(boundTargetName_ + "." + root->member);
+                    }
                 }
             }
         }

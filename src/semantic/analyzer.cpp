@@ -3157,9 +3157,49 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                                 interruptTrapParam_ = m->params[0].name;
                             }
                         }
+                        // A BOUND TARGET OWES WHAT A CONSTRUCTOR OWES. `procedure into<Fahrenheit f>`
+                        // hands the body raw storage, so the body is that object's construction and
+                        // carries the same obligation: every field assigned before it ends. Seeded
+                        // here, discharged by assignments to `f.<field>`, and reported below --
+                        // deliberately the same dataflow, because two ways of proving one thing is
+                        // how one of them ends up weaker.
+                        boundTargetName_ = m->boundTarget;
+                        pendingBoundFields_.clear();
+                        if (!m->boundTarget.empty()) {
+                            if (const ast::ClassDecl* tc = classDeclOf(m->boundTargetType)) {
+                                for (const ast::MemberPtr& tm : tc->members) {
+                                    const auto* fd = dynamic_cast<const ast::FieldDecl*>(tm.get());
+                                    if (fd == nullptr || fd->isStatic || fd->init != nullptr) {
+                                        continue;   // a field with a value at its declaration is set
+                                    }
+                                    pendingBoundFields_.push_back({fd->name, m->boundTargetLoc});
+                                }
+                            }
+                        }
+                        const auto boundFields = pendingBoundFields_;
                         analyzeMethodBody(m->body, m->params,
                                           m->isStatic ? std::string() : cls.name, false, contracts,
                                           posts, retT == "void" ? std::string() : retT);
+                        for (const auto& [fname, floc] : boundFields) {
+                            const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);
+                            if (st == FlowFacts::Init::Init) {
+                                continue;
+                            }
+                            error(std::string(st == FlowFacts::Init::Uninit
+                                                  ? "`procedure " + m->name + "` binds '" +
+                                                        m->boundTargetType + " " + m->boundTarget +
+                                                        "' and never assigns its field '" + fname + "'"
+                                                  : "`procedure " + m->name + "` binds '" +
+                                                        m->boundTargetType + " " + m->boundTarget +
+                                                        "' and assigns its field '" + fname +
+                                                        "' on only some paths") +
+                                      ". A bound target is storage with no constructor of its own run "
+                                      "over it, so an unassigned field does not start empty -- it "
+                                      "starts as whatever was last there. Assign it, or give it a "
+                                      "value at its declaration in '" + m->boundTargetType + "'",
+                                  floc);
+                        }
+                        boundTargetName_.clear();
                         currentMethodKey_.clear();
                         freestanding_ = savedFreestanding;
                         freestandingFrom_ = savedFsFrom;
@@ -3423,6 +3463,9 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
             currentNamespace_ = ns.name;
             currentBundle_ = b.name;
             namespaceBundle_[ns.name] = b.name;  // namespace -> owning bundle (stdlib-cohesion check)
+            for (const ast::ClassDecl& c : ns.classes) {
+                declsByName_[c.name] = &c;
+            }
         }
     }
     // Virtual builtin types (no prelude class, e.g. to avoid clashing with a user class named Math) live
@@ -4574,6 +4617,14 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     if (inConstructor) {
         for (const auto& [fname, floc] : pendingCtorFields_) {
             init_["this." + fname] = FlowFacts::Init::Uninit;
+        }
+    }
+    // ...and the same for a bound target, through the same map and the same join. `f.degrees` is a
+    // key like any other, so the hard case comes free: assigned on only one branch reports as Maybe,
+    // which is a different message and a different mistake.
+    if (!boundTargetName_.empty()) {
+        for (const auto& [fname, floc] : pendingBoundFields_) {
+            init_[boundTargetName_ + "." + fname] = FlowFacts::Init::Uninit;
         }
     }
     for (std::size_t i = 0; i < body.statements.size(); ++i) {

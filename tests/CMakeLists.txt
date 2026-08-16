@@ -2934,6 +2934,38 @@ if(POLARON_WITH_LLVM)
         set_tests_properties(sema_rejects_unapplied_constraint PROPERTIES
             WILL_FAIL TRUE)
 
+        # THE TARGET AS A BOUND VARIABLE: `procedure into<Fahrenheit f> returns Fahrenheit`.
+        #
+        # The pair was asymmetric — `from<Other>(Other value)` names the SOURCE, and `into<Other>()`
+        # named the target not at all, so one side could read its counterpart and the other could only
+        # conjure it through a constructor whose parameter list it had to know already. A relation
+        # between two types is not one until both ends can be named.
+        #
+        # The target is storage with no constructor of its own run over it: the body IS its
+        # construction, which is why `f.degrees` reaches a PRIVATE field of another class and is not a
+        # hole. Fahrenheit said `entrusts`.
+        add_test(NAME codegen_transformer_bound_target_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_bound_target.pol"
+            "-DEXPECTED=100C is 212F 212F is 100C round trip: 100 fields kept: 212 and 100"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # Consent. `applies` is equipment and nobody else's business; being ASSEMBLED is different in
+        # kind, because the body that binds you runs where your constructor would have and yours does
+        # not. Only the target can hand that over, and `Yards` never did.
+        add_test(NAME sema_rejects_binding_untrusted_target COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_bound_untrusted_bad.pol")
+        set_tests_properties(sema_rejects_binding_untrusted_target PROPERTIES WILL_FAIL TRUE)
+        # ...and completeness, which is what `entrusts` bought. A target left half-built hands back
+        # storage that looks like an object: an unassigned field does not read empty, it reads
+        # whatever was last there, so the wrong value is plausible and stable. Checked by the dataflow
+        # a constructor already passes — the same map and the same join, because two ways of proving
+        # one thing is how one of them ends up weaker.
+        add_test(NAME sema_rejects_incomplete_bound_target COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_bound_incomplete_bad.pol")
+        set_tests_properties(sema_rejects_incomplete_bound_target PROPERTIES WILL_FAIL TRUE)
+
         # ONE SOCKET, FOUR OPERATORS. The design note listed this as an improvement to build, with the
         # guess that it might already work because operators are ordinary `MethodDecl`s -- and it does.
         # What was missing was the test, which is the difference between a feature and an accident that
