@@ -3003,7 +3003,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                             fit->second.find('*') != std::string::npos) {
                             if (const auto* rmem =
                                     dynamic_cast<const ast::MemberExpr*>(mem->object.get())) {
-                                const std::string holder = baseType(typeOf(*rmem->object));
+                                // A STATIC CONTAINER NAMES ITS CLASS: `Database.store.add(table)`.
+                                // Asking `typeOf` for the type of a class name answers nothing, and
+                                // the persistent store of a database is exactly the shape that
+                                // reaches this line.
+                                std::string holder;
+                                if (const auto* hid =
+                                        dynamic_cast<const ast::IdentifierExpr*>(rmem->object.get());
+                                    hid != nullptr && lookupLocal(hid->name) == nullptr &&
+                                    lookupClass(hid->name) != nullptr) {
+                                    holder = baseType(hid->name);
+                                } else {
+                                    holder = baseType(typeOf(*rmem->object));
+                                }
                                 auto oit = ownedContents_.find(holder);
                                 if (oit != ownedContents_.end() &&
                                     oit->second.count(rmem->member) > 0) {

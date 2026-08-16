@@ -827,7 +827,8 @@ private:
     void computeOwnershipRound(const ast::Program& program);
     bool freshGrew_ = false;   // fixpoint flag: a method joined `returnsFresh_` this round
     void collectFreed(const ast::Block& body, std::unordered_set<std::string>& freed,
-                      std::unordered_set<std::string>& contents) const;
+                      std::unordered_set<std::string>& contents,
+                      const std::string& selfName = "") const;
     bool ownsField(const std::string& className, const std::string& field) const;
     bool anyFieldOwns(const std::string& className, const std::string& fieldList) const;
     // WHICH PARAMETERS A METHOD FREES, keyed "Class.method". A recursive structure frees itself

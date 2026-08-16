@@ -6,6 +6,9 @@
 #include "semantic/comptime.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <unordered_set>
@@ -2953,15 +2956,18 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                                                 landing = fit->second;
                                             }
                                         }
+                                        // NOT a fixpoint signal. `escapeScanFieldFor_` is cleared
+                                        // for every method, so it "grows" on every round by
+                                        // construction -- setting the changed flag here meant the
+                                        // fixpoint never converged and always ran to its guard,
+                                        // which is where most of a compile went.
                                         if (!landing.empty()) {
                                             std::string& seen = escapeScanFieldFor_[it->second];
                                             if (seen.empty()) {
                                                 seen = landing;
-                                                escapeSummaryChanged_ = true;
                                             } else if (("," + seen + ",").find("," + landing + ",") ==
                                                        std::string::npos) {
                                                 seen += "," + landing;
-                                                escapeSummaryChanged_ = true;
                                             }
                                         }
                                     }
@@ -3052,7 +3058,41 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                             // to do more work than it would without it. Computable because the
                             // hierarchy is closed at compile time; `unimport`/`reimport` is where
                             // that stops being true, and is its own question.
-                            for (std::string up = cls.superclass; !up.empty();) {
+                            //
+                            // AND OVER INTERFACES, which was the half that was missing. A call
+                            // reads the summary of the STATIC type, and an interface method has no
+                            // body -- so a call through `Drawable d; d.keep(x)` found nothing and
+                            // checked nothing, however plainly the implementing class kept the
+                            // argument. Under a default of "refuse what cannot be proven" that is
+                            // not a gap in coverage, it is a hole in the guarantee: the one way to
+                            // call a method without being seen was to call it through an interface,
+                            // which is how a program organised around interfaces calls everything.
+                            // A WORKLIST WITH A SEEN SET, and the set is not an optimisation. An
+                            // interface graph is a DAG with diamonds -- two supertypes reaching one
+                            // third -- so a walk that only appends visits that third once per path,
+                            // and the count multiplies with depth. Run for every method of every
+                            // class on every round of a fixpoint, the first version of this took the
+                            // suite from two minutes to not finishing.
+                            std::vector<std::string> uphill;
+                            std::unordered_set<std::string> seenUp;
+                            auto climb = [&](const std::string& name) {
+                                if (!name.empty() && seenUp.insert(baseType(name)).second) {
+                                    uphill.push_back(name);
+                                }
+                            };
+                            climb(cls.superclass);
+                            for (const std::string& iface : cls.interfaces) {
+                                climb(iface);
+                            }
+                            for (std::size_t at = 0; at < uphill.size(); ++at) {
+                                if (const ClassInfo* ci = lookupClass(uphill[at])) {
+                                    climb(ci->superclass);
+                                    for (const std::string& iface : ci->interfaces) {
+                                        climb(iface);
+                                    }
+                                }
+                            }
+                            for (const std::string& up : uphill) {
                                 const std::string upKey = baseType(up) + "." + m->name;
                                 auto& base = escapesToReceiver_[upKey];
                                 if (base.size() < esc.size()) {
@@ -3064,11 +3104,31 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                                         escapeSummaryChanged_ = true;   // the fixpoint must see it
                                     }
                                 }
-                                const ClassInfo* upInfo = lookupClass(up);
-                                up = upInfo == nullptr ? std::string() : upInfo->superclass;
                             }
                             for (const auto& [param, field] : escapeScanFieldFor_) {
-                                escapesToReceiverField_[key + "#" + std::to_string(param)] = field;
+                                // HERE is where a real growth shows, because this map survives the
+                                // round. A wrapper learns its landing field only once the method it
+                                // delegates to has one, so the fixpoint does need to see it -- but
+                                // only when the stored answer actually changed.
+                                std::string& kept = escapesToReceiverField_[key + "#" +
+                                                                            std::to_string(param)];
+                                if (kept != field) {
+                                    kept = field;
+                                    escapeSummaryChanged_ = true;
+                                }
+                                // The field travels with the bit. Without it a virtual call knew the
+                                // argument was kept and not where, so the handover exemption had
+                                // nothing to ask and every `add` through a base type warned.
+                                for (const std::string& up : uphill) {
+                                    std::string& there = escapesToReceiverField_[
+                                        baseType(up) + "." + m->name + "#" + std::to_string(param)];
+                                    if (there.empty()) {
+                                        there = field;
+                                    } else if (("," + there + ",").find("," + field + ",") ==
+                                               std::string::npos) {
+                                        there += "," + field;
+                                    }
+                                }
                             }
                             escapesToParam_[key] = escapeScanParamTargets_;  // param -> param slots it escapes to
                             // write the summary back onto the AST so the .polh emitter can serialize it for
@@ -3740,8 +3800,19 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
         // WHO OWNS WHAT, before anything asks where a value lives. Read off the destructors, which
         // is where the author already wrote it -- and without it every `T*` field is ambiguous
         // between ownership and a borrow, which is why the analysis could only ever see the frame.
+        const bool timeThem = std::getenv("POLARON_TIME_REGIONS") != nullptr;
+        const auto t0 = std::chrono::steady_clock::now();
         computeOwnership(program);
+        const auto t1 = std::chrono::steady_clock::now();
         computeEscapeSummaries(program);
+        const auto t2 = std::chrono::steady_clock::now();
+        if (timeThem) {
+            std::fprintf(stderr, "ownership %lld ms, escapes %lld ms\n",
+                         static_cast<long long>(
+                             std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()),
+                         static_cast<long long>(
+                             std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()));
+        }
     }
     collectFixtureOwners(program);  // spec 32.11: known before the bodies that reach into them
     analyzeBodies(program);

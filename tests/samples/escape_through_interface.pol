@@ -1,0 +1,43 @@
+program EscapeThroughInterface;
+
+// THE ONE WAY TO CALL A METHOD WITHOUT BEING SEEN was to call it through an interface.
+//
+// A call reads the escape summary of the STATIC type, and an interface method has no body -- so
+// there was nothing to read, and nothing was checked, however plainly the implementing class kept
+// the argument. In a program organised around interfaces that is how everything is called.
+//
+// Here `Sink` outlives the loop that fills it and `Item` is allocated on the stack, so the sink ends
+// up holding a pointer into a frame that is already gone. Called on `Keeper` directly it was always
+// refused; called through `Holder` it compiled.
+public bundle Main {
+    public namespace App {
+        public class Item {
+            public mutable int value;
+            public constructor Item(int value) { this.value = value; }
+        }
+
+        public interface Holder {
+            method keep(Item* item) returns void;
+        }
+
+        public class Keeper implements Holder {
+            private mutable nullable Item* held;
+            public constructor Keeper() { this.held = null; }
+            public override method keep(Item* item) returns void {
+                this.held = item;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Keeper* sink = new Keeper() on heap;
+                Holder* through = sink;
+                mutable Item scratch = new Item(7) on stack;
+                through.keep(&scratch);          // the frame ends; the sink keeps the address
+                delete sink;
+                return;
+            }
+        }
+    }
+}

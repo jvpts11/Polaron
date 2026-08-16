@@ -112,10 +112,16 @@ bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) con
 // the second.
 void SemanticAnalyzer::collectFreed(const ast::Block& body,
                                     std::unordered_set<std::string>& freed,
-                                    std::unordered_set<std::string>& contents) const {
+                                    std::unordered_set<std::string>& contents,
+                                    const std::string& selfName) const {
     // The root field name of an expression like `this.rows.get(i)` -> "rows". Anything that does not
     // start at `this` is not about this object's fields.
-    auto rootField = [](const ast::Expr* e) -> std::string {
+    // A STATIC FIELD IS NAMED AFTER ITS CLASS, NOT AFTER `this`, and there is no destructor that can
+    // ever speak for one. `Database.store` holds every table in the engine and `drop` frees them --
+    // the ownership is written down as plainly as any destructor writes it, in the only place a
+    // static's ownership CAN be written. Reading only `this.` said the database owned nothing and
+    // made `Database.store.add(table)` an unprovable borrow.
+    auto rootField = [&selfName](const ast::Expr* e) -> std::string {
         // Through a cast first: `delete cast<Predicate*>(this.filter)` is how a nullable field is
         // freed, and it is the ordinary spelling -- not seeing through it reported four setters in a
         // twenty-file program as borrows when their destructor plainly frees them.
@@ -125,7 +131,8 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
         const auto* mem = dynamic_cast<const ast::MemberExpr*>(e);
         while (mem != nullptr) {
             if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                id != nullptr && id->name == "this") {
+                id != nullptr && (id->name == "this" ||
+                                  (!selfName.empty() && baseType(id->name) == selfName))) {
                 return mem->member;
             }
             if (const auto* call = dynamic_cast<const ast::CallExpr*>(mem->object.get())) {
@@ -293,6 +300,49 @@ void SemanticAnalyzer::computeOwnership(const ast::Program& program) {
         computeOwnershipRound(program);
         if (!freshGrew_) {
             break;
+        }
+    }
+    // ONCE, OUTSIDE THE FIXPOINT. Which methods empty a field's contents is a property of a body and
+    // of nothing else, so it is the same answer on every round -- and computing it inside cost eight
+    // full walks of every method in the program, which is most of what a compile is.
+    //
+    // What it records: a method that frees what is inside a field invalidates every borrow anyone
+    // holds into that object. `DELETE FROM people` is a method call, and an earlier SELECT is still
+    // sitting there pointing at the rows. The store is not the bug and the free is not the bug; the
+    // READ afterwards is, and nothing had ever connected the two.
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr) {
+                        continue;
+                    }
+                    const std::string self = baseType(cls.name);
+                    std::unordered_set<std::string> freed;
+                    std::unordered_set<std::string> contents;
+                    collectFreed(m->body, freed, contents, self);
+                    if (!contents.empty()) {
+                        invalidators_.insert(self + "." + m->name);
+                    }
+                    // A STATIC FIELD HAS NO DESTRUCTOR TO SPEAK FOR IT, so its ownership is read
+                    // from wherever the class frees it -- `drop` deleting a table out of
+                    // `Database.store` is the whole of the evidence there is, and it is enough. Only
+                    // for statics: for an instance field the destructor is the right place to look
+                    // and reading every method instead would call a class an owner because one
+                    // method happens to delete something.
+                    for (const std::string& f : freed) {
+                        if (const FieldInfo* fi = findField(self, f); fi != nullptr && fi->isStatic) {
+                            ownedFields_[self].insert(f);
+                        }
+                    }
+                    for (const std::string& f : contents) {
+                        if (const FieldInfo* fi = findField(self, f); fi != nullptr && fi->isStatic) {
+                            ownedContents_[self].insert(f);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -537,7 +587,7 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                 std::unordered_set<std::string> contents;
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* dtor = dynamic_cast<const ast::DestructorDecl*>(member.get())) {
-                        collectFreed(dtor->body, freed, contents);
+                        collectFreed(dtor->body, freed, contents, baseType(cls.name));
                     }
                 }
                 // ...and one level of helper, which is how a destructor that shares its cleanup with
@@ -570,7 +620,7 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                         for (const ast::MemberPtr& other : cls.members) {
                             const auto* m = dynamic_cast<const ast::MethodDecl*>(other.get());
                             if (m != nullptr && calledNames.count(m->name) > 0) {
-                                collectFreed(m->body, freed, contents);
+                                collectFreed(m->body, freed, contents, baseType(cls.name));
                             }
                         }
                     }
@@ -579,24 +629,6 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                 // a helper are two halves of one answer, and overwriting threw the other half away.
                 for (const std::string& f : freed) {
                     if (ownedFields_[baseType(cls.name)].insert(f).second) {
-                        freshGrew_ = true;
-                    }
-                }
-                // WHICH METHODS EMPTY THE THING. A method that frees a field's contents invalidates
-                // every borrow anyone is holding into it -- `DELETE FROM people` is a method call,
-                // and the result of an earlier SELECT is still sitting there pointing at the rows.
-                // The store is not the bug and the free is not the bug; the READ afterwards is, and
-                // nothing had ever connected the two.
-                for (const ast::MemberPtr& member : cls.members) {
-                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                    if (m == nullptr) {
-                        continue;
-                    }
-                    std::unordered_set<std::string> mFreed;
-                    std::unordered_set<std::string> mContents;
-                    collectFreed(m->body, mFreed, mContents);
-                    if (!mContents.empty() &&
-                        invalidators_.insert(baseType(cls.name) + "." + m->name).second) {
                         freshGrew_ = true;
                     }
                 }
