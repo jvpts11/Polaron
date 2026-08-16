@@ -1,0 +1,30 @@
+import System.IO.Console;
+program FfiStdcall;
+
+// `extern stdcall` -- C, called the way 32-bit x86 calls it: the callee cleans the stack and the symbol
+// is decorated `@N`. Every Win32 entry point is called that way on i686.
+//
+// The word is legal on any target and only changes the instructions where it has instructions to
+// change: on x86-64 all three conventions collapsed onto the one platform ABI years ago, so this
+// lowers exactly as `cdecl` does there. Two tests hold both halves of that -- the IR carries
+// `x86_stdcallcc` for an i686 target and carries no such thing for this one.
+//
+// Prints: beeped 0
+public bundle main {
+    public namespace app {
+
+        public class Win library User32 {
+            public extern stdcall static method MessageBeep(int kind) returns int;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Masked to nothing so the program's output does not depend on the machine: what is
+                // being checked is the convention the call is made with, not what the OS answers.
+                int beeped = Win.MessageBeep(0) & 0;
+                System.IO.Console.printf("beeped %d\n", beeped);
+                return;
+            }
+        }
+    }
+}

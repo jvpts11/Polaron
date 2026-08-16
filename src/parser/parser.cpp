@@ -2015,14 +2015,25 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             //            and Zig's `export` is the C ABI. The words are worth having anyway -- they
             //            declare intent, and they are what a mismatch warning can be written against.
             //
-            // `stdcall` and `fastcall` are GONE. They named 32-bit x86 conventions (callee cleans the
-            // stack, symbol decorated `@N`; first two integers in ECX/EDX) that mean nothing on x86-64,
-            // and on this axis they are conventions rather than languages. Nothing used them.
+            // `stdcall` and `fastcall` SIT IN THE SAME POSITION AND MEAN C PLUS A CONVENTION. They
+            // name 32-bit x86 conventions -- the callee cleans the stack and the symbol is decorated
+            // `@N`; the first two integer arguments ride in ECX and EDX -- so on x86-64, where all
+            // three collapsed onto the one platform ABI, they lower exactly like `cdecl`.
             //
-            // The new names are matched as identifiers rather than added to the keyword table, so no
-            // existing program loses a name it was already using.
+            // They were removed once, on the argument that the axis is the language and nothing used
+            // them. The second half was measured against this compiler's own test suite: the OpenGL
+            // library alone declared seventy Win32 entry points with `stdcall`, and every 32-bit x86
+            // target -- which this compiler has, boots, and tests -- calls Win32 that way for real.
+            // A word that is right on one target and cosmetic on another is not a word to delete.
+            //
+            // The new language names are matched as identifiers rather than added to the keyword
+            // table, so no existing program loses a name it was already using.
             if (match(TokenKind::KwCdecl)) {
                 externConvention = "cdecl";
+            } else if (match(TokenKind::KwStdcall)) {
+                externConvention = "stdcall";
+            } else if (match(TokenKind::KwFastcall)) {
+                externConvention = "fastcall";
             } else if (check(TokenKind::Identifier) &&
                        (current().lexeme == "cppdecl" || current().lexeme == "rustdecl" ||
                         current().lexeme == "zigdecl")) {
@@ -2046,8 +2057,8 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
                     "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
             } else {
                 fail("expected the foreign LANGUAGE after 'extern' -- cdecl (C), cppdecl (C++), "
-                     "rustdecl, zigdecl, or `unknown <world>` for a raw ABI. (`stdcall` and `fastcall` "
-                     "were calling conventions, not languages, and meant nothing on 64-bit.)",
+                     "rustdecl, zigdecl, or `unknown <world>` for a raw ABI; or a 32-bit x86 calling "
+                     "convention, stdcall or fastcall, which mean C plus that convention",
                      current().loc);
             }
             isExtern = true;

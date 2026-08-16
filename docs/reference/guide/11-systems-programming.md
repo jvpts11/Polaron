@@ -354,11 +354,18 @@ and the word after `extern` names the foreign **language**, not a calling conven
 | `syscall(<n>)` | Not a language and not a symbol: an instruction with a number. `extern syscall(1) method write(...)`. |
 
 The language is the axis because the language is what decides name mangling, how aggregates travel,
-exceptions and ownership. A calling convention is an ABI detail below that. `stdcall` and `fastcall`
-were once accepted here and are **gone**: they named 32-bit x86 conventions — the callee cleans the
-stack, the symbol is decorated `@N`, the first two integers ride in ECX and EDX — that mean nothing on
-x86-64, where all three collapsed onto the one platform ABI. Code carrying them reads `cdecl` now, and
-generates the same instructions it did before.
+exceptions and ownership. A calling convention is an ABI detail below that — but two of them are still
+spelled in this position, meaning *C, called this way*:
+
+| Word | Means |
+|------|-------|
+| `stdcall` | C with the 32-bit x86 stdcall convention: the callee cleans the stack and the symbol is decorated `@N`. Every Win32 entry point is called this way on i686. |
+| `fastcall` | C with the fastcall convention: the first two integer arguments ride in ECX and EDX. |
+
+Both are legal to write on any target and change the instructions only where there are instructions to
+change: on x86-64 all three conventions collapsed onto the one platform ABI, so a `stdcall` declaration
+there lowers exactly as `cdecl` does. The `@N` decoration follows from the convention, so nothing spells
+a decorated symbol by hand.
 
 The enclosing class is pure organization: it groups related externs and gives them a namespace. You call
 through it (`LibC.abs(...)`), but the actual C symbol is the method's **simple name** (`abs`), so it links

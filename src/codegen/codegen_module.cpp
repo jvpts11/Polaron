@@ -1459,6 +1459,23 @@ void CodeGenerator::Impl::emitVtables() {
 }
 
 llvm::CallingConv::ID CodeGenerator::Impl::worldToCallConv(const std::string& conv, SourceLocation loc) {
+    // `stdcall` and `fastcall` ARE REAL ON 32-BIT x86 AND NOWHERE ELSE. There the callee cleans the
+    // stack and the symbol is decorated `@N` (stdcall), or the first two integer arguments ride in ECX
+    // and EDX (fastcall) -- which is how every Win32 entry point is called on i686. On x86-64 all three
+    // conventions collapsed onto the one platform ABI long ago, so the word costs nothing there.
+    //
+    // Gated on the ARCHITECTURE rather than accepted everywhere, because LLVM does not quietly ignore a
+    // convention its target cannot express: it fails in the backend, without a source line. The word is
+    // legal to write on any target; it only changes the instructions where it has instructions to
+    // change. The `@N` decoration follows from the convention through LLVM's mangler, so nothing here
+    // spells a symbol by hand.
+    if (conv == "stdcall" || conv == "fastcall") {
+        const llvm::Triple tt(moduleTripleStr(module));
+        if (archFamily(tt.getArchName().str()) != "x86") {
+            return llvm::CallingConv::C;
+        }
+        return conv == "stdcall" ? llvm::CallingConv::X86_StdCall : llvm::CallingConv::X86_FastCall;
+    }
     if (conv.rfind("unknown:", 0) != 0) {
         return llvm::CallingConv::C;
     }
