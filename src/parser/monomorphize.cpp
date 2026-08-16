@@ -1914,6 +1914,14 @@ bool expandGenericMethods(ast::Program& program) {
                     if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
                         if (!meth->typeParams.empty()) {
                             genNames.insert(meth->name);
+                            // ...and the LAW that family carries, which the expansion pass turns
+                            // into a `<name>Law$<Target>` member on each applying type. It is called
+                            // the same way its family is -- `c.intoLaw<Fahrenheit>()` -- so it needs
+                            // registering here for the same reason, and its absence looked exactly
+                            // like a method nobody wrote.
+                            if (meth->law != nullptr) {
+                                genNames.insert(meth->name + "Law");
+                            }
                         }
                     }
                 }

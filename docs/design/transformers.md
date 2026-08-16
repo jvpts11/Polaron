@@ -834,7 +834,33 @@ of it. `tests/samples/transformer_invariant_broken.pol` is the proof that it is 
 decorative — `Gate` drives the count negative through a method of its own, touching state it did not
 declare and breaking a rule it never read, and the report names the rule, the line and `Gate.rewind`.
 
-### 5b. The LAW of the relation — **still open, and now known to be harder**
+### 5b. The LAW of the relation — **BUILT 2026-08-16**
+
+```polaron
+public procedure into<each Other>() returns Other
+    invariant itself.into<Other>().into<itself>().sameAs(itself);
+```
+
+**The position is what tells the two invariants apart** — no new word, and no rule that reads the
+expression to guess its subject. On the transformer's body: the state it brings. On a procedure: that
+procedure's relation.
+
+It becomes a `<name>Law$<Target>` method on each applying type, called the way its family is:
+`c.intoLaw<Fahrenheit>()` asks whether the round trip holds AT c. **Checkable rather than checked**,
+and honestly so — a property test needs values the compiler cannot invent for an arbitrary type, so
+the receiver IS the sample. Whoever tests has the values; the transformer had the law.
+
+**It earned its keep on the first program written with it.** Celsius→Fahrenheit→Celsius holds at 100
+and fails at 37: integer division loses the remainder both ways. A conversion that compiles, runs,
+and is wrong for most inputs — which is exactly what this note said a round-trip law is the only
+thing that separates from a conversion that is right.
+
+Two things had to be got right on the way. The law's expression ends where the MEMBER does, so the
+`;` after it is the socket's, not the law's — consuming it left the parser demanding a body for a
+procedure that deliberately has none. And the generated method needed registering as a family name,
+or the call was left unmangled and reported as a method nobody wrote.
+
+### 5c. What was open before it was built
 
 The round trip is NOT the feature above, and finding out why is the useful part. A class invariant is
 checked on entry to and exit from every method. A round-trip law would therefore convert on every

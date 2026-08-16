@@ -1,0 +1,72 @@
+import System.IO.Console;
+program TransformerLaw;
+
+// THE LAW OF THE RELATION, written on the procedure that IS the relation.
+//
+// A conversion that compiles and a conversion that is RIGHT are different things, and nothing in the
+// declaration used to say which one you had. The round trip is what separates them: whatever
+// Celsius(100) becomes, converting it back must give Celsius(100).
+//
+// `invariant` on a procedure is not the same word doing double duty by accident. In a transformer's
+// BODY it is about the state the transformer brings, and is checked the way any class invariant is --
+// on entry to and exit from every method. That cannot be this: a round-trip law checked on entry to
+// every method would convert on every call, and the conversion calls methods, which check the
+// invariant, which converts. Unbounded recursion. The POSITION tells them apart -- no new word, and
+// no rule that reads the expression to guess what it is about.
+//
+// CHECKABLE RATHER THAN CHECKED, and that is honest rather than weak. A property test needs VALUES,
+// and the compiler cannot invent them for an arbitrary type. So the law becomes a method whose
+// receiver IS the sample: `c.intoLaw<Fahrenheit>()` asks whether the round trip holds at c. Whoever
+// tests has the values; the transformer had the law.
+//
+// And the law finds a real one. 100C round-trips exactly; 37C does not, because integer division
+// loses the remainder both ways -- a conversion that compiles, runs, and is wrong for most inputs.
+//
+// Prints:
+//   100 degrees: 212F, law holds 1
+//   37 degrees: 98F, law holds 0
+public bundle Main {
+    public namespace App {
+        public mutual transformer TConverter {
+            public procedure into<each Other>() returns Other
+                invariant itself.into<Other>().into<itself>().sameAs(itself);
+        }
+
+        public class Celsius applies TConverter {
+            public mutable int degrees;
+            public constructor Celsius(int degrees) { this.degrees = degrees; }
+            public method sameAs(Celsius other) returns boolean {
+                return this.degrees == other.degrees;
+            }
+            public procedure into<Fahrenheit>() returns Fahrenheit {
+                return new Fahrenheit(itself.degrees * 9 / 5 + 32);
+            }
+        }
+
+        public class Fahrenheit applies TConverter {
+            public mutable int degrees;
+            public constructor Fahrenheit(int degrees) { this.degrees = degrees; }
+            public method sameAs(Fahrenheit other) returns boolean {
+                return this.degrees == other.degrees;
+            }
+            public procedure into<Celsius>() returns Celsius {
+                return new Celsius((itself.degrees - 32) * 5 / 9);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Celsius boiling = new Celsius(100);
+                System.IO.Console.printf("100 degrees: %dF, law holds %d\n",
+                                         boiling.into<Fahrenheit>().degrees,
+                                         boiling.intoLaw<Fahrenheit>() ? 1 : 0);
+
+                Celsius body = new Celsius(37);
+                System.IO.Console.printf("37 degrees: %dF, law holds %d\n",
+                                         body.into<Fahrenheit>().degrees,
+                                         body.intoLaw<Fahrenheit>() ? 1 : 0);
+                return;
+            }
+        }
+    }
+}
