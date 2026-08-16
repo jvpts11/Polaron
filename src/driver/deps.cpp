@@ -1,4 +1,5 @@
 #include "driver/deps.h"
+#include "driver/build.h"
 #include "driver/git.h"
 #include "driver/lockfile.h"
 #include "driver/manifest.h"
@@ -143,7 +144,13 @@ std::optional<std::string> installDep(const fs::path& packagesDir, const fs::pat
     }
 
     const fs::path polb = dest / (name + ".polb");
-    std::vector<std::string> compileArgs = {"--lib", entry.string()};
+    // EVERY source of the dependency, not just its entry. A library is a project like any other and may
+    // hold one type per file; compiling the entry alone made a multi-file library build perfectly where
+    // it was written and fail on installation, on a class declared in the file next door.
+    std::vector<std::string> compileArgs = {"--lib"};
+    for (const auto& src : collectSources(entry)) {
+        compileArgs.push_back(src.string());
+    }
     for (const auto& u : useArgs) {
         compileArgs.push_back(u);
     }

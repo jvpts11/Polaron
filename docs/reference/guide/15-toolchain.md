@@ -61,15 +61,18 @@ language_version = "1.0"
 entry = "src/main.pol"
 
 [dependencies]
-polaron-opengl = { path = "../polaron-opengl" }
+Polaron-OpenGL = "https://github.com/jvpts11/Polaron-OpenGL@v1.0.0"
 
 [build]
 output = "build-output/"
 target = "x86_64-windows"
 freestanding = false
 subsystem = "windows"          # a GUI app: no console window on launch
-native_libs = "opengl32, gdi32, user32, kernel32"
 ```
+
+Nothing here names opengl32 or gdi32, though the program links both. The classes that declare those
+externs say which library they come from, the library's own manifest maps that name to a file per
+platform, and the link inherits it — see [§11.8](#118-ffi-calling-c-from-polaron).
 
 - **`[program]`** (or **`[library]`** for a reusable bundle) — `name`, `version`,
   `language_version`, and `entry` (the file holding `main`). A `[library]` builds an `.polb`
@@ -80,14 +83,18 @@ native_libs = "opengl32, gdi32, user32, kernel32"
 - **`[build]`** — `output` (the build directory), `target` (an LLVM triple, e.g.
   `x86_64-windows`), `freestanding` (bare-metal mode; see [§11](#11-systems-programming)),
   `subsystem` (`windows` links a GUI app with no console window; the default is a console
-  app), `native_libs` (a comma-separated list of native import libraries to link for FFI),
-  and `environment` (a named shared environment to build against).
+  app), `native_libs` (the older blunt way to name import libraries for FFI), and `environment`
+  (a named shared environment to build against).
+- **`[libraries]`** — what each logical foreign-library name (`class Wgl library OpenGL`) means on
+  each platform: `OpenGL = { windows = "opengl32", linux = "GL" }`. A dependency's entries apply to
+  whoever links it, so a consumer does not repeat its dependency's link list.
 
 ## 15.4 Dependencies and environments
 
-`polaron plug` fetches a dependency and records it in `[dependencies]`; `polaron unplug` removes
-one. A **path dependency** points at a sibling project on disk and is built from source as
-part of the build — the pattern Forge uses for `polaron-opengl`.
+`polaron plug` fetches a dependency, compiles it — every source file of it, not just its entry — and
+records it in `[dependencies]`; `polaron unplug` removes one. A **path dependency** points at a sibling
+project on disk instead, and is built from source as part of the build: the pattern for a library being
+developed alongside its consumer.
 
 **Environments** (`polaron env`) are shared toolchain/dependency sets: create one with
 `polaron env new <name>`, list them with `polaron env list`, and point a project at one via the

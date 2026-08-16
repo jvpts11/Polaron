@@ -96,6 +96,18 @@ Manifest parseManifestText(const std::string& text);
 std::optional<std::string> resolveForeignLibrary(const Manifest& m, const std::string& logical,
                                                  const std::string& platform);
 
+// The same, against a map gathered from SEVERAL manifests -- a program's own plus every dependency's.
+//
+// A library's classes name the foreign libraries they come from; the mapping from that name to a file
+// belongs to the library too, because it is the library that knows. Reading only the program's manifest
+// made a consumer repeat its dependency's link list to get a build at all, which is somebody else's
+// private business written down in the wrong file -- and, when they disagreed, wrong in a way nothing
+// checked. `collectForeignLibraries` builds the map; the program's own entries win, so a consumer can
+// still override where a dependency guessed badly.
+using ForeignLibraryMap = std::map<std::string, std::map<std::string, std::string>>;
+std::optional<std::string> resolveForeignLibrary(const ForeignLibraryMap& libs, const std::string& logical,
+                                                 const std::string& platform);
+
 // The platform key `resolveForeignLibrary` wants, read off a target triple ("x86_64-pc-windows-msvc"
 // -> "windows"). Unrecognized triples answer "linux", the ELF default.
 std::string platformOfTriple(const std::string& triple);

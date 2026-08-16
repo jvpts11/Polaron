@@ -342,14 +342,33 @@ public bundle main {
 }
 ```
 
-**The shape of the declaration** is `public extern <cdecl|stdcall|fastcall> static method
-name(params) returns T;`. The calling convention is a *keyword*, not a string — `cdecl`,
-`stdcall`, or `fastcall`. On the x86-64 targets Polaron supports today these three conventions
-converge on the single platform C ABI, so the choice is currently cosmetic on 64-bit; it is
-carried through the AST so that the distinction can matter on 32-bit x86, where the conventions
-genuinely differ. The enclosing class is pure organization: it groups related externs under one
-convention and gives them a namespace. You call through it (`LibC.abs(...)`), but the actual C
-symbol is the method's **simple name** (`abs`), so it links against the real `abs` in libc.
+**The shape of the declaration** is `public extern <language> static method name(params) returns T;`,
+and the word after `extern` names the foreign **language**, not a calling convention:
+
+| Word | Means |
+|------|-------|
+| `cdecl` | C. |
+| `cppdecl` | C++ — C++ ABI rules for aggregates and the implicit `this`. There is no mangler: the symbol is taken literally, so a mangled name goes in `symbol("...")`. |
+| `rustdecl`, `zigdecl` | Reserved, and lowered to the C ABI today. Neither language has a stable native ABI — what is callable from outside Rust is `#[no_mangle] extern "C"`, and Zig's `export` is the C ABI — but the words declare intent, and a mismatch warning can be written against them. |
+| `unknown <world>` | A raw ABI with no language behind it: `pe`, `elf`, `macho`, or `win64`, `sysv`, `aapcs`. |
+| `syscall(<n>)` | Not a language and not a symbol: an instruction with a number. `extern syscall(1) method write(...)`. |
+
+The language is the axis because the language is what decides name mangling, how aggregates travel,
+exceptions and ownership. A calling convention is an ABI detail below that. `stdcall` and `fastcall`
+were once accepted here and are **gone**: they named 32-bit x86 conventions — the callee cleans the
+stack, the symbol is decorated `@N`, the first two integers ride in ECX and EDX — that mean nothing on
+x86-64, where all three collapsed onto the one platform ABI. Code carrying them reads `cdecl` now, and
+generates the same instructions it did before.
+
+The enclosing class is pure organization: it groups related externs and gives them a namespace. You call
+through it (`LibC.abs(...)`), but the actual C symbol is the method's **simple name** (`abs`), so it links
+against the real `abs` in libc.
+
+**A pointer that crosses is an `address`.** Past an `extern` there is no Polaron left to reason about:
+nothing can say whether the callee keeps a pointer it was handed, so nothing can prove the storage
+outlives it, and the region binder refuses a `T*` parameter on a foreign declaration. Declare it
+`address` and hand across `cast<address>(p)` — which is how a program says the lifetime is outside the
+language, and is the truth for a buffer the operating system fills during the call.
 
 **Marshalling** — how Polaron values become C values at the boundary — is where the interesting work
 happens, and Polaron handles the common cases automatically:
@@ -405,20 +424,40 @@ happens, and Polaron handles the common cases automatically:
   LibC.printf("x=%d\n", 42);
   ```
 
-**Linking system libraries.** Declaring an extern says *what* to call; you still have to tell the
-linker *where* the symbol lives. For libraries beyond the C runtime, list them in the project
-manifest's `[build]` section under `native_libs`, as a comma-separated list of system libraries.
-The driver forwards each to the linker.
+**Linking system libraries.** Declaring an extern says *what* to call; you still have to tell the linker
+*where* the symbol lives. The class that groups the externs is the thing that knows, so the class says
+it:
 
-```toml
-[build]
-target = "x86_64-windows"
-native_libs = "opengl32, user32, gdi32"
+```polaron
+public class Wgl library OpenGL {
+    public extern cdecl static method wglCreateContext(long hdc) returns long;
+    // ...
+}
 ```
 
-This is precisely how a plugable graphics binding (Polaron-OpenGL, for instance) links `opengl32`
-without any change to the compiler: extern declarations for the entry points, plus one
-`native_libs` line.
+`OpenGL` there is a **logical name**: an identifier, ours, the same on every platform, and therefore
+checkable against the declaration that uses it. The **file** it means is theirs — `opengl32.lib` on
+Windows, `libGL.so.1` on Linux — unspellable as an identifier and different per platform, so it lives in
+the manifest of the project that declares the class:
+
+```toml
+[libraries]
+OpenGL = { windows = "opengl32", linux = "GL" }
+Zlib   = "z"                                     # one name, every platform
+```
+
+An unmapped name resolves to itself, so a library whose file is spelled like its logical name needs no
+entry at all; a name mapped to the empty string needs no link flag; and `C` — the C runtime, which every
+platform links already — is answered that way by default.
+
+**A dependency's mapping is inherited.** A program that plugs Polaron-OpenGL writes nothing about
+opengl32, gdi32, user32, kernel32 or gdiplus: the classes are in the library, the mapping is in the
+library's manifest, and the link reads both. A program's own `[libraries]` entries win over a
+dependency's, so it can still override one that was mapped badly.
+
+The older `[build] native_libs = "opengl32, user32"` still works and simply appends to the link line. It
+is blunter: it says "link this" and never "this is where `class Wgl` comes from", so a class could name a
+library the build did not link, and nothing noticed until the linker did.
 
 ---
 
