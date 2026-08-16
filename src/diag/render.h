@@ -13,6 +13,23 @@ namespace polaron::diag {
 // clear it between renders.
 std::set<std::string>& explainedCodes();
 
+// HOW TO SHOW A LOCATION, installed once by the driver.
+//
+// Only the driver has the compiled text of each file and the map from the concatenated standard
+// library back to its subject files. Everything else that reports -- the monomorphizer, the
+// transformer expander, the layout checker -- had neither, so their diagnostics printed with no
+// source line under the caret and named `<prelude>`, a place nobody can open. They were the parts of
+// the compiler whose messages were hardest to act on, for no reason except that they report from a
+// different file.
+//
+// `display` turns a location's file into what the reader should see; `line` returns that file's
+// numbered source line, or "" when it is unavailable.
+struct SourceResolver {
+    std::string (*display)(std::string_view file, int line) = nullptr;
+    std::string (*line)(std::string_view file, int lineNo) = nullptr;
+};
+void setSourceResolver(SourceResolver r);
+
 // Render one diagnostic.
 //
 // `severity` is "error" or "warning". `sourceLine` is the offending source line (pass "" if unavailable --
@@ -22,6 +39,7 @@ std::set<std::string>& explainedCodes();
 //
 // The returned string ends with a newline and is ready to write to stderr.
 std::string render(std::string_view severity, const std::string& path, int line, int col,
-                   const std::string& message, Code code, const std::string& sourceLine, bool concise);
+                   const std::string& message, Code code, const std::string& sourceLineIn,
+                   bool concise);
 
 }  // namespace polaron::diag

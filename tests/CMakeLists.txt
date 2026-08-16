@@ -875,6 +875,16 @@ add_test(NAME concise_diagnostic_is_one_line_with_code
 set_tests_properties(concise_diagnostic_is_one_line_with_code PROPERTIES
     PASS_REGULAR_EXPRESSION "did_you_mean_bad.pol:[0-9]+:[0-9]+: error\\[Polaron-0102\\]: class 'Point' has no field")
 
+# The monomorphizer, the transformer expander and the layout checker report from their own files, so
+# they had neither the compiled source nor the map from the concatenated library back to its subject
+# files: their diagnostics printed with nothing under the caret. One resolver, installed by the
+# driver, gives every reporting site both.
+add_test(NAME every_reporter_shows_its_source_line
+    COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_bound_untrusted_bad.pol"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/tbu.ll")
+set_tests_properties(every_reporter_shows_its_source_line PROPERTIES
+    PASS_REGULAR_EXPRESSION "25 \\| .*public procedure into<Yards y>")
+
 # The write-up appears ONCE per code per run. It is worth reading the first time and is noise the
 # tenth: two naming warnings in one file printed the same fifteen lines twice, and a program with a
 # dozen would bury everything else. A diagnostic nobody reads has failed, however good it is.

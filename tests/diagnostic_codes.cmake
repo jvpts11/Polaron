@@ -14,6 +14,31 @@
 # the set of programs the suite already asserts are errors. A new negative test joins the guard by
 # existing.
 
+# FIRST, THAT EVERY CODE HAS SOMETHING TO SAY. A Code with a mapping rule but an empty catalog entry
+# renders as a code with no help under it -- worse than no code, because the reader follows it to
+# `--explain` and finds nothing. The corpus check below cannot see this: the diagnostic carries a
+# code, so it passes.
+execute_process(COMMAND "${POLC}" --explain OUTPUT_VARIABLE _listing ERROR_VARIABLE _lerr)
+string(REGEX MATCHALL "Polaron-[0-9A-Fa-f]+" _codes "${_listing}${_lerr}")
+list(REMOVE_DUPLICATES _codes)
+list(LENGTH _codes _ncodes)
+set(_hollow "")
+foreach(_c IN LISTS _codes)
+    execute_process(COMMAND "${POLC}" --explain "${_c}" OUTPUT_VARIABLE _e ERROR_VARIABLE _ee)
+    set(_text "${_e}${_ee}")
+    if(NOT _text MATCHES "why:" OR NOT _text MATCHES "fix:" OR NOT _text MATCHES "prevent:")
+        list(APPEND _hollow "${_c}")
+    endif()
+endforeach()
+message(STATUS "codes in the catalog: ${_ncodes}")
+if(_hollow)
+    message("These codes exist but have no complete write-up (why / fix / prevent):")
+    foreach(_h IN LISTS _hollow)
+        message("  ${_h}")
+    endforeach()
+    message(FATAL_ERROR "hollow catalog entries")
+endif()
+
 file(READ "${DIR}/CMakeLists.txt" _tests_src)
 string(REGEX MATCHALL "samples/[A-Za-z0-9_.]+\\.pol" _hits "${_tests_src}")
 list(REMOVE_DUPLICATES _hits)
