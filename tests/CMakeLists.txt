@@ -7879,6 +7879,31 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # PLACING THE VALUES THE ANALYSIS USED TO SHRUG AT. `Unknown` is what `lifetimeOf` answers
+        # when it cannot say where a value lives, and it is PERMISSIVE — so every shape it did not
+        # handle was a hole rather than a question. Closing them is the prerequisite for the default
+        # ever being flipped, and it REDUCES what flipping costs: measured on the standard library,
+        # `--strict-regions` went from 35 sites to 18, because most of what looked unplaceable was
+        # placeable all along.
+        #
+        # Four shapes: `null` (points at nothing, so fits anywhere — left out, strict refused
+        # `this.kept = null` in most constructors); a ternary (as short-lived as its shorter arm); a
+        # static call (names its class, not an object, and every factory is spelled that way); and
+        # transitive freshness (a factory handing back another factory's result). All must be SILENT,
+        # including under strict — a checker is judged by what it stays quiet about.
+        add_test(NAME codegen_region_placing_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_placing_values.pol"
+            "-DEXPECTED=made 3 kept 2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # NOT YET A TEST UNDER `--strict-regions`, and the reason is the remaining work rather than a
+        # problem with the sample: strict makes an unplaceable value an ERROR, and the standard
+        # library still has 18 of them, so `polc` exits non-zero on any program at all. The sample's
+        # own lines are already silent under strict — checked by hand, 2026-08-16 — and this becomes
+        # a test the day the prelude is clean. The 18 is the tracker.
+
         # SUB-REGIONS AND NESTING (§10). Two explicit regions used to be compared by IDENTITY, so a
         # nest of them was a set of unrelated boxes and the direction that is a bug looked exactly
         # like the direction that is fine.

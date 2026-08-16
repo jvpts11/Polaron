@@ -195,6 +195,20 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
 // A DESTRUCTOR IT CALLS COUNTS TOO: `~Table` calling `this.clear()` frees the rows there, and a
 // check that only read the destructor's own statements would report the class as owning nothing.
 void SemanticAnalyzer::computeOwnership(const ast::Program& program) {
+    // ROUND AND ROUND UNTIL NOTHING NEW IS FRESH. Freshness is transitive -- a factory that hands
+    // back another factory's result hands back fresh storage too -- and the standard library is
+    // written in exactly that chain. Monotone (names only get added), so it converges; bounded
+    // anyway, because a program has finitely many methods.
+    for (int round = 0; round < 8; ++round) {
+        freshGrew_ = false;
+        computeOwnershipRound(program);
+        if (!freshGrew_) {
+            break;
+        }
+    }
+}
+
+void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
@@ -241,6 +255,84 @@ void SemanticAnalyzer::computeOwnership(const ast::Program& program) {
                 }
                 if (!freed.empty()) {
                     ownedFields_[baseType(cls.name)] = std::move(freed);
+                }
+                // WHICH METHODS HAND BACK FRESH STORAGE, which is the commonest thing a call
+                // result can be and was an Unknown until now: `node.addChild(this.element())`
+                // stores something `element` just allocated, and that is a handover, not a borrow.
+                //
+                // Every `return` in the method must be a fresh heap allocation -- directly, or a
+                // local bound to one. A method that sometimes hands back a field and sometimes a new
+                // object is not answered here, and stays Unknown, which is the honest outcome.
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr || m->body.statements.empty()) {
+                        continue;
+                    }
+                    std::unordered_set<std::string> freshLocals;
+                    bool sawReturn = false;
+                    bool allFresh = true;
+                    std::function<void(const ast::Block&)> look = [&](const ast::Block& body) {
+                        for (const auto& st : body.statements) {
+                            if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get())) {
+                                if (const auto* nw =
+                                        dynamic_cast<const ast::NewExpr*>(vd->init.get());
+                                    nw != nullptr && nw->location == "heap" && nw->region.empty()) {
+                                    freshLocals.insert(vd->name);
+                                }
+                                continue;
+                            }
+                            if (const auto* ret = dynamic_cast<const ast::ReturnStmt*>(st.get())) {
+                                if (ret->value == nullptr) {
+                                    continue;
+                                }
+                                sawReturn = true;
+                                const ast::Expr* v = ret->value.get();
+                                if (const auto* nw = dynamic_cast<const ast::NewExpr*>(v)) {
+                                    if (nw->location != "heap" || !nw->region.empty()) {
+                                        allFresh = false;
+                                    }
+                                } else if (const auto* id =
+                                               dynamic_cast<const ast::IdentifierExpr*>(v)) {
+                                    if (freshLocals.count(id->name) == 0) {
+                                        allFresh = false;
+                                    }
+                                } else if (const auto* rc = dynamic_cast<const ast::CallExpr*>(v)) {
+                                    // FRESHNESS IS TRANSITIVE, and the standard library is written in
+                                    // exactly that chain: `Toml.value` hands back `Json.ofStr(...)`,
+                                    // which hands back the `new`. One layer of factory is the rule,
+                                    // not the exception, so this is computed to a fixpoint below.
+                                    const auto* rm =
+                                        dynamic_cast<const ast::MemberExpr*>(rc->callee.get());
+                                    std::string owner;
+                                    if (rm != nullptr) {
+                                        if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(
+                                                rm->object.get())) {
+                                            owner = oid->name == "this" ? baseType(cls.name)
+                                                                        : baseType(oid->name);
+                                        }
+                                    }
+                                    if (owner.empty() ||
+                                        returnsFresh_.count(owner + "." + rm->member) == 0) {
+                                        allFresh = false;
+                                    }
+                                } else {
+                                    allFresh = false;
+                                }
+                                continue;
+                            }
+                            if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(st.get())) {
+                                look(ifs->thenBlock);
+                                if (ifs->elseBlock != nullptr) {
+                                    look(*ifs->elseBlock);
+                                }
+                            }
+                        }
+                    };
+                    look(m->body);
+                    if (sawReturn && allFresh &&
+                        returnsFresh_.insert(baseType(cls.name) + "." + m->name).second) {
+                        freshGrew_ = true;   // the fixpoint has to go round again
+                    }
                 }
                 // ...and while the class is in hand, the one-line accessors. `at(i) { return
                 // this.rows.get(i); }` hands back a row the table owns, and without knowing that,
@@ -311,6 +403,20 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
     // Muted for the duration: the receiver types this needs are asked for with `typeOf`, which
     // reports as it goes, and a question must not produce a complaint.
     Quiet hush(*this);
+    // `null` POINTS AT NOTHING, so it fits anywhere and always has. Not an Unknown: Unknown means
+    // "this analysis cannot say", and about null it can say everything. Left out, the strict mode
+    // refused `this.kept = null;` in a constructor -- which is most constructors.
+    if (dynamic_cast<const ast::NullLiteralExpr*>(&expr) != nullptr) {
+        return Lifetime{RegionKind::Root, ""};
+    }
+    // A TERNARY IS AS SHORT-LIVED AS ITS SHORTER ARM. The value is one of the two and nothing here
+    // says which, so the only sound answer is the one that would be refused -- the join, taken
+    // downward. Without it, `h.kept = pick ? a : b` was an Unknown and passed.
+    if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(&expr)) {
+        const Lifetime a = lifetimeOf(*tern->thenExpr);
+        const Lifetime b = lifetimeOf(*tern->elseExpr);
+        return outlivesOrEqual(a, b) ? b : a;
+    }
     // `new T()` -- the allocation says where it lives, which is the one case that needs no inference.
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
         if (!nw->region.empty()) {
@@ -375,10 +481,27 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
     // method that returns a field returns that field's region.
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
-            const std::string recvType = baseType(typeOf(*mem->object));
+            // A STATIC CALL NAMES ITS CLASS RATHER THAN AN OBJECT, so `typeOf` on the receiver has no
+            // type to give: `Toml.value(x)` reads `Toml` as an expression and answers nothing. Every
+            // factory in the standard library is spelled that way, which is why most of what was
+            // left unplaceable was a call whose class was sitting right there in the source.
+            std::string recvType;
+            if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                rid != nullptr && lookupLocal(rid->name) == nullptr &&
+                lookupClass(rid->name) != nullptr) {
+                recvType = baseType(rid->name);
+            } else {
+                recvType = baseType(typeOf(*mem->object));
+            }
             const std::string returned = returnedFieldOf(recvType, mem->member);
             if (!returned.empty() && ownsField(recvType, returned)) {
                 return Lifetime{RegionKind::Object, describePath(*mem->object)};
+            }
+            // A method that hands back FRESH storage hands back something nobody owns yet, and
+            // whoever takes it becomes its owner -- so it fits anywhere, exactly like a `new` at the
+            // call site. Thirteen of the standard library's remaining unplaceable values were this.
+            if (returnsFresh_.count(recvType + "." + mem->member) > 0) {
+                return Lifetime{RegionKind::Root, ""};
             }
         }
         return Lifetime{RegionKind::Unknown, ""};

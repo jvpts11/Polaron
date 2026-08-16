@@ -1,0 +1,80 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program RegionPlacingValues;
+
+// PLACING THE VALUES THE ANALYSIS USED TO SHRUG AT.
+//
+// `Unknown` is what `lifetimeOf` answers when it cannot say where a value lives, and it is
+// permissive -- so every shape it did not handle was a hole rather than a question. Closing them is
+// the prerequisite for the default ever being flipped, and it turns out to REDUCE what flipping
+// would cost: measured on the standard library, `--strict-regions` went from 35 sites to 18, because
+// most of what looked unplaceable was placeable all along.
+//
+// Four shapes, all of them ordinary, none of them previously placed:
+//
+//   * `null` points at nothing, so it fits anywhere. Left out, strict mode refused
+//     `this.kept = null` in a constructor -- which is most constructors.
+//   * a TERNARY is as short-lived as its shorter arm: the value is one of the two and nothing says
+//     which, so the only sound answer is the join taken downward.
+//   * a STATIC call names its class rather than an object, so asking the receiver for a type got
+//     nothing -- and every factory in the standard library is spelled that way.
+//   * FRESHNESS IS TRANSITIVE: a factory handing back another factory's result hands back fresh
+//     storage too, which is a chain the standard library is written in.
+//
+// Everything here must be SILENT, including under `--strict-regions`. That is the point: a checker
+// is judged by what it stays quiet about at least as much as by what it catches.
+//
+// Prints:
+//   made 3
+//   kept 2
+public bundle Main {
+    public namespace App {
+        public class Leaf {
+            public mutable int value;
+            public constructor Leaf(int value) { this.value = value; }
+        }
+
+        public class Holder {
+            public mutable nullable Leaf* kept;
+            // `null` into a reference field: the shape that must never be a diagnostic.
+            public constructor Holder() { this.kept = null; }
+            public method take(Leaf* leaf) returns void { this.kept = leaf; return; }
+            public method read() returns int {
+                return this.kept == null ? 0 : cast<Leaf*>(this.kept).value;
+            }
+            public destructor ~Holder() returns void {
+                if (this.kept != null) { delete cast<Leaf*>(this.kept); }
+            }
+        }
+
+        // A chain of factories, three deep, through a branch and a local.
+        public class Make {
+            public static method one() returns Leaf* { return new Leaf(1) on heap; }
+            public static method two() returns Leaf* { return Make.one(); }
+            public static method three(boolean pick) returns Leaf* {
+                if (pick) { return Make.two(); }
+                Leaf* made = new Leaf(3) on heap;
+                return made;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A three-deep factory result handed to an owner.
+                mutable Holder* h = new Holder() on heap;
+                h.take(Make.three(true));
+                System.IO.Console.printf("made %d\n", h.read() + 2);
+                delete h;
+
+                // ...and into a collection, which is the same handover one level along.
+                mutable ArrayList<Leaf*> all = new ArrayList<Leaf*>() on heap;
+                all.add(Make.three(true));
+                all.add(Make.three(false));
+                System.IO.Console.printf("kept %d\n", all.size());
+                for (mutable int i = 0; i < all.size(); i++) { delete all.get(i); }
+                delete all;
+                return;
+            }
+        }
+    }
+}

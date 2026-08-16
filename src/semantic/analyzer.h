@@ -814,12 +814,18 @@ private:
     // in the language, which is the model's own first sentence about where regions come from.
     std::unordered_map<std::string, std::unordered_set<std::string>> ownedFields_;  // class -> fields
     void computeOwnership(const ast::Program& program);
+    void computeOwnershipRound(const ast::Program& program);
+    bool freshGrew_ = false;   // fixpoint flag: a method joined `returnsFresh_` this round
     void collectFreed(const ast::Block& body, std::unordered_set<std::string>& freed) const;
     bool ownsField(const std::string& className, const std::string& field) const;
     // "Class.method" -> the field a one-line accessor hands back. What makes a CALL result carry its
     // receiver's region: `table.at(i)` is a row the table owns, and without this the commonest way
     // to reach into another object is invisible.
     std::unordered_map<std::string, std::string> accessorField_;
+    // "Class.method" for every method whose every `return` is a fresh heap allocation. Its result is
+    // owned by nobody yet, so it fits anywhere -- the commonest thing a call result can be, and an
+    // Unknown until it was computed.
+    std::unordered_set<std::string> returnsFresh_;
     std::string returnedFieldOf(const std::string& className, const std::string& method) const;
     std::string describePath(const ast::Expr& expr) const;
     std::string describeRegion(const Lifetime& life) const;
