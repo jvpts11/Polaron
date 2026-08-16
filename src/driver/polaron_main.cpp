@@ -18,7 +18,7 @@
 #include "driver/toolchain.h"
 
 namespace {
-constexpr const char* kVersion = "polaron 1.0.125";
+constexpr const char* kVersion = "polaron 1.0.126";
 
 int printHelp() {
     std::printf(
@@ -211,14 +211,17 @@ int runCli(int argc, char** argv) {
         std::vector<fs::path> files;
         if (args.size() >= 2 && !args[1].empty() && args[1][0] != '-') {
             files.emplace_back(args[1]);  // a specific file
-        } else {  // every .pol under the project, skipping packages/ and build-output/
+        } else {  // every .pol under the project, skipping libraries/ and build-output/
             const auto manifestPath = polaron::driver::findManifest(fs::current_path());
             const fs::path base = manifestPath ? manifestPath->parent_path() : fs::current_path();
             std::error_code ec;
             for (fs::recursive_directory_iterator it(base, ec), end; it != end; it.increment(ec)) {
                 if (it->is_directory()) {
                     const std::string n = it->path().filename().string();
-                    if (n == "packages" || n == "build-output" || n == ".git") {
+                    // `packages` was where an installed library went before, and a project that still
+                    // has one is not a reason to reformat somebody else's source.
+                    if (n == polaron::driver::kLibrariesDir || n == "packages" ||
+                        n == "build-output" || n == ".git") {
                         it.disable_recursion_pending();
                     }
                     continue;
@@ -346,9 +349,10 @@ int runCli(int argc, char** argv) {
             std::fprintf(stderr, "polaron: no polaron.toml found; run 'polaron init' first\n");
             return 1;
         }
-        // Resolve the target: the project's packages/, or its declared environment (with -e).
+        // Resolve the target: the project's libraries/, or its declared environment (with -e).
         std::filesystem::path recordManifest = *manifestPath;
-        std::filesystem::path packagesDir = manifestPath->parent_path() / "packages";
+        std::filesystem::path packagesDir =
+            manifestPath->parent_path() / polaron::driver::kLibrariesDir;
         if (toEnv) {
             std::ifstream f(*manifestPath);
             std::stringstream ss;

@@ -14,12 +14,12 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.125")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.126")
 
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.125")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.126")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -776,6 +776,27 @@ add_test(NAME driver_dependency_library_map COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_dep_libmap_test.cmake")
 set_tests_properties(driver_dependency_library_map PROPERTIES TIMEOUT 120)
+
+# `extern stdcall` on the target where it MEANS something: 32-bit x86, where the callee cleans the
+# stack and the symbol is decorated `@N`. Both the declaration and the call site must carry it -- a
+# declaration alone would be a callee promising one thing and every caller doing another.
+add_test(NAME codegen_stdcall_is_real_on_i686 COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ffi_stdcall.pol"
+    "-DTARGET_TRIPLE=i686-pc-windows-msvc"
+    "-DNEEDLE=call x86_stdcallcc i32 @MessageBeep"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# ... and the other half: on x86-64 the three conventions are one ABI, so the word costs nothing and
+# must emit nothing. Without this, "supported" could mean a convention stamped where the backend
+# cannot express it -- which fails inside LLVM, with no source line.
+add_test(NAME codegen_stdcall_is_nothing_on_x86_64 COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ffi_stdcall.pol"
+    "-DNEEDLE=x86_stdcallcc"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
 
 add_test(NAME parser_loose_extern_errors
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/ffi_loose_extern.pol")
