@@ -561,6 +561,322 @@ constexpr Row kCatalog[] = {
         "`--no-region-binder` turns these checks off for that program; there is no per-line version, "
         "because a line that looks ordinary is exactly how this mistake survives review." }},
 
+    {Code::RegionIncomparable, {
+        "Polaron-1722", "nothing in the program says which of these two dies first",
+        "Both of these live as long as some object -- neither is frame storage, so neither is obviously "
+        "the shorter-lived one. That is not a gap in the analysis; it is a gap in the program. Nothing "
+        "written anywhere says whether the object being pointed at outlives the object doing the "
+        "pointing, so the reference cannot be shown to be valid for as long as it is reachable. It is "
+        "the shape a database gets wrong: a result set holding rows a later statement frees, where "
+        "every line involved is individually correct and only their order is not.",
+        "Say who owns it, and the destructor is where that is said. If the object doing the pointing "
+        "should free what it points at, give it a destructor that does -- the reference then becomes "
+        "ownership and there is nothing left to prove. If it genuinely is a view, then it must not "
+        "outlive what it views: build it, read it, and drop it before the owner changes. Storing a "
+        "COPY removes the question entirely, and for small values that is usually the right answer.",
+        "Decide, per field, whether it is ownership or a view, and let the destructor say so. A class "
+        "whose destructor frees a field owns it and can be reasoned about; a class that frees nothing "
+        "and holds pointers is a view, and a view has to be shorter-lived than what it views." }},
+
+    {Code::RegionForeignBoundary, {
+        "Polaron-1723", "past this point there is no proof to be had",
+        "An `extern` function has no Polaron body, so nothing in this program can say whether it keeps "
+        "the pointer it is handed. If it stores it somewhere that outlives the object, the object is "
+        "freed and the foreign side is left holding an address -- and nothing on either side will "
+        "notice. Assuming a foreign function keeps nothing is a guess, and a compiler that guesses "
+        "here cannot claim a guarantee anywhere, because this is the one call that could always be "
+        "reached to get around it.",
+        "Say that the lifetime is outside the language: declare the parameter as `address`, which is a "
+        "raw machine word and is exactly what a pointer crossing into C is. The refusal goes away "
+        "because the claim goes away -- the declaration now states where this program's proof stops. "
+        "If the foreign side only reads, hand it a copy, or hand it the values it needs rather than "
+        "the object.",
+        "Draw the boundary in the declaration, once, rather than at every call. An `extern` that takes "
+        "`address` reads as what it is: a place where the program leaves its own guarantees behind." }},
+
+    {Code::RegionUseAfterInvalidate, {
+        "Polaron-1724", "what this holds was freed by an earlier call",
+        "This value holds references into another object -- it was built from that object's contents "
+        "-- and something since has freed those contents. The references are still there and still "
+        "look valid; the storage behind them is not. This is use-after-free spread over three "
+        "statements and two objects, which is why it survives review: building the view is correct, "
+        "emptying the source is correct, reading the view is correct, and only their ORDER is wrong.",
+        "Move the read before the call that empties, if the answer was wanted from the old contents. "
+        "If it has to outlive them, it cannot hold references: have it keep copies of what it needs, "
+        "so that emptying the source leaves it intact. Rebuilding it after the change also works, and "
+        "is usually what was meant.",
+        "A value built out of another object's contents belongs to that object's lifetime whether or "
+        "not anything says so. Treat it as a window that is only open until the owner is next changed "
+        "-- read it, take what you need out of it, and do not keep it across a mutation." }},
+
+    {Code::NoEntryPoint, {
+        "Polaron-0609", "this program has nowhere to start",
+        "A program has to name the one method the operating system calls first. Polaron spells it "
+        "`public static method main(string[] args) returns void`, inside a public class in a public "
+        "namespace in a public bundle -- and every step of that path must be public, because the "
+        "runtime reaches it from outside the program entirely. A file with no such method compiles to "
+        "no executable: there is nothing to run.",
+        "Add the entry point, or make the existing one reachable. The usual cause is not a missing "
+        "method but a missing `public`: a `main` inside a private namespace, or in a bundle that was "
+        "never made public, is invisible from outside and does not count.",
+        "Keep the entry point in one obvious place -- a class named `Main` at the top of the program's "
+        "own bundle -- so the question of where a program starts has one answer." }},
+
+    {Code::DuplicateConstructor, {
+        "Polaron-0610", "a class has one constructor, and this is the second",
+        "Polaron has no overloading, for constructors or for anything else: a name means one thing. "
+        "Two constructors would mean the call `new Point(...)` picks between them by argument types, "
+        "which is exactly the resolution the language leaves out so that reading a call tells you what "
+        "runs.",
+        "Keep one constructor and give the alternatives names: static factory methods (`Point.origin()`, "
+        "`Point.polar(r, theta)`) that build and return. They read better at the call site than an "
+        "overload set, because the name says which construction was meant. Default values on parameters "
+        "cover the case where the difference is only which arguments were supplied.",
+        "Name your constructions. A type with several ways to be built usually has several concepts "
+        "behind it, and static factories put those concepts in the source instead of in a resolution "
+        "rule." }},
+
+    {Code::ShadowsBuiltinType, {
+        "Polaron-0611", "this name already belongs to a type the compiler provides",
+        "Some types are built into the compiler rather than written in the standard library -- the "
+        "code generator knows their layout and lowers their operations directly. A user type with the "
+        "same name would be two different types answering to one name, and which one a program meant "
+        "would depend on where it was written.",
+        "Rename yours. If you want a wrapper around the built-in behaviour, a distinct name (`TextFile`, "
+        "`MyFile`) and a field of the built-in type gives you that without the collision.",
+        "Check the built-in names when you are about to declare a very general one -- `File`, `String`, "
+        "`Object`. A domain-specific name is usually the better name anyway." }},
+
+    {Code::FieldNeverAssigned, {
+        "Polaron-0612", "this field is left with no value by the constructor",
+        "A new object's state is whatever its constructor assigns. A field it never touches holds "
+        "nothing at all -- not zero, not null, no value -- and the first read of it reads memory that "
+        "was never written. Polaron does not zero-fill, because a silent zero is a wrong answer that "
+        "looks like a right one.",
+        "Assign it in the constructor, or give the field an inline initializer at its declaration so "
+        "every constructor starts from it. If a field genuinely has no value until later, say so with "
+        "`nullable` and assign `null` here -- that makes the absence part of the type, and every reader "
+        "of the field then has to deal with it.",
+        "Write each field's initial value where the field is declared unless the constructor's argument "
+        "decides it. Then a new constructor cannot forget one." }},
+
+    {Code::WeakNeedsPointer, {
+        "Polaron-0406", "`weak` describes a reference, and this is not one",
+        "A weak reference is one that observes without keeping alive: it can be told that what it "
+        "pointed at is gone. That only means anything for a pointer. A value is not observing anything "
+        "-- it IS the thing -- so `weak` on it has nothing to describe.",
+        "Write the pointer: `weak Node* parent` rather than `weak Node parent`. If you did want a "
+        "value, drop the `weak`.",
+        "`weak` belongs on the back-references in a graph -- a child pointing at its parent, an "
+        "observer pointing at its subject -- which are pointers by their nature." }},
+
+    {Code::AtomicTooWide, {
+        "Polaron-0809", "this is wider than the machine can do atomically",
+        "An atomic operation is one the hardware performs indivisibly, and hardware does that only up "
+        "to a machine word. A wider type has to be protected by a lock instead, which the compiler "
+        "will not insert silently: a value that says `atomic` and is quietly locked has different "
+        "performance and different deadlock behaviour from what the declaration claims.",
+        "Make the atomic part fit: hold an atomic index or pointer into the wide value rather than the "
+        "value itself, or split it into two atomics that are updated independently. If the operation "
+        "genuinely needs both halves at once, that is a critical section -- use a `Mutex<T>` and say "
+        "so.",
+        "Reach for `atomic` for counters, flags, and pointers, and for a `Mutex` when the invariant "
+        "spans more than a word. The width limit is where those two tools divide." }},
+
+    {Code::InterruptMisuse, {
+        "Polaron-0810", "an interrupt is entered, not called, and it runs where almost nothing is safe",
+        "An interrupt handler is entered by the hardware or the operating system at a moment the "
+        "program did not choose -- possibly in the middle of any other line of it. That is what makes "
+        "the rules around it strict: it cannot be called like a method (calling it would simulate an "
+        "interrupt, which is a different thing wearing the same name); a device has one handler, so a "
+        "class declares at most one; it must not allocate or free, because it may have interrupted the "
+        "allocator itself; and the state it reaches must be state the interrupted code agreed to share.",
+        "For a call: extract the body into an ordinary method, and have both the handler and the caller "
+        "use it. For allocation or freeing: do it before, in the code that installs the handler, and "
+        "let the handler write into storage that already exists -- a fixed buffer or a ring. For shared "
+        "state: make it `volatile` or an `atomic<T>`, which is how the program says that something else "
+        "can touch it between two instructions.",
+        "Give a handler one job: record what happened somewhere pre-allocated and return. Everything "
+        "that interprets, formats, or allocates belongs in the ordinary code that reads the record "
+        "afterwards." }},
+
+    {Code::TransformerMisuse, {
+        "Polaron-0811", "this transformer's contract is not met here",
+        "A transformer is expanded into the type that applies it, at compile time, so what it requires "
+        "has to be present at that moment: a `procedure` it declares must exist on the applying type "
+        "with the signature it declares, a `final procedure` may not be replaced, and a `collective` "
+        "one binds every type that applies it. And a procedure must name its subject -- the expansion "
+        "has to know which type it is being written into, so a signature that mentions none has no "
+        "meaning.",
+        "Read the transformer's declaration and match it exactly: same name, same parameters, same "
+        "return type, and `procedure` rather than `method` for the ones it declares. If the type "
+        "should not be bound by that contract, do not apply the transformer -- `applies` is the whole "
+        "of the commitment.",
+        "Keep a transformer small and its contract explicit. The narrower the set of procedures it "
+        "requires, the fewer types it can be wrong about." }},
+
+    {Code::TestDeclaration, {
+        "Polaron-0812", "this annotation cannot go on this method",
+        "The test framework reads annotations to decide what to run and in what order, so each one has "
+        "a shape it must find: a `[Test]` takes no parameters unless a `[Cases]` supplies them, a "
+        "`[BeforeAll]` runs before any instance exists and so must be static, a class has one `[Setup]` "
+        "because two would have no defined order, and a method cannot be both a test and a teardown. "
+        "An annotation on the wrong shape would otherwise be ignored at run time, which is the worst "
+        "outcome: a test that never runs and never says so.",
+        "Match the shape the annotation needs -- usually adding `static`, removing parameters, or "
+        "moving one of two conflicting annotations to a separate method. When a test really does need "
+        "parameters, give it a `[Cases]` source: a public static method returning the rows to run it "
+        "with.",
+        "One annotation per method and one job per method. A method that wants two of these labels is "
+        "two methods." }},
+
+    {Code::NamingConvention, {
+        "Polaron-0B01", "this name reads against the convention the rest of the language follows",
+        "Polaron names bundles, namespaces and types in PascalCase, and transformers with a leading "
+        "`T` and an agent-noun ending -- `TNamer`, not `TName`. None of this changes what the program "
+        "does. It changes whether a reader can tell what kind of thing a name refers to without "
+        "looking it up, which is most of what makes unfamiliar code readable.",
+        "Rename it. A bundle or namespace in PascalCase (`Main`, `Geometry`); a transformer as the "
+        "thing it makes its subject into (`TDescriber`, `TComparer`).",
+        "Pick the name when you declare the thing, in the form its kind uses. Renaming later is cheap "
+        "in this language and expensive in habit." }},
+
+    {Code::ShadowsStdlibType, {
+        "Polaron-0B02", "the standard library already has a type with this short name",
+        "Both types can exist -- they are in different namespaces and the compiler keeps them apart. "
+        "The cost is at every use site: a file that imports one of them and mentions the name means "
+        "that one, and a reader who knows the standard library will read it as the other. Nothing "
+        "breaks, and everyone hesitates.",
+        "Give yours a name from its own domain -- `Grid` rather than `Matrix`, `RoutePath` rather "
+        "than `Paths`. If it really is the same concept and you want a variant, say so in the name "
+        "(`CachingScanner`).",
+        "Skim the standard library's names for the area you are working in before declaring a very "
+        "general one. The domain-specific name is usually clearer anyway." }},
+
+    {Code::ShadowsField, {
+        "Polaron-0B03", "this local hides a field of the same name",
+        "Inside this scope the bare name means the local, and the field is only reachable as "
+        "`this.name`. That is a deliberate rule and not a bug -- it is what makes `this.x = x` in a "
+        "constructor work -- but away from a constructor it usually means one of the two was meant "
+        "and the other was written, and both compile.",
+        "Rename the local if it is a different thing (`count` and `newCount`), or drop it and assign "
+        "the field directly if it is the same thing. Where the shadowing is intended, writing "
+        "`this.name` for every use of the field makes the intent visible instead of implied.",
+        "Reserve shadowing for the one place it reads well -- a constructor or setter taking a "
+        "parameter named after the field it sets." }},
+
+    {Code::UndeclaredThrow, {
+        "Polaron-0B04", "this exception leaves the method without being declared",
+        "A method that can raise an exception has to say so in its signature (`throws E`), or handle "
+        "it. This one does neither, so a caller reading the signature sees a method that cannot fail "
+        "-- and finds out otherwise at run time. The signature is where the failure modes of a method "
+        "are written down; an exception missing from it is a lie in the type.",
+        "Add `throws E` to the method, and the callers will be told to deal with it; or catch it here "
+        "and turn it into a value the signature does declare (a `Result`, an `Option`, a status). "
+        "Which one depends on whether the caller can do anything useful about it.",
+        "Decide a method's failure modes when you write its signature, and let the compiler push the "
+        "obligation up to whoever can act on it." }},
+
+    {Code::ClassPointerArith, {
+        "Polaron-0B05", "a pointer to a class usually points at one object, not at an array",
+        "Pointer arithmetic steps by the size of the pointed-to type, which is only meaningful when "
+        "the pointer is into a contiguous run of them. A pointer to a class normally holds the "
+        "address of a single object, and stepping off it lands in memory that belongs to something "
+        "else -- a write there corrupts an unrelated object, silently, and the crash arrives "
+        "somewhere unrelated (spec 27).",
+        "Index an array instead: `T[] items; items[i]` says what was meant and is bounds-checked. If "
+        "you genuinely hold a pointer into a block of objects, hold the block: keep the array and its "
+        "length together rather than a bare pointer.",
+        "Let arrays be arrays. A bare pointer in Polaron is for referring to one object; the moment "
+        "arithmetic appears on one, the type is not saying what the code is doing." }},
+
+    {Code::MutatesByValueParam, {
+        "Polaron-0B06", "this changes a copy, and the caller will not see it",
+        "A class parameter passed by value is a deep copy -- assignment in Polaron is copying -- so a "
+        "method that mutates it mutates the copy, and the argument at the call site is untouched. The "
+        "code reads exactly like code that works, which is what makes it worth a warning: nothing at "
+        "the call site suggests the change went nowhere.",
+        "Take it as `T*` or `T&` if the caller should see the change, which also says so in the "
+        "signature. If the mutation is local scratch work, it is fine as it is -- and clearer if the "
+        "copy is bound to a differently named local first.",
+        "Say the direction in the parameter type: a value for input, a pointer or reference for "
+        "something the method is meant to change." }},
+
+    {Code::ForeignSymbolMismatch, {
+        "Polaron-0B07", "the calling convention and the symbol it binds do not agree",
+        "A foreign symbol's name encodes how it expects to be called on this platform, and the "
+        "declared convention has to match what the object file actually exports. When they disagree, "
+        "the link may still succeed and the call then pushes and pops the wrong things -- a corrupted "
+        "stack, at a call that looks correct in both languages.",
+        "Match the declaration to the symbol: `cdecl` for a plain C function, `stdcall` for a Win32 "
+        "API. If unsure, check what the library's own header says -- the convention is part of its "
+        "public interface, not a detail.",
+        "Write the convention from the library's documentation rather than from what happened to "
+        "link. This is one of the few mistakes in the language that no run-time check can catch." }},
+
+    {Code::Deprecated, {
+        "Polaron-0B08", "this still works and is not going to keep working",
+        "A deprecated declaration is one whose author has said there is now a better way and that "
+        "this one will be removed. It compiles and behaves exactly as before -- the warning is the "
+        "notice period (spec 14.2).",
+        "Move to the replacement the declaration names. If the code has to keep using the old one for "
+        "now, the warning is the reminder that it is borrowed time; there is no way to silence it per "
+        "call, deliberately.",
+        "Deal with deprecations while they are still warnings and there is one of them, rather than "
+        "at the release where the removal lands and there are forty." }},
+
+    {Code::PersistentIdentity, {
+        "Polaron-0B09", "these persistents will be told apart by identity, not by their contents",
+        "A persistent is found again across runs by its key. When the key fields are values, two "
+        "objects with equal contents are the same persistent and reattach to the same state -- which "
+        "is usually the point. When they are not, the object is keyed by its identity instead, so a "
+        "logically identical object built in a later run is a DIFFERENT persistent, and the state you "
+        "expected to find will not be there.",
+        "Give the class value-typed key fields that say what identifies it (an id, a name), so that "
+        "rebuilding an equal object finds the same persistent. If identity really is what you want -- "
+        "one per live object, not one per logical thing -- then this is correct and can be ignored.",
+        "Decide what makes two of these 'the same thing' when you declare the persistent, and put "
+        "exactly that in value fields." }},
+
+    {Code::FixtureLifecycle, {
+        "Polaron-0B0A", "this test reads a fixture whose setup it does not run",
+        "A `[BeforeAll]`/`[AfterAll]` pair belongs to the class that declares it, and runs around "
+        "that class's tests. A test in another class that reads the fixture sees whatever state "
+        "happens to be there -- set up if the other class ran first, not if it did not -- so the test "
+        "passes or fails depending on test ordering, which is the least useful kind of failure.",
+        "Move the test into the class that owns the fixture, or give this class its own "
+        "`[BeforeAll]` that establishes what it needs. Sharing read-only constants across classes is "
+        "fine; sharing lifecycle is not.",
+        "Keep a fixture and the tests that depend on it in one class. A test should be runnable on "
+        "its own, and that is only true when its setup is its own." }},
+
+    {Code::ImportNameMismatch, {
+        "Polaron-0106", "this name was brought in under a different path",
+        "An import names one type by its full path, and inside the file that name means exactly what "
+        "was imported. Writing it as a different path -- or writing the short name when the import "
+        "brought in a qualified one, or the other way round -- names something the file has not been "
+        "given. Two types can share a short name across namespaces, which is why the import decides "
+        "and not the use.",
+        "Use the name the import introduced, or change the import to the path you meant. When two "
+        "namespaces really do declare the same short name, only one of them can be imported into a "
+        "file; reach the other through an instance or move the code that needs it.",
+        "Import at the top of the file the exact types the file uses, one per line. Then the name at "
+        "the use site and the name in the import are the same string, and there is nothing to get "
+        "wrong." }},
+
+    {Code::BitFieldRange, {
+        "Polaron-0704", "this value does not fit the bits the field was given",
+        "A bit field declares how many bits it has, and that fixes its range exactly. A literal "
+        "outside it would be stored truncated -- a different number, silently, with no run-time check "
+        "to catch it, because the truncation is what the hardware does. A SIGNED field spends one of "
+        "its bits on the sign, so a 3-bit `int` holds -4 to 3 rather than 0 to 7, which is where this "
+        "usually bites.",
+        "Widen the field, or make it unsigned if the values are counts or ordinals and never negative "
+        "-- an unsigned 3-bit field holds 0 to 7. If the value is genuinely out of range for what the "
+        "field means, the value is the thing to fix.",
+        "Decide signedness from the meaning, not the habit: quantities that cannot be negative should "
+        "say so in the type, and then every bit is spent on range." }},
+
     {Code::ComptimeConstant, {
         "Polaron-0807", "this must be a compile-time constant",
         "Some positions are evaluated by the compiler, not at run time -- a `comptime` argument, a `fixed` "
@@ -614,6 +930,13 @@ constexpr Rule kRules[] = {
     {"not available in freestanding", Code::FreestandingRestriction},
     {"freestanding mode", Code::FreestandingRestriction},
 
+    // THE REGION BINDER'S FOUR REASONS, each before the generic "region-binder:" rule below, because
+    // first match wins and that one would otherwise explain frame escape for all of them -- confident
+    // advice for a mistake the reader did not make.
+    {"neither is known to outlive the other", Code::RegionIncomparable},
+    {"is an extern function", Code::RegionForeignBoundary},
+    {"was emptied: it holds references", Code::RegionUseAfterInvalidate},
+
     // Null safety BEFORE the general type rules: every one of these is also "a wrong type", but the
     // remedy is different -- casting cannot turn null into a non-nullable value -- so matching them as
     // TypeMismatch handed out advice ("convert explicitly with cast<T>") that cannot work.
@@ -644,6 +967,71 @@ constexpr Rule kRules[] = {
     {"has no method", Code::NoSuchMethod},
     {"no method '", Code::NoSuchMethod},
     {"cannot bind a static method", Code::NoSuchMethod},
+
+    // WHAT WAS FALLING THROUGH TO NO CODE AT ALL. Measured across the 90 error programs the suite
+    // keeps: 45 of 111 diagnostics printed as a bare line, with no why, no fix and nothing for
+    // `explain` to find. These are the rules behind them, and `diagnostics_all_carry_a_code` fails
+    // if the number ever climbs again.
+    {"has no entry point", Code::NoEntryPoint},
+    {"already has a constructor", Code::DuplicateConstructor},
+    {"is a type the compiler provides", Code::ShadowsBuiltinType},
+    {"never assigns field", Code::FieldNeverAssigned},
+    {"'weak' requires a pointer", Code::WeakNeedsPointer},
+    {"is wider than a machine word", Code::AtomicTooWide},
+    {"is already declared in class", Code::DuplicateField},
+    {"cannot return a value of type", Code::ReturnTypeMismatch},
+    {"cannot mix signed and unsigned", Code::BadOperand},
+    {"is used before it is initialized", Code::UndeclaredVariable},
+    {"may be used before it is initialized", Code::UndeclaredVariable},
+    {"has already been initialized", Code::AssignImmutable},
+    // The `move` family: the type says single-owner and a binding did not say `move`.
+    {"so it gives up ownership", Code::MoveRequired},
+    {"so the call has to say so", Code::MoveRequired},
+    // An interrupt is entered rather than called, and runs where almost nothing is safe.
+    {"an interrupt", Code::InterruptMisuse},
+    {"interrupt is entered", Code::InterruptMisuse},
+    {"already declares an interrupt", Code::InterruptMisuse},
+    {"a hosted interrupt", Code::InterruptMisuse},
+    {"a freestanding interrupt", Code::InterruptMisuse},
+    {"an interrupt reaches", Code::InterruptMisuse},
+    {"the trap an interrupt receives", Code::InterruptMisuse},
+    // Transformer contracts: what a type promised by writing `applies`.
+    // ADVICE. Warnings reach classify() the same way errors do, and had no rules at all: 1309 of
+    // them across the test corpus, one with a code. A warning needs its `why` more than an error
+    // does -- an error at least stops you, while a warning is only worth printing if the reader can
+    // tell from it whether it applies to them.
+    {"should start with a capital letter", Code::NamingConvention},
+    {"should be named `T", Code::NamingConvention},
+    {"is also declared by the standard library", Code::ShadowsStdlibType},
+    {"shadows the field of the same name", Code::ShadowsField},
+    {"is neither caught nor declared", Code::UndeclaredThrow},
+    {"pointer arithmetic on", Code::ClassPointerArith},
+    {"changes the object it is called on", Code::MutatesByValueParam},
+    {"but the symbol it binds", Code::ForeignSymbolMismatch},
+    {"is deprecated", Code::Deprecated},
+    {"would key its persistents by identity", Code::PersistentIdentity},
+    {"which owns a [BeforeAll]", Code::FixtureLifecycle},
+
+    {"is imported as", Code::ImportNameMismatch},
+    {"does not fit '", Code::BitFieldRange},
+    {"unknown transformer", Code::TransformerMisuse},
+    {"does not entrust", Code::TransformerMisuse},
+    {"applies transformer", Code::TransformerMisuse},
+    {"comes from a transformer", Code::TransformerMisuse},
+    {"but no transformer", Code::TransformerMisuse},
+    {"is `mutual`", Code::TransformerMisuse},
+    {"which is closed over", Code::TransformerMisuse},
+    {"`collective` transformer", Code::TransformerMisuse},
+    {"declares `final procedure", Code::TransformerMisuse},
+    {"names no subject", Code::TransformerMisuse},
+    // Test-framework annotations, where the failure mode is a test that silently never runs.
+    {"'[Setup]' method", Code::TestDeclaration},
+    {"'[BeforeAll]'", Code::TestDeclaration},
+    {"'[Teardown]'", Code::TestDeclaration},
+    {"'[Ignore]'", Code::TestDeclaration},
+    {"'[Cases]'", Code::TestDeclaration},
+    {"'[Benchmark]'", Code::TestDeclaration},
+    {"[Test] method", Code::TestDeclaration},
 
     {"use of undeclared variable", Code::UndeclaredVariable},
     {"assignment to undeclared variable", Code::UndeclaredVariable},

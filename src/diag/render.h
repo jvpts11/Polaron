@@ -1,11 +1,17 @@
 #pragma once
 
+#include <set>
 #include <string>
 #include <string_view>
 
 #include "diag/diagnostic.h"
 
 namespace polaron::diag {
+
+// Codes whose why/fix/prevent has already been printed in this run. The write-up appears once; later
+// diagnostics with the same code keep their headline and caret and point at it. Exposed so a test can
+// clear it between renders.
+std::set<std::string>& explainedCodes();
 
 // Render one diagnostic.
 //

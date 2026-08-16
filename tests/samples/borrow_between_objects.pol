@@ -1,0 +1,48 @@
+program BorrowBetweenObjects;
+
+// NOTHING HERE SAYS WHICH OF THE TWO DIES FIRST, and that is a gap in the program rather than in the
+// analysis.
+//
+// `Watcher` keeps a pointer to a `Target` and frees nothing, so it is a view. `Target` knows nothing
+// about the watcher. Both are heap objects with owners the compiler cannot compare, so the reference
+// from one into the other cannot be shown to be valid for as long as it is reachable -- and whether
+// it is depends entirely on which `delete` a later reader writes first.
+//
+// It is the shape a database gets wrong. Every line is individually correct; only their order is
+// not, and nothing in the types records the order that would make it safe.
+public bundle Main {
+    public namespace App {
+        public class Target {
+            public mutable int value;
+            public constructor Target(int value) { this.value = value; }
+        }
+
+        public class Watcher {
+            private mutable nullable Target* seen;
+            public constructor Watcher() { this.seen = null; }
+            public method watch(Target* t) returns void {
+                this.seen = t;
+                return;
+            }
+        }
+
+        public class Main {
+            // TWO THINGS HANDED IN, AND NOTHING ORDERING THEM. Inside here the watcher and the target
+            // are just two objects the caller happened to have; whether one outlives the other is not
+            // written anywhere, and this method is where the reference is made permanent.
+            public static method attach(Watcher* eye, Target* subject) returns void {
+                eye.watch(subject);
+                return;
+            }
+
+            public static method main(string[] args) returns void {
+                mutable Target* subject = new Target(1) on heap;
+                mutable Watcher* eye = new Watcher() on heap;
+                Main.attach(eye, subject);
+                delete subject;
+                delete eye;
+                return;
+            }
+        }
+    }
+}
