@@ -14,12 +14,12 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.124")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.125")
 
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.124")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.125")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -45,6 +45,14 @@ add_test(NAME polaron_plug_unplug COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_plug_test.cmake")
 set_tests_properties(polaron_plug_unplug PROPERTIES TIMEOUT 90)
+
+# ... and the installed library may span several files: the fixture's entry names a class declared in
+# its sibling, which is how one-type-per-file libraries are written and how this used to fail.
+add_test(NAME polaron_plug_multifile COMMAND "${CMAKE_COMMAND}"
+    "-DPOLARON=$<TARGET_FILE:polaron>"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_plug_multifile_test.cmake")
+set_tests_properties(polaron_plug_multifile PROPERTIES TIMEOUT 120)
 
 # Version ranges: several tags, plug ^1.0.0 resolves to the highest 1.x (needs polc + git, not clang).
 add_test(NAME polaron_version_range COMMAND "${CMAKE_COMMAND}"
@@ -760,6 +768,14 @@ add_test(NAME driver_foreign_library_crosses_bundle COMMAND "${CMAKE_COMMAND}"
     "-DEXPECTED=SDL2"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_foreign_libs_test.cmake")
+
+# ... and the mapping crosses a PROJECT boundary: the consumer's manifest says nothing about libraries,
+# and the link still resolves the name through its dependency's manifest.
+add_test(NAME driver_dependency_library_map COMMAND "${CMAKE_COMMAND}"
+    "-DPOLARON=$<TARGET_FILE:polaron>"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_dep_libmap_test.cmake")
+set_tests_properties(driver_dependency_library_map PROPERTIES TIMEOUT 120)
 
 add_test(NAME parser_loose_extern_errors
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/ffi_loose_extern.pol")

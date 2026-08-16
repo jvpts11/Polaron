@@ -222,27 +222,35 @@ void collectClosure(const fs::path& packagesDir, const std::vector<std::string>&
     }
 }
 
-// Collect every .pol under the entry's directory (recursively) so a program can span multiple files.
-// The entry is compiled first (it fixes the program name); the rest follow in a stable sorted order.
-std::vector<fs::path> collectSources(const fs::path& entry) {
-    std::vector<fs::path> extra;
-    std::error_code ec;
-    for (fs::recursive_directory_iterator it(entry.parent_path(), ec), end; it != end; it.increment(ec)) {
-        if (ec) {
-            break;
-        }
-        if (!it->is_regular_file() || it->path().extension() != ".pol") {
-            continue;
-        }
-        if (fs::equivalent(it->path(), entry, ec)) {
-            continue;
-        }
-        extra.push_back(it->path());
+// Gather the [libraries] mappings that apply to this link: this project's, then every dependency's --
+// path dependencies and installed packages, transitively, walked the same way the bundles are.
+//
+// A dependency's classes say which foreign library they come from (`class Wgl library OpenGL`), and the
+// file that name means on this platform is the dependency's own knowledge. Consulting only the program's
+// manifest made every consumer repeat its dependency's link list -- opengl32, gdi32, user32, kernel32,
+// gdiplus copied into a file that has no business knowing any of it -- and a consumer that did not
+// repeat it linked nothing, with the failure arriving as a missing `OpenGL.lib`, which is not a file
+// anybody ever named.
+//
+// The FIRST writer of a name wins and this project is asked first, so a program can still override a
+// dependency that mapped a name badly, without editing the dependency.
+void collectForeignLibraries(const Manifest& m, const fs::path& projectDir, const fs::path& packagesDir,
+                             ForeignLibraryMap& out, std::set<fs::path>& seen) {
+    for (const auto& logical : m.foreignLibraries) {
+        out.emplace(logical.first, logical.second);
     }
-    std::sort(extra.begin(), extra.end());
-    std::vector<fs::path> all{entry};
-    all.insert(all.end(), extra.begin(), extra.end());
-    return all;
+    for (const auto& d : m.dependencies) {
+        // A path dependency keeps its own packages/; a registry dependency's own registry dependencies
+        // are installed beside it, in the consumer's packages/ -- which is where collectClosure looks.
+        const bool byPath = !d.path.empty();
+        const fs::path depDir = byPath ? fs::absolute(projectDir / d.path) : (packagesDir / d.name);
+        const fs::path depMf = depDir / "polaron.toml";
+        if (!fs::is_regular_file(depMf) || !seen.insert(depMf).second) {
+            continue;
+        }
+        collectForeignLibraries(readManifest(depMf), depDir, byPath ? (depDir / "packages") : packagesDir,
+                                out, seen);
+    }
 }
 
 // Fold the (already-built) path dependencies of `m` into the link closure, transitively. Used after a
@@ -317,6 +325,33 @@ int buildPathDeps(const Manifest& m, const fs::path& projectDir, bool checkOnly,
 }
 
 }  // namespace
+
+// Collect every .pol under the entry's directory (recursively) so a project can span multiple files.
+// The entry is compiled first (it fixes the program name); the rest follow in a stable sorted order.
+//
+// Not private to the build: `polaron plug` compiles a downloaded dependency itself and used to hand
+// polc the entry alone, so a library of more than one file compiled where it was written and failed
+// the moment anybody installed it, complaining about a name declared in a sibling file.
+std::vector<fs::path> collectSources(const fs::path& entry) {
+    std::vector<fs::path> extra;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(entry.parent_path(), ec), end; it != end; it.increment(ec)) {
+        if (ec) {
+            break;
+        }
+        if (!it->is_regular_file() || it->path().extension() != ".pol") {
+            continue;
+        }
+        if (fs::equivalent(it->path(), entry, ec)) {
+            continue;
+        }
+        extra.push_back(it->path());
+    }
+    std::sort(extra.begin(), extra.end());
+    std::vector<fs::path> all{entry};
+    all.insert(all.end(), extra.begin(), extra.end());
+    return all;
+}
 
 // The public face of the rewrite above. Target-agnostic by name because the next architecture with a
 // backend quirk goes here rather than into a second command.
@@ -1704,6 +1739,20 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
     std::vector<std::string> declaredLibs;
     {
         const std::string platform = platformOfTriple(triple);
+        // This project's mappings and every dependency's, so a library's link requirements travel with
+        // the library instead of being copied into whoever uses it.
+        ForeignLibraryMap foreignLibs;
+        {
+            std::set<fs::path> seenManifests;
+            collectForeignLibraries(m, projectDir, projectDir / "packages", foreignLibs, seenManifests);
+            if (!m.environment.empty()) {
+                const fs::path envDir = polaronHomeDir() / "environments" / m.environment;
+                if (fs::is_regular_file(envDir / "polaron.toml")) {
+                    collectForeignLibraries(readManifest(envDir / "polaron.toml"), envDir,
+                                            envDir / "packages", foreignLibs, seenManifests);
+                }
+            }
+        }
         std::ifstream in(foreignLibsFile);
         std::string logical;
         while (std::getline(in, logical)) {
@@ -1713,7 +1762,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
             if (logical.empty()) {
                 continue;
             }
-            const std::optional<std::string> file = resolveForeignLibrary(m, logical, platform);
+            const std::optional<std::string> file = resolveForeignLibrary(foreignLibs, logical, platform);
             if (!file.has_value()) {
                 continue;
             }

@@ -29,7 +29,8 @@ chapter documents what the compiler accepts today and flags the difference.
 > - `switch`/`case` uses `case V { ... }` (braces), per spec 7.3 — not the legacy `case V:` colon form.
 > - `operator` uses `operator + (...)`, not the legacy `operator method +(...)`.
 > - `cdecl`/`stdcall`/`fastcall`/`byCatalog`/`expecting`/`onFailure` are called "contextual" in spec 39,
->   but the lexer reserves them as **hard keywords**.
+>   but the lexer reserves them as **hard keywords**. `stdcall` and `fastcall` are reserved without being
+>   accepted anywhere: `extern` declares a foreign language now, not a calling convention.
 > - `yield` has two uses: the value of a `match`-expression arm (spec 16.2), and producing the
 >   next element of a generator method that returns `Iterator<T>` (spec 22.6).
 
@@ -459,13 +460,18 @@ synchronized (counter) using int& c { c = c + 1; }
 **hard.** Declares an external function (FFI); may specify a calling convention and library.
 
 #### `cdecl`
-**hard** (spec 39 calls it contextual; the lexer reserves it). The C calling convention in `extern`.
+**hard** (spec 39 calls it contextual; the lexer reserves it). Says the foreign language of an `extern`
+is C. Its siblings — `cppdecl`, `rustdecl`, `zigdecl`, `unknown <world>` and `syscall(<n>)` — are matched
+as identifiers rather than reserved, so no program loses a name it was already using.
 
 #### `stdcall`
-**hard.** The Windows stdcall calling convention in `extern`.
+**reserved, and not accepted anywhere.** It named a 32-bit x86 calling convention; `extern` now declares
+the foreign *language*, and on x86-64 stdcall, fastcall and cdecl are the same ABI. Write `cdecl`. The
+word stays reserved rather than freed, because on 32-bit x86 the convention is a real distinction and
+the word may come back meaning exactly that.
 
 #### `fastcall`
-**hard.** The fastcall calling convention in `extern`.
+**reserved, and not accepted anywhere.** As `stdcall`.
 
 #### `freestanding`
 **hard.** Marks a `program`/`bundle` as freestanding (bare-metal): forbids async, exceptions, unimport, reflection, and the managed `Console`.
@@ -668,7 +674,7 @@ Plus the contextual persistent-move qualifiers `carrying`, `leaving`, `releasing
 
 **Kept and essential:** the ownership disciplines (`move`, `movable`, `unique`, `partitionable`,
 `into`), `itself`, `literal`, `region` / `release region` / `accepts` / `rejects`,
-`extern`/`cdecl`/`stdcall`/`fastcall`, **the chaos tetrad** (`goto`/`label`/`comefrom`/`abstainfrom`/
+`extern`/`cdecl` and the other foreign languages, **the chaos tetrad** (`goto`/`label`/`comefrom`/`abstainfrom`/
 `reinstate` — compile-time branches plus a global atomic counter, no runtime), bit fields, and —
 **freestanding-only** — the bit-counted names (`int8`…`float64`) and the `address` type (a raw memory
 address; int↔pointer casts).

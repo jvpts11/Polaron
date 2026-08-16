@@ -219,8 +219,13 @@ std::string platformOfTriple(const std::string& triple) {
 
 std::optional<std::string> resolveForeignLibrary(const Manifest& m, const std::string& logical,
                                                  const std::string& platform) {
-    const auto entry = m.foreignLibraries.find(logical);
-    if (entry != m.foreignLibraries.end()) {
+    return resolveForeignLibrary(m.foreignLibraries, logical, platform);
+}
+
+std::optional<std::string> resolveForeignLibrary(const ForeignLibraryMap& libs, const std::string& logical,
+                                                 const std::string& platform) {
+    const auto entry = libs.find(logical);
+    if (entry != libs.end()) {
         const auto exact = entry->second.find(platform);
         const auto any = entry->second.find("*");
         const auto* file = (exact != entry->second.end())  ? &exact->second

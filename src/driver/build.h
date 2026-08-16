@@ -42,4 +42,12 @@ struct BuildOptions {
 // If opts.run, execute it and return its exit code. Returns non-zero on any build failure.
 int buildProgram(const Manifest& m, const std::filesystem::path& projectDir, const BuildOptions& opts);
 
+// Every .pol that belongs to a project whose entry is `entry`: the entry first (it fixes the program
+// name), then every other .pol under its directory, sorted.
+//
+// Exposed because `polaron plug` compiles a downloaded dependency itself, and compiled only the entry --
+// so a library of more than one file built fine where it lived and failed the moment somebody installed
+// it, on a name declared in a sibling file. A project's sources are one question with one answer.
+std::vector<std::filesystem::path> collectSources(const std::filesystem::path& entry);
+
 }  // namespace polaron::driver
