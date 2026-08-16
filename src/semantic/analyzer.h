@@ -781,6 +781,16 @@ private:
     // first. That incomparability is not a gap -- it is the answer, and it is what makes storing one
     // object's row inside another object an error rather than a shrug.
     static bool outlivesOrEqual(const Lifetime& a, const Lifetime& b);
+    // `--strict-regions`: a lifetime this analysis cannot place is REFUSED rather than allowed. The
+    // difference between a checker that finds and one that guarantees, and a decision rather than an
+    // implementation detail -- so it is a flag, and the measurement that makes it decidable is in
+    // `docs/design/region-binder.md`. Static because `outlivesOrEqual` is.
+    static bool strictRegions_;
+
+public:
+    static void setStrictRegions(bool on) { strictRegions_ = on; }
+
+private:
     // The lifetime of a VALUE, computed by the same walk that computes its type -- the structural
     // change the model needed. Lifetime used to be a property of a NAME, so an escape had to be
     // spelled as a bare identifier on both sides to be seen; a temporary, an array element, a field
