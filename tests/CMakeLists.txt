@@ -506,6 +506,14 @@ add_test(NAME sema_private_constructor_errors
 set_tests_properties(sema_private_constructor_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "'Made' is private to 'Made'")
 
+# A call reads the escape summary of the STATIC type, and an interface method has no body. Until the
+# summary was unioned onto the interfaces too, calling through one was the only way to hand an object
+# somewhere without being seen -- in a program organised around interfaces, that is every call.
+add_test(NAME sema_escape_through_interface_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_through_interface.pol")
+set_tests_properties(sema_escape_through_interface_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "'keep' keeps that argument")
+
 # A view that outlives what it views. Each of the three statements is fine alone -- build the result,
 # empty the table, read the result -- and the order is the bug. This is the shape a database gets
 # wrong, and the reason the region binder tracks where a returned collection's contents came from.
