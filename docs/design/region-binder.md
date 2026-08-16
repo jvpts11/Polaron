@@ -56,12 +56,30 @@ behind a flag because it is a decision and not an implementation detail. Measure
 **Thirty-five sites in the whole standard library.** The flip is affordable, and that was the thing
 nobody could say before.
 
+### §10, sub-regions and nesting — built the same day
+
+Two explicit regions were compared by IDENTITY, so a nest of them was a set of unrelated boxes: the
+direction that is a bug looked exactly like the direction that is fine.
+
+**The order needs no model of the nest.** Regions are released last-in-first-out — at scope exit, in
+reverse declaration order — and a region declared inside a block is necessarily born after the region
+enclosing that block. So *born earlier* is exactly *dies later*, and **one number per region** orders
+an arbitrarily deep nest. Nothing about lexical depth is tracked separately, because an inner region
+cannot be born before the outer one it sits inside.
+
+That is the whole of §10, and it is why this is a scope-nesting check rather than lifetime inference:
+a region's lifetime is lexical and declared, not inferred, which is what lets the model reach temporal
+safety without a borrow checker.
+
+`region_nesting_bad.pol` carries **both directions**, because a rule that refuses everything is not an
+order: a scratch node pointing at durable data stays silent, and the durable node pointing into the
+scratch region is the one error.
+
 ### What is still not built
 
-`§10 sub-regions and nesting` — two explicit regions are compared by identity only, so a region
-inside a region is not ordered. And `&mut` exclusivity, which is a separate question about aliasing
-and should stay one: steps 1–3 reach **temporal** safety, which is what the region model was designed
-to promise.
+`&mut` exclusivity — a separate question about aliasing, and it should stay one. Steps 1–3 plus §10
+reach **temporal** safety, which is what the region model was designed to promise; data-race freedom
+is a further rule and deserves to be decided rather than to arrive as a side effect.
 
 ---
 

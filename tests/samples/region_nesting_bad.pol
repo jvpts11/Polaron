@@ -1,0 +1,58 @@
+import System.Memory.Units.bytes;
+program RegionNesting;
+
+// SUB-REGIONS AND NESTING (§10): which of two regions outlives the other.
+//
+// Until now two explicit regions were compared by IDENTITY -- the same region outlived itself and
+// nothing else was ordered, so a nest of them was a set of unrelated boxes and the one direction that
+// is a bug looked exactly like the one that is fine.
+//
+// The order needs no model of the nest. Regions are released LAST-IN-FIRST-OUT: at scope exit, in
+// reverse declaration order, and a region declared inside a block is necessarily born after the
+// region enclosing that block. So "born earlier" IS "dies later", and one number per region orders
+// an arbitrarily deep nest. That is what makes this a scope-nesting check rather than lifetime
+// inference, and why it needs no borrow checker.
+//
+// BOTH DIRECTIONS ARE HERE, because a rule that refuses everything is not an order. Pointing from
+// the short-lived region into the long-lived one is the ordinary way a scratch arena refers to
+// durable data, and it must stay silent. The other way round is the bug.
+//
+// Expected: one error, on `outer` pointing into `inner`.
+public bundle Main {
+    public namespace App {
+        public class Node {
+            public mutable int value;
+            public mutable nullable Node* next;
+            public constructor Node(int value) {
+                this.value = value;
+                this.next = null;
+            }
+        }
+
+        public class Probe {
+            public static method nesting() returns void {
+                region durable = itself.allocate(1024 bytes);
+                Node* kept = new Node(1) in region durable;
+
+                region scratch = itself.allocate(512 bytes);
+                Node* temporary = new Node(2) in region scratch;
+
+                // FINE: the scratch node points at something that outlives it. `durable` was born
+                // first, so it is released last.
+                temporary.next = kept;
+
+                // THE BUG: the durable node points into the scratch region, which is released first.
+                // Every read of `kept.next` after that is a read of freed storage.
+                kept.next = temporary;
+
+                release region scratch;
+                release region durable;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

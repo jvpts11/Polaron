@@ -31,7 +31,7 @@ using namespace semutil;   // NOLINT(google-build-using-namespace): as in analyz
 
 bool SemanticAnalyzer::strictRegions_ = false;
 
-bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) {
+bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) const {
     // Unknown is the open question of the model (§4): today it answers "yes" so that a shape the
     // analysis cannot place is allowed rather than refused. That is what makes this a checker that
     // FINDS rather than one that GUARANTEES, and flipping it is a decision with a measurement
@@ -67,9 +67,27 @@ bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) {
     if (a.kind == RegionKind::Object && b.kind == RegionKind::Object) {
         return a.owner == b.owner;
     }
-    // The same for two explicit regions: nesting is §10 and is not built, so only identity answers.
+    // TWO EXPLICIT REGIONS, ORDERED BY WHEN THEY WERE BORN (§10).
+    //
+    // Regions are released last-in-first-out: at scope exit, in reverse declaration order. And a
+    // region declared inside a block is necessarily born after the region enclosing that block. So
+    // "born earlier" is exactly "dies later", and one number per region orders an arbitrarily deep
+    // nest without modelling the nest -- which is what makes this a scope-nesting check rather than
+    // lifetime inference, and why it needs no borrow checker.
+    //
+    // Identity first, because a region outlives itself and the birth numbers are equal.
     if (a.kind == RegionKind::Region && b.kind == RegionKind::Region) {
-        return a.owner == b.owner;
+        if (a.owner == b.owner) {
+            return true;
+        }
+        auto ba = regionBirth_.find(a.owner);
+        auto bb = regionBirth_.find(b.owner);
+        if (ba == regionBirth_.end() || bb == regionBirth_.end()) {
+            // One of them is a field region or came from somewhere this frame cannot see. Unordered,
+            // and the default's direction decides -- the same open question as everywhere else.
+            return !strictRegions_;
+        }
+        return ba->second < bb->second;
     }
     return rank(a.kind) >= rank(b.kind);
 }
