@@ -1,0 +1,49 @@
+import System.IO.Console;
+program TransformerInvariantBroken;
+
+// THE HALF THAT PROVES THE OTHER ONE. A rule that travels and is never enforced is a comment.
+//
+// `Gate` applies the same counter and then drives its count negative through a method of its own --
+// state the transformer brought, a rule the transformer stated, and a violation the applier commits
+// without ever naming either. The invariant catches it at the method boundary and the program dies
+// rather than carrying on with a count that cannot be true.
+//
+// That is why it must be the transformer that says it: `Gate` has no idea `hits` has a rule, and
+// under the old arrangement neither did the compiler.
+//
+// Expected: exits non-zero on the invariant, having printed nothing after `before:`
+public bundle Main {
+    public namespace App {
+        public transformer TCounter {
+            public mutable int hits = 0;
+            invariant itself.hits >= 0;
+
+            public procedure hit() returns void {
+                itself.hits = itself.hits + 1;
+                return;
+            }
+            public procedure count() returns int { return itself.hits; }
+        }
+
+        public class Gate applies TCounter {
+            public mutable int width;
+            public constructor Gate(int width) { this.width = width; }
+            // Its own method, touching state it did not declare, breaking a rule it never read.
+            public method rewind(int by) returns void {
+                this.hits = this.hits - by;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Gate g = new Gate(80);
+                g.hit();
+                System.IO.Console.print("before:\n");
+                g.rewind(5);
+                System.IO.Console.print("after: this line must not be reached\n");
+                return;
+            }
+        }
+    }
+}

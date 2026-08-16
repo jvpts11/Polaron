@@ -1,0 +1,57 @@
+import System.IO.Console;
+program TransformerInvariant;
+
+// A RULE THAT TRAVELS WITH THE STATE IT IS ABOUT.
+//
+// A transformer can bring a field. Until now it could not bring the property that must hold OF that
+// field, so the applier was left maintaining a rule about state it never declared -- or, more
+// honestly, not maintaining it, because nothing said what the rule was.
+//
+// It belongs in the transformer for the same reason the field does: whoever wrote the state is the
+// one who knows what must be true of it. Copied into every applying type, it becomes that type's own
+// invariant and is checked by the machinery every class invariant already uses -- entry and exit of
+// each method, with `itself` bound to the applying type on the way in.
+//
+// WHAT THIS IS NOT. The design note also wanted `invariant` to state the LAW OF A RELATION --
+// `itself.into<Other>().into<itself>() == itself`, the round trip that separates a conversion which
+// is right from one that merely compiles. That is a different thing and cannot be this one: a class
+// invariant is checked on entry to every method, so a round-trip law would convert on every call --
+// and the conversion calls methods, which check the invariant, which converts. Unbounded recursion.
+// The note's "checked as a generated property test, not at run time" is not a preference; it is
+// forced, and it is still open.
+//
+// Prints:
+//   counted: 2
+//   still holds: 1
+public bundle Main {
+    public namespace App {
+        public transformer TCounter {
+            public mutable int hits = 0;
+            invariant itself.hits >= 0;
+
+            public procedure hit() returns void {
+                itself.hits = itself.hits + 1;
+                return;
+            }
+            public procedure count() returns int { return itself.hits; }
+            public procedure holds() returns boolean { return itself.hits >= 0; }
+        }
+
+        public class Door applies TCounter {
+            public mutable int width;
+            // Nothing here mentions `hits`, and nothing here maintains its rule.
+            public constructor Door(int width) { this.width = width; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Door d = new Door(80);
+                d.hit();
+                d.hit();
+                System.IO.Console.printf("counted: %d\n", d.count());
+                System.IO.Console.printf("still holds: %d\n", d.holds() ? 1 : 0);
+                return;
+            }
+        }
+    }
+}

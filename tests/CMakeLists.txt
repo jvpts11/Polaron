@@ -3022,6 +3022,35 @@ if(POLARON_WITH_LLVM)
             --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_applied_field_bad.pol")
         set_tests_properties(sema_requires_applied_field_assigned PROPERTIES WILL_FAIL TRUE)
 
+        # A RULE THAT TRAVELS WITH THE STATE IT IS ABOUT. A transformer could bring a field and not
+        # the property that must hold of it, so the applier was left maintaining a rule about state it
+        # never declared — or, more honestly, not maintaining it, because nothing said what it was.
+        add_test(NAME codegen_transformer_invariant_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_invariant.pol"
+            "-DEXPECTED=counted: 2 still holds: 1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # ...and the half that proves it. A rule that travels and is never enforced is a comment:
+        # `Gate` drives the count negative through a method of its own, touching state it did not
+        # declare and breaking a rule it never read, and the program dies at the method boundary.
+        add_test(NAME codegen_transformer_invariant_enforced COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_invariant_broken.pol"
+            "-DPANIC=invariant itself.hits >= 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+        # ...naming the method that broke it, which is the applier's and not the transformer's.
+        add_test(NAME codegen_transformer_invariant_names_the_method COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_invariant_broken.pol"
+            "-DPANIC=in Gate.rewind"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
+
         # ONE SOCKET, FOUR OPERATORS. The design note listed this as an improvement to build, with the
         # guess that it might already work because operators are ordinary `MethodDecl`s -- and it does.
         # What was missing was the test, which is the difference between a feature and an accident that
