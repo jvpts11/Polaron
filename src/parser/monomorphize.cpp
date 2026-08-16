@@ -61,6 +61,12 @@ std::map<std::string, ast::TypeRef> g_aliases;
 std::string g_selfTemplate;
 std::string g_selfConcrete;
 std::set<std::string> g_enumNames;  // enum names in the program (for EnumName.parse() force-mono)
+// The field a structural body is being unrolled FOR, set for the duration of one copy. Empty
+// otherwise, which is what keeps the ordinary clone -- the one that monomorphizes generics -- from
+// looking at a `.name` that belongs to somebody's real object.
+std::string g_fieldVar;
+std::string g_fieldName;
+std::string g_fieldType;
 
 // Resolve a bare type-name string (a typeArg, superclass, interface, or cast target) through the
 // alias map, returning the canonical form of its target (or the name unchanged if not an alias).
@@ -263,6 +269,20 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         return n;  // was missing -> cloned `null` became nullptr -> typeOf(*nullptr) crash
     }
     if (const auto* x = dynamic_cast<const ast::MemberExpr*>(e)) {
+        // THE LOOP VARIABLE OF A STRUCTURAL BODY, folded to what it is for this copy. `field.name`
+        // and `field.typeName` are named after the reflection API they replace (`Field.name()`,
+        // `Field.typeName()`) on purpose: the same words, minus the metadata, the allocation and the
+        // dispatch. Done inside the cloner because it already visits every node -- a second visitor
+        // would go out of date the first time a node kind is added, quietly and only here.
+        if (!g_fieldVar.empty() && (x->member == "name" || x->member == "typeName")) {
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(x->object.get());
+                oid != nullptr && oid->name == g_fieldVar) {
+                auto lit = std::make_unique<ast::StringLiteralExpr>();
+                lit->loc = x->loc;
+                lit->value = x->member == "name" ? g_fieldName : g_fieldType;
+                return lit;
+            }
+        }
         auto n = std::make_unique<ast::MemberExpr>();
         n->loc = x->loc;
         n->member = x->member;
@@ -285,6 +305,25 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
             }
         }
         n->object = cloneExpr(x->object.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::MemberSpliceExpr*>(e)) {
+        auto obj = cloneExpr(x->object.get(), s);
+        auto nm = cloneExpr(x->name.get(), s);
+        // `x.[expr]` becomes the member it names, as soon as the name is a string. That happens on
+        // the very clone that substituted `field.name` for a literal just below, so a splice resolves
+        // in the same pass that gave it something to resolve to.
+        if (const auto* lit = dynamic_cast<const ast::StringLiteralExpr*>(nm.get())) {
+            auto mem = std::make_unique<ast::MemberExpr>();
+            mem->loc = x->loc;
+            mem->member = lit->value;
+            mem->object = std::move(obj);
+            return mem;
+        }
+        auto n = std::make_unique<ast::MemberSpliceExpr>();
+        n->loc = x->loc;
+        n->object = std::move(obj);
+        n->name = std::move(nm);
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::MethodRefExpr*>(e)) {
@@ -653,6 +692,8 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->elemType = substType(x->elemType, s);
         n->isVar = x->isVar;
         n->varName = x->varName;
+        n->indexName = x->indexName;
+        n->isComptime = x->isComptime;
         n->iterable = cloneExpr(x->iterable.get(), s);
         n->body = cloneBlock(x->body, s);
         return n;
@@ -926,7 +967,18 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         n->externSymbol = x->externSymbol;
         n->propertySetter = x->propertySetter;
         n->name = x->name;
+        // A type parameter that is `itself` is not a parameter at all -- it is the applying type,
+        // and this copy is being made FOR that type. Substituted like any other type name, so a
+        // structural `copy<itself f>` arrives at `Point` already knowing it builds a Point.
         n->typeParams = x->typeParams;
+        for (std::string& tp : n->typeParams) {
+            if (auto it = s.find(tp); it != s.end()) {
+                tp = it->second;
+            }
+        }
+        n->boundTarget = x->boundTarget;
+        n->boundTargetLoc = x->boundTargetLoc;
+        n->boundTargetMutable = x->boundTargetMutable;
         for (const auto& p : x->params) {
             n->params.push_back({substType(p.type, s), p.name, p.loc});
         }
@@ -2045,6 +2097,21 @@ std::string spellBound(const std::string& bound) {
 }  // namespace
 
 // Public deep-clone entry points (no type substitution), for AST-level passes outside this file.
+// One copy of a structural body, for one field. The substitution rides the ordinary clone: setting
+// three names for the duration is all that separates it from any other deep copy, which is why a
+// structural procedure costs nothing at run time for the same reason a generic does not.
+ast::Block cloneBlockForField(const ast::Block& b, const std::string& var, const std::string& name,
+                              const std::string& typeName) {
+    g_fieldVar = var;
+    g_fieldName = name;
+    g_fieldType = typeName;
+    ast::Block out = cloneBlock(b, Subst{});
+    g_fieldVar.clear();
+    g_fieldName.clear();
+    g_fieldType.clear();
+    return out;
+}
+
 ast::ExprPtr cloneExprDeep(const ast::Expr* e) { return cloneExpr(e, Subst{}); }
 ast::StmtPtr cloneStmtDeep(const ast::Stmt* s) { return cloneStmt(s, Subst{}); }
 

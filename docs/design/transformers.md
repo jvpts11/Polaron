@@ -750,7 +750,38 @@ Whether the two forms may be mixed on one procedure — the bound form and the `
 being two ways to write one thing. Nobody has asked for the mixture; the note records it only because
 a rule of one-form-per-procedure costs nothing to add now and is expensive once programs exist.
 
-### 3. Structural procedures — one body over the applying type's FIELDS
+### 3. Structural procedures — one body over the applying type's FIELDS — **BUILT 2026-08-16**
+
+**Built.** `comptime foreach (field in itself.fields) { ... }` is unrolled into one copy of the body
+per field of the applying type — inherited first, then its own, which is the order a constructor
+fills them. `tests/samples/transformer_structural.pol` writes `TCloner`, `TEquator` and a
+`TDescriber` **in the language**, and they run. 915 tests.
+
+Decided with it: the constraint form is `x.[expr]` — *the member whose name is this*. A magic binding
+(`f.field`) was refused for the third time on the same grounds as the `each` marker and the nominal
+constraint: it cannot be told from reaching a member actually called `field`. And the body SEES THE
+FIELD'S TYPE and may branch on it (`field.typeName == "String"`), which is what makes a describer or
+a serializer writable rather than only a copier.
+
+**The decided arm has to be folded, not left to the optimizer.** The branch that does not apply is
+written for a DIFFERENT type and need not type-check for this one, so `if ("int" == "String")` and
+its body are gone before the analyzer runs. Without that, type-directed structural code compiles for
+one field and fails on the next.
+
+**The vocabulary is the reflection API's on purpose.** `fields`, `name`, `typeName` are what
+`System.Serialize` already calls at RUN TIME, paying metadata, allocation and dispatch for it. The
+same words, minus the cost — and the substitution rides the ordinary clone (`cloneBlockForField`),
+which is why a structural procedure costs nothing at run time for the same reason a generic does not.
+
+Two things found on the way. `<itself f>` did not parse at all — `itself` is a keyword and the type
+parameter slot wanted an identifier, so the flagship structural shape (a copier that builds another
+of whatever this is) was unwritable. And the `call` alias is a SECOND copy of the same body, so it
+carries the same bound target and owes the same consent; missing it reported a type as not entrusting
+the empty string, which named nothing.
+
+**Left open, and not decided here:** a transformer applied to BOTH a base class and a derived one
+produces a member on each, and the derived copy is refused for overriding without `override`. It is a
+real interaction and it deserves its own answer.
 
 A transformer can supply a fixed body or a socket. What it cannot supply is a body **derived from the
 shape** of the type that applies it: clone every field, compare every field, serialise every field.

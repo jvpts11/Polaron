@@ -48,6 +48,12 @@ void MemberExpr::dump(std::string& out, int indent) const {
     object->dump(out, indent + 1);
 }
 
+void MemberSpliceExpr::dump(std::string& out, int indent) const {
+    line(out, indent, "MemberSplice '.[]'");
+    object->dump(out, indent + 1);
+    name->dump(out, indent + 1);
+}
+
 void CallExpr::dump(std::string& out, int indent) const {
     line(out, indent, "Call");
     line(out, indent + 1, "callee:");

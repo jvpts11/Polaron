@@ -159,7 +159,9 @@ private:
     ast::StmtPtr parseWhileStatement();
     ast::StmtPtr parseDoStatement();
     ast::StmtPtr parseForStatement();
-    ast::StmtPtr parseForeachStatement();  // C#-style `foreach (T v in coll)` (spec 7.6)
+    // C#-style `foreach (T v in coll)` (spec 7.6), and the unrolled `comptime foreach (field in
+    // itself.fields)`, whose loop variable names a field rather than holding a value.
+    ast::StmtPtr parseForeachStatement(bool isComptime = false);
     ast::StmtPtr parseMatch();
     ast::StmtPtr parseSwitch();
     ast::StmtPtr parseDefer();
