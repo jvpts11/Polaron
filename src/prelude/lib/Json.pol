@@ -200,13 +200,21 @@
                 return;
             }
             public method prettyString() returns String {   // indented multi-line JSON
-                StringBuilder sb = new StringBuilder() on heap;
+                mutable StringBuilder sb = new StringBuilder() on heap;
                 this.prettyInto(sb, 0);
-                return sb.toString();
+                String out = sb.toString();
+                delete sb;                 // the builder was leaking too, once per call
+                return out;
             }
             public static method parse(String src) returns Json {
-                JsonParser p = new JsonParser(src) on heap;
-                return p.parseValue();
+                // The parser is scaffolding -- a position in a string -- and was never freed: one
+                // leak per document, in the method a program calls once per file. And a UTF-8 BOM
+                // made the whole thing parse to nothing, silently, because the scanner looking for
+                // `{` found three bytes no format expects and concluded the document was empty.
+                mutable JsonParser* p = new JsonParser(Strings.withoutBom(src)) on heap;
+                Json doc = p.parseValue();
+                delete p;
+                return doc;
             }
         }
         // JSON Pointer (RFC 6901): resolve a "/a/0/b" path against a Json tree, stepping into object members

@@ -252,6 +252,37 @@
             private static method isSpaceChar(char c) returns boolean {
                 return c == ' ' || c == '\t' || c == '\n' || c == '\r';
             }
+            // THREE BYTES THAT MAKE A FILE PARSE TO NOTHING.
+            //
+            // Every Windows editor writes a UTF-8 byte-order mark at the start of a text file, and
+            // PowerShell's `Set-Content -Encoding utf8` adds one without saying so. No document
+            // format expects it: an XML parser looking for `<` finds U+FEFF, a JSON parser looking
+            // for `{` finds it, and both conclude the document is empty. Nothing errors -- the
+            // caller gets an empty tree and a blank result, which is the worst way for three
+            // invisible bytes to behave.
+            //
+            // Found by rendering an SVG written with PowerShell: a perfectly valid file produced a
+            // perfectly blank image, in silence. Every document parser in this library calls this
+            // now, so a file that opens correctly in an editor parses correctly here.
+            //
+            // Both spellings are skipped. A String holds decoded text, so the mark normally arrives
+            // as the single character U+FEFF -- but a file read as raw bytes and widened carries the
+            // three encoded ones (EF BB BF) instead, and a helper that only knows one of the two is
+            // a helper that works until the day the caller changes how it reads.
+            public static method withoutBom(String text) returns String {
+                mutable int i = 0;
+                while (i < text.length()) {
+                    int c = cast<int>(text.charAt(i));
+                    if (c == 65279 || c == 239 || c == 187 || c == 191) {
+                        i = i + 1;
+                    } else {
+                        break;
+                    }
+                }
+                if (i == 0) { return text; }
+                return text.substring(i, text.length());
+            }
+
             // Trims whitespace from one end only (spec 4); the built-in String.trim does both ends.
             public static method trimStart(String text) returns String {
                 mutable int i = 0;
