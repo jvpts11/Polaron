@@ -2931,6 +2931,28 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                                                         : std::vector<bool>(m->params.size(), false);
                             scanEscapes(m->body, alias, esc);
                             escapesToReceiver_[key] = esc;
+                            // A VIRTUAL CALL MAY RUN ANY OVERRIDE, so the summary read at a call site
+                            // has to be the union over all of them. Read from the static type alone,
+                            // an override that keeps what the base does not is an escape nobody
+                            // sees -- and inheritance is the one place this analysis genuinely has
+                            // to do more work than it would without it. Computable because the
+                            // hierarchy is closed at compile time; `unimport`/`reimport` is where
+                            // that stops being true, and is its own question.
+                            for (std::string up = cls.superclass; !up.empty();) {
+                                const std::string upKey = baseType(up) + "." + m->name;
+                                auto& base = escapesToReceiver_[upKey];
+                                if (base.size() < esc.size()) {
+                                    base.resize(esc.size(), false);
+                                }
+                                for (std::size_t i = 0; i < esc.size(); ++i) {
+                                    if (esc[i] && !base[i]) {
+                                        base[i] = true;
+                                        escapeSummaryChanged_ = true;   // the fixpoint must see it
+                                    }
+                                }
+                                const ClassInfo* upInfo = lookupClass(up);
+                                up = upInfo == nullptr ? std::string() : upInfo->superclass;
+                            }
                             for (const auto& [param, field] : escapeScanFieldFor_) {
                                 escapesToReceiverField_[key + "#" + std::to_string(param)] = field;
                             }

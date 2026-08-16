@@ -1,0 +1,57 @@
+program RegionVirtualEscape;
+
+// A VIRTUAL CALL MAY RUN ANY OVERRIDE, so the escape summary read at a call site has to be the union
+// over all of them.
+//
+// `Sink.accept` keeps nothing. `Keeper.accept` keeps what it is given. Called through a `Sink*`, the
+// static type says "keeps nothing" and the object may well be a Keeper -- so a frame-local passed
+// there dangles, and the summary read from the base alone says it is fine.
+//
+// THIS IS THE ONE PLACE INHERITANCE COSTS THE ANALYSIS ANYTHING, and it is worth being exact about:
+// it is not that ownership and inheritance conflict. Inheritance is an identity relation and the
+// region tree is a containment one -- a Derived is not INSIDE a Base, it IS one, so a hierarchy adds
+// no nodes to the region tree at all. What it adds is several possible callees behind one call, and
+// the answer is the standard one: take the union, which is computable because the hierarchy is
+// closed at compile time.
+//
+// (`unimport`/`reimport` is where that stops being true, and is its own question.)
+//
+// Expected: the frame-local passed through the base type is refused
+public bundle Main {
+    public namespace App {
+        public class Leaf {
+            public mutable int value;
+            public constructor Leaf(int value) { this.value = value; }
+        }
+
+        public class Sink {
+            public constructor Sink() { }
+            // Keeps nothing.
+            public method accept(Leaf* leaf) returns void { return; }
+        }
+
+        public class Keeper extends Sink {
+            public mutable nullable Leaf* held;
+            public constructor Keeper() { this.held = null; }
+            // ...but this one does.
+            public override method accept(Leaf* leaf) returns void {
+                this.held = leaf;
+                return;
+            }
+        }
+
+        public class Probe {
+            // `s` outlives this frame; `own` does not. Through the base type, the summary used to
+            // say `accept` keeps nothing.
+            public static method feed(Sink* s) returns void {
+                Leaf own = new Leaf(1);
+                s.accept(own);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

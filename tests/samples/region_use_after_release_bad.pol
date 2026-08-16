@@ -1,0 +1,39 @@
+import System.Memory.Units.bytes;
+program RegionUseAfterRelease;
+
+// READING THROUGH A POINTER INTO A REGION AFTER THE REGION IS RELEASED.
+//
+// This was not checked at all, and the design note called it embarrassing precisely because it is
+// easy: the analyzer already kept flow-sensitive `deleted_`/`freed_` sets for `delete`, so the
+// machinery existed and simply did not cover regions. The same mistake wearing a different keyword.
+//
+// It gets its own message rather than the `delete` one, because the fix is different: nobody wrote a
+// `delete` to move, and the advice is to read before the release or copy what is needed out.
+//
+// What must still be ALLOWED is the case next door -- `cascade move t from region old to region
+// fresh` relocates the object, so releasing `old` afterwards frees nothing it holds. That is
+// `cascade_move.pol`, and the first version of this check refused it: the map that says where things
+// live has to follow the move, or a live object is reported as freed.
+//
+// Expected: use of 'n' after `release region scratch'
+public bundle Main {
+    public namespace App {
+        public class Node {
+            public mutable int value;
+            public constructor Node(int value) { this.value = value; }
+        }
+
+        public class Probe {
+            public static method afterRelease() returns int {
+                region scratch = itself.allocate(512 bytes);
+                Node* n = new Node(7) in region scratch;
+                release region scratch;
+                return n.value;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

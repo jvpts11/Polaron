@@ -1094,6 +1094,21 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 error("'" + rel->region + "' is not a region", rel->loc);
             }
         }
+        // RELEASE KILLS EVERY POINTER INTO THE REGION (§7), flow-sensitively.
+        //
+        // Reading through one after `release region R` was not checked at all, which the design note
+        // called embarrassing precisely because it is easy: the analyzer already keeps `deleted_` and
+        // `freed_` for `delete`, so the machinery existed and simply did not cover regions. It is the
+        // same mistake wearing a different keyword, and the same message can carry it.
+        if (regionBinder_) {
+            for (const auto& [path, region] : regionOf_) {
+                if (region == rel->region) {
+                    deleted_.insert(path);
+                    freed_.insert(path);
+                }
+            }
+            releasedRegions_.insert(rel->region);
+        }
         return;
     }
     if (const auto* rb = dynamic_cast<const ast::RollbackStmt*>(&stmt)) {
@@ -1199,6 +1214,14 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             } else if (rv->type != "region") {
                 error("'" + rn + "' is not a region", cm->loc);
             }
+        }
+        // AND THE OBJECT NOW LIVES SOMEWHERE ELSE. That is what the statement is FOR -- the graph is
+        // relocated so the old region can be released while the object goes on being used -- and the
+        // map that says where things live has to follow, or the release below reports a live object
+        // as freed. Found by the check for use-after-release refusing the very sample that exists to
+        // show a move outliving its region.
+        if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(cm->target.get())) {
+            regionOf_[tid->name] = cm->toRegion;
         }
         return;
     }
