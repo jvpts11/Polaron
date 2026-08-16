@@ -872,7 +872,31 @@ has had a subject that is a relation rather than an object. It would be checked 
 property test, not at run time. A round-trip law is the only thing separating a conversion that is
 right from a conversion that compiles.
 
-### 6. Conditional procedures — the one new word
+### 6. Conditional procedures — **BUILT 2026-08-16**
+
+```polaron
+public procedure largest() returns int when itself applies TComparer { ... }
+```
+
+`applies` was all-or-nothing: every applier got the same equipment, so a transformer that could do
+better for a type with an ordering had to demand the ordering of everybody or give it to nobody.
+`tests/samples/transformer_conditional.pol` gives `largest` only where there is an ordering; the type
+without one still gets the rest.
+
+**The member is ABSENT, not present-and-broken**, and that is the point rather than a side effect. A
+conditional body that existed and failed at run time — or refused to compile inside somebody else's
+transformer — would be the shape this language keeps refusing: a thing that looks available and is
+not. Calling it is an ordinary *no such method*, at the call, in the caller's own file.
+
+`when` is the new word this note predicted would be the only one, and it is SOFT: recognised in this
+one position on a procedure, so it stays usable as an ordinary name — which matters, because it is a
+good name for a field.
+
+The subject is `itself`, the applying type. A condition about a per-target type parameter is refused
+with a message saying why: it would have to be decided once per target, which is a different rule and
+deserves to be asked for rather than assumed.
+
+### 6b. The original text
 
 ```polaron
 procedure sorted() returns itself when Other applies TComparer;

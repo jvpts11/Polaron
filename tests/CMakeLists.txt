@@ -3051,6 +3051,24 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_panic_test.cmake")
 
+        # `when itself applies TComparer` — MORE FOR A TYPE THAT HAS MORE. `applies` was
+        # all-or-nothing, so a transformer that could do better for a type with an ordering had to
+        # demand the ordering of everybody or give it to nobody. The condition is the constraint form
+        # built the same day, read at the DECLARATION instead of at a call site.
+        add_test(NAME codegen_transformer_conditional_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_conditional.pol"
+            "-DEXPECTED=plain: count=3 first=10 ranked: count=3 first=10 largest=30"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # ...and the member is ABSENT, not present-and-broken. A conditional body that existed and
+        # failed at run time would be the shape this language keeps refusing: a thing that looks
+        # available and is not. Calling it is an ordinary "no such method", in the caller's own file.
+        add_test(NAME sema_conditional_procedure_absent COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_conditional_bad.pol")
+        set_tests_properties(sema_conditional_procedure_absent PROPERTIES WILL_FAIL TRUE)
+
         # ONE SOCKET, FOUR OPERATORS. The design note listed this as an improvement to build, with the
         # guess that it might already work because operators are ordinary `MethodDecl`s -- and it does.
         # What was missing was the test, which is the difference between a feature and an accident that

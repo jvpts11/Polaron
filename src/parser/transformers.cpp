@@ -331,7 +331,8 @@ void checkTransport(const ast::ClassDecl& carrier, const Index& index) {
 // transformer `itself` is THE TYPE THAT WILL APPLY THIS, a type that does not exist yet, so binding
 // it here is what completes a procedure's signature at the applying type.
 void applyOne(const ast::ClassDecl& t, const std::string& targetName,
-              std::vector<ast::MemberPtr>& members, const SourceLocation& appliesLoc) {
+              std::vector<ast::MemberPtr>& members, const SourceLocation& appliesLoc,
+              const std::vector<std::string>& appliedHere) {
     // What the type already writes for itself. A procedure it implements REPLACES the transformer's
     // body rather than colliding with it -- that is the point of a bodied procedure being "free and
     // replaceable".
@@ -350,6 +351,30 @@ void applyOne(const ast::ClassDecl& t, const std::string& targetName,
         const std::string name = md != nullptr ? md->name : (fd != nullptr ? fd->name : std::string());
         if (name.empty()) {
             continue;
+        }
+        // `when itself applies TComparer` -- MORE FOR A TYPE THAT HAS MORE. Until this clause,
+        // `applies` was all-or-nothing: every applier got the same equipment, so a transformer that
+        // could do better for a type with an ordering had to either demand the ordering of everybody
+        // or give it to nobody. A condition that does not hold means the member is simply not here,
+        // which is the honest outcome -- not a body that exists and fails.
+        if (md != nullptr && !md->whenTransformer.empty()) {
+            if (md->whenSubject != "itself") {
+                report(md->whenLoc,
+                       "`when " + md->whenSubject + " applies ...` -- the only subject a condition "
+                       "can have here is `itself`, the type that applies this transformer. A "
+                       "condition about a per-target type parameter would have to be decided once "
+                       "per target, and that is a different rule than this one.");
+                continue;
+            }
+            bool holds = false;
+            for (const std::string& applied : appliedHere) {
+                if (applied == md->whenTransformer) {
+                    holds = true;
+                }
+            }
+            if (!holds) {
+                continue;
+            }
         }
         // A PER-TARGET SOCKET names a family, so it is answered by any member of it: a type that
         // can convert to one thing has satisfied `into<each Other>`. Nothing here can know how many
@@ -815,7 +840,8 @@ void expandCore(const std::string& targetName, std::vector<ast::MemberPtr>& memb
                 continue;
             }
         }
-        applyOne(*it->second, targetName, members, appliesLocs.empty() ? declLoc : appliesLocs[0]);
+        applyOne(*it->second, targetName, members, appliesLocs.empty() ? declLoc : appliesLocs[0],
+                 order);
     }
     // AFTER the copies exist, so the members it marks are there to mark.
     markSatisfiedOverrides(members, firstCopy, satisfied, ifaceMethods);
