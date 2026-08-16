@@ -1,0 +1,39 @@
+program EscapeThroughExtern;
+
+// HANDING A POINTER TO C WAS THE QUIET WAY OUT OF THE WHOLE ANALYSIS.
+//
+// An extern function has no body, so no escape summary exists for it -- and "no summary" was reading
+// as "keeps nothing". Whether the C side stores that pointer somewhere that outlives the object is
+// not knowable from here, and under a default of refusing what cannot be proven, assuming the best
+// is the one answer that is definitely wrong.
+//
+// The refusal is not an escape hatch bolted on. The language already has `address` for a raw machine
+// word -- which is exactly what a pointer crossing into C is, and which the model deliberately says
+// nothing about. Declaring the parameter that way is the program stating where its own proof stops,
+// in the declaration, once, instead of at every call.
+public bundle Main {
+    public namespace App {
+        public class Item {
+            public mutable int value;
+            public constructor Item(int value) { this.value = value; }
+        }
+
+        public class Bridge {
+            private extern cdecl static method remember(Item* item) returns void;
+
+            public static method hand(Item* item) returns void {
+                Bridge.remember(item);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Item* it = new Item(1) on heap;
+                Bridge.hand(it);
+                delete it;
+                return;
+            }
+        }
+    }
+}

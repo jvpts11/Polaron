@@ -1484,6 +1484,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         }
                         mi.returnIsMove = m->returnType.isMove;
                         mi.isVariadic = m->isVariadic;
+                        mi.isExtern = m->isExtern;
                         mi.isDeprecated = m->isDeprecated;
                         mi.isInterrupt = m->isInterrupt;
                         mi.visibility = m->visibility;
@@ -2758,7 +2759,12 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
         if (oid == nullptr) {
             return -2;
         }
-        if (oid->name == "this") {
+        // `this.field`, and `MyClass.field` -- which is the same store when the field is STATIC. A
+        // static method has no `this` to write through, so the only way it can keep something is by
+        // naming its own class, and reading only `this.` meant a static method recorded nothing at
+        // all. Static storage is the longest-lived a program has, so a borrow kept there is the one
+        // most likely to be wrong.
+        if (oid->name == "this" || baseType(oid->name) == escapeScanClass_) {
             return -1;
         }
         auto ta = alias.find(oid->name);              // is the target object a parameter (or its alias)?

@@ -506,6 +506,21 @@ add_test(NAME sema_private_constructor_errors
 set_tests_properties(sema_private_constructor_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "'Made' is private to 'Made'")
 
+# Static calls resolve on a different path in the compiler, and the region check lived only on the
+# instance one -- so handing something to a static was invisible, at the longest-lived storage a
+# program has. The scan had the matching gap: a static method names its own class to keep anything.
+add_test(NAME sema_escape_through_static_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_through_static.pol")
+set_tests_properties(sema_escape_through_static_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "'register' keeps that argument")
+
+# An extern has no body, so no summary can exist and nothing was checked: handing a pointer to C was
+# the quiet way out of the whole analysis. `address` is how a program says its proof stops here.
+add_test(NAME sema_escape_through_extern_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_through_extern.pol")
+set_tests_properties(sema_escape_through_extern_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "is an extern function")
+
 # Constructors had no escape summary, so `new Keeper(x)` was checked against nothing -- and that is
 # the call every object graph is built out of. The summary does not refuse the construction: it BOUNDS
 # the object, so a keeper built over a frame-local item is frame-local whatever `on heap` says, and

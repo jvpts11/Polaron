@@ -40,13 +40,16 @@ using namespace semutil;   // NOLINT(google-build-using-namespace): as in analyz
 // all. Now it can: a value the analysis cannot place is refused, which is what separates a checker
 // that FINDS from one that GUARANTEES.
 //
-// `--permissive-regions` keeps the old direction for a program that has not been read against this
-// yet. It is a migration aid and it takes the guarantee away while it is on.
-bool SemanticAnalyzer::strictRegions_ = true;
-
+// AND THERE IS NO DIAL. The flag that used to soften this is gone: the analysis divides a program
+// into regions, and saying some part of it belongs to none makes every proof about the rest
+// unavailable, because those proofs are relative to a partition that no longer covers the program.
+// A partial guarantee here is not a weaker guarantee, it is not one.
+//
+// `--no-region-binder` turns the analysis off for a whole program, and that is the only choice on
+// offer: not more safety or less, but "cannot write bad code" against "can write it anywhere".
 bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) const {
     if (a.kind == RegionKind::Unknown || b.kind == RegionKind::Unknown) {
-        return !strictRegions_;
+        return false;
     }
     // THE ORDER THE MODEL STATES (§1.3), as ranks:
     //
@@ -85,9 +88,9 @@ bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) con
         auto ba = regionBirth_.find(a.owner);
         auto bb = regionBirth_.find(b.owner);
         if (ba == regionBirth_.end() || bb == regionBirth_.end()) {
-            // One of them is a field region or came from somewhere this frame cannot see. Unordered,
-            // and the default's direction decides -- the same open question as everywhere else.
-            return !strictRegions_;
+            // One of them is a field region or came from somewhere this frame cannot see: unordered,
+            // which is the same as unplaceable, and gets the same answer as everything else here.
+            return false;
         }
         return ba->second < bb->second;
     }
@@ -325,16 +328,17 @@ void SemanticAnalyzer::computeOwnership(const ast::Program& program) {
                     if (!contents.empty()) {
                         invalidators_.insert(self + "." + m->name);
                     }
-                    // A STATIC FIELD HAS NO DESTRUCTOR TO SPEAK FOR IT, so its ownership is read
-                    // from wherever the class frees it -- `drop` deleting a table out of
-                    // `Database.store` is the whole of the evidence there is, and it is enough. Only
-                    // for statics: for an instance field the destructor is the right place to look
-                    // and reading every method instead would call a class an owner because one
-                    // method happens to delete something.
+                    // DELETING YOUR OWN FIELD IS CLAIMING IT, wherever you write it. A destructor is
+                    // the usual place and not the only one: `Stack.pop` frees the node it unlinks,
+                    // and a static field has no destructor that could ever speak for it -- `drop`
+                    // deleting a table out of `Database.store` is the whole of the evidence there is.
+                    //
+                    // Nothing is lost by reading every method: freeing something you do not own is
+                    // itself a bug, so a class that deletes `this.f` has said what it means either
+                    // way. What stays destructor-only is CONTENTS, where the distinction is between
+                    // an owner and a view and one careless `delete` inside a helper would erase it.
                     for (const std::string& f : freed) {
-                        if (const FieldInfo* fi = findField(self, f); fi != nullptr && fi->isStatic) {
-                            ownedFields_[self].insert(f);
-                        }
+                        ownedFields_[self].insert(f);
                     }
                     for (const std::string& f : contents) {
                         if (const FieldInfo* fi = findField(self, f); fi != nullptr && fi->isStatic) {
@@ -793,6 +797,150 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                 }
             }
         }
+    }
+}
+
+// §3 AT A CALL, over lifetimes rather than over a set of names -- for EVERY call, which it was not.
+//
+// This lived inline in the instance-call path, and static calls resolve somewhere else entirely, so
+// `Registry.register(item)` went through no check at all: a static method is a method, and handing it
+// something was invisible. Written once here, both paths ask the same question.
+//
+// A static call has no receiver expression. What keeps the argument is then static storage, which
+// outlives everything, so nothing borrowed can be proven to outlive it -- which is the right answer
+// and the strictest one in the model.
+void SemanticAnalyzer::checkKeptArguments(const std::string& ownerClass,
+                                          const std::string& methodName, const ast::CallExpr& call,
+                                          const ast::Expr* receiver,
+                                          const std::vector<std::string>& paramTypes,
+                                          bool calleeIsExtern) {
+    if (!regionBinder_) {
+        return;
+    }
+    // A FOREIGN FUNCTION HAS NO BODY TO READ, so no summary exists and nothing was checked --
+    // handing a pointer across the boundary was the quiet way out of the whole analysis. There is no
+    // proof to be had about what C does with it, and under a default of "refuse what cannot be
+    // proven" the honest answer is to refuse, not to assume the best.
+    //
+    // Not an escape hatch bolted on: the language already has `address` for a raw machine word, which
+    // is what a pointer crossing into C actually is and which the model deliberately says nothing
+    // about. Declaring the extern that way is the program stating where its own proof stops -- in
+    // the declaration, once, rather than at every call.
+    if (calleeIsExtern) {
+        for (std::size_t i = 0; i < call.args.size(); ++i) {
+            const bool aliases = i < paramTypes.size() ? isRefType(paramTypes[i])
+                                                       : isRefType(typeOf(*call.args[i]));
+            if (aliases) {
+                error("region-binder: '" + methodName +
+                          "' is an extern function, so nothing here can say whether it keeps that "
+                          "pointer -- and if it does, this program cannot prove the storage outlives "
+                          "it. Declare the parameter as `address` to say the lifetime is outside the "
+                          "language, or hand across a copy",
+                      call.args[i]->loc);
+            }
+        }
+        return;   // no summary can exist for it; the refusal above is the whole answer
+    }
+    auto sit = escapesToReceiver_.find(ownerClass + "." + methodName);
+    if (sit == escapesToReceiver_.end()) {
+        return;
+    }
+    // This is the half the SQL engine's bug went through: `out.keep(table.at(i))` stores a row the
+    // TABLE owns inside a result set, and both of them outlive the frame -- so a check that only knew
+    // "is this argument frame-local" had nothing to say. It compiled, ran, and printed another
+    // statement's rows.
+    const Lifetime recv =
+        receiver != nullptr ? lifetimeOf(*receiver) : Lifetime{RegionKind::Root, ""};
+    for (std::size_t i = 0; i < call.args.size() && i < sit->second.size(); ++i) {
+        if (!sit->second[i]) {
+            continue;
+        }
+        // WHETHER IT ALIASES IS THE PARAMETER'S QUESTION, not the argument's. A local declared
+        // `Leaf own` passed to `accept(Leaf* leaf)` hands the callee a pointer to frame storage --
+        // the argument's own type says value and the aliasing is real. Reading the argument's type
+        // instead let every such call through, which is most of them.
+        const bool aliases =
+            i < paramTypes.size() ? isRefType(paramTypes[i]) : isRefType(typeOf(*call.args[i]));
+        if (!aliases) {
+            continue;
+        }
+        // A HANDOVER IS NOT A BORROW. If the receiver's class frees the field the argument lands in,
+        // the receiver becomes its owner and there is no outlives question -- `list.add(item)` is the
+        // commonest line in the language.
+        auto fit =
+            escapesToReceiverField_.find(ownerClass + "." + methodName + "#" + std::to_string(i));
+        if (fit != escapesToReceiverField_.end() && anyFieldOwns(ownerClass, fit->second)) {
+            continue;
+        }
+        // A CONTAINER BORROWS ITS ELEMENTS; THE OBJECT HOLDING THE CONTAINER MAY OWN THEM.
+        // `ArrayList` frees its storage and nothing in it, so `add` is always a borrow when read on
+        // its own -- but `this.rows.add(row)` inside `Table`, whose destructor walks those rows and
+        // deletes each one, is a handover to `Table`. The list is where the value lands; the owner is
+        // one level out.
+        //
+        // This is the composition Rust spells with a lifetime parameter on the container. Here it is
+        // read off the destructor of whoever holds it, which is the same fact without the annotation
+        // -- and without it, every insertion into an owned collection reads as an unprovable borrow.
+        if (fit != escapesToReceiverField_.end() && fit->second.find('*') != std::string::npos) {
+            if (const auto* rmem = dynamic_cast<const ast::MemberExpr*>(receiver)) {
+                // A STATIC CONTAINER NAMES ITS CLASS: `Database.store.add(table)`. Asking `typeOf`
+                // for the type of a class name answers nothing, and the persistent store of a
+                // database is exactly the shape that reaches this line.
+                std::string holder;
+                if (const auto* hid = dynamic_cast<const ast::IdentifierExpr*>(rmem->object.get());
+                    hid != nullptr && lookupLocal(hid->name) == nullptr &&
+                    lookupClass(hid->name) != nullptr) {
+                    holder = baseType(hid->name);
+                } else {
+                    holder = baseType(typeOf(*rmem->object));
+                }
+                auto oit = ownedContents_.find(holder);
+                if (oit != ownedContents_.end() && oit->second.count(rmem->member) > 0) {
+                    continue;
+                }
+            }
+        }
+        const Lifetime arg = lifetimeOf(*call.args[i]);
+        // FILLING A FRESH OBJECT LOWERS ITS BOUND rather than failing. Nothing owns it yet, so
+        // nothing can outlive it and this store cannot dangle -- but the borrow that went in is now
+        // part of what it is, and the accumulated bound is what gets checked the moment it is
+        // returned or stored somewhere.
+        if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(receiver)) {
+            if (auto acq = acquired_.find(rid->name); acq != acquired_.end()) {
+                acq->second = outlivesOrEqual(acq->second, arg) ? arg : acq->second;
+                continue;
+            }
+        }
+        // STORING INTO `this` IS THE CALLER'S QUESTION, and the escape summary is how it gets there:
+        // `addAll` puts another list's elements into ours, and whether those outlive us is knowable
+        // only where both lists are named. Answering it here made every container's own transfer
+        // method an error against a lifetime the method was never given.
+        //
+        // What stays refused here is frame-local or region storage escaping into `this`, because that
+        // one IS decidable here and the frame is about to end.
+        //
+        // ROOTED AT `this`, not only `this` itself. `this.seen.add(row)` inside a view's `keep` is
+        // the same sentence as `this.keep(row)` one level in: the value ends up somewhere that dies
+        // with us, and whether it outlives us is a question about the caller's two objects, not
+        // about ours. Reading only a bare `this` made every wrapper method answer for its caller.
+        {
+            const ast::Expr* root = receiver;
+            while (const auto* rm = dynamic_cast<const ast::MemberExpr*>(root)) {
+                root = rm->object.get();
+            }
+            if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(root);
+                tid != nullptr && tid->name == "this" && arg.kind != RegionKind::Activation &&
+                arg.kind != RegionKind::Region) {
+                continue;
+            }
+        }
+        if (outlivesOrEqual(arg, recv)) {
+            continue;
+        }
+        const std::string said = "region-binder: '" + methodName + "' keeps that argument, and " +
+                                 describeRegion(recv) + " outlives " + describeRegion(arg) +
+                                 ", so what it keeps is freed first. " + regionAdvice(arg, recv);
+        error(said, call.args[i]->loc);
     }
 }
 

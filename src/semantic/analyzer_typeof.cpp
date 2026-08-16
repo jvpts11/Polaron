@@ -2287,6 +2287,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                             checkCallArgs(call->args, mit->second.paramTypes, "'" + mem->member + "'", &mit->second.moveParams);
                             checkComptimeArgs(call->args, mit->second.comptimeParams,
                                               "'" + mem->member + "'");
+                            // A STATIC METHOD IS A METHOD. This path resolves separately from the
+                            // instance one, and the region check lived only in the other -- so
+                            // handing something to a static was invisible, and a static field is the
+                            // longest-lived storage a program has.
+                            checkKeptArguments(baseType(objId->name), mem->member, *call,
+                                               /*receiver=*/nullptr, mit->second.paramTypes,
+                                               mit->second.isExtern);
                             if (call->args.size() != mit->second.paramCount) {
                                 error("method '" + mem->member + "' expects " +
                                           std::to_string(mit->second.paramCount) + " argument(s) but got " +
@@ -2955,115 +2962,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     const LocalVar* lv = lookupLocal(aid->name);
                     return lv != nullptr && isRefType(lv->type);
                 };
-                auto sit = escapesToReceiver_.find(baseType(objType) + "." + mem->member);
-                if (sit != escapesToReceiver_.end()) {
-                    // §3 AT A CALL, over lifetimes rather than over a set of names.
-                    //
-                    // This is the half the SQL engine's bug went through: `out.keep(table.at(i))`
-                    // stores a row the TABLE owns inside a result set, and both of them outlive the
-                    // frame -- so a check that only knew "is this argument frame-local" had nothing
-                    // to say. It compiled, ran, and printed another statement's rows.
-                    const Lifetime recv = lifetimeOf(*mem->object);
-                    for (std::size_t i = 0; i < call->args.size() && i < sit->second.size(); ++i) {
-                        if (!sit->second[i]) {
-                            continue;
-                        }
-                        // WHETHER IT ALIASES IS THE PARAMETER'S QUESTION, not the argument's. A local
-                        // declared `Leaf own` passed to `accept(Leaf* leaf)` hands the callee a
-                        // pointer to frame storage -- the argument's own type says value and the
-                        // aliasing is real. Reading the argument's type instead let every such call
-                        // through, which is most of them.
-                        const bool aliases =
-                            i < m->paramTypes.size() ? isRefType(m->paramTypes[i])
-                                                     : isRefType(typeOf(*call->args[i]));
-                        if (!aliases) {
-                            continue;
-                        }
-                        // A HANDOVER IS NOT A BORROW. If the receiver's class frees the field the
-                        // argument lands in, the receiver becomes its owner and there is no outlives
-                        // question -- `list.add(item)` is the commonest line in the language.
-                        const std::string recvClass = baseType(objType);
-                        auto fit = escapesToReceiverField_.find(recvClass + "." + mem->member + "#" +
-                                                                std::to_string(i));
-                        if (fit != escapesToReceiverField_.end() &&
-                            anyFieldOwns(recvClass, fit->second)) {
-                            continue;
-                        }
-                        // A CONTAINER BORROWS ITS ELEMENTS; THE OBJECT HOLDING THE CONTAINER MAY OWN
-                        // THEM. `ArrayList` frees its storage and nothing in it, so `add` is always a
-                        // borrow when read on its own -- but `this.rows.add(row)` inside `Table`,
-                        // whose destructor walks those rows and deletes each one, is a handover to
-                        // `Table`. The list is where the value lands; the owner is one level out.
-                        //
-                        // This is the composition Rust spells with a lifetime parameter on the
-                        // container. Here it is read off the destructor of whoever holds it, which is
-                        // the same fact without the annotation -- and without it, every insertion
-                        // into an owned collection in the language reads as an unprovable borrow.
-                        if (fit != escapesToReceiverField_.end() &&
-                            fit->second.find('*') != std::string::npos) {
-                            if (const auto* rmem =
-                                    dynamic_cast<const ast::MemberExpr*>(mem->object.get())) {
-                                // A STATIC CONTAINER NAMES ITS CLASS: `Database.store.add(table)`.
-                                // Asking `typeOf` for the type of a class name answers nothing, and
-                                // the persistent store of a database is exactly the shape that
-                                // reaches this line.
-                                std::string holder;
-                                if (const auto* hid =
-                                        dynamic_cast<const ast::IdentifierExpr*>(rmem->object.get());
-                                    hid != nullptr && lookupLocal(hid->name) == nullptr &&
-                                    lookupClass(hid->name) != nullptr) {
-                                    holder = baseType(hid->name);
-                                } else {
-                                    holder = baseType(typeOf(*rmem->object));
-                                }
-                                auto oit = ownedContents_.find(holder);
-                                if (oit != ownedContents_.end() &&
-                                    oit->second.count(rmem->member) > 0) {
-                                    continue;
-                                }
-                            }
-                        }
-                        const Lifetime arg = lifetimeOf(*call->args[i]);
-                        // FILLING A FRESH OBJECT LOWERS ITS BOUND rather than failing. Nothing owns
-                        // it yet, so nothing can outlive it and this store cannot dangle -- but the
-                        // borrow that went in is now part of what it is, and the accumulated bound is
-                        // what gets checked the moment it is returned or stored somewhere.
-                        if (const auto* rid =
-                                dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
-                            if (auto acq = acquired_.find(rid->name); acq != acquired_.end()) {
-                                acq->second = outlivesOrEqual(acq->second, arg) ? arg : acq->second;
-                                continue;
-                            }
-                        }
-                        // STORING INTO `this` IS THE CALLER'S QUESTION, and the escape summary is how
-                        // it gets there: `addAll` puts another list's elements into ours, and whether
-                        // those outlive us is knowable only where both lists are named. Answering it
-                        // here made every container's own transfer method an error against a lifetime
-                        // the method was never given.
-                        //
-                        // What stays refused here is frame-local or region storage escaping into
-                        // `this`, because that one IS decidable here and the frame is about to end.
-                        if (const auto* tid =
-                                dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                            tid != nullptr && tid->name == "this" &&
-                            arg.kind != RegionKind::Activation && arg.kind != RegionKind::Region) {
-                            continue;
-                        }
-                        if (outlivesOrEqual(arg, recv)) {
-                            continue;
-                        }
-                        const std::string said =
-                            "region-binder: '" + mem->member + "' keeps that argument, and " +
-                            describeRegion(recv) + " outlives " + describeRegion(arg) +
-                            ", so what it keeps is freed first. " + regionAdvice(arg, recv);
-                        // A proof and an absence of proof, told apart the same way as at a store.
-                        if (arg.kind == RegionKind::Object) {
-                            warn(said, call->args[i]->loc);
-                        } else {
-                            error(said, call->args[i]->loc);
-                        }
-                    }
-                }
+                checkKeptArguments(baseType(objType), mem->member, *call, mem->object.get(),
+                                   m->paramTypes, m->isExtern);
                 // escapes-into-parameter (§8): the callee stores argument i into argument j's field. If i is
                 // activation-owned and j outlives it (j is not itself activation-local), i dangles inside j.
                 auto pit = escapesToParam_.find(baseType(objType) + "." + mem->member);
