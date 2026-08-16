@@ -444,21 +444,58 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // activation-owned -- `this`, a parameter, a static, or an alias to an outer object. Storing into a
         // fellow activation-owned object (same lifetime) is fine. `x = move y` (a MoveExpr, not a bare
         // identifier) transfers ownership and is always allowed.
+        // §3, THE PRIME RULE: a referring binding may only point at a region that outlives its own.
+        //
+        // One rule, over VALUES rather than names. The version this replaced compared two bare
+        // identifiers against a set of frame-local ones, so it saw `h.kept = n` and missed
+        // `h.kept = new Node(2)`, `h.kept = table.at(i)` and everything allocated in a region -- the
+        // last being the thing the analysis is named after.
         if (regionBinder_) {
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
-                if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                    oid != nullptr && activationOwned_.count(oid->name) == 0) {  // target outlives the method
-                    if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(assign->value.get());
-                        rid != nullptr && activationOwned_.count(rid->name) > 0 &&
-                        // only a POINTER/REFERENCE field aliases the object; a value field deep-copies it and
-                        // cannot dangle. Gate on the field being T*/T& (isRefType).
-                        isRefType(fieldTypeOf(*mem))) {
-                        const std::string tgt = oid->name == "this" ? "this" : ("'" + oid->name + "'");
-                        error("region-binder: storing a reference to the method-local object '" + rid->name +
-                                  "' into " + tgt + "'s field '" + mem->member + "', which outlives it, "
-                                  "would dangle when '" + rid->name + "' is freed; transfer ownership with "
-                                  "'move' (= move " + rid->name + ")",
-                              assign->loc);
+                // Only a POINTER/REFERENCE field aliases; a value field deep-copies and cannot
+                // dangle. That gate is what keeps this quiet about the 85% of fields that are
+                // composition.
+                if (isRefType(fieldTypeOf(*mem))) {
+                    const Lifetime target = lifetimeOf(*mem->object);
+                    const Lifetime source = lifetimeOf(*assign->value);
+                    // STORING INTO AN OWNED FIELD IS TAKING OWNERSHIP, NOT BORROWING, and the
+                    // outlives question does not arise: after this the target IS the owner, and its
+                    // destructor says so. `this.filter = filter` in a setter is the ordinary way one
+                    // object is handed another, and reading it as a borrow reported six of them in a
+                    // twenty-file program -- every constructor and setter in it.
+                    //
+                    // What an owned field still refuses is frame-local or region-allocated storage:
+                    // taking ownership of those is a promise to free something the frame or the
+                    // region will free first, which is the same bug wearing the opposite word.
+                    const std::string targetClass = baseType(typeOf(*mem->object));
+                    const bool owns = ownsField(targetClass, mem->member);
+                    const bool refused =
+                        owns ? (source.kind == RegionKind::Activation ||
+                                source.kind == RegionKind::Region)
+                             : !outlivesOrEqual(source, target);
+                    if (refused) {
+                        const std::string said =
+                            "region-binder: " + describeRegion(target) + " outlives " +
+                            describeRegion(source) + ", so storing that reference in field '" +
+                            mem->member + "' leaves it pointing at storage that is freed first. " +
+                            regionAdvice(source, target);
+                        // A PROOF AND AN ABSENCE OF PROOF ARE NOT THE SAME DIAGNOSTIC.
+                        //
+                        // Frame-local or region-allocated storage escaping into something that
+                        // outlives it is a proof: the storage is released at a point the program
+                        // states, and the reference is still there. That is an error.
+                        //
+                        // Two DIFFERENT objects are merely incomparable -- nothing says which dies
+                        // first, and a tree with parent and child pointers is the ordinary shape
+                        // that reads that way. Refusing it is the flip the model calls step 4, and
+                        // the model's own advice is to warn first and read what comes out, because
+                        // the size of that output is the measurement of how far the language is
+                        // from the guarantee. So: warn, and let it be counted.
+                        if (source.kind == RegionKind::Object && !owns) {
+                            warn(said, assign->loc);
+                        } else {
+                            error(said, assign->loc);
+                        }
                     }
                 }
             }

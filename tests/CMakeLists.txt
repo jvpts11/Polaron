@@ -7855,6 +7855,30 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # THE REGION BINDER, over VALUES rather than over names.
+        #
+        # Four spellings of one escape, all real, and only two of which used to be seen. Lifetime was
+        # a property of a NAME, so an escape had to be a bare identifier on both sides: a temporary,
+        # an array element, a field read or a call result were invisible, and real code is made of
+        # those. (b) is an escape nobody named and (d) is an object in a REGION — the thing the
+        # analysis is named after, and a codebase that used regions well was one it had nothing to
+        # say about.
+        add_test(NAME sema_rejects_the_four_escape_shapes COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_escape_shapes_bad.pol")
+        set_tests_properties(sema_rejects_the_four_escape_shapes PROPERTIES WILL_FAIL TRUE)
+        # ...and the harder half: the shapes that must stay QUIET. Every store here outlives the
+        # frame and every one is correct, because the receiver takes ownership — told apart by the
+        # DESTRUCTOR, which the author already had to write. Without that half an earlier version
+        # reported every constructor, setter and `list.add` in the language: 808 of 925 tests, which
+        # is not a measurement but noise, and a checker that cries at `add` gets switched off.
+        add_test(NAME codegen_region_ownership_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_ownership_ok.pol"
+            "-DEXPECTED=owned: 7 handed over: 42 collected: 2"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A DEFERRED CLEANUP RUNS AT SCOPE EXIT, AND THE FLOW ANALYSIS HAS TO SAY SO.
         #
         # `defer { delete b; }` followed by any read of `b` was refused as a use-after-delete: the

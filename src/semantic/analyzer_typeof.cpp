@@ -2931,22 +2931,45 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 };
                 auto sit = escapesToReceiver_.find(baseType(objType) + "." + mem->member);
                 if (sit != escapesToReceiver_.end()) {
-                    const auto* recvId = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                    const bool recvOutlives = recvId == nullptr || activationOwned_.count(recvId->name) == 0;
-                    if (recvOutlives) {
-                        for (std::size_t i = 0; i < call->args.size() && i < sit->second.size(); ++i) {
-                            if (sit->second[i]) {
-                                if (const auto* aid =
-                                        dynamic_cast<const ast::IdentifierExpr*>(call->args[i].get());
-                                    aid != nullptr && activationOwned_.count(aid->name) > 0 &&
-                                    argAliases(aid)) {  // only a pointer/reference argument actually aliases
-                                    error("region-binder: '" + mem->member + "' stores argument '" + aid->name +
-                                              "' into a receiver that outlives this method, so the method-local "
-                                              "object would dangle at return; pass ownership with 'move' (move " +
-                                              aid->name + ")",
-                                          call->args[i]->loc);
-                                }
-                            }
+                    // §3 AT A CALL, over lifetimes rather than over a set of names.
+                    //
+                    // This is the half the SQL engine's bug went through: `out.keep(table.at(i))`
+                    // stores a row the TABLE owns inside a result set, and both of them outlive the
+                    // frame -- so a check that only knew "is this argument frame-local" had nothing
+                    // to say. It compiled, ran, and printed another statement's rows.
+                    const Lifetime recv = lifetimeOf(*mem->object);
+                    for (std::size_t i = 0; i < call->args.size() && i < sit->second.size(); ++i) {
+                        if (!sit->second[i]) {
+                            continue;
+                        }
+                        // Only a pointer/reference argument actually aliases; a value is copied in.
+                        const std::string argType = typeOf(*call->args[i]);
+                        if (!isRefType(argType)) {
+                            continue;
+                        }
+                        // A HANDOVER IS NOT A BORROW. If the receiver's class frees the field the
+                        // argument lands in, the receiver becomes its owner and there is no outlives
+                        // question -- `list.add(item)` is the commonest line in the language.
+                        const std::string recvClass = baseType(objType);
+                        auto fit = escapesToReceiverField_.find(recvClass + "." + mem->member + "#" +
+                                                                std::to_string(i));
+                        if (fit != escapesToReceiverField_.end() &&
+                            ownsField(recvClass, fit->second)) {
+                            continue;
+                        }
+                        const Lifetime arg = lifetimeOf(*call->args[i]);
+                        if (outlivesOrEqual(arg, recv)) {
+                            continue;
+                        }
+                        const std::string said =
+                            "region-binder: '" + mem->member + "' keeps that argument, and " +
+                            describeRegion(recv) + " outlives " + describeRegion(arg) +
+                            ", so what it keeps is freed first. " + regionAdvice(arg, recv);
+                        // A proof and an absence of proof, told apart the same way as at a store.
+                        if (arg.kind == RegionKind::Object) {
+                            warn(said, call->args[i]->loc);
+                        } else {
+                            error(said, call->args[i]->loc);
                         }
                     }
                 }

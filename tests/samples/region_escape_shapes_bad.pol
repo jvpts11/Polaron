@@ -1,0 +1,61 @@
+import System.Memory.Units.bytes;
+program RegionEscapeShapes;
+
+// THE FOUR SPELLINGS OF ONE ESCAPE, all of which are real and only two of which used to be seen.
+//
+// In each method the receiver `h` is a PARAMETER, so it genuinely outlives the frame and the escape
+// is a dangle in all four. Only the wording differs -- which is the whole point, because lifetime
+// used to be a property of a NAME rather than of a value. An escape had to be spelled as a bare
+// identifier on both sides to be noticed, so a temporary, an array element, a field read or a call
+// result were invisible, and real code is made of those.
+//
+// (b) and (d) are the two that were missed, and they are the two that matter: an escape that was
+// never given a name, and an object that lives in a REGION -- the thing the analysis is named after.
+// A codebase that used regions well was a codebase this analysis had nothing to say about.
+//
+// Expected: four errors, one per method.
+public bundle Main {
+    public namespace App {
+        public class Node {
+            public mutable int value;
+            public constructor Node(int value) { this.value = value; }
+        }
+        public class Holder {
+            public mutable nullable Node* kept;
+            public constructor Holder() { this.kept = null; }
+        }
+
+        public class Probe {
+            // (a) a named local. Always caught.
+            public static method named(Holder h) returns void {
+                Node n = new Node(1);
+                h.kept = n;
+                return;
+            }
+            // (b) the same escape with no name on it. The commonest way to write it.
+            public static method unnamed(Holder h) returns void {
+                h.kept = new Node(2);
+                return;
+            }
+            // (c) through an alias.
+            public static method aliased(Holder h) returns void {
+                Node n = new Node(3);
+                nullable Node* alias = n;
+                h.kept = alias;
+                return;
+            }
+            // (d) out of a region -- released at the end of this method, and the reference outlives
+            // it. The analysis is called the region binder and this was the case it could not see.
+            public static method fromRegion(Holder h) returns void {
+                region scratch = itself.allocate(512 bytes);
+                Node* n = new Node(4) in region scratch;
+                h.kept = n;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

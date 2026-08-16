@@ -24,6 +24,7 @@ set(POLARON_CORE_SOURCES
     src/parser/boundscheck.cpp
     src/parser/transformers.cpp  # `applies`: a transformer's members land in the type that takes it
     src/semantic/analyzer.cpp src/semantic/analyzer_typeof.cpp src/semantic/analyzer_stmt.cpp
+    src/semantic/regions.cpp  # the region binder: which region a value lives in, and §3's one rule
     src/semantic/semutil.cpp  # the analyser's pure helpers: name suggestions, type-name questions
     src/semantic/comptime.cpp
     src/semantic/asmcheck.cpp  # semantic analysis of inline assembly, per architecture and dialect

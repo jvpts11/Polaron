@@ -1,0 +1,73 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program RegionOwnershipOk;
+
+// THE SHAPES THAT MUST STAY QUIET, which is the harder half of a checker.
+//
+// Every line here stores a reference into something that outlives the frame, and every one of them
+// is correct -- because the receiver TAKES OWNERSHIP. The rule that tells this apart from a dangle
+// is not an annotation: it is the DESTRUCTOR, which the author already had to write. A field the
+// class frees is a handover; a field it leaves alone is somebody else's.
+//
+// Without that half, an earlier version of this check reported six stores in a twenty-file program
+// -- every constructor and setter in it -- and 808 of 925 tests, which is not a measurement, it is
+// noise. A checker that cries at `list.add(item)` gets switched off, and then it checks nothing.
+//
+// Prints:
+//   owned: 7
+//   handed over: 42
+//   collected: 2
+public bundle Main {
+    public namespace App {
+        public class Leaf {
+            public mutable int value;
+            public constructor Leaf(int value) { this.value = value; }
+        }
+
+        // Takes what it is given, and says so where it counts.
+        public class Keeper {
+            private mutable nullable Leaf* held;
+            public constructor Keeper() { this.held = null; }
+            public method take(Leaf* leaf) returns void {
+                this.held = leaf;      // a handover: the destructor below proves it
+                return;
+            }
+            public method read() returns int {
+                return this.held == null ? 0 : cast<Leaf*>(this.held).value;
+            }
+            public destructor ~Keeper() returns void {
+                if (this.held != null) { delete cast<Leaf*>(this.held); }
+            }
+        }
+
+        // The same through a constructor, which is the ordinary spelling.
+        public class Box {
+            private mutable Leaf* inside;
+            public constructor Box(Leaf* inside) { this.inside = inside; }
+            public method read() returns int { return this.inside.value; }
+            public destructor ~Box() returns void { delete this.inside; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Keeper* k = new Keeper() on heap;
+                k.take(new Leaf(7) on heap);
+                System.IO.Console.printf("owned: %d\n", k.read());
+                delete k;
+
+                mutable Box* b = new Box(new Leaf(42) on heap) on heap;
+                System.IO.Console.printf("handed over: %d\n", b.read());
+                delete b;
+
+                // And a collection, which is the line that must never be a diagnostic.
+                mutable ArrayList<Leaf*> all = new ArrayList<Leaf*>() on heap;
+                all.add(new Leaf(1) on heap);
+                all.add(new Leaf(2) on heap);
+                System.IO.Console.printf("collected: %d\n", all.size());
+                for (mutable int i = 0; i < all.size(); i++) { delete all.get(i); }
+                delete all;
+                return;
+            }
+        }
+    }
+}

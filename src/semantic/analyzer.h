@@ -754,6 +754,68 @@ private:
     bool suppressNarrowing_ = false;
     std::unordered_set<std::string> activationOwned_;  // locals bound to a no-region `new` (own the object,
                                                        // die at method return) -- region-binder escape check
+
+    // ---- THE REGION A VALUE LIVES IN (safety model §1.2) --------------------------------------
+    //
+    // Four kinds, ordered by outlives-or-equal:
+    //
+    //     Root  ⊒  Object ◇o  ⊒  Region R  ⊒  Activation ◇m
+    //
+    // and one rule (§3) generates every error: a referring binding may only point at a region that
+    // outlives its own. Until now only Activation existed, as a set of NAMES, which is why the
+    // analysis could see a local escaping a local and nothing else -- and why a SQL engine handing
+    // back rows its table had freed compiled clean and printed another query's data.
+    enum class RegionKind {
+        Unknown,     // could not be worked out; the default's direction is the open question (§4)
+        Root,        // a static, an eternal, a persistent: outlives everything
+        Object,      // owned by some object -- `owner` names it
+        Region,      // inside an explicit `region R` -- `owner` is R
+        Activation,  // this frame
+    };
+    struct Lifetime {
+        RegionKind kind = RegionKind::Unknown;
+        std::string owner;   // the object path for Object, the region name for Region
+    };
+    // Does `a` outlive-or-equal `b`? The order above, plus the one refinement that makes Object
+    // usable: two DIFFERENT objects are incomparable, because nothing in the program says which dies
+    // first. That incomparability is not a gap -- it is the answer, and it is what makes storing one
+    // object's row inside another object an error rather than a shrug.
+    static bool outlivesOrEqual(const Lifetime& a, const Lifetime& b);
+    // The lifetime of a VALUE, computed by the same walk that computes its type -- the structural
+    // change the model needed. Lifetime used to be a property of a NAME, so an escape had to be
+    // spelled as a bare identifier on both sides to be seen; a temporary, an array element, a field
+    // read or a call result were all invisible, and real code is made of those.
+    Lifetime lifetimeOf(const ast::Expr& expr);
+    // A region's lifetime, which depends on where the region itself is kept: a field region dies
+    // with its object, a local one with its scope.
+    Lifetime regionLifetime(const std::string& name) const;
+    // Which `T*` fields a class OWNS, inferred from its destructor rather than declared.
+    //
+    // This is the piece that makes Object regions decidable without an annotation on every field.
+    // A `T*` field may be ownership (a database's tables) or a borrow (a result set's rows), and the
+    // type says nothing -- but the DESTRUCTOR does, because the author already had to write it: a
+    // field it frees is owned, a field it leaves alone is somebody else's. The structure is already
+    // in the language, which is the model's own first sentence about where regions come from.
+    std::unordered_map<std::string, std::unordered_set<std::string>> ownedFields_;  // class -> fields
+    void computeOwnership(const ast::Program& program);
+    void collectFreed(const ast::Block& body, std::unordered_set<std::string>& freed) const;
+    bool ownsField(const std::string& className, const std::string& field) const;
+    // "Class.method" -> the field a one-line accessor hands back. What makes a CALL result carry its
+    // receiver's region: `table.at(i)` is a row the table owns, and without this the commonest way
+    // to reach into another object is invisible.
+    std::unordered_map<std::string, std::string> accessorField_;
+    std::string returnedFieldOf(const std::string& className, const std::string& method) const;
+    std::string describePath(const ast::Expr& expr) const;
+    std::string describeRegion(const Lifetime& life) const;
+    std::string regionAdvice(const Lifetime& source, const Lifetime& target) const;
+    // Non-zero while a lifetime is being worked out: `error` returns instead of recording. Asking a
+    // question must not produce a complaint, and `typeOf` reports as it goes.
+    int quiet_ = 0;
+    struct Quiet {   // RAII, so an early return inside a lifetime query cannot leave it muted
+        SemanticAnalyzer& a;
+        explicit Quiet(SemanticAnalyzer& an) : a(an) { ++a.quiet_; }
+        ~Quiet() { --a.quiet_; }
+    };
     std::unordered_map<std::string, const ast::LambdaExpr*> lambdaLocals_;  // local -> the lambda it holds
                                                        // (so `new Thread(work)` can inspect its captures, §14)
     // region-binder escape SUMMARY (interprocedural, §8): "Class.method" -> per value-parameter flag, true
@@ -768,6 +830,11 @@ private:
     std::string escapeScanClass_;   // class of the method currently being scanned (resolves this.field types)
     const std::vector<ast::Param>* escapeScanParams_ = nullptr;  // its parameters (resolve param.field types)
     std::vector<std::vector<int>> escapeScanParamTargets_;  // accumulator: param i -> param slots it escapes to
+    // WHICH FIELD the parameter is stored into, per method. What decides at a call site whether the
+    // receiver is BORROWING the argument or TAKING it: a field the class frees is a handover, and
+    // `list.add(item)` must not be a diagnostic. Keyed "Class.method#paramIndex".
+    std::unordered_map<int, std::string> escapeScanFieldFor_;   // accumulator, per method
+    std::unordered_map<std::string, std::string> escapesToReceiverField_;
     bool escapeSummaryChanged_ = false;  // fixpoint flag: a summary grew during the last pass
     void computeEscapeSummaries(const ast::Program& program);
     void scanEscapes(const ast::Block& body, std::unordered_map<std::string, int>& alias,
