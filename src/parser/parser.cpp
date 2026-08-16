@@ -5041,6 +5041,24 @@ ast::ExprPtr Parser::parseRegionInit() {
             fail("expected 'accepts' or 'rejects' after '.'", current().loc);
         }
     }
+    // `... in region outer` -- a SUB-REGION, whose block is carved out of the parent instead of
+    // taken from the allocator. The same phrase as `new Dog() in region pen`, meaning the same
+    // thing: the memory comes from there.
+    if (check(TokenKind::KwIn)) {
+        advance();
+        expect(TokenKind::KwRegion, "'region' after 'in'");
+        std::string parent = expect(TokenKind::Identifier, "the parent region's name").lexeme;
+        while (match(TokenKind::Dot)) {   // `this.arena`, `Class.arena`
+            parent += "." + expect(TokenKind::Identifier, "a name after '.'").lexeme;
+        }
+        if (!e->ranges.empty() || e->atAddress != nullptr) {
+            fail("a region placed `at` an address already has its memory -- it maps storage the "
+                 "program did not allocate -- so it cannot also be carved out of another region. "
+                 "Drop the `in region`, or allocate instead of mapping",
+                 e->loc);
+        }
+        e->inRegion = std::move(parent);
+    }
     return e;
 }
 

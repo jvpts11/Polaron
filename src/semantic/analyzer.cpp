@@ -4888,6 +4888,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     acquired_.clear();
     borrowsFrom_.clear();
     invalidatedAt_.clear();
+    parentRegion_.clear();
     // WHOSE VALUES THE CALLER CAN SEE. A store into `this` of something the caller handed us is a
     // question only the caller can answer, and answering it here reported the wrong line -- so the
     // check needs to know which names came from outside.

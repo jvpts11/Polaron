@@ -1,0 +1,55 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program Subregion;
+
+// A REGION CARVED OUT OF ANOTHER REGION (spec 17): nesting in SPACE, not only in scope.
+//
+// `region frame = itself.allocate(1 kilobytes) in region world;` takes the frame's block from the
+// world's memory instead of from the allocator. The phrase is the one the language already has --
+// `new Dog() in region pen` means "the memory comes from pen" -- and it means the same thing here
+// about a region's own block.
+//
+// WHAT IT BUYS. A per-phase arena inside a per-world one costs no second allocation, and releasing
+// the world reclaims every arena inside it at once, with no walk and no bookkeeping. That is the
+// shape a frame allocator wants: cheap to make, cheap to drop, and impossible to leak past the
+// thing that owns it.
+//
+// AND WHAT IT COSTS: one rule. The parent may not be released first -- see `subregion_bad.pol` --
+// because the child's storage is inside it. §10 already ordered two regions' LIFETIMES by birth;
+// this makes the order physical.
+//
+// The `rejects` clause rides along, because a sub-region is a region in every other respect: it
+// takes the same type constraints, and a type it refuses is refused at compile time.
+public bundle Main {
+    public namespace App {
+        public class Dog {
+            private int years;
+            public constructor Dog(int years) { this.years = years; }
+            public method getAge() returns int { return this.years; }
+        }
+        public class Cat {
+            private int lives;
+            public constructor Cat(int lives) { this.lives = lives; }
+            public method getLives() returns int { return this.lives; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                region world = itself.allocate(8 kilobytes);
+                Dog* durable = new Dog(1) in region world;
+
+                // Carved out of `world`, and refusing cats while it is at it.
+                region frame = itself.allocate(1 kilobytes).rejects({Cat}) in region world;
+                Dog* scratch = new Dog(2) in region frame;
+                System.IO.Console.println($"frame {scratch.getAge()} world {durable.getAge()}");
+                release region frame;
+
+                // The world is untouched by the child's release: its own objects are still there.
+                Cat* elsewhere = new Cat(9) in region world;
+                System.IO.Console.println($"after {durable.getAge()} cat {elsewhere.getLives()}");
+                release region world;
+                return;
+            }
+        }
+    }
+}

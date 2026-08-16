@@ -401,6 +401,13 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
         if (declType == "region" && vd->regionGrowable) {
             growableRegions_.insert(vd->name);
         }
+        // A sub-region, so `release` knows the block belongs to somebody else.
+        if (declType == "region") {
+            if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get());
+                ri != nullptr && !ri->inRegion.empty()) {
+                subRegions_.insert(vd->name);
+            }
+        }
         // atMultiple (spec 17.4): a multi-range region over fixed addresses. Record the ranges plus
         // one bump used-counter per range; there is no malloc'd block to free.
         //
@@ -1517,7 +1524,14 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
             } else if (isRingFlavor(relFlavor)) {
                 builder.CreateCall(ringTeardownFn(), {block});
             }
-            if (growableOfRegion(rel->region)) {
+            // A SUB-REGION DOES NOT GIVE ITS BLOCK BACK, because the block is not its own: it was
+            // carved out of the parent, and handing it to the allocator would put a slice of the
+            // parent's live memory in the free cache to be handed out again. Releasing it ends its
+            // lifetime and runs what it owns; the bytes return when the parent is released, which is
+            // the whole point of nesting them.
+            if (subRegions_.count(rel->region) > 0) {
+                // nothing to free here
+            } else if (growableOfRegion(rel->region)) {
                 builder.CreateCall(regionFreeChainFn(), {block});
             } else {
                 builder.CreateCall(regionReleaseFn(), {block});
