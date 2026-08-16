@@ -30,6 +30,18 @@ struct SourceResolver {
 };
 void setSourceResolver(SourceResolver r);
 
+// COLOUR, off unless the driver turns it on. Errors red, warnings yellow, and the caret in the same
+// colour as its severity so the eye finds the place before it reads the sentence. The driver decides:
+// a terminal gets colour, a pipe or a file does not, because escape codes in a build log are noise
+// that outlives the terminal that would have rendered them.
+void setColor(bool on);
+bool colorEnabled();
+
+// `--noVerbose`: print the headline, the location and the caret, and stop. The default is the full
+// write-up on every diagnostic -- an explanation is worth having every time it applies, and a reader
+// who does not want it says so once on the command line rather than being rationed by the compiler.
+void setVerbose(bool on);
+
 // Render one diagnostic.
 //
 // `severity` is "error" or "warning". `sourceLine` is the offending source line (pass "" if unavailable --

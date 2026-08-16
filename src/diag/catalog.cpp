@@ -61,7 +61,12 @@ constexpr Row kCatalog[] = {
         "Call an existing method (member autocomplete lists them), or declare the method on the class. "
         "Check the receiver's type is what you expect -- a wrong type is a common cause.",
         "Member autocomplete and go-to-definition (F12) confirm a method exists before you call it. "
-        "Interfaces make the available methods explicit at the call site's declared type." }},
+        "Interfaces make the available methods explicit at the call site's declared type. Two more "
+        "declarations exist for the case where a whole FAMILY of types should answer to the same call. "
+        "A `catalog` is that contract for enums: declare `method weight() returns int;` on it once, and "
+        "every enum that extends it must provide one, so a value of the catalog type can always be "
+        "asked. A `transformer` is the version that writes the method rather than only requiring it -- "
+        "every type that `applies` it gets the body, expanded at compile time." }},
 
     {Code::UnknownType, {
         "Polaron-0104", "unknown type",
@@ -226,7 +231,11 @@ constexpr Row kCatalog[] = {
         "Add the missing case, or a `default` arm. For a `sealed` type, cover each type in its `permits` "
         "list -- the compiler then checks completeness for you when the list grows.",
         "Prefer `sealed` types for closed sets of cases: the compiler makes a match over them exhaustive, "
-        "so adding a new case turns every unhandled match into a compile error, not a silent gap." }},
+        "so adding a new case turns every unhandled match into a compile error, not a silent gap. A "
+        "`catalog` gives the same property to a family of enums -- the members that extend it are the "
+        "cases, and the contract it declares is what every one of them must answer. Either way the "
+        "closed set is written down once, and the compiler finds the matches that have fallen behind "
+        "it instead of you finding them in production." }},
 
     {Code::Redeclaration, {
         "Polaron-0601", "already declared",
@@ -290,7 +299,10 @@ constexpr Row kCatalog[] = {
         "Pass a literal format string, or an interpolation `$\"...\"`. Move any computed text into the "
         "arguments after the format, not into the format itself.",
         "Write the format inline as a literal and let the values follow it. This also keeps the conversions "
-        "(`%d`, `%c`) next to the values they format, where a mismatch is easy to spot." }},
+        "(`%d`, `%c`) next to the values they format, where a mismatch is easy to spot. Better still, "
+        "stop separating them: `$\"placed {row},{column} for {player}\"` puts each value where it is "
+        "printed, so there is no order to get wrong and no conversion to choose -- the compiler picks it "
+        "from the type." }},
 
     {Code::OperatorOverload, {
         "Polaron-0801", "malformed operator overload",
@@ -479,7 +491,11 @@ constexpr Row kCatalog[] = {
         "Do not extend a `final` class -- compose with it instead (hold one as a field). To be a variant of "
         "a sealed type, be listed in its `permits`; otherwise model your type another way.",
         "`final` and `sealed` are deliberate: they say a hierarchy is closed so code can reason about all "
-        "its cases. Prefer composition over extending types that were sealed shut on purpose." }},
+        "its cases. Prefer composition over extending types that were sealed shut on purpose. When what "
+        "you wanted was to SHARE BEHAVIOUR rather than to be a variant, inheritance was the wrong tool "
+        "even where it is allowed: a `transformer` is expanded into every type that `applies` it, so the "
+        "behaviour is shared without a hierarchy, without a vtable, and without asking the author of a "
+        "closed type for permission to extend it." }},
 
     {Code::IllegalOverride, {
         "Polaron-0606", "cannot override a final method",
@@ -576,7 +592,11 @@ constexpr Row kCatalog[] = {
         "COPY removes the question entirely, and for small values that is usually the right answer.",
         "Decide, per field, whether it is ownership or a view, and let the destructor say so. A class "
         "whose destructor frees a field owns it and can be reasoned about; a class that frees nothing "
-        "and holds pointers is a view, and a view has to be shorter-lived than what it views." }},
+        "and holds pointers is a view, and a view has to be shorter-lived than what it views. Two "
+        "features answer this question outright and are worth reaching for before pointers are: a "
+        "`region` gives both objects one lifetime, so they are born and released together and there "
+        "is nothing left to order; and `unique`/`movable` on the type says there is exactly one owner "
+        "and makes every handover a `move` the compiler follows." }},
 
     {Code::RegionForeignBoundary, {
         "Polaron-1723", "past this point there is no proof to be had",
@@ -606,8 +626,13 @@ constexpr Row kCatalog[] = {
         "so that emptying the source leaves it intact. Rebuilding it after the change also works, and "
         "is usually what was meant.",
         "A value built out of another object's contents belongs to that object's lifetime whether or "
-        "not anything says so. Treat it as a window that is only open until the owner is next changed "
-        "-- read it, take what you need out of it, and do not keep it across a mutation." }},
+        "not anything says so. Treat it as a window that is only open until the owner is next "
+        "changed -- read it, take what you need out of it, and do not keep it across a mutation. "
+        "Where the result has to survive, make it hold values rather than references: a `record` is "
+        "copied on assignment, so a result built out of records is complete the moment it is built "
+        "and no later change can reach into it. `Slice<T>` is the opposite choice, said out loud -- a "
+        "window that does not own what it looks at, which is fine as long as it is read before the "
+        "owner moves on." }},
 
     {Code::NoEntryPoint, {
         "Polaron-0609", "this program has nowhere to start",
@@ -681,7 +706,10 @@ constexpr Row kCatalog[] = {
         "genuinely needs both halves at once, that is a critical section -- use a `Mutex<T>` and say "
         "so.",
         "Reach for `atomic` for counters, flags, and pointers, and for a `Mutex` when the invariant "
-        "spans more than a word. The width limit is where those two tools divide." }},
+        "spans more than a word. The width limit is where those two tools divide -- and a `layout` "
+        "on the type makes it a stated requirement rather than something discovered here: "
+        "`itself.fitWithin(8 bytes)` fails the build the moment a field pushes it past what can be "
+        "done atomically, at the declaration, where the decision belongs." }},
 
     {Code::InterruptMisuse, {
         "Polaron-0810", "an interrupt is entered, not called, and it runs where almost nothing is safe",
@@ -775,7 +803,10 @@ constexpr Row kCatalog[] = {
         "and turn it into a value the signature does declare (a `Result`, an `Option`, a status). "
         "Which one depends on whether the caller can do anything useful about it.",
         "Decide a method's failure modes when you write its signature, and let the compiler push the "
-        "obligation up to whoever can act on it." }},
+        "obligation up to whoever can act on it. When the failure is ordinary rather than "
+        "exceptional, a `Result<T, E>` return says so in the type and `try?` forwards it in one "
+        "character -- the caller cannot forget it, because the value does not exist until the "
+        "failure has been dealt with." }},
 
     {Code::ClassPointerArith, {
         "Polaron-0B05", "a pointer to a class usually points at one object, not at an array",
@@ -788,7 +819,10 @@ constexpr Row kCatalog[] = {
         "you genuinely hold a pointer into a block of objects, hold the block: keep the array and its "
         "length together rather than a bare pointer.",
         "Let arrays be arrays. A bare pointer in Polaron is for referring to one object; the moment "
-        "arithmetic appears on one, the type is not saying what the code is doing." }},
+        "arithmetic appears on one, the type is not saying what the code is doing. When a method "
+        "needs part of an array rather than all of it, `Slice<T>` is the type that means that -- a "
+        "window with a length, bounds-checked, and non-owning by declaration, which is what the "
+        "pointer arithmetic was trying to express without saying so." }},
 
     {Code::MutatesByValueParam, {
         "Polaron-0B06", "this changes a copy, and the caller will not see it",
@@ -875,7 +909,12 @@ constexpr Row kCatalog[] = {
         "-- an unsigned 3-bit field holds 0 to 7. If the value is genuinely out of range for what the "
         "field means, the value is the thing to fix.",
         "Decide signedness from the meaning, not the habit: quantities that cannot be negative should "
-        "say so in the type, and then every bit is spent on range." }},
+        "say so in the type, and then every bit is spent on range. And when the reason for hand-"
+        "packing is a size budget, say the budget instead of the packing: a `layout` with "
+        "`itself.fitWithin(12 bytes)` states what the type must cost, lets the compiler arrange the "
+        "fields to meet it, and `itself.refuse(\"...\")` fails the build with your own sentence when "
+        "it cannot. Chosen widths then answer to a stated requirement rather than to arithmetic "
+        "somebody did once." }},
 
     {Code::ComptimeConstant, {
         "Polaron-0807", "this must be a compile-time constant",
@@ -894,7 +933,12 @@ constexpr Row kCatalog[] = {
         "Add a `release persistent <name>;` on the path that ends its life. Pair every persistent's "
         "creation with a release, the way `new` pairs with `delete`.",
         "Treat a persistent like any owned resource: decide where it is released when you declare it. "
-        "Keeping the create/release pair in view prevents the leak this catches." }},
+        "Keeping the create/release pair in view prevents the leak this catches -- and the language "
+        "has two ways to keep them in view without relying on memory. `defer` puts the release beside "
+        "the creation and runs it however the scope ends, including through a `throw`; `using` binds "
+        "the two together outright, so there is no path on which one happens and the other does not. "
+        "A release written at the bottom of a long method is the one that gets skipped by an early "
+        "return." }},
 
     {Code::NotSupportedYet, {
         "Polaron-0A01", "not implemented yet",

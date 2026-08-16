@@ -885,13 +885,34 @@ add_test(NAME every_reporter_shows_its_source_line
 set_tests_properties(every_reporter_shows_its_source_line PROPERTIES
     PASS_REGULAR_EXPRESSION "25 \\| .*public procedure into<Yards y>")
 
-# The write-up appears ONCE per code per run. It is worth reading the first time and is noise the
-# tenth: two naming warnings in one file printed the same fifteen lines twice, and a program with a
-# dozen would bury everything else. A diagnostic nobody reads has failed, however good it is.
-add_test(NAME rich_writeup_prints_once_per_code
+# THE WRITE-UP PRINTS EVERY TIME. An earlier version showed it once per code and pointed later
+# occurrences back at the first, which decides for the reader that they have had enough explaining --
+# and someone fixing the fourth of four errors is looking at that one, not scrolling up.
+add_test(NAME rich_writeup_prints_on_every_diagnostic
     COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol" -o "${CMAKE_CURRENT_BINARY_DIR}/hw_once.ll")
-set_tests_properties(rich_writeup_prints_once_per_code PROPERTIES
-    PASS_REGULAR_EXPRESSION "see:     the write-up above, or .polc --explain Polaron-0B01.")
+set_tests_properties(rich_writeup_prints_on_every_diagnostic PROPERTIES
+    PASS_REGULAR_EXPRESSION "why:.*\n(.*\n)+.*why:")
+
+# ...and `--noVerbose` is how a reader who already knows says so, once, on the command line.
+add_test(NAME noverbose_drops_the_writeup
+    COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol" -o "${CMAKE_CURRENT_BINARY_DIR}/hw_nv.ll" --noVerbose)
+set_tests_properties(noverbose_drops_the_writeup PROPERTIES
+    PASS_REGULAR_EXPRESSION "see:     .polc --explain Polaron-0B01."
+    FAIL_REGULAR_EXPRESSION " why: ")
+
+# Errors red, warnings yellow -- the escapes go OUTSIDE the token, so `error[Polaron-NNNN]` stays one
+# unbroken substring for a grep and for every regex in this file. (CMake has no `\033`, so the escape
+# byte is built rather than written.)
+string(ASCII 27 POLARON_ESC)
+add_test(NAME diagnostics_are_coloured_by_severity
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_after_clear.pol" --color)
+set_tests_properties(diagnostics_are_coloured_by_severity PROPERTIES
+    PASS_REGULAR_EXPRESSION "${POLARON_ESC}\\[31merror\\[Polaron-1724\\]${POLARON_ESC}\\[0m")
+
+add_test(NAME warnings_are_coloured_yellow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol" --color)
+set_tests_properties(warnings_are_coloured_yellow PROPERTIES
+    PASS_REGULAR_EXPRESSION "${POLARON_ESC}\\[33mwarning\\[Polaron-0B01\\]${POLARON_ESC}\\[0m")
 
 # EVERY DIAGNOSTIC THE SUITE PRODUCES CARRIES A CODE, and so has a why/fix/prevent behind it.
 #
