@@ -154,14 +154,21 @@ std::string preludePlace(int line) {
     return std::string("<prelude:") + file + ":" + std::to_string(line - firstLine + 1) + ">";
 }
 
+// The two things only the driver knows, handed to the renderer once so that EVERY reporting site
+// gets them -- the monomorphizer, the transformer expander and the layout checker report from their
+// own files and had neither, so their diagnostics showed no source line and named `<prelude>`.
+void installSourceResolver() {
+    polaron::diag::setSourceResolver(
+        {[](std::string_view file, int line) -> std::string {
+             return file == "<prelude>" ? preludePlace(line) : std::string(file);
+         },
+         [](std::string_view file, int line) -> std::string { return sourceLineAt(file, line); }});
+}
+
 // Print one semantic diagnostic (error or warning) richly, unless concise output was requested.
 void printSemaDiag(std::string_view severity, const polaron::SemaError& d, bool concise) {
-    std::string file(d.loc.file);
-    if (file == "<prelude>") {
-        file = preludePlace(d.loc.line);
-    }
-    std::fputs(polaron::diag::render(severity, file, d.loc.line, d.loc.col, d.message, d.code,
-                                  sourceLineAt(d.loc.file, d.loc.line), concise)
+    std::fputs(polaron::diag::render(severity, std::string(d.loc.file), d.loc.line, d.loc.col,
+                                     d.message, d.code, "", concise)
                    .c_str(),
                stderr);
 }
@@ -1504,6 +1511,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
 }  // namespace
 
 int main(int argc, char** argv) {
+    installSourceResolver();   // before anything can report
     const std::vector<std::string_view> args(argv + 1, argv + argc);
     if (args.empty()) {
         return printUsage(argv[0]);

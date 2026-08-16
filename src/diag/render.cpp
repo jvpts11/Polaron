@@ -101,10 +101,22 @@ std::set<std::string>& explainedCodes() {
     return seen;
 }
 
+namespace {
+SourceResolver g_resolver;
+}
+void setSourceResolver(SourceResolver r) { g_resolver = r; }
+
 std::string render(std::string_view severity, const std::string& path, int line, int col,
-                   const std::string& message, Code code, const std::string& sourceLine, bool concise) {
+                   const std::string& message, Code code, const std::string& sourceLineIn,
+                   bool concise) {
     const std::string sev = severityToken(severity, code);
-    const std::string shown = displayPath(path);
+    // The resolver fills in what the reporting site could not know: how the path should read, and
+    // the source text under the caret. A caller that already has the line keeps it.
+    const std::string shown =
+        displayPath(g_resolver.display != nullptr ? g_resolver.display(path, line) : path);
+    const std::string sourceLine =
+        (sourceLineIn.empty() && g_resolver.line != nullptr) ? g_resolver.line(path, line)
+                                                             : sourceLineIn;
 
     // Concise: the one line CI and Forge's live-check parse.
     if (concise) {
