@@ -46,6 +46,29 @@
             public static method ofStr(String v) returns Json {
                 Json j = new Json(3) on heap; j.str = v; return j;
             }
+            // A DOCUMENT OWNS ITS CHILDREN, and until now nothing said so or acted on it.
+            //
+            // Thirteen allocation sites in this file, no destructor, and no `delete` of a Json
+            // anywhere in the standard library: every parsed document leaked its whole tree, and it
+            // leaked quietly, because a leak passes every test that checks an answer.
+            //
+            // Found by the region binder, which is what it is for: with no destructor a class owns
+            // nothing, so `firstChild` read as a BORROW and storing a node in it was reported as a
+            // reference nobody could prove safe. The complaint was about the missing sentence, and
+            // this is the sentence.
+            //
+            // The walk reads the next sibling BEFORE freeing the node, which is the whole of the
+            // care this needs: deleting a child runs its own destructor and takes that child's
+            // subtree with it, so one pass over the top-level chain frees the document.
+            public destructor ~Json() returns void {
+                mutable nullable Json* cursor = this.firstChild;
+                while (cursor != null) {
+                    mutable Json* here = cast<Json*>(cursor);
+                    cursor = here.nextSibling;
+                    delete here;
+                }
+            }
+
             public static method array() returns Json { return new Json(4) on heap; }
             public static method object() returns Json { return new Json(5) on heap; }
             public method add(Json* v) returns void {  // append a child (array element / member)

@@ -479,10 +479,26 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                     // region will free first, which is the same bug wearing the opposite word.
                     const std::string targetClass = baseType(typeOf(*mem->object));
                     const bool owns = ownsField(targetClass, mem->member);
+                    // A SECOND POINTER TO WHAT THIS OBJECT ALREADY OWNS IS NOT A BORROW FROM
+                    // ELSEWHERE. `this.firstChild = v; this.lastChild = v;` is the head-and-tail of
+                    // every linked structure ever written: the first store made this object the
+                    // owner, and the second names the same node again so an append is O(1).
+                    //
+                    // Recorded per method, keyed by receiver AND value, so it says only what it saw:
+                    // this exact value went into an owned field of this exact object, here, a moment
+                    // ago. It is not a claim about the type.
+                    const std::string valueName = describePath(*assign->value);
+                    const std::string ownedKey = describePath(*mem->object) + "\x1f" + valueName;
+                    if (owns && !valueName.empty()) {
+                        alreadyOwnedHere_.insert(ownedKey);
+                    }
+                    const bool ownChainTail =
+                        !owns && !valueName.empty() && alreadyOwnedHere_.count(ownedKey) > 0;
                     const bool refused =
-                        owns ? (source.kind == RegionKind::Activation ||
-                                source.kind == RegionKind::Region)
-                             : !outlivesOrEqual(source, target);
+                        ownChainTail ? false
+                        : owns ? (source.kind == RegionKind::Activation ||
+                                  source.kind == RegionKind::Region)
+                               : !outlivesOrEqual(source, target);
                     if (refused) {
                         const std::string said =
                             "region-binder: " + describeRegion(target) + " outlives " +

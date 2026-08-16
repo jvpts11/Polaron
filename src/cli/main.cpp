@@ -1546,9 +1546,13 @@ int main(int argc, char** argv) {
             } else if (args[i] == "--no-region-binder") {
                 regionBinder = false;
             } else if (args[i] == "--strict-regions") {
-                // Refuse what cannot be proven, instead of allowing it. See the design note: this is
-                // the difference between a checker that finds bugs and one that states a guarantee.
-                polaron::SemanticAnalyzer::setStrictRegions(true);
+                polaron::SemanticAnalyzer::setStrictRegions(true);   // now the default; kept so old
+                                                                    // scripts and build files still run
+            } else if (args[i] == "--permissive-regions") {
+                // ALLOW what cannot be placed, which is where this started and what it cost to leave.
+                // A migration aid for a program written before the analysis could place its shapes:
+                // while it is on the compiler finds bugs and states no guarantee.
+                polaron::SemanticAnalyzer::setStrictRegions(false);
             } else if (args[i] == "--use" && i + 1 < args.size()) {
                 deps.emplace_back(args[++i]);
             } else if (args[i] == "--overlay" && i + 1 < args.size()) {
@@ -1719,7 +1723,9 @@ int main(int argc, char** argv) {
             regionBinder = true;  // accepted and a no-op: it is the default. Kept so build scripts
                                   // written while it was opt-in keep working.
         } else if (args[i] == "--strict-regions") {
-            polaron::SemanticAnalyzer::setStrictRegions(true);
+            polaron::SemanticAnalyzer::setStrictRegions(true);   // the default; kept for old scripts
+        } else if (args[i] == "--permissive-regions") {
+            polaron::SemanticAnalyzer::setStrictRegions(false);
         } else if (args[i] == "--no-region-binder") {
             // The escape hatch. There is no dialect of "safe" that lets you deliberately hand out a
             // pointer to a dead frame, so the way to do it is to turn the analysis off for the

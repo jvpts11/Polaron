@@ -460,6 +460,29 @@
                 this.nextKid = null;
                 this.kidCount = 0;
             }
+            // AN ELEMENT OWNS ITS CHILDREN AND ITS ATTRIBUTE LISTS, and this file said so nowhere:
+            // four allocation sites, no destructor, no `delete`. Every parsed document leaked its
+            // whole tree, exactly as `Json` did next door, and for the same reason -- a leak answers
+            // every question a test asks, so nothing was ever going to notice.
+            //
+            // The region binder noticed, because with no destructor the class owns nothing and
+            // `firstKid = node` read as storing a reference nobody could prove outlives this. The
+            // fix is not to quiet the check; the check was describing a missing sentence.
+            //
+            // Reading `nextKid` BEFORE the delete is the whole care this needs: freeing a child runs
+            // its destructor and takes that child's subtree along, so one pass over the top-level
+            // chain frees the document.
+            public destructor ~Xml() returns void {
+                mutable nullable Xml* cursor = this.firstKid;
+                while (cursor != null) {
+                    mutable Xml* here = cast<Xml*>(cursor);
+                    cursor = here.nextKid;
+                    delete here;
+                }
+                delete this.attrNames;
+                delete this.attrValues;
+            }
+
             // What the reader needs to BUILD one, and no more than that. `internal` rather than
             // public: filling an element is the parser's job, not a caller's, and these are not part
             // of the surface a document consumer reads. (The first version had `XmlReader` writing the

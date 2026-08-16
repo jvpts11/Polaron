@@ -818,6 +818,16 @@ private:
     bool freshGrew_ = false;   // fixpoint flag: a method joined `returnsFresh_` this round
     void collectFreed(const ast::Block& body, std::unordered_set<std::string>& freed) const;
     bool ownsField(const std::string& className, const std::string& field) const;
+    bool anyFieldOwns(const std::string& className, const std::string& fieldList) const;
+    // WHICH PARAMETERS A METHOD FREES, keyed "Class.method". A recursive structure frees itself
+    // through a helper -- `~TreeMap` calls `freeSubtree(this.root)` and never writes a `delete` --
+    // so without this a tree owned nothing and every rotation in it was an unplaceable reference.
+    std::unordered_map<std::string, std::set<int>> deletesParam_;
+    // The CLASS behind such a parameter, under the name the rest of the compiler uses. A
+    // monomorphized helper still declares its template's type, so the declared name is not the one
+    // anything looks up; the field it is called with belongs to an instantiated class and is.
+    std::unordered_map<std::string, std::unordered_map<int, std::string>> paramClassOf_;
+    void computeDeleteSummaries(const ast::Program& program);
     // "Class.method" -> the field a one-line accessor hands back. What makes a CALL result carry its
     // receiver's region: `table.at(i)` is a row the table owns, and without this the commonest way
     // to reach into another object is invisible.
@@ -861,6 +871,12 @@ private:
     // `list.add(item)` must not be a diagnostic. Keyed "Class.method#paramIndex".
     std::unordered_map<int, std::string> escapeScanFieldFor_;   // accumulator, per method
     std::unordered_map<std::string, std::string> escapesToReceiverField_;
+    // VALUES THIS OBJECT WAS JUST GIVEN, keyed "receiverPath\x1fvaluePath". A store into an owned
+    // field makes the receiver the owner; a later store of the SAME value into another field of the
+    // SAME receiver is then a second name for something it already owns, not a borrow from elsewhere.
+    // That is the head-and-tail of every linked structure. Cleared per method: it records what was
+    // seen a few statements ago, and claims nothing beyond that.
+    std::unordered_set<std::string> alreadyOwnedHere_;
     bool escapeSummaryChanged_ = false;  // fixpoint flag: a summary grew during the last pass
     void computeEscapeSummaries(const ast::Program& program);
     void scanEscapes(const ast::Block& body, std::unordered_map<std::string, int>& alias,
