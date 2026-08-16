@@ -896,6 +896,7 @@ private:
     // That is the head-and-tail of every linked structure. Cleared per method: it records what was
     // seen a few statements ago, and claims nothing beyond that.
     std::unordered_set<std::string> alreadyOwnedHere_;
+    std::unordered_set<std::string> currentParamNames_;   // this body's parameters, by name
     // A FRESH OBJECT BEING FILLED IN, and what it has picked up so far.
     //
     // `mutable ArrayList<T> out = new ArrayList<T>() on heap;` owns nothing and is owned by nothing:

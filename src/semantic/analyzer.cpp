@@ -3162,6 +3162,43 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                             }
                             const_cast<ast::MethodDecl*>(m)->escapeSummary = std::move(sum);
                         }
+                        // A CONSTRUCTOR IS WHERE MOST OBJECTS ARE HANDED SOMETHING, and it had no
+                        // summary at all. `Parser(ArrayList<Token*> tokens) { this.tokens = tokens; }`
+                        // is the ordinary way one object is given another, and with nothing recorded
+                        // the only signal was a complaint inside the constructor -- at a place that
+                        // cannot answer it. Whether those tokens outlive the parser is knowable
+                        // exactly where both are named, which is the `new`.
+                        //
+                        // No union over overrides here: a constructor is not virtual, and the class
+                        // written at the `new` is the class that runs.
+                        if (const auto* ct = dynamic_cast<const ast::ConstructorDecl*>(member.get())) {
+                            escapeScanClass_ = baseType(cls.name);
+                            escapeScanParams_ = &ct->params;
+                            escapeScanParamTargets_.assign(ct->params.size(), {});
+                            escapeScanFieldFor_.clear();
+                            borrowLocals_.clear();
+                            std::unordered_map<std::string, int> alias;
+                            for (std::size_t i = 0; i < ct->params.size(); ++i) {
+                                alias[ct->params[i].name] = static_cast<int>(i);
+                            }
+                            const std::string key = escapeScanClass_ + ".<new>";
+                            escapeScanKey_ = key;
+                            std::vector<bool> esc =
+                                escapesToReceiver_.count(key) > 0
+                                    ? escapesToReceiver_[key]
+                                    : std::vector<bool>(ct->params.size(), false);
+                            scanEscapes(ct->body, alias, esc);
+                            escapesToReceiver_[key] = esc;
+                            for (const auto& [param, field] : escapeScanFieldFor_) {
+                                std::string& kept =
+                                    escapesToReceiverField_[key + "#" + std::to_string(param)];
+                                if (kept != field) {
+                                    kept = field;
+                                    escapeSummaryChanged_ = true;
+                                }
+                            }
+                            escapesToParam_[key] = escapeScanParamTargets_;
+                        }
                     }
                 }
             }
@@ -4845,6 +4882,13 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     acquired_.clear();
     borrowsFrom_.clear();
     invalidatedAt_.clear();
+    // WHOSE VALUES THE CALLER CAN SEE. A store into `this` of something the caller handed us is a
+    // question only the caller can answer, and answering it here reported the wrong line -- so the
+    // check needs to know which names came from outside.
+    currentParamNames_.clear();
+    for (const ast::Param& p : params) {
+        currentParamNames_.insert(p.name);
+    }
     catchStack_.clear();
     regionConstraints_.clear();
     regionFlavor_.clear();

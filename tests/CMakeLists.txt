@@ -506,6 +506,15 @@ add_test(NAME sema_private_constructor_errors
 set_tests_properties(sema_private_constructor_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "'Made' is private to 'Made'")
 
+# Constructors had no escape summary, so `new Keeper(x)` was checked against nothing -- and that is
+# the call every object graph is built out of. The summary does not refuse the construction: it BOUNDS
+# the object, so a keeper built over a frame-local item is frame-local whatever `on heap` says, and
+# the complaint lands on the `return` that carries it out.
+add_test(NAME sema_escape_through_constructor_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_through_constructor.pol")
+set_tests_properties(sema_escape_through_constructor_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "returns something that does not outlive the call")
+
 # A call reads the escape summary of the STATIC type, and an interface method has no body. Until the
 # summary was unioned onto the interfaces too, calling through one was the only way to hand an object
 # somewhere without being seen -- in a program organised around interfaces, that is every call.

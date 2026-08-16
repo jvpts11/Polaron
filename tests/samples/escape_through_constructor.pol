@@ -1,0 +1,48 @@
+import System.IO.Console;
+program EscapeThroughConstructor;
+
+// A CONSTRUCTOR IS WHERE MOST OBJECTS ARE HANDED SOMETHING, and it was the one call in the language
+// that could hand something over unobserved: constructors had no escape summary, so `new Keeper(x)`
+// was checked against nothing. Every object graph is built out of that call.
+//
+// Two things had to be got right at once, and the first attempt got the second one wrong.
+//
+// `this.held = item` inside the constructor is NOT the place to complain. It is how one object is
+// given another, there is no other way to write it, and whether the item outlives the keeper is
+// knowable only where both are named. A diagnostic there is true and useless.
+//
+// And the `new` itself is not the place either. Building a keeper over a stack item is fine as long
+// as the keeper does not outlive it -- refusing at the construction flagged `new Some(row)`, where
+// the wrapper dies with what it wraps, and every keeper that never leaves its own frame.
+//
+// What the constructor's summary does instead is BOUND the object: a keeper built over a frame-local
+// item is a frame-local keeper, whatever `on heap` says. The complaint then lands where it belongs
+// -- here, on the return, which is the statement that is actually wrong.
+public bundle Main {
+    public namespace App {
+        public class Item {
+            public mutable int value;
+            public constructor Item(int value) { this.value = value; }
+        }
+
+        public class Keeper {
+            private mutable nullable Item* held;
+            public constructor Keeper(Item* item) { this.held = item; }
+            public method value() returns int { return this.held.value; }
+        }
+
+        public class Main {
+            public static method build() returns Keeper* {
+                mutable Item scratch = new Item(7) on stack;
+                return new Keeper(&scratch) on heap;   // the item dies here; the keeper leaves
+            }
+
+            public static method main(string[] args) returns void {
+                mutable Keeper* sink = Main.build();
+                System.IO.Console.printf("%d\n", sink.value());
+                delete sink;
+                return;
+            }
+        }
+    }
+}
