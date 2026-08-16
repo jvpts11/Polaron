@@ -506,6 +506,14 @@ add_test(NAME sema_private_constructor_errors
 set_tests_properties(sema_private_constructor_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "'Made' is private to 'Made'")
 
+# A view that outlives what it views. Each of the three statements is fine alone -- build the result,
+# empty the table, read the result -- and the order is the bug. This is the shape a database gets
+# wrong, and the reason the region binder tracks where a returned collection's contents came from.
+add_test(NAME sema_borrow_after_clear_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_after_clear.pol")
+set_tests_properties(sema_borrow_after_clear_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "use of 'answer' after 'people' was emptied")
+
 # Everything beneath a region class must be one. A plain class inheriting from an abstract region class
 # would put its instances outside the family's region, and totality is the whole feature.
 add_test(NAME sema_region_class_escapee_errors

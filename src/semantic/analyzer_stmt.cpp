@@ -16,7 +16,85 @@ namespace polaron {
 
 using namespace semutil;   // NOLINT(google-build-using-namespace): as in analyzer.cpp
 
+// A borrow that arrived from somewhere else, and a call that empties where it came from. Both are
+// read here, before the statement is analysed, so the diagnostic lands on the READ that comes after
+// -- which is the only one of the three statements that is actually wrong.
+void SemanticAnalyzer::noteBorrowFlow(const ast::Stmt& stmt) {
+    if (!regionBinder_) {
+        return;
+    }
+    auto callOf = [](const ast::Expr* e) -> const ast::CallExpr* {
+        while (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) {
+            e = c->operand.get();
+        }
+        return dynamic_cast<const ast::CallExpr*>(e);
+    };
+    // `answer = Main.scan(people)` -- the result borrows from whatever was passed as that parameter.
+    auto bindResult = [&](const std::string& name, const ast::Expr* init) {
+        const ast::CallExpr* call = callOf(init);
+        if (call == nullptr) {
+            return;
+        }
+        const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+        if (mem == nullptr) {
+            return;
+        }
+        std::string cls;
+        if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+            rid != nullptr && lookupLocal(rid->name) == nullptr && lookupClass(rid->name) != nullptr) {
+            cls = baseType(rid->name);          // a static call names its class
+        } else {
+            Quiet hush(*this);
+            cls = baseType(typeOf(*mem->object));
+        }
+        auto rit = returnsBorrowOfParam_.find(cls + "." + mem->member);
+        if (rit == returnsBorrowOfParam_.end() ||
+            rit->second >= static_cast<int>(call->args.size())) {
+            return;
+        }
+        const std::string source = describePath(*call->args[rit->second]);
+        if (!source.empty()) {
+            borrowsFrom_[name] = source;
+        }
+    };
+    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
+        if (vd->init != nullptr) {
+            borrowsFrom_.erase(vd->name);
+            bindResult(vd->name, vd->init.get());
+        }
+        return;
+    }
+    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
+        if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
+            borrowsFrom_.erase(tid->name);      // a new value, a new answer
+            invalidatedAt_.erase(tid->name);
+            bindResult(tid->name, as->value.get());
+        }
+        return;
+    }
+    // `people.clear()` -- every borrow into `people` is now pointing at freed rows.
+    if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
+        const ast::CallExpr* call = callOf(es->expr.get());
+        if (call == nullptr) {
+            return;
+        }
+        const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+        if (mem == nullptr) {
+            return;
+        }
+        Quiet hush(*this);
+        const std::string cls = baseType(typeOf(*mem->object));
+        if (invalidators_.count(cls + "." + mem->member) > 0) {
+            const std::string who = describePath(*mem->object);
+            if (!who.empty()) {
+                invalidatedAt_.insert(who);
+            }
+        }
+    }
+}
+
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
+    noteBorrowFlow(stmt);
     if (const auto* sa = dynamic_cast<const ast::DemandStmt*>(&stmt)) {
         // A DEMAND IS NOT CODE THAT RUNS -- it is a check the BUILD performs, and it has to fire
         // whether or not anything calls the method holding it. `sizeof_budget_bad.pol` is exactly
@@ -377,6 +455,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             lambdaLocals_.erase(vd->name);
         }
         activationOwned_.erase(vd->name);
+        acquired_.erase(vd->name);
+        // A local bound to a heap allocation MADE HERE starts unconstrained: nothing owns it yet, so
+        // nothing can outlive it. Each borrow stored into it lowers that bound (see `acquired_`).
+        if (const auto* fresh = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+            fresh != nullptr && fresh->region.empty() && fresh->location == "heap") {
+            acquired_[vd->name] = Lifetime{RegionKind::Root, ""};
+        }
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
             nw != nullptr && nw->region.empty() && nw->location != "heap") {
             activationOwned_.insert(vd->name);
