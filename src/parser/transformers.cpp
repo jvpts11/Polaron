@@ -59,6 +59,13 @@ std::string conventionalName(const std::string& name) {
         stem.erase(stem.size() - 4);
     } else if (endsWith("er")) {
         stem.erase(stem.size() - 2);
+        // ...AND A PAST PARTICIPLE, which is the other way an author names the property rather than
+        // the agent: `Named`, `Sorted`, `Ordered`. Without this the suggestion was `TNameder`, which
+        // is not a word -- a diagnostic that tells the reader to write something wrong is worse than
+        // one that only says "wrong". Found by writing a real program: `TNamed` is the first name
+        // anyone reaches for when two types are compared by name.
+    } else if (endsWith("ed")) {
+        stem.erase(stem.size() - (endsWith("eed") ? 1 : 2));
     } else if (endsWith("e")) {
         stem.erase(stem.size() - 1);
     }

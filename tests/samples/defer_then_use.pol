@@ -1,0 +1,51 @@
+import System.IO.Console;
+program DeferThenUse;
+
+// A DEFERRED CLEANUP RUNS AT SCOPE EXIT, AND THE FLOW ANALYSIS HAS TO SAY SO.
+//
+// This is the two lines `defer` exists for -- allocate, then say next to the allocation how it ends
+// -- and they did not compile. The deferred body was analyzed inline, so `delete b` was recorded as
+// having happened AT the `defer`, and every later read of `b` was reported as a use-after-delete.
+// The feature could not be used for the one thing it is for.
+//
+// Found by writing a real program: a SQL engine's one entry point allocates a lexer, a token list, a
+// parser and a statement, all of which die when the call does. Written by hand that was a try, a
+// catch freeing three things in order, and the same three frees repeated on the success path -- six
+// statements to say "these die here" and two places to be wrong when a seventh is added. `defer` is
+// that sentence, and it was refused.
+//
+// The body is still analyzed -- its types and its own mistakes are still reported. What is rolled
+// back is only what it claimed about who is still alive, because none of it has happened yet.
+//
+// Prints:
+//   value 7
+//   pair 3 and 4
+//   done
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int value;
+            public constructor Box(int value) { this.value = value; }
+            public method read() returns int { return this.value; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Box* one = new Box(7) on heap;
+                defer { delete one; }
+                System.IO.Console.printf("value %d\n", one.read());
+
+                // Several of them, in the order an entry point really allocates: each cleanup next
+                // to its allocation, and every one of them used afterwards.
+                mutable Box* left = new Box(3) on heap;
+                defer { delete left; }
+                mutable Box* right = new Box(4) on heap;
+                defer { delete right; }
+                System.IO.Console.printf("pair %d and %d\n", left.read(), right.read());
+
+                System.IO.Console.print("done\n");
+                return;
+            }
+        }
+    }
+}

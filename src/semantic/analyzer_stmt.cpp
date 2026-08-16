@@ -1222,7 +1222,26 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                       def->within->loc);
             }
         }
+        // A DEFERRED BODY RUNS AT SCOPE EXIT, NOT HERE, and the flow facts have to say so.
+        //
+        // Analyzed inline, its `delete x` was recorded as having happened at the `defer` -- so every
+        // later use of `x` was reported as a use-after-delete. That made the feature unusable for the
+        // one thing it exists to do: put the cleanup NEXT TO the allocation instead of at the bottom
+        // of the function. `defer { delete b; }` followed by any read of `b` was refused, which is
+        // the canonical two lines from the feature's own design note.
+        //
+        // So the body is still analyzed -- its types, its calls and its own mistakes are all still
+        // reported -- and then the facts it changed about WHO IS STILL ALIVE are rolled back, because
+        // none of it has happened yet at this point in the program. What the deferred deletes
+        // discharge at the end of the scope is a separate question, answered by the scope's own exit
+        // checks.
+        const std::unordered_set<std::string> deletedBefore = deleted_;
+        const std::unordered_set<std::string> freedBefore = freed_;
+        const std::unordered_set<std::string> movedBefore = moved_;
         analyzeBlock(def->body);
+        deleted_ = deletedBefore;
+        freed_ = freedBefore;
+        moved_ = movedBefore;
         return;
     }
     if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&stmt)) {
