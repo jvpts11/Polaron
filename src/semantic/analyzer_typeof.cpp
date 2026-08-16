@@ -190,6 +190,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                           "it (spec 18.2), or move the `delete` after this use",
                       id->loc);
             }
+        } else if (auto bit = borrowsFrom_.find(id->name);
+                   bit != borrowsFrom_.end() && invalidatedAt_.count(bit->second) > 0) {
+            // USE AFTER INVALIDATION -- the same mistake as use-after-free, spread over three
+            // statements and two objects, which is why nothing caught it.
+            //
+            // A result built out of another object's rows is fine when it is built and fine when it
+            // is returned. It goes wrong when the source is emptied and the result is read
+            // afterwards, and that is a SELECT still holding what a DELETE freed. The rows are gone,
+            // the pointers are not, and at the machine level those are the same 64 bits.
+            error("use of '" + id->name + "' after '" + bit->second +
+                      "' was emptied: it holds references to what that object owned, and freeing "
+                      "them left every one of those references pointing at storage that is gone. "
+                      "Read it before the call that empties, or have it keep copies rather than "
+                      "references",
+                  id->loc);
         } else if (const FlowFacts::Init st = initStateOf(id->name); st != FlowFacts::Init::Init) {
             // Definite assignment. The two states get different messages because they are different
             // mistakes: never assigned at all, versus assigned on only one path through a branch.
@@ -2974,7 +2989,54 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                             anyFieldOwns(recvClass, fit->second)) {
                             continue;
                         }
+                        // A CONTAINER BORROWS ITS ELEMENTS; THE OBJECT HOLDING THE CONTAINER MAY OWN
+                        // THEM. `ArrayList` frees its storage and nothing in it, so `add` is always a
+                        // borrow when read on its own -- but `this.rows.add(row)` inside `Table`,
+                        // whose destructor walks those rows and deletes each one, is a handover to
+                        // `Table`. The list is where the value lands; the owner is one level out.
+                        //
+                        // This is the composition Rust spells with a lifetime parameter on the
+                        // container. Here it is read off the destructor of whoever holds it, which is
+                        // the same fact without the annotation -- and without it, every insertion
+                        // into an owned collection in the language reads as an unprovable borrow.
+                        if (fit != escapesToReceiverField_.end() &&
+                            fit->second.find('*') != std::string::npos) {
+                            if (const auto* rmem =
+                                    dynamic_cast<const ast::MemberExpr*>(mem->object.get())) {
+                                const std::string holder = baseType(typeOf(*rmem->object));
+                                auto oit = ownedContents_.find(holder);
+                                if (oit != ownedContents_.end() &&
+                                    oit->second.count(rmem->member) > 0) {
+                                    continue;
+                                }
+                            }
+                        }
                         const Lifetime arg = lifetimeOf(*call->args[i]);
+                        // FILLING A FRESH OBJECT LOWERS ITS BOUND rather than failing. Nothing owns
+                        // it yet, so nothing can outlive it and this store cannot dangle -- but the
+                        // borrow that went in is now part of what it is, and the accumulated bound is
+                        // what gets checked the moment it is returned or stored somewhere.
+                        if (const auto* rid =
+                                dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                            if (auto acq = acquired_.find(rid->name); acq != acquired_.end()) {
+                                acq->second = outlivesOrEqual(acq->second, arg) ? arg : acq->second;
+                                continue;
+                            }
+                        }
+                        // STORING INTO `this` IS THE CALLER'S QUESTION, and the escape summary is how
+                        // it gets there: `addAll` puts another list's elements into ours, and whether
+                        // those outlive us is knowable only where both lists are named. Answering it
+                        // here made every container's own transfer method an error against a lifetime
+                        // the method was never given.
+                        //
+                        // What stays refused here is frame-local or region storage escaping into
+                        // `this`, because that one IS decidable here and the frame is about to end.
+                        if (const auto* tid =
+                                dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                            tid != nullptr && tid->name == "this" &&
+                            arg.kind != RegionKind::Activation && arg.kind != RegionKind::Region) {
+                            continue;
+                        }
                         if (outlivesOrEqual(arg, recv)) {
                             continue;
                         }

@@ -100,8 +100,19 @@ bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) con
 // a loop over `this.f` that deletes its elements. All three mean the same thing about the field --
 // the class is responsible for what is in it -- and a check that only understood the first would
 // call every collection-holding class a borrower.
+// OWNING A CONTAINER IS NOT OWNING WHAT IS IN IT, and the difference is a whole class of bug.
+//
+// `~Table` walks its rows and deletes each one, then deletes the list. `~ViewResult` deletes only the
+// list -- correct for a view, and exactly why a view dangles. Both classes free a field called
+// `rows`/`seen`, so a check that asked one question could not tell them apart, and `result.keep(row)`
+// looked like the same handover as `table.insert(row)`. It is the opposite of one.
+//
+// So two answers come out of a destructor, not one: which FIELDS it frees, and whose CONTENTS it
+// frees. A value landing in a field asks the first; a value landing among a field's elements asks
+// the second.
 void SemanticAnalyzer::collectFreed(const ast::Block& body,
-                                    std::unordered_set<std::string>& freed) const {
+                                    std::unordered_set<std::string>& freed,
+                                    std::unordered_set<std::string>& contents) const {
     // The root field name of an expression like `this.rows.get(i)` -> "rows". Anything that does not
     // start at `this` is not about this object's fields.
     auto rootField = [](const ast::Expr* e) -> std::string {
@@ -130,6 +141,25 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
     // destructor is written -- the node has to be read before it is freed -- and a check that only
     // understood `delete this.f` called every such class a borrower of its own children.
     std::unordered_map<std::string, std::string> standsFor;
+    // ...and a local standing in for one of a field's ELEMENTS: `foreach (Row* r in this.rows)` then
+    // `delete r`, which is how a container's destructor is actually written when the elements are
+    // its own. Without it the walk saw a delete of a local it knew nothing about.
+    std::unordered_map<std::string, std::string> standsForElement;
+    // Reading an element out of a field: `this.rows.get(i)` or `this.rows[i]`.
+    auto elementFieldOf = [&](const ast::Expr* e) -> std::string {
+        while (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) {
+            e = c->operand.get();
+        }
+        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+            return rootField(ix->array.get());
+        }
+        if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+                return rootField(mem->object.get());
+            }
+        }
+        return "";
+    };
     std::function<void(const ast::Stmt*)> walkStmt = [&](const ast::Stmt* st) {
         if (st == nullptr) {
             return;
@@ -140,11 +170,16 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
                 while (const auto* c = dynamic_cast<const ast::CastExpr*>(v)) {
                     v = c->operand.get();
                 }
-                if (const std::string f = rootField(v); !f.empty()) {
+                if (const std::string el = elementFieldOf(v); !el.empty()) {
+                    standsForElement[vd->name] = el;
+                } else if (const std::string f = rootField(v); !f.empty()) {
                     standsFor[vd->name] = f;
                 } else if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(v)) {
                     if (auto it = standsFor.find(id->name); it != standsFor.end()) {
                         standsFor[vd->name] = it->second;   // an alias of an alias
+                    } else if (auto et = standsForElement.find(id->name);
+                               et != standsForElement.end()) {
+                        standsForElement[vd->name] = et->second;
                     }
                 }
             }
@@ -164,6 +199,13 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
         }
         if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(st)) {
             const ast::Expr* target = del->target.get();
+            // AN ELEMENT FIRST, because `delete this.rows.get(i)` also matches the field walk below
+            // and would have been filed as "this class frees its rows list" -- which is what made a
+            // view indistinguishable from an owner.
+            if (const std::string el = elementFieldOf(target); !el.empty()) {
+                contents.insert(el);
+                return;
+            }
             std::string name = rootField(target);
             if (!name.empty()) {
                 freed.insert(name);
@@ -178,14 +220,9 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
                     if (auto it = standsFor.find(id->name); it != standsFor.end()) {
                         freed.insert(it->second);
                     }
-                }
-            }
-            // `delete this.rows.get(i)` reaches the field through a call, so the receiver of that
-            // call is where the name is.
-            if (const auto* call = dynamic_cast<const ast::CallExpr*>(target)) {
-                std::string viaCall = rootField(call->callee.get());
-                if (!viaCall.empty()) {
-                    freed.insert(viaCall);
+                    if (auto et = standsForElement.find(id->name); et != standsForElement.end()) {
+                        contents.insert(et->second);
+                    }
                 }
             }
             return;
@@ -214,6 +251,11 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
             return;
         }
         if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) {
+            // `foreach (Row* r in this.rows) { delete r; }` -- the loop variable IS an element, and
+            // that is the plainest way a container frees what it owns.
+            if (const std::string over = rootField(fe->iterable.get()); !over.empty()) {
+                standsForElement[fe->varName] = over;
+            }
             for (const auto& s : fe->body.statements) {
                 walkStmt(s.get());
             }
@@ -492,9 +534,10 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
                 std::unordered_set<std::string> freed;
+                std::unordered_set<std::string> contents;
                 for (const ast::MemberPtr& member : cls.members) {
                     if (const auto* dtor = dynamic_cast<const ast::DestructorDecl*>(member.get())) {
-                        collectFreed(dtor->body, freed);
+                        collectFreed(dtor->body, freed, contents);
                     }
                 }
                 // ...and one level of helper, which is how a destructor that shares its cleanup with
@@ -527,7 +570,7 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                         for (const ast::MemberPtr& other : cls.members) {
                             const auto* m = dynamic_cast<const ast::MethodDecl*>(other.get());
                             if (m != nullptr && calledNames.count(m->name) > 0) {
-                                collectFreed(m->body, freed);
+                                collectFreed(m->body, freed, contents);
                             }
                         }
                     }
@@ -536,6 +579,32 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                 // a helper are two halves of one answer, and overwriting threw the other half away.
                 for (const std::string& f : freed) {
                     if (ownedFields_[baseType(cls.name)].insert(f).second) {
+                        freshGrew_ = true;
+                    }
+                }
+                // WHICH METHODS EMPTY THE THING. A method that frees a field's contents invalidates
+                // every borrow anyone is holding into it -- `DELETE FROM people` is a method call,
+                // and the result of an earlier SELECT is still sitting there pointing at the rows.
+                // The store is not the bug and the free is not the bug; the READ afterwards is, and
+                // nothing had ever connected the two.
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr) {
+                        continue;
+                    }
+                    std::unordered_set<std::string> mFreed;
+                    std::unordered_set<std::string> mContents;
+                    collectFreed(m->body, mFreed, mContents);
+                    if (!mContents.empty() &&
+                        invalidators_.insert(baseType(cls.name) + "." + m->name).second) {
+                        freshGrew_ = true;
+                    }
+                }
+                for (const std::string& f : contents) {
+                    // Freeing what is in a field also frees nothing about the field itself, so the
+                    // two sets stay apart -- but a class that walks its list deleting rows and then
+                    // deletes the list says both, in two statements, and both are recorded.
+                    if (ownedContents_[baseType(cls.name)].insert(f).second) {
                         freshGrew_ = true;
                     }
                 }
@@ -712,9 +781,18 @@ bool SemanticAnalyzer::anyFieldOwns(const std::string& className,
     std::string::size_type at = 0;
     while (at <= fieldList.size()) {
         const std::string::size_type comma = fieldList.find(',', at);
-        const std::string one = fieldList.substr(
+        std::string one = fieldList.substr(
             at, comma == std::string::npos ? std::string::npos : comma - at);
-        if (!one.empty() && ownsField(className, one)) {
+        // A leading `*` means the value went AMONG the field's elements, so the question is whether
+        // this class frees the elements -- not whether it frees the container. `~ViewResult` deletes
+        // its list and nothing in it, which is right for a view and is exactly why a view dangles.
+        if (!one.empty() && one[0] == '*') {
+            one.erase(0, 1);
+            auto it = ownedContents_.find(baseType(className));
+            if (it != ownedContents_.end() && it->second.count(one) > 0) {
+                return true;
+            }
+        } else if (!one.empty() && ownsField(className, one)) {
             return true;
         }
         if (comma == std::string::npos) {
@@ -804,6 +882,11 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
         }
         if (activationOwned_.count(id->name) > 0) {
             return Lifetime{RegionKind::Activation, ""};
+        }
+        // A fresh object still being filled: its lifetime is whatever the borrows put into it have
+        // lowered it to, and Root until one has.
+        if (auto acq = acquired_.find(id->name); acq != acquired_.end()) {
+            return acq->second;
         }
         if (const LocalVar* local = lookupLocal(id->name); local != nullptr) {
             // A PARAMETER, OR A LOCAL HOLDING A HEAP OBJECT. Neither dies with this frame -- the

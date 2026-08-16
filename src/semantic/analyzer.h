@@ -813,10 +813,21 @@ private:
     // field it frees is owned, a field it leaves alone is somebody else's. The structure is already
     // in the language, which is the model's own first sentence about where regions come from.
     std::unordered_map<std::string, std::unordered_set<std::string>> ownedFields_;  // class -> fields
+    // ...and whose CONTENTS it frees, which is a different sentence. `~Table` walks its rows and
+    // deletes each one; `~ViewResult` deletes only the list. Both free a field; only one of them owns
+    // what is in it, and reading a single set made a view look exactly like an owner.
+    std::unordered_map<std::string, std::unordered_set<std::string>> ownedContents_;
+    // Methods that free a field's contents: calling one invalidates every borrow into that object.
+    std::unordered_set<std::string> invalidators_;
+    // Per method: a local -> the object it holds borrows from, and which objects have been emptied.
+    std::unordered_map<std::string, std::string> borrowsFrom_;
+    std::unordered_set<std::string> invalidatedAt_;
+    void noteBorrowFlow(const ast::Stmt& stmt);
     void computeOwnership(const ast::Program& program);
     void computeOwnershipRound(const ast::Program& program);
     bool freshGrew_ = false;   // fixpoint flag: a method joined `returnsFresh_` this round
-    void collectFreed(const ast::Block& body, std::unordered_set<std::string>& freed) const;
+    void collectFreed(const ast::Block& body, std::unordered_set<std::string>& freed,
+                      std::unordered_set<std::string>& contents) const;
     bool ownsField(const std::string& className, const std::string& field) const;
     bool anyFieldOwns(const std::string& className, const std::string& fieldList) const;
     // WHICH PARAMETERS A METHOD FREES, keyed "Class.method". A recursive structure frees itself
@@ -877,6 +888,26 @@ private:
     // That is the head-and-tail of every linked structure. Cleared per method: it records what was
     // seen a few statements ago, and claims nothing beyond that.
     std::unordered_set<std::string> alreadyOwnedHere_;
+    // A FRESH OBJECT BEING FILLED IN, and what it has picked up so far.
+    //
+    // `mutable ArrayList<T> out = new ArrayList<T>() on heap;` owns nothing and is owned by nothing:
+    // at that moment nothing can outlive it, so a store into it cannot dangle. What it may not do is
+    // stay unconstrained -- each borrow put inside LOWERS its lifetime to the shorter of the two, and
+    // by the time it is returned or stored the accumulated bound is what gets checked.
+    //
+    // This is the inference Rust writes as `fn sorted(&'a self) -> Vec<&'a T>`, arrived at by reading
+    // the stores instead of by writing the parameter. Without it `sortedBy` -- a fresh list filled
+    // from `this` -- was an unprovable borrow, and so was every other method in the language that
+    // builds a collection and hands it back.
+    mutable std::unordered_map<std::string, Lifetime> acquired_;
+    // A METHOD THAT HANDS BACK SOMETHING BORROWED FROM ONE OF ITS PARAMETERS, keyed "Class.method"
+    // -> the parameter index. Nothing inside such a method is wrong; the whole question is at the
+    // caller, where the source can be emptied while the result is still being read. Without this the
+    // fact stopped at the `return` and a view outliving its table was invisible.
+    std::unordered_map<std::string, int> returnsBorrowOfParam_;
+    std::unordered_map<std::string, int> borrowLocals_;        // accumulator, per method
+    std::unordered_map<std::string, std::string> freshLocalClass_;   // locals built by `new ... on heap`
+    std::string escapeScanKey_;                                // "Class.method" being scanned
     bool escapeSummaryChanged_ = false;  // fixpoint flag: a summary grew during the last pass
     void computeEscapeSummaries(const ast::Program& program);
     void scanEscapes(const ast::Block& body, std::unordered_map<std::string, int>& alias,

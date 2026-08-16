@@ -2705,6 +2705,20 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
             auto it = alias.find(id->name);
             return it == alias.end() ? -1 : it->second;
         }
+        // DERIVED FROM a parameter, not equal to it: `Row* borrowed = table.at(i);` is a value that
+        // belongs to `table` and dies when `table`'s rows do. Reading only bare identifiers, the
+        // chain broke at exactly the line real code writes, and a result built out of those rows
+        // looked like it borrowed nothing.
+        if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+                if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                    auto it = alias.find(rid->name);
+                    if (it != alias.end()) {
+                        return it->second;
+                    }
+                }
+            }
+        }
         return -1;
     };
     // The lifetime "slot" a field-store target belongs to: -1 = `this` (receiver), j = parameter j (or an
@@ -2739,6 +2753,21 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
         } else {
             alias.erase(vd->name);
         }
+        // A container built HERE, so a later `x.add(param)` is known to be filling something fresh
+        // and the class is known without a symbol table this pass does not have.
+        if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+            nw != nullptr && nw->location == "heap" && nw->region.empty()) {
+            freshLocalClass_[vd->name] = nw->className;
+        }
+    } else if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(s)) {
+        // ...and handing it back is where the fact leaves the method.
+        if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get())) {
+            if (auto bit = borrowLocals_.find(rid->name); bit != borrowLocals_.end()) {
+                if (returnsBorrowOfParam_.emplace(escapeScanKey_, bit->second).second) {
+                    escapeSummaryChanged_ = true;
+                }
+            }
+        }
     } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) {
         int slot = storeSlot(as->target.get());
         if (slot != -2) {
@@ -2760,6 +2789,8 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(t)) {
                         t = ix->array.get();
                     }
+                    const bool intoElement =
+                        dynamic_cast<const ast::IndexExpr*>(as->target.get()) != nullptr;
                     if (const auto* tmem = dynamic_cast<const ast::MemberExpr*>(t)) {
                         // EVERY field it lands in, not the last one seen. An append writes the
                         // argument twice -- into the chain the object owns and into the tail pointer
@@ -2767,12 +2798,19 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                         // handover as a borrow, because the tail is a borrow. One of the two is the
                         // owner and that is the one the question is about, so keep them all and let
                         // the call site ask whether ANY of them owns.
+                        //
+                        // A `*` in front means it landed AMONG a field's elements rather than in the
+                        // field, and the two ask different questions of the class: a container may
+                        // own its storage and borrow everything in it. `this.data[i] = item` is an
+                        // element; `this.filter = f` is a field.
+                        const std::string landing =
+                            (intoElement ? "*" : "") + tmem->member;
                         std::string& seen = escapeScanFieldFor_[p];
                         if (seen.empty()) {
-                            seen = tmem->member;
-                        } else if (("," + seen + ",").find("," + tmem->member + ",") ==
+                            seen = landing;
+                        } else if (("," + seen + ",").find("," + landing + ",") ==
                                    std::string::npos) {
-                            seen += "," + tmem->member;
+                            seen += "," + landing;
                         }
                     }
                 } else if (p < static_cast<int>(escapeScanParamTargets_.size()) &&
@@ -2852,6 +2890,31 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                         }
                     }
                 }
+                // A FRESH COLLECTION THAT GATHERS BORROWS FROM A PARAMETER carries that parameter's
+                // lifetime out with it, and the caller has to be told. `scan(table)` fills a new
+                // result with rows read out of `table` and returns it: nothing inside the method is
+                // wrong -- the result is fresh, the rows are the table's -- and the whole bug lives
+                // at the caller, where the table is emptied and the result is read afterwards.
+                //
+                // So the fact travels: this method hands back something borrowed from parameter p.
+                if (const auto* rid =
+                        dynamic_cast<const ast::IdentifierExpr*>(callee->object.get());
+                    rid != nullptr && freshLocalClass_.count(rid->name) > 0) {
+                    const std::string holderClass = baseType(freshLocalClass_[rid->name]);
+                    auto kit = escapesToReceiver_.find(holderClass + "." + callee->member);
+                    if (kit != escapesToReceiver_.end()) {
+                        for (std::size_t k = 0; k < call->args.size() && k < kit->second.size();
+                             ++k) {
+                            if (!kit->second[k]) {
+                                continue;
+                            }
+                            const int from = paramOf(call->args[k].get());
+                            if (from >= 0) {
+                                borrowLocals_[rid->name] = from;
+                            }
+                        }
+                    }
+                }
                 if (!calleeClass.empty()) {
                     // WHICH FIELD, not just THAT it escapes. `put` hands the node to `add` and `add`
                     // is what stores it; propagating only the bit left `put` knowing the argument is
@@ -2866,8 +2929,9 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                     const bool sameObject =
                         dynamic_cast<const ast::IdentifierExpr*>(callee->object.get()) != nullptr;
                     const std::string throughField =
-                        sameObject ? std::string()
-                                   : dynamic_cast<const ast::MemberExpr*>(callee->object.get())->member;
+                        sameObject
+                            ? std::string()
+                            : "*" + dynamic_cast<const ast::MemberExpr*>(callee->object.get())->member;
                     auto sit = escapesToReceiver_.find(calleeClass + "." + callee->member);
                     if (sit != escapesToReceiver_.end()) {
                         for (std::size_t k = 0; k < call->args.size() && k < sit->second.size(); ++k) {
@@ -2969,11 +3033,13 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                             escapeScanParams_ = &m->params;
                             escapeScanParamTargets_.assign(m->params.size(), {});
                             escapeScanFieldFor_.clear();
+                            borrowLocals_.clear();
                             std::unordered_map<std::string, int> alias;   // param/alias name -> param index
                             for (std::size_t i = 0; i < m->params.size(); ++i) {
                                 alias[m->params[i].name] = static_cast<int>(i);
                             }
                             std::string key = escapeScanClass_ + "." + m->name;
+                            escapeScanKey_ = key;
                             std::vector<bool> esc = escapesToReceiver_.count(key) > 0
                                                         ? escapesToReceiver_[key]  // keep bits from prior round
                                                         : std::vector<bool>(m->params.size(), false);
@@ -4689,6 +4755,9 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     regionOf_.clear();
     deleted_.clear();
     alreadyOwnedHere_.clear();
+    acquired_.clear();
+    borrowsFrom_.clear();
+    invalidatedAt_.clear();
     catchStack_.clear();
     regionConstraints_.clear();
     regionFlavor_.clear();

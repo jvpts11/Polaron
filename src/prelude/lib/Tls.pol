@@ -3212,6 +3212,18 @@
             public constructor TrustStore() {
                 this.roots = new ArrayList<Certificate*>() on heap;
             }
+            // A TRUST STORE OWNS ITS ROOTS. `system()` parses hundreds of certificates off the
+            // machine and every one of them was leaked, along with the list holding them -- there was
+            // no destructor at all, so opening one TLS connection lost the whole operating system
+            // trust store. The region binder found it the way it finds all of these: with nothing
+            // saying the store frees them, `roots.add(root)` is a reference nobody can prove safe,
+            // and the complaint was about the missing sentence rather than about the store.
+            public destructor ~TrustStore() returns void {
+                for (mutable int i = 0; i < this.roots.size(); i++) {
+                    delete this.roots.get(i);
+                }
+                delete this.roots;
+            }
             public method add(Certificate* root) returns void {
                 this.roots.add(root);
                 return;

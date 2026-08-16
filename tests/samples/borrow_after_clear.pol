@@ -1,0 +1,79 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program BorrowAfterClear;
+
+// A SELECT STILL HOLDING WHAT A DELETE FREED -- the bug an SQL engine gets wrong, written small.
+//
+// `ViewResult` keeps views: it does not own the rows and its destructor does not free them, which is
+// correct for a view and is exactly why it dangles. `scan` fills one from a table's own rows and
+// hands it back; nothing in `scan` is wrong. Then the table is emptied and the result is read.
+//
+// Compiled and run before this was caught, it printed 888 and 777 where the query asked for 10 and
+// 20 -- another statement's rows, silently, with no crash to notice. It is one decision away from
+// the code that is correct, and nothing at the call site says which version you have.
+//
+// The three statements are each fine on their own. What makes it a bug is their order, and that is
+// what the analysis has to see: the borrow arrives from `people`, `clear` frees what `people` owned,
+// and the read comes after.
+public bundle Main {
+    public namespace App {
+        public class Row {
+            public mutable int value;
+            public constructor Row(int value) { this.value = value; }
+            public method read() returns int { return this.value; }
+        }
+
+        public class Table {
+            private mutable ArrayList<Row*> rows;
+            public constructor Table() { this.rows = new ArrayList<Row*>() on heap; }
+            public method insert(Row* row) returns void { this.rows.add(row); return; }
+            public method count() returns int { return this.rows.size(); }
+            public method at(int position) returns Row* { return this.rows.get(position); }
+            public method clear() returns void {
+                for (mutable int i = 0; i < this.rows.size(); i++) { delete this.rows.get(i); }
+                this.rows.clear();
+                return;
+            }
+            public destructor ~Table() returns void {
+                this.clear();
+                delete this.rows;
+            }
+        }
+
+        public class ViewResult {
+            private mutable ArrayList<Row*> seen;
+            public constructor ViewResult() { this.seen = new ArrayList<Row*>() on heap; }
+            public method keep(Row* row) returns void { this.seen.add(row); return; }
+            public method count() returns int { return this.seen.size(); }
+            public method at(int position) returns Row* { return this.seen.get(position); }
+            public destructor ~ViewResult() returns void { delete this.seen; }
+        }
+
+        public class Main {
+            public static method scan(Table* table) returns ViewResult* {
+                mutable ViewResult* out = new ViewResult() on heap;
+                for (mutable int i = 0; i < table.count(); i++) {
+                    Row* borrowed = table.at(i);
+                    out.keep(borrowed);
+                }
+                return out;
+            }
+
+            public static method main(string[] args) returns void {
+                mutable Table* people = new Table() on heap;
+                people.insert(new Row(10) on heap);
+                people.insert(new Row(20) on heap);
+
+                mutable ViewResult* answer = Main.scan(people);
+                people.clear();                       // DELETE FROM people
+
+                for (mutable int i = 0; i < answer.count(); i++) {
+                    System.IO.Console.printf("%d\n", answer.at(i).read());
+                }
+                delete answer;
+                delete people;
+                return;
+            }
+        }
+    }
+}
