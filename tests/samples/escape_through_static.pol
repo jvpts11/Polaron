@@ -1,0 +1,40 @@
+import System.Collections.ArrayList;
+program EscapeThroughStatic;
+
+// A STATIC METHOD IS A METHOD, and static calls resolve on a different path in the compiler, so the
+// region check -- which lived only on the instance path -- never ran on one. Handing something to a
+// static was invisible.
+//
+// It is the worst place for that to be true. A static field is the longest-lived storage a program
+// has: it outlives every object and every frame, so a borrow kept there can only be safe if what it
+// points at is at least as long-lived. Here the registry keeps the address of a stack item, and the
+// frame it lives in ends four lines later.
+//
+// The scan had a matching gap: a static method has no `this` to write through, so the only way it
+// can keep anything is by naming its own class -- and reading only `this.` meant a static method
+// recorded no escapes at all.
+public bundle Main {
+    public namespace App {
+        public class Item {
+            public mutable int value;
+            public constructor Item(int value) { this.value = value; }
+        }
+
+        public class Registry {
+            private static mutable nullable Item* held;
+
+            public static method register(Item* item) returns void {
+                Registry.held = item;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Item scratch = new Item(1) on stack;
+                Registry.register(&scratch);   // the frame ends; the registry does not
+                return;
+            }
+        }
+    }
+}

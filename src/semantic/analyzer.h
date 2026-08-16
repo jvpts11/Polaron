@@ -111,6 +111,10 @@ struct MethodInfo {
     bool isFinal = false;     // `final` method -- cannot be overridden
     bool isAsync = false;     // spec 20.2: the call site yields a Task<returnType>
     bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (arg count is open)
+    // spec 26: declared `extern` -- there is no Polaron body, so no escape summary can exist and
+    // nothing can be said about what it does with a pointer it is handed. The region binder has to
+    // know, because "no summary" was reading as "keeps nothing".
+    bool isExtern = false;
     std::vector<std::string> paramTypes;  // declared parameter types (for methodref's function type)
     std::vector<bool> comptimeParams;     // spec 32.4: which params are `comptime` (arg must be const)
     std::vector<std::string> paramNames;  // spec 22.4: for matching named arguments at the call site
@@ -794,16 +798,6 @@ private:
     // without modelling the nest at all.
     std::unordered_map<std::string, int> regionBirth_;
     int regionBirthCounter_ = 0;
-    // `--strict-regions`: a lifetime this analysis cannot place is REFUSED rather than allowed. The
-    // difference between a checker that finds and one that guarantees, and a decision rather than an
-    // implementation detail -- so it is a flag, and the measurement that makes it decidable is in
-    // `docs/design/region-binder.md`. Static because `outlivesOrEqual` is.
-    static bool strictRegions_;
-
-public:
-    static void setStrictRegions(bool on) { strictRegions_ = on; }
-
-private:
     // The lifetime of a VALUE, computed by the same walk that computes its type -- the structural
     // change the model needed. Lifetime used to be a property of a NAME, so an escape had to be
     // spelled as a bare identifier on both sides to be seen; a temporary, an array element, a field
@@ -836,6 +830,10 @@ private:
     void collectFreed(const ast::Block& body, std::unordered_set<std::string>& freed,
                       std::unordered_set<std::string>& contents,
                       const std::string& selfName = "") const;
+    // §3 at a call, for BOTH call paths -- static calls resolve elsewhere and were checked nowhere.
+    void checkKeptArguments(const std::string& ownerClass, const std::string& methodName,
+                            const ast::CallExpr& call, const ast::Expr* receiver,
+                            const std::vector<std::string>& paramTypes, bool calleeIsExtern);
     bool ownsField(const std::string& className, const std::string& field) const;
     bool anyFieldOwns(const std::string& className, const std::string& fieldList) const;
     // WHICH PARAMETERS A METHOD FREES, keyed "Class.method". A recursive structure frees itself

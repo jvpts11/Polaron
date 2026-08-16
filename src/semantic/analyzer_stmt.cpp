@@ -611,6 +611,19 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                         source.kind != RegionKind::Activation && source.kind != RegionKind::Region &&
                         dynamic_cast<const ast::IdentifierExpr*>(mem->object.get()) != nullptr &&
                         dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())->name == "this";
+                    // FILLING A FRESH OBJECT LOWERS ITS BOUND, at a field store as much as at a
+                    // call. `Node* n = new Node(v) on heap; n.next = this.top;` is the second line of
+                    // every push ever written: `n` is owned by nobody yet, so nothing can outlive it
+                    // and the store cannot dangle -- but the node now points into the stack's chain,
+                    // and that is what `n` is worth from here on. Doing this only for calls left the
+                    // plainest form of it refused.
+                    if (const auto* fid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                        if (auto acq = acquired_.find(fid->name); acq != acquired_.end()) {
+                            acq->second =
+                                outlivesOrEqual(acq->second, source) ? source : acq->second;
+                            return;
+                        }
+                    }
                     const bool refused =
                         (ownChainTail || callersQuestion) ? false
                         : owns ? (source.kind == RegionKind::Activation ||
@@ -622,23 +635,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                             describeRegion(source) + ", so storing that reference in field '" +
                             mem->member + "' leaves it pointing at storage that is freed first. " +
                             regionAdvice(source, target);
-                        // A PROOF AND AN ABSENCE OF PROOF ARE NOT THE SAME DIAGNOSTIC.
+                        // TWO DIFFERENT OBJECTS USED TO BE A WARNING, on the model's own advice: warn
+                        // first, read what comes out, and let the size of that output measure how far
+                        // the language was from the guarantee. That measurement is finished. Every
+                        // shape it printed turned out to be either a real borrow the analysis could
+                        // not yet place, or a real leak -- `Json`, `Xml` and `TrustStore` each had no
+                        // destructor at all -- and once they were closed the count reached zero
+                        // across the standard library, 799 samples and a 27-file SQL engine.
                         //
-                        // Frame-local or region-allocated storage escaping into something that
-                        // outlives it is a proof: the storage is released at a point the program
-                        // states, and the reference is still there. That is an error.
-                        //
-                        // Two DIFFERENT objects are merely incomparable -- nothing says which dies
-                        // first, and a tree with parent and child pointers is the ordinary shape
-                        // that reads that way. Refusing it is the flip the model calls step 4, and
-                        // the model's own advice is to warn first and read what comes out, because
-                        // the size of that output is the measurement of how far the language is
-                        // from the guarantee. So: warn, and let it be counted.
-                        if (source.kind == RegionKind::Object && !owns) {
-                            warn(said, assign->loc);
-                        } else {
-                            error(said, assign->loc);
-                        }
+                        // A warning nobody has to act on is not a guarantee, so it is an error now.
+                        error(said, assign->loc);
                     }
                 }
             }
