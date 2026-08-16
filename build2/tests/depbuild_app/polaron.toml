@@ -1,9 +1,0 @@
-[polaron_project]
-[program]
-name = "consumer"
-version = "0.1.0"
-language_version = "1.0"
-entry = "src/main.pol"
-
-[dependencies]
-mathlib = "C:/Users/jvpts/Documents/GitHub/LDP3/build2/tests/depbuild_fixtures/mathlib@v1.0.0"

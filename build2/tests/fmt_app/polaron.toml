@@ -1,5 +1,0 @@
-[polaron_project]
-[program]
-name = "app"
-language_version = "1.0"
-entry = "src/main.pol"

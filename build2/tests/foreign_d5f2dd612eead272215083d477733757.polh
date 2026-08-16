@@ -1,9 +1,0 @@
-program FfiLibraryBundleLib;
-
-public bundle Graphics {
-    public namespace Video {
-        public class Sdl library SDL2 extends Object {
-            public static method start() returns int;
-        }
-    }
-}

@@ -1,5 +1,0 @@
-[polaron_project]
-[program]
-name = "widgets"
-language_version = "1.0"
-entry = "src/main.pol"

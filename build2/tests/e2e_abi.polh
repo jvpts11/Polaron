@@ -1,9 +1,0 @@
-program CalcLib;
-
-public bundle calc {
-    public namespace math {
-        public class Calc extends Object {
-            public static method square(int x) returns int;
-        }
-    }
-}

@@ -1,6 +1,0 @@
-[polaron_project]
-[library]
-name = "mylib"
-version = "1.0.0"
-language_version = "1.0"
-entry = "src/lib.pol"
