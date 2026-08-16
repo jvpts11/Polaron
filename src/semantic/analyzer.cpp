@@ -994,6 +994,8 @@ FlowFacts SemanticAnalyzer::snapshotFlow() const {
     f.moved = moved_;
     f.deleted = deleted_;
     f.freed = freed_;
+    f.invalidated = invalidatedAt_;
+    f.borrows = borrowsFrom_;
     return f;
 }
 
@@ -1003,6 +1005,8 @@ void SemanticAnalyzer::restoreFlow(const FlowFacts& f) {
     moved_ = f.moved;
     deleted_ = f.deleted;
     freed_ = f.freed;
+    invalidatedAt_ = f.invalidated;
+    borrowsFrom_ = f.borrows;
 }
 
 void SemanticAnalyzer::joinFlow(const FlowFacts& a, const FlowFacts& b) {
@@ -1039,6 +1043,18 @@ void SemanticAnalyzer::joinFlow(const FlowFacts& a, const FlowFacts& b) {
     deleted_.insert(b.deleted.begin(), b.deleted.end());
     freed_ = a.freed;
     freed_.insert(b.freed.begin(), b.freed.end());
+    // Emptied on either path is emptied here: an obligation, like the three above it.
+    invalidatedAt_ = a.invalidated;
+    invalidatedAt_.insert(b.invalidated.begin(), b.invalidated.end());
+    // Where a borrow CAME FROM is knowledge, not an obligation, so it survives only where both paths
+    // agree -- and disagreeing means one path rebound the name, which is the case that must not
+    // silently keep the old source.
+    borrowsFrom_.clear();
+    for (const auto& [name, from] : a.borrows) {
+        if (auto it = b.borrows.find(name); it != b.borrows.end() && it->second == from) {
+            borrowsFrom_.emplace(name, from);
+        }
+    }
 }
 
 void SemanticAnalyzer::invalidateAcrossBackEdge(const FlowFacts& before) {

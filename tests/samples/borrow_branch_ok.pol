@@ -1,0 +1,69 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program BorrowBranchOk;
+
+// CORRECT CODE THAT MUST COMPILE, and the guard on the check that catches `borrow_after_clear`.
+//
+// The branch that empties the table RETURNS. No path reaches the read with the rows freed, so a
+// complaint here is a complaint about a path that does not exist -- and the first version of that
+// check made exactly that complaint, because it kept "what has been emptied" in a flat set outside
+// the flow machine. It also flagged `delete answer`, which is the correct cleanup: freeing a view
+// releases the object holding the dangling references and never follows one.
+//
+// Refusing correct code is the failure mode that gets an analysis switched off, so it gets a test.
+
+public bundle Main {
+    public namespace App {
+        public class Row {
+            public mutable int value;
+            public constructor Row(int value) { this.value = value; }
+            public method read() returns int { return this.value; }
+        }
+        public class Table {
+            private mutable ArrayList<Row*> rows;
+            public constructor Table() { this.rows = new ArrayList<Row*>() on heap; }
+            public method insert(Row* row) returns void { this.rows.add(row); return; }
+            public method count() returns int { return this.rows.size(); }
+            public method at(int position) returns Row* { return this.rows.get(position); }
+            public method clear() returns void {
+                for (mutable int i = 0; i < this.rows.size(); i++) { delete this.rows.get(i); }
+                this.rows.clear();
+                return;
+            }
+            public destructor ~Table() returns void { this.clear(); delete this.rows; }
+        }
+        public class ViewResult {
+            private mutable ArrayList<Row*> seen;
+            public constructor ViewResult() { this.seen = new ArrayList<Row*>() on heap; }
+            public method keep(Row* row) returns void { this.seen.add(row); return; }
+            public method count() returns int { return this.seen.size(); }
+            public method at(int position) returns Row* { return this.seen.get(position); }
+            public destructor ~ViewResult() returns void { delete this.seen; }
+        }
+        public class Main {
+            public static method scan(Table* table) returns ViewResult* {
+                mutable ViewResult* out = new ViewResult() on heap;
+                for (mutable int i = 0; i < table.count(); i++) { out.keep(table.at(i)); }
+                return out;
+            }
+            // CORRECT code: the branch that empties the table LEAVES. Nothing reaches the read with
+            // the rows freed, so a checker that complains here is complaining about a path that does
+            // not exist.
+            public static method main(string[] args) returns void {
+                mutable Table* people = new Table() on heap;
+                people.insert(new Row(10) on heap);
+                mutable ViewResult* answer = Main.scan(people);
+                if (args.length() > 5) {
+                    people.clear();
+                    delete answer;
+                    delete people;
+                    return;
+                }
+                System.IO.Console.printf("%d\n", answer.at(0).read());
+                delete answer;
+                delete people;
+                return;
+            }
+        }
+    }
+}

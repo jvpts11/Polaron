@@ -70,6 +70,13 @@ struct FlowFacts {
     // Deleted AND actually freed. `deleted` exists for the spec-18.2 redeclaration rule and
     // includes no-op deletes; only this one means reading the name reads freed memory.
     std::unordered_set<std::string> freed;
+    // WHICH OBJECTS HAVE BEEN EMPTIED, and which locals hold borrows into which object. These belong
+    // here for the same reason everything else does: kept in flat sets they survived a branch that
+    // could not reach the code after it. `if (...) { people.clear(); return; }` then reading the
+    // result was reported as use-after-invalidation on a path where the clear never runs -- the
+    // checker complaining about correct code, which is worse than the bug it was added to catch.
+    std::unordered_set<std::string> invalidated;
+    std::unordered_map<std::string, std::string> borrows;
 };
 
 // Class members collected in pass 1, for name resolution / type checking.
