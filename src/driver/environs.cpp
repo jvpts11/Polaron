@@ -1,4 +1,5 @@
 #include "driver/environs.h"
+#include "driver/manifest.h"
 #include "driver/toolchain.h"
 #include <algorithm>
 #include <cstdio>
@@ -25,7 +26,9 @@ std::vector<std::string> listEnvironments() {
     std::sort(names.begin(), names.end());
     return names;
 }
-fs::path environmentPackagesDir(const std::string& name) { return environmentsDir() / name / "packages"; }
+fs::path environmentPackagesDir(const std::string& name) {
+    return environmentsDir() / name / kLibrariesDir;
+}
 fs::path environmentManifest(const std::string& name) { return environmentsDir() / name / "polaron.toml"; }
 
 int envNew(const std::string& name) {
@@ -35,7 +38,7 @@ int envNew(const std::string& name) {
         return 1;
     }
     std::error_code ec;
-    fs::create_directories(dir / "packages", ec);
+    fs::create_directories(dir / kLibrariesDir, ec);
     if (ec) {
         std::fprintf(stderr, "polaron: cannot create environment '%s': %s\n", name.c_str(), ec.message().c_str());
         return 1;

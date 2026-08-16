@@ -74,7 +74,7 @@ int scaffold(const fs::path& dir, const std::string& name) {
         "    }\n"
         "}\n";
 
-    const std::string gitignore = "packages/\nbuild-output/\n";
+    const std::string gitignore = "libraries/\nbuild-output/\n";
 
     if (!writeFile(dir / "polaron.toml", manifest) ||
         !writeFile(dir / "src" / "main.pol", main) ||

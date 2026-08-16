@@ -1,4 +1,5 @@
 #include "driver/discovery.h"
+#include "driver/manifest.h"
 
 #include <algorithm>
 #include <fstream>
@@ -29,7 +30,8 @@ void discoverProjectsStreaming(const std::filesystem::path& root,
         }
         if (it->is_directory(ec)) {
             const std::string name = it->path().filename().string();
-            if (name == "packages" || name == "build-output" || name == ".git" || name == "node_modules") {
+            if (name == kLibrariesDir || name == "packages" || name == "build-output" ||
+                name == ".git" || name == "node_modules") {
                 it.disable_recursion_pending();
             }
             continue;

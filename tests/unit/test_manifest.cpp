@@ -150,14 +150,17 @@ TEST_CASE("parseManifestText reads the environment field and the dependency list
 TEST_CASE("addDependency inserts into an existing section and updates in place") {
     const auto p = writeTemp(
         "[polaron_project]\n\n[program]\nname = \"x\"\n\n[dependencies]\n\n[build]\noutput = \"o/\"\n");
-    CHECK(addDependency(p, "audio", "1.0.0"));
+    CHECK(addDependency(p, "audio", "1.0.0", "libraries/audio"));
     Manifest m1 = reparse(p);
     REQUIRE(m1.dependencies.size() == 1);
     CHECK(m1.dependencies[0].name == "audio");
     CHECK(m1.dependencies[0].version == "1.0.0");
+    CHECK(m1.dependencies[0].source == "1.0.0");
+    CHECK(m1.dependencies[0].path == "libraries/audio");
+    CHECK(m1.dependencies[0].isPlugged());
     CHECK(m1.outputDir == "o/");  // the [build] section is preserved
 
-    CHECK(addDependency(p, "audio", "2.0.0"));  // same name updates, not duplicates
+    CHECK(addDependency(p, "audio", "2.0.0", "libraries/audio"));  // same name updates, not duplicates
     Manifest m2 = reparse(p);
     REQUIRE(m2.dependencies.size() == 1);
     CHECK(m2.dependencies[0].version == "2.0.0");
@@ -166,7 +169,7 @@ TEST_CASE("addDependency inserts into an existing section and updates in place")
 
 TEST_CASE("addDependency creates a section when absent and removeDependency drops the entry") {
     const auto p = writeTemp("[program]\nname = \"x\"\n");
-    CHECK(addDependency(p, "net", "3.1.0"));
+    CHECK(addDependency(p, "net", "3.1.0", "libraries/net"));
     Manifest m1 = reparse(p);
     REQUIRE(m1.dependencies.size() == 1);
     CHECK(m1.dependencies[0].name == "net");
@@ -175,4 +178,35 @@ TEST_CASE("addDependency creates a section when absent and removeDependency drop
     Manifest m2 = reparse(p);
     CHECK(m2.dependencies.empty());
     std::filesystem::remove(p);
+}
+
+// The two kinds of dependency and how they are told apart. A plugged library was fetched and installed,
+// so it has a source AND a place; a path dependency is a project next door being built with this one, so
+// it has a place and nothing to record about where it came from. Both now carry a path, which is why the
+// source is what distinguishes them -- and why the bare form, which is only a link, still means a
+// plugged library with its location left to the default.
+TEST_CASE("a dependency says what it is, where it is, and where it came from") {
+    const std::string toml =
+        "[program]\nname = \"x\"\nentry = \"m.pol\"\n[dependencies]\n"
+        "Gl = { path = \"libraries/Gl\", source = \"https://example.invalid/Gl@v1.0.1\" }\n"
+        "sibling = { path = \"../sibling\" }\n"
+        "bare = \"https://example.invalid/bare@v2.0.0\"\n";
+    Manifest m = parseManifestText(toml);
+    REQUIRE(m.dependencies.size() == 3);
+
+    CHECK(m.dependencies[0].name == "Gl");
+    CHECK(m.dependencies[0].path == "libraries/Gl");
+    CHECK(m.dependencies[0].source == "https://example.invalid/Gl@v1.0.1");
+    CHECK(m.dependencies[0].isPlugged());
+    CHECK_FALSE(m.dependencies[0].isPathDependency());
+
+    CHECK(m.dependencies[1].path == "../sibling");
+    CHECK(m.dependencies[1].source.empty());
+    CHECK(m.dependencies[1].isPathDependency());
+    CHECK_FALSE(m.dependencies[1].isPlugged());
+
+    // The bare link is the same entry with the location defaulted -- which is all a command line gives.
+    CHECK(m.dependencies[2].source == "https://example.invalid/bare@v2.0.0");
+    CHECK(m.dependencies[2].path == "libraries/bare");
+    CHECK(m.dependencies[2].isPlugged());
 }

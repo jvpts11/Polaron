@@ -77,9 +77,14 @@ platform, and the link inherits it — see [§11.8](#118-ffi-calling-c-from-pola
 - **`[program]`** (or **`[library]`** for a reusable bundle) — `name`, `version`,
   `language_version`, and `entry` (the file holding `main`). A `[library]` builds an `.polb`
   bundle plus an `.polh` header instead of an executable.
-- **`[dependencies]`** — each entry is either a **path** dependency
-  (`name = { path = "../sibling" }`) or a plugged one fetched by `polaron plug`. Dependencies
-  are other Polaron projects/libraries.
+- **`[dependencies]`** — each entry names another Polaron library and says where it is:
+  - a **plugged** library, fetched by `polaron plug` and installed under `libraries/`:
+    `Polaron-OpenGL = { path = "libraries/Polaron-OpenGL", source = "https://…@v1.0.1" }`. `path` is
+    where it lives now; `source` is the link it came from. Writing the bare link
+    (`Name = "https://…@v1.0.1"`) is the same entry with the location left to its default, which is
+    what a command line gives and what `plug` expands.
+  - a **path** dependency — a sibling project built from source with yours:
+    `somelib = { path = "../somelib" }`. No `source`, because it was never fetched.
 - **`[build]`** — `output` (the build directory), `target` (an LLVM triple, e.g.
   `x86_64-windows`), `freestanding` (bare-metal mode; see [§11](#11-systems-programming)),
   `subsystem` (`windows` links a GUI app with no console window; the default is a console
@@ -91,10 +96,15 @@ platform, and the link inherits it — see [§11.8](#118-ffi-calling-c-from-pola
 
 ## 15.4 Dependencies and environments
 
-`polaron plug` fetches a dependency, compiles it — every source file of it, not just its entry — and
-records it in `[dependencies]`; `polaron unplug` removes one. A **path dependency** points at a sibling
-project on disk instead, and is built from source as part of the build: the pattern for a library being
-developed alongside its consumer.
+`polaron plug` fetches a dependency into **`libraries/`** inside your project, compiles it — every source
+file of it, not just its entry — and records it in `[dependencies]` as what it is, where it is, and where
+it came from. `polaron unplug` removes both the directory and the entry. The `libraries/` directory is
+build output, not source: `polaron new` puts it in `.gitignore`, and `polaron plug` with no arguments
+rebuilds it from the manifest and `polaron.lock`, which pins the exact resolved version of everything
+installed.
+
+A **path dependency** points at a sibling project on disk instead, and is built from source as part of
+the build: the pattern for a library being developed alongside its consumer.
 
 **Environments** (`polaron env`) are shared toolchain/dependency sets: create one with
 `polaron env new <name>`, list them with `polaron env list`, and point a project at one via the

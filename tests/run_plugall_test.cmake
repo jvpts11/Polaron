@@ -1,7 +1,7 @@
 # `polaron plug` (no args) + lockfile test, invoked via `cmake -P`.
 #
-# Simulates a freshly cloned project: the manifest already declares a dependency but packages/ is absent.
-# `polaron plug` installs it and writes polaron.lock; removing packages/ and running again reproduces the install
+# Simulates a freshly cloned project: the manifest already declares a dependency but libraries/ is absent.
+# `polaron plug` installs it and writes polaron.lock; removing libraries/ and running again reproduces the install
 # from the lock. Hermetic; no network.
 #
 # Required -D args: POLARON, WORKDIR
@@ -26,7 +26,7 @@ if(NOT rc EQUAL 0)
 endif()
 execute_process(COMMAND git tag v1.0.0 WORKING_DIRECTORY "${fix}")
 
-# Consumer whose manifest already declares the dependency (as if just cloned), with no packages/.
+# Consumer whose manifest already declares the dependency (as if just cloned), with no libraries/.
 file(MAKE_DIRECTORY "${app}/src")
 file(WRITE "${app}/polaron.toml"
 "[polaron_project]\n[program]\nname = \"consumer\"\nlanguage_version = \"1.0\"\nentry = \"src/main.pol\"\n\n[dependencies]\nmathlib = \"${fix}@v1.0.0\"\n")
@@ -40,7 +40,7 @@ message(STATUS "plug (all): ${out}${err}")
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "plug (all) failed (exit ${rc}): ${err}")
 endif()
-if(NOT EXISTS "${app}/packages/mathlib/mathlib.polb")
+if(NOT EXISTS "${app}/libraries/mathlib/mathlib.polb")
     message(FATAL_ERROR "plug (all) did not install the dependency")
 endif()
 if(NOT EXISTS "${app}/polaron.lock")
@@ -51,14 +51,14 @@ if(NOT lock MATCHES "mathlib")
     message(FATAL_ERROR "lockfile did not record the dependency:\n${lock}")
 endif()
 
-# Remove packages/ and reproduce the install from the lock.
-file(REMOVE_RECURSE "${app}/packages")
+# Remove libraries/ and reproduce the install from the lock.
+file(REMOVE_RECURSE "${app}/libraries")
 execute_process(COMMAND "${POLARON}" plug
     WORKING_DIRECTORY "${app}" RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "reproducing from lock failed (exit ${rc}): ${err}")
 endif()
-if(NOT EXISTS "${app}/packages/mathlib/mathlib.polb")
+if(NOT EXISTS "${app}/libraries/mathlib/mathlib.polb")
     message(FATAL_ERROR "reproducing from lock did not reinstall the dependency")
 endif()
 
