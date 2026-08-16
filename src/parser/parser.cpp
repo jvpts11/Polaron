@@ -1195,6 +1195,17 @@ ast::ClassDecl Parser::parseTransformer() {
             expect(TokenKind::Semicolon, "';'");
             continue;
         }
+        // `invariant <expr>;` -- a property of the state this transformer BRINGS. It travels to
+        // every applying type as that type's own invariant, checked the way any class invariant is.
+        //
+        // It belongs here for the same reason the field does: a transformer that brings state is the
+        // one place that knows what must hold of it, and an applier told to maintain a rule about a
+        // field it never declared would be maintaining somebody else's rule blind.
+        if (match(TokenKind::KwInvariant)) {
+            c.invariants.push_back(parseExpression());
+            expect(TokenKind::Semicolon, "';'");
+            continue;
+        }
         c.members.push_back(parseMember(/*inInterface=*/false));
     }
     inTransformer_ = false;

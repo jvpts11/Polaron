@@ -3366,6 +3366,10 @@ bool monomorphize(ast::Program& program) {
 // a lie.
 // The generic copier, published for `expandTransformers`. Nothing here is generic-specific: it is a
 // deep clone that renames types as it goes, and a transformer needs exactly that with one binding.
+ast::ExprPtr cloneExprSubst(const ast::Expr* e, const std::map<std::string, std::string>& subst) {
+    return cloneExpr(e, subst);
+}
+
 ast::MemberPtr cloneMemberSubst(const ast::MemberDecl* m,
                                 const std::map<std::string, std::string>& subst) {
     return cloneMember(m, subst);

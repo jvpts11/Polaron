@@ -50,6 +50,10 @@ ast::Block cloneBlockForField(const ast::Block& b, const std::string& var, const
 // class per instantiation. `expandTransformers` uses it to copy a transformer's members into every
 // type that applies it, binding `itself` to that type's name. Two features, one copier: a
 // transformer costs nothing at run time for exactly the reason a generic does not.
+// The same substitution over a bare expression, for the pieces of a declaration that are not
+// members: a transformer's invariants travel to every applying type this way.
+ast::ExprPtr cloneExprSubst(const ast::Expr* e, const std::map<std::string, std::string>& subst);
+
 ast::MemberPtr cloneMemberSubst(const ast::MemberDecl* m,
                                 const std::map<std::string, std::string>& subst);
 

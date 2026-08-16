@@ -819,7 +819,41 @@ operators answer (`codegen_transformer_operators_runs`).
 Nothing was built for this; what was missing was the test, which is the difference between a feature
 and an accident that has not been broken yet. It is now the flagship example this note said it lacked.
 
-### 5. The LAW of the relation
+### 5a. `invariant` in a transformer — **BUILT 2026-08-16**
+
+Half of the item below, and the half that turned out to be a different feature.
+
+**A transformer could bring a FIELD and not the property that must hold OF it.** So the applier was
+left maintaining a rule about state it never declared — or, honestly, not maintaining it, because
+nothing said what the rule was. `invariant <expr>;` now parses inside a transformer and travels to
+every applying type as that type's own invariant, `itself` bound on the way, checked by the machinery
+every class invariant already uses.
+
+It belongs there for the same reason the field does: whoever wrote the state knows what must be true
+of it. `tests/samples/transformer_invariant_broken.pol` is the proof that it is enforced rather than
+decorative — `Gate` drives the count negative through a method of its own, touching state it did not
+declare and breaking a rule it never read, and the report names the rule, the line and `Gate.rewind`.
+
+### 5b. The LAW of the relation — **still open, and now known to be harder**
+
+The round trip is NOT the feature above, and finding out why is the useful part. A class invariant is
+checked on entry to and exit from every method. A round-trip law would therefore convert on every
+call — and the conversion calls methods, which check the invariant, which converts. **Unbounded
+recursion.** This note's "checked as a generated property test, not at run time" is not a preference;
+it is forced.
+
+And a property test needs VALUES, which the compiler cannot invent for an arbitrary type. Two
+coherent ways to get them, both design decisions rather than implementation:
+
+- *The law becomes a predicate the caller invokes.* The transformer states it once; the compiler
+  generates a method on each applying type whose body is the law with `itself` bound to a sample the
+  CALLER supplies. Checkable rather than checked, no invented values, no cost unless called.
+- *The samples come from a socket.* The transformer also declares `static procedure samples() returns
+  itself[];` — an obligation each applier answers — and the compiler emits a real `[Test]`, which the
+  runner already supports through `[Cases(source: ...)]`. Fully automatic, at the price of a demand on
+  every applier.
+
+### 5c. The original text
 
 This note rejected the bidirectional-codec transformer on the grounds that *"the only thing it adds
 over a class with two static methods is the round-trip check, and that is a contract, not a new kind

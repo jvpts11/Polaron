@@ -998,6 +998,21 @@ void expandInto(ast::ClassDecl& target, const Index& index, const std::set<std::
     expandCore(target.name, target.members, target.applies, target.appliesLocs, target.loc,
                hasLayout, &target.interfaces, target.procCalls, index, ifaceMethods,
                &target.appliedClosure);
+    // AND ITS INVARIANTS TRAVEL WITH ITS FIELDS. A transformer that brings state is the one place
+    // that knows what must hold of it; copied in, the rule becomes this type's own and is checked by
+    // the machinery every class invariant already uses. `itself` is bound to the applying type on the
+    // way, like everything else the copier carries.
+    for (const std::string& tn : target.appliedClosure) {
+        auto it = index.find(tn);
+        if (it == index.end()) {
+            continue;
+        }
+        std::map<std::string, std::string> subst;
+        subst["itself"] = target.name;
+        for (const ast::ExprPtr& inv : it->second->invariants) {
+            target.invariants.push_back(cloneExprSubst(inv.get(), subst));
+        }
+    }
 }
 
 // An ENUM is the flagship of the totality rule -- `Errno -> int` is total because the constants are
