@@ -472,6 +472,15 @@ struct RegionInitExpr : Expr {
         std::vector<std::string> rejects;
     };
     std::vector<Range> ranges;         // non-empty => atMultiple
+    // A SUB-REGION: `region inner = itself.allocate(1 kilobytes) in region outer;` -- the block is
+    // carved out of `outer` rather than taken from the allocator, so releasing the parent reclaims
+    // every child in one stroke and a per-phase arena inside a per-world one costs no second
+    // allocation. Empty when the region stands on its own.
+    //
+    // The phrase is the one the language already has: `new Dog() in region pen` means "take the
+    // memory from pen", and this means the same thing about a region's own block. Nesting by SCOPE
+    // was always possible and is what §10 orders; this is nesting in SPACE, which was not.
+    std::string inRegion;
     void dump(std::string& out, int indent) const override;
 };
 

@@ -443,6 +443,39 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // Remember a region's accepts/rejects constraints, keyed by variable.
         if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(vd->init.get())) {
             regionConstraints_[vd->name] = RegionConstraints{ri->accepts, ri->rejects};
+            // A SUB-REGION'S PARENT, and the parent must be a region that exists and is still live.
+            // Nesting in space is a stronger claim than nesting in scope: the child's block IS part
+            // of the parent's, so releasing the parent first does not merely end a lifetime early,
+            // it hands the child's storage back to the allocator while the child is still using it.
+            if (!ri->inRegion.empty()) {
+                const LocalVar* parent = lookupLocal(ri->inRegion);
+                if (parent == nullptr || parent->type != "region") {
+                    error("region '" + ri->inRegion +
+                              "' is not a region in scope here, so there is nothing to carve '" +
+                              vd->name + "' out of",
+                          ri->loc);
+                } else if (releasedRegions_.count(ri->inRegion) > 0) {
+                    error("region '" + ri->inRegion +
+                              "' has already been released, so its memory is gone and '" + vd->name +
+                              "' cannot come out of it",
+                          ri->loc);
+                } else if (vd->regionGrowable) {
+                    // GROWING MEANS ASKING THE ALLOCATOR, and a region carved out of a parent is
+                    // defined by not doing that: its whole claim is that its bytes are the parent's
+                    // bytes, reclaimed when the parent is. A growable one would be part inside its
+                    // parent and part somewhere else, and its release -- which deliberately frees
+                    // nothing, because the parent owns the block -- would leak every block it had
+                    // chained. Two coherent things, and the contradiction is between them.
+                    error("a sub-region cannot be `growable`: its memory is carved out of '" +
+                              ri->inRegion +
+                              "' and comes back when that is released, while growing means taking "
+                              "fresh blocks from the allocator. Size it for the phase it serves, or "
+                              "let it stand on its own and be growable",
+                          ri->loc);
+                } else {
+                    parentRegion_[vd->name] = ri->inRegion;
+                }
+            }
         }
         // Remember which region a `checkpoint m = mark of region R;` came from (spec 17, Polaron-1714).
         if (const auto* mk = dynamic_cast<const ast::MarkExpr*>(vd->init.get())) {
@@ -1282,6 +1315,24 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // `freed_` for `delete`, so the machinery existed and simply did not cover regions. It is the
         // same mistake wearing a different keyword, and the same message can carry it.
         if (regionBinder_) {
+            // A PARENT CANNOT GO FIRST. A sub-region's block is part of its parent's, so releasing
+            // the parent hands the child's storage back to the allocator while the child is still
+            // being allocated into -- and the child's own `release` would then be reading a block
+            // that belongs to somebody else.
+            //
+            // With independent regions, releasing them out of order was merely unusual; §10 already
+            // ordered their LIFETIMES. Carving one out of another makes the order physical, and this
+            // is the check that says so.
+            for (const auto& [child, parent] : parentRegion_) {
+                if (parent == rel->region && releasedRegions_.count(child) == 0) {
+                    error("region '" + child + "' was carved out of '" + rel->region +
+                              "', so its memory is part of this one. Releasing '" + rel->region +
+                              "' first would take back storage '" + child +
+                              "' is still using. Release '" + child + "' before it -- the bytes come "
+                              "back with the parent either way, which is what nesting them is for",
+                          rel->loc);
+                }
+            }
             for (const auto& [path, region] : regionOf_) {
                 if (region == rel->region) {
                     deleted_.insert(path);

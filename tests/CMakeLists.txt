@@ -553,6 +553,20 @@ add_test(NAME sema_borrow_after_clear_errors
 set_tests_properties(sema_borrow_after_clear_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "use of 'answer' after 'people' was emptied")
 
+# The rule that nesting in space creates: the parent's release would take the child's storage
+# with it, so it may not go first. §10 ordered lifetimes; this makes the order physical.
+add_test(NAME sema_subregion_parent_first_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/subregion_bad.pol")
+set_tests_properties(sema_subregion_parent_first_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "was carved out of 'world', so its memory is part of this one")
+
+# `.rejects({T})` has been in the analyzer since regions arrived and no sample used it. A rule with
+# no test is a rule that works until someone refactors near it.
+add_test(NAME sema_region_rejects_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_rejects_bad.pol")
+set_tests_properties(sema_region_rejects_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "region 'pen' rejects type 'Cat'")
+
 # Everything beneath a region class must be one. A plain class inheriting from an abstract region class
 # would put its instances outside the family's region, and totality is the whole feature.
 add_test(NAME sema_region_class_escapee_errors
@@ -6965,6 +6979,19 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/regions.pol"
             "-DEXPECTED=a = 3 b = 7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A region carved out of another region: nesting in SPACE, where §10 gave only nesting in
+        # scope. The child's block comes from the parent, so a per-phase arena inside a per-world one
+        # costs no second allocation and releasing the world reclaims every arena in it at once.
+        # The parent's own objects survive the child's release, which is what the second line checks.
+        add_test(NAME codegen_subregion_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/subregion.pol"
+            "-DEXPECTED=frame 2 world 1"
+            "-DCONTAINS=after 1 cat 9"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

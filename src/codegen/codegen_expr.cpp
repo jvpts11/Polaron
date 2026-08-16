@@ -790,7 +790,7 @@ llvm::Value* CodeGenerator::Impl::emitExpr(const ast::Expr& expr) {
     }
     if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(&expr)) {
         return emitRegionAllocate(ri->size.get(), ri->atAddress.get(), pendingRegionFlavor_,
-                                  pendingRegionGrowable_, pendingRegionRegistry_);
+                                  pendingRegionGrowable_, pendingRegionRegistry_, ri->inRegion);
     }
     // `snapshot region W in region B` (spec 32.2): ask how much room the capture needs, take that
     // much from B, and fill it. The block is an ordinary region slot, which is what makes the

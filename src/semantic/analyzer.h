@@ -895,6 +895,10 @@ private:
     // seen a few statements ago, and claims nothing beyond that.
     std::unordered_set<std::string> alreadyOwnedHere_;
     std::unordered_set<std::string> currentParamNames_;   // this body's parameters, by name
+    // A sub-region and the region its block was carved out of: `region frame = itself.allocate(...)
+    // in region world;`. The parent must outlive it PHYSICALLY, not only in the lifetime order §10
+    // already keeps -- releasing the parent takes the child's storage with it.
+    std::unordered_map<std::string, std::string> parentRegion_;
     // A FRESH OBJECT BEING FILLED IN, and what it has picked up so far.
     //
     // `mutable ArrayList<T> out = new ArrayList<T>() on heap;` owns nothing and is owned by nothing:

@@ -1378,6 +1378,9 @@ struct CodeGenerator::Impl {
     // regions chain a new block on overflow. Reset per function alongside the other region maps.
     std::unordered_map<std::string, std::string> regionFlavor_;
     std::unordered_set<std::string> growableRegions_;
+    // Regions whose block was carved out of another region: releasing one runs what it owns and
+    // leaves the memory to its parent, because the block was never the allocator's to take back.
+    std::unordered_set<std::string> subRegions_;
     // `volatile region` (spec 37.5, MMIO): region locals whose objects must be accessed volatilely,
     // and the object locals bound from `new ... in` such a region (their field accesses are volatile).
     std::unordered_set<std::string> volatileRegions_;
@@ -3223,7 +3226,8 @@ struct CodeGenerator::Impl {
     // accepts/rejects are compile-time only, so codegen ignores them.
     llvm::Value* emitRegionAllocate(const ast::Expr* sizeExpr, const ast::Expr* atAddr = nullptr,
                                     const std::string& flavor = "", bool growable = false,
-                                    bool wantRegistry = false) {
+                                    bool wantRegistry = false,
+                                    const std::string& parentRegion = std::string()) {
         llvm::Value* nbytes = builder.getInt64(0);
         if (sizeExpr != nullptr) {
             llvm::Value* arg = emitExpr(*sizeExpr);
@@ -3249,9 +3253,32 @@ struct CodeGenerator::Impl {
         // fields ARE the lean header, so emitRegionAllocBytes bumps [used] at +0 over [dataBase] at +16
         // exactly as before, and objects still carry no per-slot header. The larger header buys the
         // registry and costs 424 bytes once per region -- not a byte or an instruction per object.
+        // A SUB-REGION TAKES ITS BLOCK FROM ITS PARENT. Everything else about it is identical -- the
+        // same header, the same init, the same allocation path for objects inside it -- so the only
+        // difference is where the bytes come from, which is exactly what `in region outer` says.
+        //
+        // `__polaron_region_new` is the same primitive `snapshot region W in region B` already used
+        // to place a capture inside a region, so nothing new is being asked of the runtime.
+        //
+        // THROUGH `emitRegionAllocBytes`, NOT through the runtime allocator directly. A plain bump
+        // region's block carries the LEAN 24-byte header and is bumped by an inline cursor; only a
+        // flavored or growable one has the 448-byte descriptor that `__polaron_region_new` reads.
+        // Calling that on a bump parent read the wrong fields and handed back a pointer overlapping
+        // live objects -- the durable Dog came back as 32. Asking the same function that serves every
+        // `new T in region R` gets the right path for every flavor, and gets it right again the day a
+        // new flavor is added.
+        auto takeBlock = [&](llvm::Value* total, const char* name) -> llvm::Value* {
+            if (parentRegion.empty()) {
+                return builder.CreateCall(regionAcquireFn(), {total}, name);
+            }
+            return emitRegionAllocBytes(parentRegion, total, SourceLocation{});
+        };
         if ((usesRuntimeDesc(flavor) || growable || wantRegistry) && atAddr == nullptr) {
-            llvm::Value* block = builder.CreateCall(
-                regionAcquireFn(), {builder.CreateAdd(builder.getInt64(kRegionHdr), nbytes)}, "region");
+            llvm::Value* block =
+                takeBlock(builder.CreateAdd(builder.getInt64(kRegionHdr), nbytes), "region");
+            if (block == nullptr) {
+                return nullptr;
+            }
             builder.CreateCall(regionInitFn(),
                                {block, builder.getInt64(flavorCode(flavor)), nbytes,
                                 builder.getInt64(growable ? 1 : 0)});
@@ -3268,8 +3295,10 @@ struct CodeGenerator::Impl {
             dataBase = builder.CreateIntToPtr(
                 builder.CreateIntCast(addr, builder.getInt64Ty(), false), builder.getPtrTy());
         } else {
-            block = builder.CreateCall(
-                regionAcquireFn(), {builder.CreateAdd(builder.getInt64(24), nbytes)}, "region");
+            block = takeBlock(builder.CreateAdd(builder.getInt64(24), nbytes), "region");
+            if (block == nullptr) {
+                return nullptr;
+            }
             dataBase = builder.CreateConstGEP1_64(builder.getInt8Ty(), block, 24, "rgn.databegin");
         }
         builder.CreateStore(builder.getInt64(0), block);  // used = 0
@@ -4867,6 +4896,7 @@ struct CodeGenerator::Impl {
         ownedRegions_.clear();
         regionFlavor_.clear();
         growableRegions_.clear();
+        subRegions_.clear();
         pendingRegionFlavor_.clear();
         volatileObjects_.clear();
         deferred.clear();

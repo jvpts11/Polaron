@@ -1,0 +1,27 @@
+import System.Memory.Units.kilobytes;
+program RegionRejectsBad;
+
+// `.rejects({T})` was implemented and tested by nothing: the analyzer has carried the check since
+// regions arrived, and not one sample in the suite used the clause. A rule with no test is a rule
+// that works until someone refactors near it.
+//
+// It is the complement of `accepts`: an arena that takes anything EXCEPT the types named. Useful
+// where a region exists to hold one kind of scratch and a particular type must never end up there
+// -- something with a destructor that must run at a different time, or something whose lifetime is
+// longer than the arena's by construction.
+public bundle Main {
+    public namespace App {
+        public class Dog { public constructor Dog() { } }
+        public class Cat { public constructor Cat() { } }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                region pen = itself.allocate(1 kilobytes).rejects({Cat});
+                Dog* fine = new Dog() in region pen;      // anything not named is welcome
+                Cat* nope = new Cat() in region pen;      // this one is not
+                release region pen;
+                return;
+            }
+        }
+    }
+}
