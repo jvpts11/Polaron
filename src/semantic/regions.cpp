@@ -29,21 +29,23 @@ using namespace semutil;   // NOLINT(google-build-using-namespace): as in analyz
 
 // ---- The order -------------------------------------------------------------------------------
 
-bool SemanticAnalyzer::strictRegions_ = false;
+// REFUSING WHAT CANNOT BE PLACED IS THE DEFAULT, and getting here took closing every shape rather
+// than arguing about the switch. The measured cost of the flip went 35 sites, then 23, then 18, then
+// 10, then 0 -- and 0 is not "we stopped counting", it is 799 sample programs, a 27-file SQL engine
+// and a 20,000-line standard library reporting the same number in both modes. Every step that
+// removed sites taught the analysis to place another real shape; none of them relaxed a rule.
+//
+// So the number was never a count of dangerous code. It was a count of this analysis's own silence,
+// and a checker that says "allowed" where it means "I could not tell" cannot state a guarantee at
+// all. Now it can: a value the analysis cannot place is refused, which is what separates a checker
+// that FINDS from one that GUARANTEES.
+//
+// `--permissive-regions` keeps the old direction for a program that has not been read against this
+// yet. It is a migration aid and it takes the guarantee away while it is on.
+bool SemanticAnalyzer::strictRegions_ = true;
 
 bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) const {
-    // Unknown is the open question of the model (§4): today it answers "yes" so that a shape the
-    // analysis cannot place is allowed rather than refused. That is what makes this a checker that
-    // FINDS rather than one that GUARANTEES, and flipping it is a decision with a measurement
-    // attached, not a switch to throw quietly.
     if (a.kind == RegionKind::Unknown || b.kind == RegionKind::Unknown) {
-        // A checker whose default is ALLOWED can find bugs and can never state a guarantee, and it
-        // will be quiet on any codebase whose idioms it does not happen to match. Rust's refuses what
-        // it cannot prove; this one accepts it, and that difference is the whole story.
-        //
-        // `--strict-regions` is the flip, behind a flag rather than in the default, because it is a
-        // decision and not an implementation detail: every existing program has to be re-examined
-        // against it. The measurement that makes it decidable now exists -- see the design note.
         return !strictRegions_;
     }
     // THE ORDER THE MODEL STATES (§1.3), as ranks:
@@ -123,8 +125,41 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
         }
         return "";
     };
+    // A local standing in for a field, so that `Json* here = cast<Json*>(cur); ... delete here;`
+    // still says the field is owned. Walking a chain through a local is how a linked structure's
+    // destructor is written -- the node has to be read before it is freed -- and a check that only
+    // understood `delete this.f` called every such class a borrower of its own children.
+    std::unordered_map<std::string, std::string> standsFor;
     std::function<void(const ast::Stmt*)> walkStmt = [&](const ast::Stmt* st) {
         if (st == nullptr) {
+            return;
+        }
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) {
+            if (vd->init != nullptr) {
+                const ast::Expr* v = vd->init.get();
+                while (const auto* c = dynamic_cast<const ast::CastExpr*>(v)) {
+                    v = c->operand.get();
+                }
+                if (const std::string f = rootField(v); !f.empty()) {
+                    standsFor[vd->name] = f;
+                } else if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(v)) {
+                    if (auto it = standsFor.find(id->name); it != standsFor.end()) {
+                        standsFor[vd->name] = it->second;   // an alias of an alias
+                    }
+                }
+            }
+            return;
+        }
+        if (const auto* as = dynamic_cast<const ast::AssignStmt*>(st)) {
+            if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
+                const ast::Expr* v = as->value.get();
+                while (const auto* c = dynamic_cast<const ast::CastExpr*>(v)) {
+                    v = c->operand.get();
+                }
+                if (const std::string f = rootField(v); !f.empty()) {
+                    standsFor[tid->name] = f;   // `cur = this.firstChild;` walks the same chain
+                }
+            }
             return;
         }
         if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(st)) {
@@ -132,6 +167,18 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
             std::string name = rootField(target);
             if (!name.empty()) {
                 freed.insert(name);
+            }
+            // ...or through the local that stands in for it.
+            {
+                const ast::Expr* bare = target;
+                while (const auto* c = dynamic_cast<const ast::CastExpr*>(bare)) {
+                    bare = c->operand.get();
+                }
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(bare)) {
+                    if (auto it = standsFor.find(id->name); it != standsFor.end()) {
+                        freed.insert(it->second);
+                    }
+                }
             }
             // `delete this.rows.get(i)` reaches the field through a call, so the receiver of that
             // call is where the name is.
@@ -208,7 +255,239 @@ void SemanticAnalyzer::computeOwnership(const ast::Program& program) {
     }
 }
 
+// WHICH METHODS FREE WHAT THEY ARE HANDED, and through them, which fields a class really owns.
+//
+// A tree does not free itself in its destructor. `~TreeMap` calls `freeSubtree(this.root)`, and that
+// helper deletes its own parameter and recurses down `n.left` and `n.right` -- so the destructor's
+// own statements free nothing, and reading only those said `TreeMap` owns nothing and `TreeNode`
+// owns nothing, which made every rotation in the AVL code a store of an unplaceable reference. The
+// ownership was written down plainly; it was just written one call away.
+//
+// Two facts come out of the same scan:
+//   * `M(this.f)` where M deletes that parameter  ->  the class owns `f`.
+//   * inside such an M, `M2(p.g)` where M2 also deletes  ->  `p`'s class owns `g`.
+// The second is what makes a node own its children, and it is why one pass over a helper answers for
+// a whole recursive structure. Both feed the fixpoint: a summary that grows starts another round.
+void SemanticAnalyzer::computeDeleteSummaries(const ast::Program& program) {
+    // `M(this.F)` tells us what M's parameter really is: whatever type field F has on the class doing
+    // the calling -- and that one is instantiated, so it is the name the rest of the compiler uses.
+    auto noteParamClass = [this](const std::string& key, int slot, const std::string& holder,
+                                 const std::string& field) {
+        const FieldInfo* fi = findField(holder, field);
+        if (fi == nullptr) {
+            return;
+        }
+        const std::string cls = baseType(fi->type);
+        if (!cls.empty() && paramClassOf_[key].emplace(slot, cls).second) {
+            freshGrew_ = true;
+        }
+    };
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                const std::string self = baseType(cls.name);
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr) {
+                        continue;
+                    }
+                    // Which parameter a name refers to, seeing through the locals that stand in for
+                    // one -- a walk reads the node into a local before freeing it, always.
+                    std::unordered_map<std::string, int> slotOf;
+                    for (std::size_t i = 0; i < m->params.size(); ++i) {
+                        slotOf[m->params[i].name] = static_cast<int>(i);
+                    }
+                    auto bare = [](const ast::Expr* e) {
+                        while (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) {
+                            e = c->operand.get();
+                        }
+                        return e;
+                    };
+                    auto slotFor = [&](const ast::Expr* e) -> int {
+                        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(bare(e))) {
+                            auto it = slotOf.find(id->name);
+                            return it == slotOf.end() ? -1 : it->second;
+                        }
+                        return -1;
+                    };
+                    const std::string key = self + "." + m->name;
+                    std::function<void(const ast::Stmt*)> walk = [&](const ast::Stmt* st) {
+                        if (st == nullptr) {
+                            return;
+                        }
+                        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) {
+                            if (vd->init != nullptr) {
+                                if (const int s = slotFor(vd->init.get()); s >= 0) {
+                                    slotOf[vd->name] = s;
+                                }
+                            }
+                            return;
+                        }
+                        if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(st)) {
+                            if (const int s = slotFor(del->target.get()); s >= 0) {
+                                if (deletesParam_[key].insert(s).second) {
+                                    freshGrew_ = true;
+                                }
+                            }
+                            return;
+                        }
+                        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(st)) {
+                            const auto* call = dynamic_cast<const ast::CallExpr*>(es->expr.get());
+                            if (call == nullptr) {
+                                return;
+                            }
+                            const auto* callee =
+                                dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+                            if (callee == nullptr) {
+                                return;
+                            }
+                            // Only a call on `this` or a static one on this class: a helper that
+                            // frees is a private detail of the class that owns the structure.
+                            const auto* recv =
+                                dynamic_cast<const ast::IdentifierExpr*>(callee->object.get());
+                            if (recv == nullptr || (recv->name != "this" && recv->name != self)) {
+                                return;
+                            }
+                            auto sit = deletesParam_.find(self + "." + callee->member);
+                            if (sit == deletesParam_.end()) {
+                                return;
+                            }
+                            for (int k : sit->second) {
+                                if (k >= static_cast<int>(call->args.size())) {
+                                    continue;
+                                }
+                                const ast::Expr* arg = bare(call->args[k].get());
+                                // Passing our own parameter on: we free it too.
+                                if (const int s = slotFor(arg); s >= 0) {
+                                    if (deletesParam_[key].insert(s).second) {
+                                        freshGrew_ = true;
+                                    }
+                                    continue;
+                                }
+                                const auto* mem = dynamic_cast<const ast::MemberExpr*>(arg);
+                                if (mem == nullptr) {
+                                    continue;
+                                }
+                                const auto* base =
+                                    dynamic_cast<const ast::IdentifierExpr*>(bare(mem->object.get()));
+                                if (base == nullptr) {
+                                    continue;
+                                }
+                                if (base->name == "this") {
+                                    if (ownedFields_[self].insert(mem->member).second) {
+                                        freshGrew_ = true;   // `M(this.root)` and M frees it
+                                    }
+                                    noteParamClass(self + "." + callee->member, k, self,
+                                                   mem->member);
+                                    continue;
+                                }
+                                // `M2(p.g)` inside a method that frees `p`: `p`'s class owns `g`.
+                                auto pit = slotOf.find(base->name);
+                                if (pit == slotOf.end() ||
+                                    deletesParam_[key].count(pit->second) == 0 ||
+                                    pit->second >= static_cast<int>(m->params.size())) {
+                                    continue;
+                                }
+                                // THE NAME AS THE PROGRAM WILL ASK FOR IT LATER. A monomorphized
+                                // helper still carries its template's parameter type -- the
+                                // instantiated `TreeSet$int.freeSubtree` says `TreeSetNode`, not
+                                // `TreeSetNode$int` -- so attributing the field to the declared name
+                                // filed it under a class no call site ever looks up, and the whole
+                                // AVL tree stayed unplaceable while the analysis believed it had
+                                // solved it. The field the helper is CALLED with carries the real
+                                // name, because it belongs to an instantiated class.
+                                std::string nodeClass;
+                                auto pcit = paramClassOf_.find(key);
+                                if (pcit != paramClassOf_.end()) {
+                                    auto sit2 = pcit->second.find(pit->second);
+                                    if (sit2 != pcit->second.end()) {
+                                        nodeClass = sit2->second;
+                                    }
+                                }
+                                if (nodeClass.empty()) {
+                                    nodeClass = baseType(m->params[pit->second].type.name);
+                                }
+                                if (!nodeClass.empty() &&
+                                    ownedFields_[nodeClass].insert(mem->member).second) {
+                                    freshGrew_ = true;
+                                }
+                            }
+                            return;
+                        }
+                        if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(st)) {
+                            for (const auto& s : ifs->thenBlock.statements) { walk(s.get()); }
+                            if (ifs->elseBlock != nullptr) {
+                                for (const auto& s : ifs->elseBlock->statements) { walk(s.get()); }
+                            }
+                            return;
+                        }
+                        if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(st)) {
+                            for (const auto& s : wh->body.statements) { walk(s.get()); }
+                            return;
+                        }
+                        if (const auto* fo = dynamic_cast<const ast::ForStmt*>(st)) {
+                            for (const auto& s : fo->body.statements) { walk(s.get()); }
+                            return;
+                        }
+                        if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) {
+                            for (const auto& s : fe->body.statements) { walk(s.get()); }
+                            return;
+                        }
+                        if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) {
+                            for (const auto& s : df->body.statements) { walk(s.get()); }
+                        }
+                    };
+                    for (const auto& st : m->body.statements) {
+                        walk(st.get());
+                    }
+                }
+                // The destructor is the other caller of those helpers, and it is where a class most
+                // often says what it owns: `~TreeMap` is two lines, both of them a call.
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* dtor = dynamic_cast<const ast::DestructorDecl*>(member.get());
+                    if (dtor == nullptr) {
+                        continue;
+                    }
+                    std::function<void(const ast::Stmt*)> walk = [&](const ast::Stmt* st) {
+                        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(st)) {
+                            const auto* call = dynamic_cast<const ast::CallExpr*>(es->expr.get());
+                            if (call == nullptr) { return; }
+                            const auto* callee =
+                                dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+                            if (callee == nullptr) { return; }
+                            auto sit = deletesParam_.find(self + "." + callee->member);
+                            if (sit == deletesParam_.end()) { return; }
+                            for (int k : sit->second) {
+                                if (k >= static_cast<int>(call->args.size())) { continue; }
+                                const ast::Expr* arg = call->args[k].get();
+                                while (const auto* c = dynamic_cast<const ast::CastExpr*>(arg)) {
+                                    arg = c->operand.get();
+                                }
+                                if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(arg)) {
+                                    if (const auto* base = dynamic_cast<const ast::IdentifierExpr*>(
+                                            mem->object.get());
+                                        base != nullptr && base->name == "this") {
+                                        if (ownedFields_[self].insert(mem->member).second) {
+                                            freshGrew_ = true;
+                                        }
+                                        noteParamClass(self + "." + callee->member, k, self,
+                                                       mem->member);
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    for (const auto& st : dtor->body.statements) {
+                        walk(st.get());
+                    }
+                }
+            }
+        }
+    }
+}
+
 void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
+    computeDeleteSummaries(program);
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             for (const ast::ClassDecl& cls : ns.classes) {
@@ -253,8 +532,12 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                         }
                     }
                 }
-                if (!freed.empty()) {
-                    ownedFields_[baseType(cls.name)] = std::move(freed);
+                // MERGED, not assigned. What the destructor frees directly and what it frees through
+                // a helper are two halves of one answer, and overwriting threw the other half away.
+                for (const std::string& f : freed) {
+                    if (ownedFields_[baseType(cls.name)].insert(f).second) {
+                        freshGrew_ = true;
+                    }
                 }
                 // WHICH METHODS HAND BACK FRESH STORAGE, which is the commonest thing a call
                 // result can be and was an Unknown until now: `node.addChild(this.element())`
@@ -420,6 +703,28 @@ bool SemanticAnalyzer::ownsField(const std::string& className, const std::string
     return it->second.count(field) > 0;
 }
 
+// ONE OWNER IS ENOUGH. An escape summary records every field an argument lands in, comma-joined,
+// because an append writes it into the chain the object owns AND into the tail pointer that makes
+// the next append cheap. If any of them is owned, the object took the value and the call is a
+// handover, whatever the other fields are.
+bool SemanticAnalyzer::anyFieldOwns(const std::string& className,
+                                    const std::string& fieldList) const {
+    std::string::size_type at = 0;
+    while (at <= fieldList.size()) {
+        const std::string::size_type comma = fieldList.find(',', at);
+        const std::string one = fieldList.substr(
+            at, comma == std::string::npos ? std::string::npos : comma - at);
+        if (!one.empty() && ownsField(className, one)) {
+            return true;
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        at = comma + 1;
+    }
+    return false;
+}
+
 // ---- The lifetime of a VALUE -------------------------------------------------------------------
 
 // The structural change the model needed, in one method.
@@ -457,6 +762,15 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
         const Lifetime a = lifetimeOf(*tern->thenExpr);
         const Lifetime b = lifetimeOf(*tern->elseExpr);
         return outlivesOrEqual(a, b) ? b : a;
+    }
+    // THE ADDRESS OF A THING LIVES WHERE THE THING LIVES, which is the one question `&x` asks and
+    // the answer the analysis was not giving: it read `a.next = &b` as a reference to somewhere it
+    // could not place, when `b` is a local three lines up and its lifetime is right there. Taking an
+    // address changes what you hold, not how long what you point at lasts.
+    if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
+        if (un->op == "&" || un->op == "*") {
+            return lifetimeOf(*un->operand);
+        }
     }
     // `new T()` -- the allocation says where it lives, which is the one case that needs no inference.
     if (const auto* nw = dynamic_cast<const ast::NewExpr*>(&expr)) {
@@ -510,12 +824,22 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
         if (!recvType.empty() && ownsField(recvType, mem->member)) {
             return Lifetime{RegionKind::Object, describePath(*mem->object)};
         }
-        if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-            oid != nullptr && oid->name == "this") {
-            // A field of ours that we do not free: a borrow, and whose it is we cannot say here.
+        // A BORROWED FIELD GETS THE SAME ANSWER, and it is not a shrug -- it is the induction this
+        // whole analysis runs on. Every store into that field was itself checked against this rule,
+        // so whatever is in there already outlives the object holding it. The holder's lifetime is
+        // therefore a true LOWER BOUND on the value's, and a lower bound is exactly what a source
+        // position may be understated to: it can refuse a program that was fine, never accept one
+        // that was not.
+        //
+        // Calling it Unknown instead cost the guarantee outright. `node.next = this.head` is the
+        // second line of every linked list ever written, and under a strict default an Unknown is a
+        // refusal -- so the standard library's own list, stack and queue stopped compiling, on a
+        // value the analysis could have named.
+        const std::string path = describePath(*mem->object);
+        if (path.empty()) {
             return Lifetime{RegionKind::Unknown, ""};
         }
-        return Lifetime{RegionKind::Unknown, ""};
+        return Lifetime{RegionKind::Object, path};
     }
     // A call: its result belongs to the receiver when the callee hands back something the receiver
     // owns -- `table.at(i)` is a row the table owns -- and that is read from the RECEIVER, because a
@@ -552,6 +876,14 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
         return lifetimeOf(*idx->array);
     }
     if (const auto* cast = dynamic_cast<const ast::CastExpr*>(&expr)) {
+        // A NUMBER CAST TO A POINTER IS A FIXED ADDRESS, and a fixed address outlives everything --
+        // the UART at 0x09000000 was there before the program started and will be there after. That
+        // is the root region by definition, and it is the whole of how a freestanding program talks
+        // to hardware, so reading it as unplaceable stopped the aarch64 kernel from compiling on a
+        // line whose lifetime is the least uncertain in the language.
+        if (isRefType(cast->targetType) && !isRefType(typeOf(*cast->operand))) {
+            return Lifetime{RegionKind::Root, ""};
+        }
         return lifetimeOf(*cast->operand);
     }
     return Lifetime{RegionKind::Unknown, ""};

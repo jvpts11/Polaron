@@ -2971,7 +2971,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                         auto fit = escapesToReceiverField_.find(recvClass + "." + mem->member + "#" +
                                                                 std::to_string(i));
                         if (fit != escapesToReceiverField_.end() &&
-                            ownsField(recvClass, fit->second)) {
+                            anyFieldOwns(recvClass, fit->second)) {
                             continue;
                         }
                         const Lifetime arg = lifetimeOf(*call->args[i]);

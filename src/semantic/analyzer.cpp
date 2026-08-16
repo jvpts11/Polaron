@@ -2761,7 +2761,19 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                         t = ix->array.get();
                     }
                     if (const auto* tmem = dynamic_cast<const ast::MemberExpr*>(t)) {
-                        escapeScanFieldFor_[p] = tmem->member;
+                        // EVERY field it lands in, not the last one seen. An append writes the
+                        // argument twice -- into the chain the object owns and into the tail pointer
+                        // that makes the next append O(1) -- and recording only the second read the
+                        // handover as a borrow, because the tail is a borrow. One of the two is the
+                        // owner and that is the one the question is about, so keep them all and let
+                        // the call site ask whether ANY of them owns.
+                        std::string& seen = escapeScanFieldFor_[p];
+                        if (seen.empty()) {
+                            seen = tmem->member;
+                        } else if (("," + seen + ",").find("," + tmem->member + ",") ==
+                                   std::string::npos) {
+                            seen += "," + tmem->member;
+                        }
                     }
                 } else if (p < static_cast<int>(escapeScanParamTargets_.size()) &&
                            std::find(escapeScanParamTargets_[p].begin(), escapeScanParamTargets_[p].end(),
@@ -2841,6 +2853,21 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                     }
                 }
                 if (!calleeClass.empty()) {
+                    // WHICH FIELD, not just THAT it escapes. `put` hands the node to `add` and `add`
+                    // is what stores it; propagating only the bit left `put` knowing the argument is
+                    // kept and unable to say by what, so the handover exemption had nothing to ask
+                    // about and every wrapper method warned.
+                    //
+                    // Through `this.M(x)` the callee's fields ARE our fields, so they carry over as
+                    // they are. Through `this.items.M(x)` they are the inner object's fields, and the
+                    // one that answers for us is `items` itself: we own the value exactly when we
+                    // free `items` and `items` keeps it. That composes, which is what makes a
+                    // one-line `add` wrapper -- the commonest method in any library -- come out right.
+                    const bool sameObject =
+                        dynamic_cast<const ast::IdentifierExpr*>(callee->object.get()) != nullptr;
+                    const std::string throughField =
+                        sameObject ? std::string()
+                                   : dynamic_cast<const ast::MemberExpr*>(callee->object.get())->member;
                     auto sit = escapesToReceiver_.find(calleeClass + "." + callee->member);
                     if (sit != escapesToReceiver_.end()) {
                         for (std::size_t k = 0; k < call->args.size() && k < sit->second.size(); ++k) {
@@ -2848,10 +2875,31 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                                 if (const auto* aid =
                                         dynamic_cast<const ast::IdentifierExpr*>(call->args[k].get())) {
                                     auto it = alias.find(aid->name);
-                                    if (it != alias.end() && it->second < static_cast<int>(esc.size()) &&
-                                        !esc[it->second]) {
-                                        esc[it->second] = true;
-                                        escapeSummaryChanged_ = true;  // a summary grew -> another fixpoint round
+                                    if (it != alias.end() && it->second < static_cast<int>(esc.size())) {
+                                        if (!esc[it->second]) {
+                                            esc[it->second] = true;
+                                            escapeSummaryChanged_ = true;  // a summary grew -> another round
+                                        }
+                                        std::string landing = throughField;
+                                        if (sameObject) {
+                                            auto fit = escapesToReceiverField_.find(
+                                                calleeClass + "." + callee->member + "#" +
+                                                std::to_string(k));
+                                            if (fit != escapesToReceiverField_.end()) {
+                                                landing = fit->second;
+                                            }
+                                        }
+                                        if (!landing.empty()) {
+                                            std::string& seen = escapeScanFieldFor_[it->second];
+                                            if (seen.empty()) {
+                                                seen = landing;
+                                                escapeSummaryChanged_ = true;
+                                            } else if (("," + seen + ",").find("," + landing + ",") ==
+                                                       std::string::npos) {
+                                                seen += "," + landing;
+                                                escapeSummaryChanged_ = true;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -4640,6 +4688,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     checkpointRegion_.clear();
     regionOf_.clear();
     deleted_.clear();
+    alreadyOwnedHere_.clear();
     catchStack_.clear();
     regionConstraints_.clear();
     regionFlavor_.clear();
