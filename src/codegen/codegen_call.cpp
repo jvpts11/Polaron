@@ -1857,6 +1857,33 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
                     builder.CreateSelect(gt, builder.getInt32(1), builder.getInt32(0)));
             }
         }
+        // AN ARRAY IS A REFERENCE, so it satisfies Hashable the same way an object does: identity.
+        //
+        // `ArrayList<int[]>` is how you hold a list of buffers -- the encoded images of an .ico, the
+        // rows of a table, the frames of anything -- and it did not compile at all. The failure
+        // surfaced deep inside the standard library, at `this.data[i].equalsKey(item)`, saying
+        // "arrays support .length() to read and .length(n) to resize; 'equalsKey' is not a method":
+        // a true sentence about arrays, pointing at library code the caller never wrote, for a
+        // collection the caller merely declared.
+        //
+        // Comparing CONTENTS would be the wrong answer even if it were free: two arrays with equal
+        // elements are still two arrays, and a collection that conflated them would make `remove`
+        // take out the wrong one. Identity is what an array reference means.
+        if (isArrayType(typeName(*mem->object)) &&
+            (mem->member == "equalsKey" || mem->member == "hash")) {
+            llvm::Value* a = emitExpr(*mem->object);
+            if (a == nullptr) {
+                return nullptr;
+            }
+            if (mem->member == "hash") {
+                return builder.CreatePtrToInt(a, builder.getInt64Ty());
+            }
+            llvm::Value* b = emitExpr(*call.args[0]);
+            if (b == nullptr) {
+                return nullptr;
+            }
+            return builder.CreateZExt(builder.CreateICmpEQ(a, b), builder.getInt32Ty());
+        }
         // Reflection tokens (Method/Field/Annotation) satisfy Hashable by identity, so they can
         // live in a collection: equalsKey is pointer equality and hash is the pointer value.
         // `Type` is in the list for the same reason the other three are: a program that WIRES

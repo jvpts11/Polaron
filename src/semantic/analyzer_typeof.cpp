@@ -2454,6 +2454,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     }
                     return "void";
                 }
+                // AN ARRAY IS A REFERENCE, so it answers Hashable by identity like any other one.
+                // `ArrayList<int[]>` -- a list of buffers, of rows, of frames -- did not compile at
+                // all without this, and the refusal surfaced inside the standard library at
+                // `this.data[i].equalsKey(item)`: a true sentence about arrays, pointing at code the
+                // caller never wrote, for a collection the caller merely declared.
+                if (mem->member == "equalsKey" && call->args.size() == 1) {
+                    return "boolean";
+                }
+                if (mem->member == "hash" && call->args.empty()) {
+                    return "long";
+                }
                 error("arrays support .length() to read and .length(n) to resize; '" + mem->member +
                           "' is not a method",
                       call->loc);

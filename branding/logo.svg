@@ -1,25 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 100">
-  <!-- The Polaron horizontal logo: Flamo + the wordmark. Amber on transparent, works on light and
-       dark grounds (the wordmark uses the brand amber, not black/white). -->
-  <g transform="translate(2,2) scale(0.96)">
-    <path fill="#eab464" d="M50 4
-      C 52 14, 60 22, 68 32
-      C 76 42, 82 52, 82 64
-      C 82 83, 68 96, 50 96
-      C 32 96, 18 83, 18 64
-      C 18 52, 24 42, 31 33
-      C 36 27, 40 20, 40 12
-      C 44 18, 46 24, 45 30
-      C 49 26, 50 14, 50 4 Z"/>
-    <path fill="#ffd9a0" d="M50 44
-      C 54 52, 64 56, 64 68
-      C 64 79, 58 86, 50 86
-      C 42 86, 36 79, 36 68
-      C 36 58, 44 54, 46 46
-      C 47 50, 49 52, 50 48 Z"/>
-    <ellipse cx="43" cy="66" rx="3.4" ry="5.2" fill="#0d1417"/>
-    <ellipse cx="57" cy="66" rx="3.4" ry="5.2" fill="#0d1417"/>
+  <!-- The Polaron horizontal logo, DARK-ground variant. Use logo-light.svg on white/light grounds.
+       -->
+  <!-- THE MARK IS A LATTICE WITH ONE THING WRONG WITH IT.
+       A polaron is a real object in physics: a charge carrier moving through a crystal lattice,
+       dragging with it the distortion it causes. Carrier and cloud, treated as one thing. So the
+       mark is nine points -- a heavy core, four near neighbours pulled IN toward it on the
+       diagonals, and four further out on the axes still where the lattice put them. Near bends, far
+       does not, and the displacement is read from that rhythm rather than from any before-and-after.
+
+       The rings are told apart by SIZE, never by opacity. A mark that leans on transparency dies the
+       first time it is punched into an .ico, stencilled into one colour, or printed. -->
+  <g transform="translate(6,6) scale(1.375)">
+    <g fill="#5a80ec">
+      <circle cx="23.1" cy="23.1" r="3.1"/><circle cx="40.9" cy="23.1" r="3.1"/>
+      <circle cx="23.1" cy="40.9" r="3.1"/><circle cx="40.9" cy="40.9" r="3.1"/>
+      <circle cx="32" cy="11" r="2.3"/><circle cx="32" cy="53" r="2.3"/>
+      <circle cx="11" cy="32" r="2.3"/><circle cx="53" cy="32" r="2.3"/>
+    </g>
+    <circle cx="32" cy="32" r="7" fill="#8ea6f2"/>
   </g>
-  <text x="104" y="72" font-family="'Segoe UI', 'Inter', system-ui, sans-serif" font-size="58"
-        font-weight="800" letter-spacing="2" fill="#eab464">LDP<tspan fill="#ffd9a0">3</tspan></text>
+  <text x="104" y="68" font-family="'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif"
+        font-size="46" font-weight="700" letter-spacing="7" fill="#e8ebf7">POLARON</text>
 </svg>

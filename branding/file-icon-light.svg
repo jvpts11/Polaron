@@ -1,22 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- The .pol file icon, light-theme variant (darker sheet outline). -->
-  <path d="M7 3 h13 l5 5 v21 h-18 z" fill="none" stroke="#58726e" stroke-width="2" stroke-linejoin="round"/>
-  <path d="M20 3 v5 h5" fill="none" stroke="#58726e" stroke-width="2" stroke-linejoin="round"/>
-  <g transform="translate(9.5,11) scale(0.14)">
-    <path fill="#c97f2e" d="M50 4
-      C 52 14, 60 22, 68 32
-      C 76 42, 82 52, 82 64
-      C 82 83, 68 96, 50 96
-      C 32 96, 18 83, 18 64
-      C 18 52, 24 42, 31 33
-      C 36 27, 40 20, 40 12
-      C 44 18, 46 24, 45 30
-      C 49 26, 50 14, 50 4 Z"/>
-    <path fill="#eab464" d="M50 44
-      C 54 52, 64 56, 64 68
-      C 64 79, 58 86, 50 86
-      C 42 86, 36 79, 36 68
-      C 36 58, 44 54, 46 46
-      C 47 50, 49 52, 50 48 Z"/>
+  <!-- The .pol file icon, light-theme variant (darker sheet outline, brand blue at full strength).
+       See file-icon.svg for why the reduction keeps the four that moved. -->
+  <path d="M7 3 h13 l5 5 v21 h-18 z" fill="none" stroke="#5b6480" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M20 3 v5 h5" fill="none" stroke="#5b6480" stroke-width="2" stroke-linejoin="round"/>
+  <g transform="translate(16,19) scale(0.155) translate(-32,-32)">
+    <g fill="#395fdb">
+      <circle cx="20.5" cy="20.5" r="7"/><circle cx="43.5" cy="20.5" r="7"/>
+      <circle cx="20.5" cy="43.5" r="7"/><circle cx="43.5" cy="43.5" r="7"/>
+    </g>
+    <circle cx="32" cy="32" r="12" fill="#1f3591"/>
   </g>
 </svg>
