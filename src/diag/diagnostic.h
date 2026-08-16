@@ -67,6 +67,13 @@ enum class Code {
     StaticInitNotConst,   // a static field's initializer cannot be evaluated before the program runs
     EscapesFrame,         // a pointer/reference to this activation's own storage leaving the activation
     MoveRequired,         // a `movable` value bound somewhere without the explicit `move`
+    // THE REGION BINDER REFUSES FOR FOUR DIFFERENT REASONS, and for a while all four printed the same
+    // explanation -- the one about frames, which is wrong prose for three of them. A code exists so
+    // that `why` and `fix` can say what actually happened; sharing one across unrelated rules gives
+    // the reader confident advice for a mistake they did not make, which is worse than no advice.
+    RegionIncomparable,   // two different objects, and nothing in the program orders their deaths
+    RegionForeignBoundary,  // a pointer handed to an `extern`, where no proof is available at all
+    RegionUseAfterInvalidate,  // a borrow read after the object it came from was emptied
 
     // 07xx -- literals and I/O builtins
     LiteralSuffix,        // an unknown or misused literal suffix
@@ -93,11 +100,41 @@ enum class Code {
     ComptimeConstant,     // a value required to be a compile-time constant but is not
     PersistentLifecycle,  // a persistent with no `release persistent` in the program
 
+    NoEntryPoint,         // a program with no `public static method main` anywhere
+    DuplicateConstructor, // a second constructor, in a language with no overloading
+    ShadowsBuiltinType,   // a user type with the name of one the compiler provides
+    FieldNeverAssigned,   // a constructor that leaves a field of the new object unset
+    WeakNeedsPointer,     // `weak` on something that is not a pointer
+    ImportNameMismatch,   // a name used differently from how the import brought it in
+    BitFieldRange,        // a literal that does not fit the declared width of a bit field
+    AtomicTooWide,        // an `atomic<T>` wider than the machine can do without a lock
+
+    // 08xx -- features used incorrectly (continued below the older entries)
+    InterruptMisuse,      // an interrupt handler that is called, duplicated, or reaches what it must not
+    TransformerMisuse,    // a transformer contract a type does not meet, or a procedure that names no subject
+    TestDeclaration,      // a [Test]/[Setup]/[Cases] annotation on something that cannot carry it
+
     // 09xx -- context restrictions
     FreestandingRestriction,  // a feature unavailable in freestanding mode (spec 36.3)
 
     // 0Axx -- not-yet-implemented corners
     NotSupportedYet,      // a valid construct the current compiler does not implement yet
+
+    // 0Bxx -- ADVICE. These arrive as warnings: the program compiles and runs, and something about it
+    // is likely to be a mistake or is likely to become one. A warning needs its `why` more than an
+    // error does, not less -- an error at least stops you, while a warning is only worth printing if
+    // the reader can tell from it whether it applies to them. Measured before these existed: 1309
+    // warnings across the test corpus and exactly one of them carried a code.
+    NamingConvention,     // a bundle/namespace/transformer named against the language's convention
+    ShadowsStdlibType,    // a user type with the same short name as one in the standard library
+    ShadowsField,         // a local whose name hides a field of the enclosing class
+    UndeclaredThrow,      // an exception a method can raise and neither catches nor declares
+    ClassPointerArith,    // arithmetic on a pointer to a class, which usually points at one object
+    MutatesByValueParam,  // a mutating call on a parameter received by value (the caller sees nothing)
+    ForeignSymbolMismatch,   // an `extern` whose convention and the symbol it binds disagree
+    Deprecated,           // a call to something marked deprecated
+    PersistentIdentity,   // a persistent keyed by identity because its key fields are values
+    FixtureLifecycle,     // a test reading a fixture whose [BeforeAll]/[AfterAll] it does not run
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

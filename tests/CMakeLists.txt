@@ -875,6 +875,44 @@ add_test(NAME concise_diagnostic_is_one_line_with_code
 set_tests_properties(concise_diagnostic_is_one_line_with_code PROPERTIES
     PASS_REGULAR_EXPRESSION "did_you_mean_bad.pol:[0-9]+:[0-9]+: error\\[Polaron-0102\\]: class 'Point' has no field")
 
+# The write-up appears ONCE per code per run. It is worth reading the first time and is noise the
+# tenth: two naming warnings in one file printed the same fifteen lines twice, and a program with a
+# dozen would bury everything else. A diagnostic nobody reads has failed, however good it is.
+add_test(NAME rich_writeup_prints_once_per_code
+    COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol" -o "${CMAKE_CURRENT_BINARY_DIR}/hw_once.ll")
+set_tests_properties(rich_writeup_prints_once_per_code PROPERTIES
+    PASS_REGULAR_EXPRESSION "see:     the write-up above, or .polc --explain Polaron-0B01.")
+
+# EVERY DIAGNOSTIC THE SUITE PRODUCES CARRIES A CODE, and so has a why/fix/prevent behind it.
+#
+# Codes are attached by matching text in the message, so rewording one silently drops its code and
+# the diagnostic quietly loses half of itself -- it still prints, still looks fine, and nothing else
+# in the build notices. Measured before this guard: 45 of 111 had none. The corpus is read from this
+# file, so a new negative test joins the guard by existing.
+add_test(NAME diagnostics_all_carry_a_code
+    COMMAND ${CMAKE_COMMAND} "-DPOLC=$<TARGET_FILE:polc>" "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/diagnostic_codes.cmake")
+set_tests_properties(diagnostics_all_carry_a_code PROPERTIES TIMEOUT 900)
+
+# The region binder refuses for four different reasons, and each says which one. Before this, all
+# four printed the frame-escape write-up -- confident advice for a mistake the reader did not make.
+add_test(NAME region_reasons_have_distinct_codes
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_through_extern.pol")
+set_tests_properties(region_reasons_have_distinct_codes PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[Polaron-1723\\]")
+
+# Two objects the caller happened to have, with nothing ordering them. The sentence must not claim an
+# ordering it does not have: "A outlives B" is the frame wording and is false here.
+add_test(NAME region_incomparable_says_nothing_orders_them
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_between_objects.pol")
+set_tests_properties(region_incomparable_says_nothing_orders_them PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[Polaron-1722\\]: region-binder: 'watch' keeps that argument, and nothing orders")
+
+add_test(NAME region_use_after_invalidate_has_a_code
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_after_clear.pol")
+set_tests_properties(region_use_after_invalidate_has_a_code PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[Polaron-1724\\]")
+
 # `polc --explain <code>` prints a code's canonical why / fix / prevent.
 add_test(NAME explain_prints_the_canonical_writeup
     COMMAND polc --explain Polaron-0101)

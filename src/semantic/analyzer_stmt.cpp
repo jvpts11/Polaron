@@ -85,6 +85,13 @@ void SemanticAnalyzer::noteBorrowFlow(const ast::Stmt& stmt) {
         if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(target)) {
             borrowsFrom_.erase(tid->name);
         }
+        // ...AND IT EMPTIES WHOEVER BORROWED FROM IT. `delete subject` is as final as
+        // `subject.clear()` for anything holding references into it, and reading only method calls
+        // left the plainest way to invalidate a borrow uncounted. (The name is also in `freed_`,
+        // which catches reading the name itself; this catches reading what borrowed FROM it.)
+        if (const std::string who = describePath(*del->target); !who.empty()) {
+            invalidatedAt_.insert(who);
+        }
         return;
     }
     // `people.clear()` -- every borrow into `people` is now pointing at freed rows.
@@ -630,11 +637,21 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                                   source.kind == RegionKind::Region)
                                : !outlivesOrEqual(source, target);
                     if (refused) {
+                        // Incomparable is not an ordering -- see the note at the call-site check.
+                        // Claiming one here sends the reader hunting for a relationship the program
+                        // never stated, which is the thing being complained about.
                         const std::string said =
-                            "region-binder: " + describeRegion(target) + " outlives " +
-                            describeRegion(source) + ", so storing that reference in field '" +
-                            mem->member + "' leaves it pointing at storage that is freed first. " +
-                            regionAdvice(source, target);
+                            (source.kind == RegionKind::Object && target.kind == RegionKind::Object)
+                                ? "region-binder: nothing orders " + describeRegion(target) +
+                                      " against " + describeRegion(source) +
+                                      ", so storing that reference in field '" + mem->member +
+                                      "' cannot be proven safe: neither is known to outlive the "
+                                      "other. " + regionAdvice(source, target)
+                                : "region-binder: " + describeRegion(target) + " outlives " +
+                                      describeRegion(source) + ", so storing that reference in "
+                                      "field '" + mem->member +
+                                      "' leaves it pointing at storage that is freed first. " +
+                                      regionAdvice(source, target);
                         // TWO DIFFERENT OBJECTS USED TO BE A WARNING, on the model's own advice: warn
                         // first, read what comes out, and let the size of that output measure how far
                         // the language was from the guarantee. That measurement is finished. Every

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <set>
 #include <string>
 
 namespace polaron::diag {
@@ -93,6 +94,13 @@ void section(std::string& out, std::string_view label, std::string_view body) {
 }
 }  // namespace
 
+// Which codes have already had their write-up printed in this run. Process-wide, like the concise
+// flag next door, because "this run" is what a reader experiences as one piece of output.
+std::set<std::string>& explainedCodes() {
+    static std::set<std::string> seen;
+    return seen;
+}
+
 std::string render(std::string_view severity, const std::string& path, int line, int col,
                    const std::string& message, Code code, const std::string& sourceLine, bool concise) {
     const std::string sev = severityToken(severity, code);
@@ -125,11 +133,23 @@ std::string render(std::string_view severity, const std::string& path, int line,
     }
 
     // The rich sections (only for coded diagnostics; an un-coded one stops at the snippet).
+    //
+    // ONCE PER CODE PER RUN. The write-up is worth reading the first time and is noise the tenth: a
+    // file with two naming warnings printed the same fifteen lines twice, and a real program with a
+    // dozen of them would bury everything else under repeated prose. That is how output stops being
+    // read at all -- and a diagnostic nobody reads has failed, however good it is.
+    //
+    // The rule is per RUN rather than per file, because a build is one thing to a reader. Later
+    // occurrences keep their headline, location and caret, and say where the rest went.
     if (code != Code::None) {
         out += "   " + std::string(std::to_string(line).size(), ' ') + " |\n";
-        section(out, "why", e.why);
-        section(out, "fix", e.fix);
-        section(out, "prevent", e.prevent);
+        if (explainedCodes().insert(codeString(code)).second) {
+            section(out, "why", e.why);
+            section(out, "fix", e.fix);
+            section(out, "prevent", e.prevent);
+        } else {
+            section(out, "see", "the write-up above, or `polc --explain " + codeString(code) + "`");
+        }
     }
     return out;
 }

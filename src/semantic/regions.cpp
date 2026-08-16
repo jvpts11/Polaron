@@ -901,6 +901,17 @@ void SemanticAnalyzer::checkKeptArguments(const std::string& ownerClass,
             }
         }
         const Lifetime arg = lifetimeOf(*call.args[i]);
+        // WHAT THE RECEIVER NOW HOLDS, so that freeing the source later is seen as invalidating it.
+        // A call that keeps an argument is the same fact as a method that returns a borrow; only the
+        // direction differs, and recording just one of the two left `eye.watch(subject); ...
+        // delete subject; eye.read();` with nothing connecting the three lines.
+        if (receiver != nullptr) {   // a static call has none; static storage is not a borrower
+            if (const std::string holder = describePath(*receiver); !holder.empty()) {
+                if (const std::string from = describePath(*call.args[i]); !from.empty()) {
+                    borrowsFrom_[holder] = from;
+                }
+            }
+        }
         // FILLING A FRESH OBJECT LOWERS ITS BOUND rather than failing. Nothing owns it yet, so
         // nothing can outlive it and this store cannot dangle -- but the borrow that went in is now
         // part of what it is, and the accumulated bound is what gets checked the moment it is
@@ -937,9 +948,20 @@ void SemanticAnalyzer::checkKeptArguments(const std::string& ownerClass,
         if (outlivesOrEqual(arg, recv)) {
             continue;
         }
-        const std::string said = "region-binder: '" + methodName + "' keeps that argument, and " +
-                                 describeRegion(recv) + " outlives " + describeRegion(arg) +
-                                 ", so what it keeps is freed first. " + regionAdvice(arg, recv);
+        // TWO INCOMPARABLE OBJECTS ARE NOT AN ORDERING, so the sentence must not claim one. The
+        // shared template reads "A outlives B, so what it keeps is freed first" -- true when one of
+        // them is a frame, false here. Neither is known to outlive the other, and saying otherwise
+        // sends the reader looking for a lifetime relationship the program never stated. That it
+        // never stated one is the entire complaint.
+        const std::string said =
+            (arg.kind == RegionKind::Object && recv.kind == RegionKind::Object)
+                ? "region-binder: '" + methodName + "' keeps that argument, and nothing orders " +
+                      describeRegion(recv) + " against " + describeRegion(arg) +
+                      ": neither is known to outlive the other, so this reference cannot be proven "
+                      "safe. " + regionAdvice(arg, recv)
+                : "region-binder: '" + methodName + "' keeps that argument, and " +
+                      describeRegion(recv) + " outlives " + describeRegion(arg) +
+                      ", so what it keeps is freed first. " + regionAdvice(arg, recv);
         error(said, call.args[i]->loc);
     }
 }
@@ -1254,8 +1276,11 @@ std::string SemanticAnalyzer::regionAdvice(const Lifetime& source, const Lifetim
                "reference somewhere that does not outlive the region.";
     }
     if (source.kind == RegionKind::Object) {
-        return "Nothing says which of the two objects dies first, so this reference cannot be "
-               "proven safe. Store a copy, or have one of them own the value outright.";
+        // ADVICE ONLY. This used to restate the diagnosis -- "nothing says which of the two dies
+        // first" -- which the sentence in front of it now says properly, so the reader got the same
+        // observation twice and the actual advice third. A `fix` that repeats the `why` reads as
+        // padding, and padding is what teaches people to skim diagnostics.
+        return "Store a copy, or have one of them own the value outright.";
     }
     return "Store a copy, or make the owner outlive the place the reference is kept.";
 }
