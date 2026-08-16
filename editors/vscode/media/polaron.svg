@@ -1,14 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <!-- Flamo, monochrome for the activity bar (VS Code recolors currentColor). -->
-  <path fill="currentColor" fill-rule="evenodd" d="M12 1.5
-    C 12.4 3.6, 14 5.2, 15.7 7.3
-    C 17.4 9.4, 18.7 11.5, 18.7 14
-    C 18.7 18.2, 15.8 21, 12 21
-    C 8.2 21, 5.3 18.2, 5.3 14
-    C 5.3 11.5, 6.6 9.4, 8.1 7.5
-    C 9.2 6.2, 10 4.7, 10 3
-    C 10.9 4.3, 11.3 5.6, 11.1 6.9
-    C 12 6, 12 3.6, 12 1.5 Z
-    M 10.6 14 a 0.8 1.2 0 1 0 0.001 0 Z
-    M 13.4 14 a 0.8 1.2 0 1 0 0.001 0 Z"/>
+  <!-- The lattice, monochrome for the activity bar (VS Code recolors currentColor).
+       This is the case the whole mark was designed for: one colour, no opacity, 24px. The rings are
+       told apart by SIZE alone, so nothing is lost here that is present anywhere else -- see
+       branding/logo.svg for what the mark is. -->
+  <g fill="currentColor">
+    <circle cx="8.66" cy="8.66" r="1.16"/><circle cx="15.34" cy="8.66" r="1.16"/>
+    <circle cx="8.66" cy="15.34" r="1.16"/><circle cx="15.34" cy="15.34" r="1.16"/>
+    <circle cx="12" cy="4.13" r="0.86"/><circle cx="12" cy="19.87" r="0.86"/>
+    <circle cx="4.13" cy="12" r="0.86"/><circle cx="19.87" cy="12" r="0.86"/>
+    <circle cx="12" cy="12" r="2.63"/>
+  </g>
 </svg>

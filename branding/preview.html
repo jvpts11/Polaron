@@ -1,16 +1,33 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><style>
-  body { margin:0; font-family:'Segoe UI',sans-serif; background:#0d1417; color:#e4ece9; }
-  .row { display:flex; align-items:center; gap:28px; padding:18px 28px; }
-  .light { background:#f4f1ec; color:#1a1a1a; }
-  h3 { width:150px; margin:0; font-size:13px; font-weight:600; opacity:.7 }
+<html><head><meta charset="utf-8"><title>Polaron marks</title><style>
+  /* A contact sheet for the asset set: every file, on both grounds, at the sizes it ships at.
+     Open it after touching any SVG here -- the point is to see the 16px rung next to the 96px one,
+     because a mark that only works large is a mark nobody will meet. */
+  body { margin:0; font-family:'Segoe UI Variable Display','Segoe UI',sans-serif;
+         background:#0b0e1a; color:#e8ebf7; }
+  .row { display:flex; align-items:center; gap:28px; padding:20px 28px; border-bottom:1px solid #1b2140; }
+  .light { background:#f6f7fc; color:#13172a; border-bottom-color:#e0e4f2; }
+  .brand { background:#395fdb; color:#fff; border-bottom-color:#2a49ad; }
+  h3 { width:158px; margin:0; font-size:12px; font-weight:600; letter-spacing:.06em;
+       text-transform:uppercase; opacity:.62 }
   img { display:block }
+  .name { font-family:'Cascadia Mono',Consolas,monospace; font-size:12px; opacity:.7 }
 </style></head><body>
-  <div class="row"><h3>mascote (dark)</h3><img src="flamo.svg" width="120" height="120"><img src="flamo.svg" width="64" height="64"><img src="flamo.svg" width="32" height="32"></div>
-  <div class="row light"><h3>mascote (light)</h3><img src="flamo.svg" width="120" height="120"><img src="flamo.svg" width="64" height="64"><img src="flamo.svg" width="32" height="32"></div>
-  <div class="row"><h3>app icon</h3><img src="icon.svg" width="96" height="96"><img src="icon.svg" width="48" height="48"><img src="icon.svg" width="24" height="24"></div>
-  <div class="row"><h3>logo (dark)</h3><img src="logo.svg" width="340" height="100"></div>
-  <div class="row light"><h3>logo (light)</h3><img src="logo.svg" width="340" height="100"></div>
-  <div class="row"><h3>file icon (dark)</h3><img src="file-icon.svg" width="48" height="48"><img src="file-icon.svg" width="32" height="32"><img src="file-icon.svg" width="16" height="16"><span style="font-size:13px;opacity:.75">main.pol</span></div>
-  <div class="row light"><h3>file icon (light)</h3><img src="file-icon-light.svg" width="48" height="48"><img src="file-icon-light.svg" width="32" height="32"><img src="file-icon-light.svg" width="16" height="16"><span style="font-size:13px;opacity:.75">main.pol</span></div>
+  <div class="row"><h3>app icon</h3>
+    <img src="icon.svg" width="96" height="96"><img src="icon.svg" width="48" height="48">
+    <img src="icon.svg" width="32" height="32"><img src="icon.svg" width="16" height="16"></div>
+  <div class="row light"><h3>app icon · on light</h3>
+    <img src="icon.svg" width="96" height="96"><img src="icon.svg" width="48" height="48">
+    <img src="icon.svg" width="32" height="32"><img src="icon.svg" width="16" height="16"></div>
+
+  <div class="row"><h3>logo · dark</h3><img src="logo.svg" width="340" height="100"></div>
+  <div class="row light"><h3>logo · light</h3><img src="logo-light.svg" width="340" height="100"></div>
+  <div class="row brand"><h3>logo · on brand</h3><img src="logo.svg" width="340" height="100"></div>
+
+  <div class="row"><h3>file icon · dark</h3>
+    <img src="file-icon.svg" width="48" height="48"><img src="file-icon.svg" width="32" height="32">
+    <img src="file-icon.svg" width="16" height="16"><span class="name">main.pol</span></div>
+  <div class="row light"><h3>file icon · light</h3>
+    <img src="file-icon-light.svg" width="48" height="48"><img src="file-icon-light.svg" width="32" height="32">
+    <img src="file-icon-light.svg" width="16" height="16"><span class="name">main.pol</span></div>
 </body></html>

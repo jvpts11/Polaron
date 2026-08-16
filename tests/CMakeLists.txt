@@ -6982,6 +6982,19 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `ArrayList<int[]>` -- a list of buffers -- did not compile at all: an array has no
+        # `equalsKey`, so the failure surfaced inside the standard library for a collection the
+        # caller merely declared. An array is a reference and answers by identity, which is why the
+        # equal-looking twin is NOT found.
+        add_test(NAME codegen_collection_of_arrays_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_of_arrays.pol"
+            "-DEXPECTED=count 2"
+            "-DCONTAINS=has a 1 has twin 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A region carved out of another region: nesting in SPACE, where §10 gave only nesting in
         # scope. The child's block comes from the parent, so a per-phase arena inside a per-world one
         # costs no second allocation and releasing the world reclaims every arena in it at once.

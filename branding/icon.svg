@@ -1,24 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <!-- The Polaron app icon: Flamo on the dark brand ground, rounded square. Used for the VS Code
-       extension icon and rasterized into the Windows .ico. -->
-  <rect width="128" height="128" rx="28" fill="#101c1f"/>
-  <g transform="translate(14,14) scale(1.0)">
-    <path fill="#eab464" d="M50 4
-      C 52 14, 60 22, 68 32
-      C 76 42, 82 52, 82 64
-      C 82 83, 68 96, 50 96
-      C 32 96, 18 83, 18 64
-      C 18 52, 24 42, 31 33
-      C 36 27, 40 20, 40 12
-      C 44 18, 46 24, 45 30
-      C 49 26, 50 14, 50 4 Z"/>
-    <path fill="#ffd9a0" d="M50 44
-      C 54 52, 64 56, 64 68
-      C 64 79, 58 86, 50 86
-      C 42 86, 36 79, 36 68
-      C 36 58, 44 54, 46 46
-      C 47 50, 49 52, 50 48 Z"/>
-    <ellipse cx="43" cy="66" rx="3.4" ry="5.2" fill="#0d1417"/>
-    <ellipse cx="57" cy="66" rx="3.4" ry="5.2" fill="#0d1417"/>
+  <!-- The Polaron app icon: the lattice knocked out of a solid brand tile. Used for the VS Code
+       extension icon and rasterized into the Windows .ico.
+       See logo.svg for what the mark is.
+
+       A SOLID #395fdb GROUND rather than a dark one, deliberately. The dark tile the mascot sat on
+       looked considered on this page and vanished into a dark taskbar, which is where an app icon
+       spends its life -- next to a wall of other icons, at 32px, being found rather than admired.
+       A saturated tile with the mark opened out of it is the version that gets found. -->
+  <rect width="128" height="128" rx="28" fill="#395fdb"/>
+  <g transform="translate(64,64) scale(1.45) translate(-32,-32)">
+    <g fill="#c9d6fb">
+      <circle cx="23.1" cy="23.1" r="3.1"/><circle cx="40.9" cy="23.1" r="3.1"/>
+      <circle cx="23.1" cy="40.9" r="3.1"/><circle cx="40.9" cy="40.9" r="3.1"/>
+      <circle cx="32" cy="11" r="2.3"/><circle cx="32" cy="53" r="2.3"/>
+      <circle cx="11" cy="32" r="2.3"/><circle cx="53" cy="32" r="2.3"/>
+    </g>
+    <circle cx="32" cy="32" r="7" fill="#ffffff"/>
   </g>
 </svg>

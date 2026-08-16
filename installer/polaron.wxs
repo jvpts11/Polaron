@@ -54,7 +54,7 @@
       <File Id="InstallVsCodeCmd" Source="install-vscode.cmd" Name="install-vscode.cmd" />
     </Component>
 
-    <!-- Register the .pol extension so source files show Flamo (the file icon) in Explorer. -->
+    <!-- Register the .pol extension so source files carry the lattice mark in Explorer. -->
     <Component Id="FileAssociation" Directory="INSTALLFOLDER" Guid="c3d4e5f6-7a8b-4c9d-0e1f-2a3b4c5d6e7f">
       <File Id="PolaronFileIcoFile" Source="../branding/file-icon.ico" Name="polaron-file.ico" />
       <ProgId Id="Polaron.SourceFile" Description="Polaron source file" Icon="PolaronFileIcoFile">

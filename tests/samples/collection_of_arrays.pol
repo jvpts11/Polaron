@@ -1,0 +1,52 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+
+program CollectionOfArrays;
+
+// A LIST OF BUFFERS, which did not compile at all.
+//
+// `ArrayList<int[]>` is how a program holds the encoded images of an icon file, the rows of a table,
+// the frames of anything. Declaring one failed inside the standard library, at
+// `this.data[i].equalsKey(item)`, with "arrays support .length() to read and .length(n) to resize;
+// 'equalsKey' is not a method" -- a true sentence about arrays, pointing at library code the caller
+// never wrote, for a collection the caller merely declared.
+//
+// An array is a REFERENCE, so it answers Hashable the way every other reference does: by identity.
+// Comparing contents would be the wrong answer even if it were free -- two arrays holding equal
+// elements are still two arrays, and a collection that conflated them would have `remove` take out
+// the wrong one.
+//
+// Found while writing Polaron's own icon generator in Polaron, which is the point of writing tooling
+// in the language it belongs to: the gaps are in the parts nobody exercises.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int[]> blobs = new ArrayList<int[]>() on heap;
+
+                mutable int[] a = new int[3]();
+                a[0] = 1; a[1] = 2; a[2] = 3;
+                mutable int[] b = new int[2]();
+                b[0] = 9; b[1] = 8;
+
+                blobs.add(a);
+                blobs.add(b);
+                System.IO.Console.println($"count {blobs.size()}");
+
+                int[] first = blobs.get(0);
+                System.IO.Console.println($"first {first[0]}{first[1]}{first[2]}");
+
+                // Identity, not contents: an equal-looking third array is a different element.
+                mutable int[] twin = new int[3]();
+                twin[0] = 1; twin[1] = 2; twin[2] = 3;
+                System.IO.Console.println($"has a {blobs.contains(a)} has twin {blobs.contains(twin)}");
+
+                delete twin;
+                delete a;
+                delete b;
+                delete blobs;
+                return;
+            }
+        }
+    }
+}
