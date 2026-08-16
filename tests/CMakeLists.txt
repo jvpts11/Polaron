@@ -2988,6 +2988,40 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A TRANSFORMER APPLIED TO A BASE AND TO ITS DERIVED CLASS. It puts a member on each and the
+        # derived one overrides — refused, until now, for not saying `override`: a word nobody was
+        # there to write, since the compiler made the member. The same sentence already governed the
+        # copy that answers a `satisfies` interface, and what `override` exists to make visible IS
+        # visible here, on the class line in the reader's own file.
+        #
+        # The structural case is what makes it worth having: one body over `itself.fields` becomes a
+        # DIFFERENT body in each class, and the right one runs through the vtable.
+        add_test(NAME codegen_transformer_hierarchy_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_hierarchy.pol"
+            "-DEXPECTED=base: one=1 derived: one=2 two=3 through the base type: one=4 two=5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # AN INITIALIZER ON A FIELD A TRANSFORMER BRINGS — listed as an improvement to build, and it
+        # ALREADY WORKED. Like the operators before it, what was missing was the test, which is the
+        # difference between a feature and an accident that has not been broken yet.
+        add_test(NAME codegen_transformer_applied_field_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_applied_field.pol"
+            "-DEXPECTED=front: 2 wide 80 back: 1 wide 90"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        # ...and the obligation that makes the initializer worth having. Without the `= 0`, `Door`'s
+        # constructor must assign a field its class never declared — because an unassigned field does
+        # not start empty, it starts as whatever was last in that storage, and the field being
+        # somebody else's does not soften that.
+        add_test(NAME sema_requires_applied_field_assigned COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_applied_field_bad.pol")
+        set_tests_properties(sema_requires_applied_field_assigned PROPERTIES WILL_FAIL TRUE)
+
         # ONE SOCKET, FOUR OPERATORS. The design note listed this as an improvement to build, with the
         # guess that it might already work because operators are ordinary `MethodDecl`s -- and it does.
         # What was missing was the test, which is the difference between a feature and an accident that

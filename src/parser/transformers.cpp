@@ -400,6 +400,9 @@ void applyOne(const ast::ClassDecl& t, const std::string& targetName,
             if (!tm->boundTarget.empty() && tm->boundTargetVia.empty()) {
                 tm->boundTargetVia = t.name;
             }
+            if (tm->fromTransformer.empty()) {
+                tm->fromTransformer = t.name;
+            }
             if (t.isFreestandingTransformer) {
                 tm->freestandingFrom = t.name;
             }
@@ -456,9 +459,13 @@ void applyOne(const ast::ClassDecl& t, const std::string& targetName,
         // transformer, and after the copy the body is an ordinary member of the type with nothing
         // left saying where it came from -- so the one thing the consent check needs is stamped here,
         // at the only moment both facts are in hand.
-        if (auto* cm = dynamic_cast<ast::MethodDecl*>(copy.get());
-            cm != nullptr && !cm->boundTarget.empty() && cm->boundTargetVia.empty()) {
-            cm->boundTargetVia = t.name;
+        if (auto* cm = dynamic_cast<ast::MethodDecl*>(copy.get()); cm != nullptr) {
+            if (!cm->boundTarget.empty() && cm->boundTargetVia.empty()) {
+                cm->boundTargetVia = t.name;
+            }
+            if (cm->fromTransformer.empty()) {
+                cm->fromTransformer = t.name;
+            }
         }
         members.push_back(std::move(copy));
         own.insert(name);
@@ -1587,6 +1594,43 @@ bool expandTransformers(ast::Program& program) {
                             md->body.statements.insert(md->body.statements.begin(), std::move(decl));
                         }
                         unrollStructural(md->body, c, forFields);
+                    }
+                }
+            }
+        }
+        // A TRANSFORMER APPLIED TO A BASE AND TO ITS DERIVED CLASS puts a member on each, and the
+        // derived one overrides. It was refused for not saying `override` -- a word nobody was there
+        // to write, since the compiler made the member.
+        //
+        // The same sentence already sits above `indexInterfaceMethods`, for the copy that answers a
+        // `satisfies` interface: a member the compiler copied in has nobody to write the word. The
+        // argument transfers unchanged, and so should the answer. What `override` exists to make
+        // visible IS visible here -- `applies TNamer` is on the class line, in the reader's own file.
+        for (ast::Bundle& b : program.bundles) {
+            for (ast::Namespace& ns : b.namespaces) {
+                for (ast::ClassDecl& c : ns.classes) {
+                    if (c.superclass.empty()) {
+                        continue;
+                    }
+                    for (ast::MemberPtr& m : c.members) {
+                        auto* md = dynamic_cast<ast::MethodDecl*>(m.get());
+                        if (md == nullptr || md->fromTransformer.empty() || md->isOverride) {
+                            continue;
+                        }
+                        std::string up = c.superclass;
+                        for (int depth = 0; depth < 32 && !up.empty(); ++depth) {
+                            auto sup = forFields.find(up);
+                            if (sup == forFields.end()) {
+                                break;
+                            }
+                            for (const ast::MemberPtr& sm : sup->second->members) {
+                                if (const ast::MethodDecl* smd = asMethod(sm);
+                                    smd != nullptr && smd->name == md->name && !smd->isStatic) {
+                                    md->isOverride = true;
+                                }
+                            }
+                            up = sup->second->superclass;
+                        }
                     }
                 }
             }

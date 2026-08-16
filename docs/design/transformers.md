@@ -779,9 +779,18 @@ of whatever this is) was unwritable. And the `call` alias is a SECOND copy of th
 carries the same bound target and owes the same consent; missing it reported a type as not entrusting
 the empty string, which named nothing.
 
-**Left open, and not decided here:** a transformer applied to BOTH a base class and a derived one
-produces a member on each, and the derived copy is refused for overriding without `override`. It is a
-real interaction and it deserves its own answer.
+**And the interaction it exposed, closed the same day.** A transformer applied to BOTH a base class
+and a derived one produces a member on each, and the derived copy was refused for overriding without
+`override` — a word nobody was there to write, since the compiler made the member. The sentence
+already sat above `indexInterfaceMethods` for the copy that answers a `satisfies` interface, and the
+argument transfers unchanged: what `override` exists to make VISIBLE is visible here, because
+`applies TDescriber` is on the class line in the reader's own file. Copies now carry which transformer
+brought them (`MethodDecl::fromTransformer`), and one that shadows an ancestor's method is marked.
+
+The structural case is what makes it worth having, and it is the test:
+`tests/samples/transformer_hierarchy.pol` writes `describe` once, and the copy in the base walks the
+base's shape while the copy in the derived walks the derived's — so one line becomes two different
+bodies, and the right one runs through the vtable.
 
 A transformer can supply a fixed body or a socket. What it cannot supply is a body **derived from the
 shape** of the type that applies it: clone every field, compare every field, serialise every field.
@@ -838,7 +847,19 @@ procedure sorted() returns itself when Other applies TComparer;
 Rust's `where`. Today `applies` is all-or-nothing: a transformer cannot give more to a type that has
 more. Real value, smaller than the four above, and **the only item here that needs a new keyword**.
 
-### 7. An initializer on an applied field
+### 7. ~~An initializer on an applied field~~ — **it already worked. Tested 2026-08-16.**
+
+The second time this note guessed at an improvement that was already there, and the second time the
+missing thing was the test. `tests/samples/transformer_applied_field.pol` gives `TCounter` a
+`public mutable int hits = 0` and `Door` never mentions it.
+
+Both halves are tested, because the second is what makes the first mean anything: WITHOUT the `= 0`,
+`Door`'s constructor is required to assign a field its class never declared, and the diagnostic lands
+on the `applies` line rather than inside somebody else's transformer. So the `=` is not a
+convenience — it is the transformer's author saying what their field starts as, so that no applier
+has to know.
+
+### 7b. The original text, kept for the argument
 
 A transformer that brings a field forces every applier's constructor to assign something its class
 never declared. An `=` on the field solves it with no weaving — and the argument against weaving the
