@@ -174,11 +174,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // USE AFTER FREE, caught at compile time. The machinery was already here -- `deleted_` was
             // populated by every `delete` and read only to permit redeclaring the name -- so the trap the
             // guide promises (05:768) was one condition away the whole time.
-            error("use of variable '" + id->name +
-                      "' after it was deleted: the object it named is gone, and reading the variable "
-                      "reads freed memory. Redeclare the name with a new object if you meant to reuse "
-                      "it (spec 18.2), or move the `delete` after this use",
-                  id->loc);
+            //
+            // ...and a RELEASED REGION is the same fact with a different keyword, so it gets the
+            // message that names the release rather than a `delete` nobody wrote.
+            if (auto rit = regionOf_.find(id->name);
+                rit != regionOf_.end() && releasedRegions_.count(rit->second) > 0) {
+                error("use of '" + id->name + "' after `release region " + rit->second +
+                          "': it lives in that region, so its storage is gone. Read it before the "
+                          "release, or copy what is needed out of the region first",
+                      id->loc);
+            } else {
+                error("use of variable '" + id->name +
+                          "' after it was deleted: the object it named is gone, and reading the variable "
+                          "reads freed memory. Redeclare the name with a new object if you meant to reuse "
+                          "it (spec 18.2), or move the `delete` after this use",
+                      id->loc);
+            }
         } else if (const FlowFacts::Init st = initStateOf(id->name); st != FlowFacts::Init::Init) {
             // Definite assignment. The two states get different messages because they are different
             // mistakes: never assigned at all, versus assigned on only one path through a branch.
@@ -2942,9 +2953,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                         if (!sit->second[i]) {
                             continue;
                         }
-                        // Only a pointer/reference argument actually aliases; a value is copied in.
-                        const std::string argType = typeOf(*call->args[i]);
-                        if (!isRefType(argType)) {
+                        // WHETHER IT ALIASES IS THE PARAMETER'S QUESTION, not the argument's. A local
+                        // declared `Leaf own` passed to `accept(Leaf* leaf)` hands the callee a
+                        // pointer to frame storage -- the argument's own type says value and the
+                        // aliasing is real. Reading the argument's type instead let every such call
+                        // through, which is most of them.
+                        const bool aliases =
+                            i < m->paramTypes.size() ? isRefType(m->paramTypes[i])
+                                                     : isRefType(typeOf(*call->args[i]));
+                        if (!aliases) {
                             continue;
                         }
                         // A HANDOVER IS NOT A BORROW. If the receiver's class frees the field the

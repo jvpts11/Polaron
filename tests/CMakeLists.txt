@@ -7879,6 +7879,26 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # READING THROUGH A POINTER INTO A RELEASED REGION. Not checked at all before — embarrassing
+        # precisely because it is easy: the analyzer already kept flow-sensitive `deleted_`/`freed_`
+        # sets for `delete`, so the machinery existed and did not cover regions. It gets its own
+        # message, because nobody wrote a `delete` to move.
+        add_test(NAME sema_rejects_use_after_release COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_use_after_release_bad.pol")
+        set_tests_properties(sema_rejects_use_after_release PROPERTIES WILL_FAIL TRUE)
+        # A VIRTUAL CALL MAY RUN ANY OVERRIDE, so the escape summary read at a call site is the union
+        # over all of them. `Sink.accept` keeps nothing and `Keeper.accept` keeps what it is given;
+        # through a `Sink*` the base's summary said "fine" and the object may well be a Keeper.
+        #
+        # The one place inheritance costs this analysis anything — and worth being exact: it is not
+        # that ownership and inheritance conflict. Inheritance is an identity relation, the region
+        # tree is a containment one, and a hierarchy adds no nodes to it at all. What it adds is
+        # several callees behind one call, answered by the union, computable because the hierarchy is
+        # closed at compile time.
+        add_test(NAME sema_rejects_escape_through_override COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_virtual_escape_bad.pol")
+        set_tests_properties(sema_rejects_escape_through_override PROPERTIES WILL_FAIL TRUE)
+
         # A DEFERRED CLEANUP RUNS AT SCOPE EXIT, AND THE FLOW ANALYSIS HAS TO SAY SO.
         #
         # `defer { delete b; }` followed by any read of `b` was refused as a use-after-delete: the

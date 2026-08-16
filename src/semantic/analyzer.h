@@ -811,6 +811,10 @@ private:
     // Non-zero while a lifetime is being worked out: `error` returns instead of recording. Asking a
     // question must not produce a complaint, and `typeOf` reports as it goes.
     int quiet_ = 0;
+    // Regions released on this path (§7). Kept beside `deleted_`/`freed_`, which carry the values
+    // that lived in them -- one is for naming the region in a message, the other is what the
+    // use-after check already reads.
+    std::unordered_set<std::string> releasedRegions_;
     struct Quiet {   // RAII, so an early return inside a lifetime query cannot leave it muted
         SemanticAnalyzer& a;
         explicit Quiet(SemanticAnalyzer& an) : a(an) { ++a.quiet_; }
