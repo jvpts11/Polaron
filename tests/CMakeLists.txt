@@ -7879,6 +7879,21 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # SUB-REGIONS AND NESTING (§10). Two explicit regions used to be compared by IDENTITY, so a
+        # nest of them was a set of unrelated boxes and the direction that is a bug looked exactly
+        # like the direction that is fine.
+        #
+        # The order needs no model of the nest: regions are released last-in-first-out, and one
+        # declared inside a block is necessarily born after the region enclosing it — so "born
+        # earlier" IS "dies later", and one number per region orders an arbitrarily deep nest.
+        #
+        # BOTH directions are in the sample, because a rule that refuses everything is not an order.
+        # The scratch node pointing at durable data must stay silent; the durable node pointing into
+        # the scratch region is the one error.
+        add_test(NAME sema_orders_nested_regions COMMAND "$<TARGET_FILE:polc>"
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/region_nesting_bad.pol")
+        set_tests_properties(sema_orders_nested_regions PROPERTIES WILL_FAIL TRUE)
+
         # READING THROUGH A POINTER INTO A RELEASED REGION. Not checked at all before — embarrassing
         # precisely because it is easy: the analyzer already kept flow-sensitive `deleted_`/`freed_`
         # sets for `delete`, so the machinery existed and did not cover regions. It gets its own

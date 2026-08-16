@@ -780,7 +780,13 @@ private:
     // usable: two DIFFERENT objects are incomparable, because nothing in the program says which dies
     // first. That incomparability is not a gap -- it is the answer, and it is what makes storing one
     // object's row inside another object an error rather than a shrug.
-    static bool outlivesOrEqual(const Lifetime& a, const Lifetime& b);
+    bool outlivesOrEqual(const Lifetime& a, const Lifetime& b) const;
+    // §10, SUB-REGIONS AND NESTING: when each region was declared. Regions are released last-in-
+    // first-out, and one declared inside a block is necessarily born after the block's enclosing
+    // region -- so "born earlier" is "dies later", and one number per region orders the whole nest
+    // without modelling the nest at all.
+    std::unordered_map<std::string, int> regionBirth_;
+    int regionBirthCounter_ = 0;
     // `--strict-regions`: a lifetime this analysis cannot place is REFUSED rather than allowed. The
     // difference between a checker that finds and one that guarantees, and a decision rather than an
     // implementation detail -- so it is a flag, and the measurement that makes it decidable is in

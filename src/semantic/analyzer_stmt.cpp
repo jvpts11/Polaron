@@ -313,6 +313,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             }
             declareLocal(vd->name, LocalVar{declType.empty() ? std::string("int") : declType,
                                             vd->isMutable, stackObj, heapObj, deferred});
+            // WHEN A REGION WAS BORN, which is all §10 needs to order two of them.
+            //
+            // Regions are released last-in-first-out -- at scope exit, in reverse declaration order,
+            // and a region declared inside a block is necessarily born after the one enclosing it.
+            // So "born earlier" IS "dies later", and one number per region orders the whole nest
+            // without modelling the nest. Nothing about lexical depth has to be tracked separately:
+            // an inner region cannot be born before the outer one it sits inside.
+            if (declType == "region") {
+                regionBirth_[vd->name] = ++regionBirthCounter_;
+            }
             if (deferred) {
                 init_[vd->name] = FlowFacts::Init::Uninit;
             } else {
