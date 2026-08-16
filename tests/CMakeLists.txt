@@ -514,6 +514,13 @@ add_test(NAME sema_escape_through_interface_errors
 set_tests_properties(sema_escape_through_interface_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "'keep' keeps that argument")
 
+# The other half of the check above: the branch that empties RETURNS, so nothing reaches the read
+# with the rows freed. Refusing correct code is the failure mode that gets an analysis switched off.
+add_test(NAME sema_borrow_branch_ok
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_branch_ok.pol")
+set_tests_properties(sema_borrow_branch_ok PROPERTIES
+    FAIL_REGULAR_EXPRESSION "error")
+
 # A view that outlives what it views. Each of the three statements is fine alone -- build the result,
 # empty the table, read the result -- and the order is the bug. This is the shape a database gets
 # wrong, and the reason the region binder tracks where a returned collection's contents came from.

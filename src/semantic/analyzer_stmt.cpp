@@ -72,6 +72,21 @@ void SemanticAnalyzer::noteBorrowFlow(const ast::Stmt& stmt) {
         }
         return;
     }
+    // FREEING A VIEW IS NOT READING IT. `delete answer` releases the object that holds the dangling
+    // references and never follows one, so it is safe after the source was emptied -- and it is the
+    // right thing to do there. Reporting it made the checker refuse the correct cleanup of the very
+    // situation it had just diagnosed. After this the name is freed, and a later use gets the
+    // use-after-free message it should have.
+    if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&stmt)) {
+        const ast::Expr* target = del->target.get();
+        while (const auto* c = dynamic_cast<const ast::CastExpr*>(target)) {
+            target = c->operand.get();
+        }
+        if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(target)) {
+            borrowsFrom_.erase(tid->name);
+        }
+        return;
+    }
     // `people.clear()` -- every borrow into `people` is now pointing at freed rows.
     if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
         const ast::CallExpr* call = callOf(es->expr.get());
