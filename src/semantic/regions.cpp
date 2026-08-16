@@ -278,6 +278,25 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                                         dynamic_cast<const ast::NewExpr*>(vd->init.get());
                                     nw != nullptr && nw->location == "heap" && nw->region.empty()) {
                                     freshLocals.insert(vd->name);
+                                } else if (const auto* ic =
+                                               dynamic_cast<const ast::CallExpr*>(vd->init.get())) {
+                                    // ...and a local bound to a FACTORY's result is fresh too:
+                                    // `mutable Json map = Json.object();` then `return map;` is how
+                                    // the standard library's builders are written, and reading only
+                                    // `new` here broke the chain three callers up.
+                                    const auto* im =
+                                        dynamic_cast<const ast::MemberExpr*>(ic->callee.get());
+                                    if (im != nullptr) {
+                                        if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(
+                                                im->object.get())) {
+                                            const std::string owner =
+                                                oid->name == "this" ? baseType(cls.name)
+                                                                    : baseType(oid->name);
+                                            if (returnsFresh_.count(owner + "." + im->member) > 0) {
+                                                freshLocals.insert(vd->name);
+                                            }
+                                        }
+                                    }
                                 }
                                 continue;
                             }
@@ -320,10 +339,32 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                                 }
                                 continue;
                             }
+                            // EVERY BLOCK, not just the branches. A factory that returns from inside
+                            // a loop is ordinary -- `Toml.number` parses digits in a `while` and
+                            // returns out of it -- and a scan that only descended into `if` called
+                            // such a method unplaceable, which then made every caller unplaceable
+                            // too. One missed statement kind travels a long way up a chain.
                             if (const auto* ifs = dynamic_cast<const ast::IfStmt*>(st.get())) {
                                 look(ifs->thenBlock);
                                 if (ifs->elseBlock != nullptr) {
                                     look(*ifs->elseBlock);
+                                }
+                            } else if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(st.get())) {
+                                look(wh->body);
+                            } else if (const auto* fo = dynamic_cast<const ast::ForStmt*>(st.get())) {
+                                look(fo->body);
+                            } else if (const auto* fe =
+                                           dynamic_cast<const ast::ForeachStmt*>(st.get())) {
+                                look(fe->body);
+                            } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(st.get())) {
+                                look(dw->body);
+                            } else if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st.get())) {
+                                look(tr->body);
+                                for (const auto& c : tr->catches) {
+                                    look(c.body);
+                                }
+                                if (tr->finallyBlock != nullptr) {
+                                    look(*tr->finallyBlock);
                                 }
                             }
                         }
