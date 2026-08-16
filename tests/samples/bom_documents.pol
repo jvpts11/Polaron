@@ -1,0 +1,54 @@
+import System.IO.Console;
+import System.Text.Strings;
+import System.Text.StringBuilder;
+import System.Formats.Xml;
+import System.Formats.Toml;
+import System.Json.Json;
+
+program BomDocuments;
+
+// THREE BYTES THAT MADE EVERY PARSER RETURN NOTHING, in silence.
+//
+// A UTF-8 byte-order mark is what every Windows editor writes and what `Set-Content -Encoding utf8`
+// adds without saying so. No document format expects it: the XML scanner looking for `<` finds
+// U+FEFF, the JSON scanner looking for `{` finds it, and both conclude the document is empty. No
+// error, no exception -- an empty tree and a caller that renders a blank page.
+//
+// Found by rendering an SVG written with PowerShell: a valid file, a blank image, and nothing
+// anywhere to say which of the two hundred lines was at fault.
+//
+// THE MARK IS THREE BYTES, not one character, and getting that wrong is its own lesson. A Polaron
+// String holds bytes -- `charAt` is byte-level, which is why `Utf8` exists beside it for real
+// codepoints -- so a file that starts with a UTF-8 BOM starts with 0xEF 0xBB 0xBF and not with
+// U+FEFF. A test that prepends the single character builds something no file ever contains, passes
+// or fails for the wrong reason, and proves nothing about the bug it was written for.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                sb.appendChar(cast<char>(239));
+                sb.appendChar(cast<char>(187));
+                sb.appendChar(cast<char>(191));
+                String mark = sb.toString();
+                delete sb;
+
+                Xml doc = Xml.parse(mark.concat("<root><item name=\"a\"/></root>"));
+                System.IO.Console.println($"xml {doc.name()} kids {doc.childCount()}");
+
+                Json cfg = Toml.parse(mark.concat("port = 8080\n"));
+                long port = cfg.field("port").asNum();
+                System.IO.Console.println($"toml {port}");
+
+                Json j = Json.parse(mark.concat("{\"n\": 7}"));
+                long n = j.field("n").asNum();
+                System.IO.Console.println($"json {n}");
+
+                // And the helper on its own, which is what every parser now calls.
+                String clean = Strings.withoutBom(mark.concat("hello"));
+                System.IO.Console.println($"stripped {clean.length()}");
+                return;
+            }
+        }
+    }
+}

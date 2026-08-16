@@ -1196,6 +1196,111 @@
                 if (b <= 0.0) { return 0.0; }
                 return Numerics.exp(e * Numerics.ln(b));
             }
+
+            // THE INVERSE HALF, in pure Polaron, for the same reason `sin` and `cos` are here.
+            //
+            // The `Math` builtin already has all of these and lowers them to libm -- use it in
+            // ordinary code. These exist for what this class exists for: a scientific type inside
+            // this library must not depend on a builtin whose bare name a user's own `class Math`
+            // can take, and a freestanding program has no libm to lower to.
+            //
+            // `sin` and `cos` answer "where is this angle"; `atan2` and `acos` answer "what angle is
+            // this", and every conversion from a shape back to an angle needs the second kind. The
+            // set was half-complete: the forward direction was here and the inverse was not, so a
+            // pure-Polaron caller could place a point on a circle and not ask which point it was.
+            public static method tan(double x) returns double {
+                double c = Numerics.cos(x);
+                if (Numerics.abs(c) < 0.000000000001) {
+                    // The asymptote. A caller that reaches it has a degenerate angle, and a very
+                    // large number carries that through arithmetic more honestly than a zero does.
+                    if (Numerics.sin(x) >= 0.0) { return 1000000000000.0; }
+                    return 0.0 - 1000000000000.0;
+                }
+                return Numerics.sin(x) / c;
+            }
+
+            // Reduced twice before the series, because the series is only fast where the argument is
+            // small. For |x| > 1, atan(x) = pi/2 - atan(1/x). Then the tangent-subtraction identity
+            // brings anything above tan(pi/12) below it, so the series never sees an argument past
+            // 0.268 -- where a dozen terms reach the limit of a double rather than approaching it.
+            public static method atan(double x) returns double {
+                if (x < 0.0) { return 0.0 - Numerics.atan(0.0 - x); }
+                if (x > 1.0) { return 1.57079632679489661923 - Numerics.atan(1.0 / x); }
+                if (x > 0.26794919243112270647) {                    // tan(pi/12)
+                    double root3 = 1.73205080756887729353;
+                    return 3.14159265358979323846 / 6.0 + Numerics.atan((x * root3 - 1.0) / (root3 + x));
+                }
+                double x2 = x * x;
+                mutable double term = x;
+                mutable double sum = x;
+                mutable int n = 1;
+                while (n <= 12) {
+                    term = 0.0 - term * x2;
+                    sum = sum + term / cast<double>(2 * n + 1);
+                    n = n + 1;
+                }
+                return sum;
+            }
+
+            // The angle of the point (x, y), in (-pi, pi].
+            //
+            // THE QUADRANT CANNOT COME FROM THE RATIO. atan(y/x) is identical for (1,1) and (-1,-1),
+            // so a caller that divides first has thrown away half the answer before asking the
+            // question -- and gets a result mirrored through the origin, which is a perfectly
+            // plausible drawing of the wrong thing.
+            public static method atan2(double y, double x) returns double {
+                if (x > 0.0) { return Numerics.atan(y / x); }
+                if (x < 0.0) {
+                    if (y >= 0.0) { return Numerics.atan(y / x) + 3.14159265358979323846; }
+                    return Numerics.atan(y / x) - 3.14159265358979323846;
+                }
+                if (y > 0.0) { return 1.57079632679489661923; }
+                if (y < 0.0) { return 0.0 - 1.57079632679489661923; }
+                return 0.0;
+            }
+
+            // CLAMPED, and not as a defensive habit. These are asked for an angle from a dot product
+            // of two vectors that were just normalized, and rounding puts that a hair outside
+            // [-1, 1] often enough to matter. One such value makes the square root below take a
+            // negative argument, and the caller's arc silently disappears.
+            public static method asin(double x) returns double {
+                mutable double v = x;
+                if (v > 1.0) { v = 1.0; }
+                if (v < 0.0 - 1.0) { v = 0.0 - 1.0; }
+                if (v == 1.0) { return 1.57079632679489661923; }
+                if (v == 0.0 - 1.0) { return 0.0 - 1.57079632679489661923; }
+                return Numerics.atan(v / Numerics.sqrt(1.0 - v * v));
+            }
+            public static method acos(double x) returns double {
+                return 1.57079632679489661923 - Numerics.asin(x);
+            }
+
+            // TOWARD NEGATIVE INFINITY, which `cast<int>` is not: it truncates toward ZERO, so it
+            // disagrees with `floor` for every negative value. A rasterizer asking "which pixel is
+            // this coordinate in" gets the wrong answer for the whole left half of its canvas, and
+            // for no other part of it -- which is why it looks like a rendering artefact rather than
+            // an arithmetic one.
+            public static method floor(double x) returns double {
+                double t = cast<double>(cast<long>(x));
+                if (x < 0.0 && t != x) { return t - 1.0; }
+                return t;
+            }
+            public static method ceil(double x) returns double {
+                return 0.0 - Numerics.floor(0.0 - x);
+            }
+
+            // Scaled before squaring, so a large coordinate cannot overflow on the way to a result
+            // that fits comfortably. That is the entire reason this is not written inline.
+            public static method hypot(double x, double y) returns double {
+                double ax = Numerics.abs(x);
+                double ay = Numerics.abs(y);
+                mutable double big = ax;
+                if (ay > big) { big = ay; }
+                if (big == 0.0) { return 0.0; }
+                double sx = ax / big;
+                double sy = ay / big;
+                return big * Numerics.sqrt(sx * sx + sy * sy);
+            }
         }
         // Interpolation helpers (spec 34.6): linear interpolate and its inverse, clamp, Hermite smoothstep,
         // and remap of a value from one range to another. Handy for animation and graphics.

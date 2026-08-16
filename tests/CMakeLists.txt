@@ -6982,6 +6982,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A UTF-8 BOM made every document parser return an empty tree, in silence: three bytes that
+        # every Windows editor writes and no format expects. Found by rendering an SVG written with
+        # PowerShell -- a valid file, a blank image, and nothing anywhere to say why.
+        add_test(NAME codegen_bom_documents_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bom_documents.pol"
+            "-DEXPECTED=xml root kids 1"
+            "-DCONTAINS=toml 8080"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `ArrayList<int[]>` -- a list of buffers -- did not compile at all: an array has no
         # `equalsKey`, so the failure surfaced inside the standard library for a collection the
         # caller merely declared. An array is a reference and answers by identity, which is why the
