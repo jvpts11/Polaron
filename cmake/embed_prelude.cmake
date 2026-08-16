@@ -50,7 +50,13 @@ set(PRELUDE_ORDER
 # only a few more adjacent literals -- which the preprocessor joins before anything reads them.
 set(_CHUNK 12000)
 
+# WHICH SUBJECT EACH LINE CAME FROM, recorded while the concatenation happens -- the only moment
+# anything knows. A diagnostic that lands in the library says `<prelude>:11144`, and that is a place
+# nobody can open: the reader has to reconstruct the offsets by hand to find out it means
+# `Persist.pol:8`. The build already has the answer here; it just never wrote it down.
 set(_prelude "program __prelude;\npublic bundle System {\n")
+set(_line 3)   # the two lines above, and the next subject starts on line 3
+set(_index "")
 foreach(_subject IN LISTS PRELUDE_ORDER)
     if("${_subject}" IN_LIST PRELUDE_OMIT)
         continue()
@@ -62,7 +68,12 @@ foreach(_subject IN LISTS PRELUDE_ORDER)
             "  Either the file was renamed and the list was not, or the list gained a typo.")
     endif()
     file(READ "${_f}" _part)
+    string(APPEND _index "    {${_line}, \"${_subject}.pol\"},\n")
     string(APPEND _prelude "${_part}")
+    # Count the lines this subject contributed, so the next one's start is known.
+    string(REGEX MATCHALL "\n" _newlines "${_part}")
+    list(LENGTH _newlines _n_lines)
+    math(EXPR _line "${_line} + ${_n_lines}")
 endforeach()
 string(APPEND _prelude "}\n")
 
@@ -117,4 +128,13 @@ file(WRITE "${PRELUDE_OUT}"
 // Emitted as several adjacent literals rather than one -- see the chunking note in the generator.
 const std::string_view kPreludeSource =
 ${_body};
+
+// Where each subject starts in the text above, so a diagnostic in the library can name a file a
+// reader can open. `<prelude>:11144` means nothing; `Persist.pol:8` is a place.
+struct PreludeSubject {
+    int firstLine;            // 1-based line in kPreludeSource where this subject begins
+    const char* file;         // its name under src/prelude/lib/
+};
+inline constexpr PreludeSubject kPreludeSubjects[] = {
+${_index}};
 ")

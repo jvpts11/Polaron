@@ -127,9 +127,39 @@ std::string sourceLineAt(std::string_view file, int line) {
     return ln;
 }
 
+// The generated prelude text and, with it, the table of where each subject starts. Included here
+// rather than further down because `preludePlace` just below needs the table; the long note on why
+// the library is embedded at all is at its other use site.
+#include "prelude_source.h"   // generated: kPreludeSource, kPreludeSubjects
+
+// A LOCATION IN THE LIBRARY, NAMED SOMEWHERE A READER CAN GO. The standard library is assembled from
+// one file per subject and compiled as a single text, so a diagnostic in it says `<prelude>:11144` --
+// which is not a place. It cost an afternoon once to work out by hand that it meant `Persist.pol:8`.
+// The build records where each subject starts (see cmake/embed_prelude.cmake); this is the lookup.
+//
+// The concatenated line stays in the output as well, because that is what the snippet above the
+// caret is numbered by, and dropping it would make the two disagree.
+std::string preludePlace(int line) {
+    const char* file = nullptr;
+    int firstLine = 0;
+    for (const PreludeSubject& s : kPreludeSubjects) {
+        if (line >= s.firstLine) {
+            file = s.file;
+            firstLine = s.firstLine;
+        }
+    }
+    if (file == nullptr) {
+        return "<prelude>";
+    }
+    return std::string("<prelude:") + file + ":" + std::to_string(line - firstLine + 1) + ">";
+}
+
 // Print one semantic diagnostic (error or warning) richly, unless concise output was requested.
 void printSemaDiag(std::string_view severity, const polaron::SemaError& d, bool concise) {
-    const std::string file(d.loc.file);
+    std::string file(d.loc.file);
+    if (file == "<prelude>") {
+        file = preludePlace(d.loc.line);
+    }
     std::fputs(polaron::diag::render(severity, file, d.loc.line, d.loc.col, d.message, d.code,
                                   sourceLineAt(d.loc.file, d.loc.line), concise)
                    .c_str(),
@@ -145,7 +175,7 @@ void printSemaDiag(std::string_view severity, const polaron::SemaError& d, bool 
 // no formatter, no LSP, no `go to definition` -- and this file was 10 807 lines of which 89% were
 // not C++. The generated header keeps the single self-contained binary, which is what the literal
 // was for; what it gives back is a source file that is a source file.
-#include "prelude_source.h"   // generated: kPreludeSource
+// (included above, next to `preludePlace`, which needs the subject table)
 
 // Parses the embedded prelude and merges its bundles into `prog`.
 void appendPrelude(polaron::ast::Program& prog) {
