@@ -1,5 +1,6 @@
 #include "parser/monomorphize.h"
 
+#include <algorithm>  // std::find; MSVC hands it over through another header, libstdc++ does not
 #include <cstdio>
 #include <map>
 #include <set>
