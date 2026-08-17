@@ -12,6 +12,10 @@
 param(
     [string]$Config = "Release",
     [string]$RepoRoot = (Resolve-Path "$PSScriptRoot\.."),
+    # The CMake build directory to stage from. Empty means "find one": the packer looks for the
+    # binaries rather than assuming a directory name, because the name is a local choice and a
+    # hard-coded one turns a second build tree into "binary not found" on a machine that has both.
+    [string]$BuildDir = "",
     [string]$LlvmBin  = "",
     # A Python 3.11 embeddable (a dir containing python311.dll, or the -embed-amd64.zip). If empty, it is
     # downloaded and cached under installer\.cache. Needed because liblldb.dll (the debugger) imports python311.dll.
@@ -26,7 +30,17 @@ if (-not $LlvmBin) {
 }
 function Need($p, $what) { if (-not (Test-Path $p)) { throw "$what not found: $p" } ; return $p }
 
-$bin  = Join-Path $RepoRoot "build\bin\$Config"
+if ($BuildDir) {
+    $bin = Join-Path $RepoRoot "$BuildDir\bin\$Config"
+} else {
+    $bin = $null
+    foreach ($d in @("build2", "build", "out")) {
+        $cand = Join-Path $RepoRoot "$d\bin\$Config"
+        if (Test-Path (Join-Path $cand "polaron.exe")) { $bin = $cand; break }
+    }
+    if (-not $bin) { throw "no $Config build found under $RepoRoot (looked in build2\, build\, out\); pass -BuildDir" }
+}
+Write-Host "staging from $bin"
 $stage = Join-Path $RepoRoot "installer\dist\stage"
 $core = Join-Path $stage "core"; $tui = Join-Path $stage "tui"; $vscode = Join-Path $stage "vscode"
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
