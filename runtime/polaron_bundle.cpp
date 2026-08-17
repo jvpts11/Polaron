@@ -18,6 +18,7 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -76,6 +77,76 @@ std::string hostImportLib() {
     return p.substr(0, dot) + ".lib";
 #else
     return {};
+#endif
+}
+
+// WHAT THE COMPILED IMAGE DEPENDS ON BESIDES THE BUNDLE: the host it is linked against.
+//
+// The image is cached in the temp directory and reused, and it used to be named after the bundle alone
+// -- its name and its ABI fingerprint. But the bundle is only half of what went into it: on Windows the
+// image links against the HOST's import library so that both sides share one allocator, and on POSIX its
+// undefined runtime symbols resolve back against the host at load time. An image built for one host and
+// handed to another is a different artifact wearing the same name.
+//
+// Which is not a hypothetical. The same three test programs, rebuilt after their directory was renamed,
+// found images from three days earlier sitting in the temp directory, reused them, and failed to load
+// them -- and, because a cached file is never rebuilt, they would have gone on failing until somebody
+// thought to empty %TEMP%. "It worked yesterday and nothing I changed can explain it" is the whole cost
+// of a cache key that does not name everything the cached thing was made from.
+//
+// So the host goes in the key: where it is, how big it is, and when it was written -- enough to tell a
+// different program from this one, and a rebuilt program from the one that was here before.
+std::uint64_t hashOf(const std::string& s, std::uint64_t seed = 1469598103934665603ULL) {
+    std::uint64_t h = seed;  // FNV-1a, which is plenty for telling two build outputs apart
+    for (const unsigned char c : s) {
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+std::string hostTag() {
+    std::string ident;
+#ifdef _WIN32
+    char buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n != 0 && n < MAX_PATH) {
+        ident.assign(buf, n);
+        WIN32_FILE_ATTRIBUTE_DATA fa{};
+        if (GetFileAttributesExA(ident.c_str(), GetFileExInfoStandard, &fa) != 0) {
+            ident += ':' + std::to_string((static_cast<std::uint64_t>(fa.nFileSizeHigh) << 32) |
+                                          fa.nFileSizeLow);
+            ident += ':' + std::to_string((static_cast<std::uint64_t>(fa.ftLastWriteTime.dwHighDateTime)
+                                           << 32) |
+                                          fa.ftLastWriteTime.dwLowDateTime);
+        }
+    }
+#else
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        ident.assign(buf, static_cast<std::size_t>(n));
+        struct stat st {};
+        if (::stat(ident.c_str(), &st) == 0) {
+            ident += ':' + std::to_string(static_cast<std::uint64_t>(st.st_size));
+            ident += ':' + std::to_string(static_cast<std::uint64_t>(st.st_mtime));
+        }
+    }
+#endif
+    if (ident.empty()) {
+        return "nohost";  // an unidentifiable host is one cache slot, shared: no worse than before
+    }
+    char out[17];
+    std::snprintf(out, sizeof(out), "%016llx", static_cast<unsigned long long>(hashOf(ident)));
+    return std::string(out);
+}
+
+// Deletes a file, ignoring whether it was there.
+void removeFile(const std::string& path) {
+#ifdef _WIN32
+    DeleteFileA(path.c_str());
+#else
+    ::unlink(path.c_str());
 #endif
 }
 
@@ -149,31 +220,47 @@ void* polaron_bundle_load(const char* polbPath, const unsigned char* expectedFp,
         return fail(POLARON_BUNDLE_ABI, "ABI fingerprint mismatch");
     }
 
-    // Build (or reuse) a shared library from the bundle's bitcode, keyed by fingerprint so an unchanged
-    // bundle is compiled only once.
-    const std::string dll = tempDir() + "/polaron_" + b.name + "_" + hex8(b.fingerprint) + POLARON_BUNDLE_EXT;
-    if (!fileExists(dll)) {
+    // Build (or reuse) a shared library from the bundle's bitcode, keyed by the bundle's fingerprint AND
+    // the host it will be linked against (see hostTag), so an unchanged pair is compiled only once and a
+    // changed one is never mistaken for it.
+    const std::string dll = tempDir() + "/polaron_" + b.name + "_" + hex8(b.fingerprint) + "_" +
+                            hostTag() + POLARON_BUNDLE_EXT;
+    // -O1 dead-strips the weak prelude functions the bundle does not use, so the image only keeps what it
+    // references (e.g. Object) and stays self-contained.
+    // Link against the host's import library so the bundle's allocations come from the host's heap (see
+    // hostImportLib). Absent -- an older host, or one linked without exporting -- the command is
+    // unchanged and the failure is the same undefined-symbol error as before, not a silent second heap:
+    // better to fail at load than to corrupt at free.
+    auto build = [&]() -> bool {
         const std::string bc = dll + ".bc";
         std::ofstream out(bc, std::ios::binary);
         out.write(b.code.data(), static_cast<std::streamsize>(b.code.size()));
         out.close();
-        // -O1 dead-strips the weak prelude functions the bundle does not use, so the image only keeps
-        // what it references (e.g. Object) and stays self-contained.
-        // Link against the host's import library so the bundle's allocations come from the host's heap
-        // (see hostImportLib). Absent -- an older host, or one linked without exporting -- the command is
-        // unchanged and the failure is the same undefined-symbol error as before, not a silent second
-        // heap: better to fail at load than to corrupt at free.
         std::string hostLib;
         if (const std::string lib = hostImportLib(); !lib.empty() && fileExists(lib)) {
             hostLib = " \"" + lib + "\"";
         }
         const std::string cmd = "clang -shared -O1 -Wno-override-module \"" + bc + "\" -o \"" + dll +
                                 "\"" + hostLib + POLARON_BUNDLE_LINK;
-        if (std::system(cmd.c_str()) != 0) {
-            return fail(POLARON_BUNDLE_MISSING, "could not be compiled");
-        }
+        return std::system(cmd.c_str()) == 0;
+    };
+    const bool reused = fileExists(dll);
+    if (!reused && !build()) {
+        return fail(POLARON_BUNDLE_MISSING, "could not be compiled");
     }
     void* h = loadLibrary(dll);
+    if (h == nullptr && reused) {
+        // A REUSED IMAGE THAT WILL NOT LOAD IS REBUILT ONCE, rather than failing for as long as it sits
+        // there. The key above names everything this image is made from, so this should not happen -- but
+        // "should not" is what the old key said too, and the failure it produced was permanent and
+        // unexplainable from inside the program. A cache is an optimisation; it may never be the reason
+        // a correct program cannot run.
+        removeFile(dll);
+        if (!build()) {
+            return fail(POLARON_BUNDLE_MISSING, "could not be compiled");
+        }
+        h = loadLibrary(dll);
+    }
     if (h == nullptr) {
         return fail(POLARON_BUNDLE_MISSING, "could not be loaded");
     }

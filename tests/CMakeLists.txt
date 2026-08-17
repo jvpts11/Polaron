@@ -14,12 +14,12 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.127")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.128")
 
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.127")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.128")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -2185,6 +2185,20 @@ if(POLARON_WITH_LLVM)
             "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_lib.pol"
             "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_app.pol"
             "-DEXPECTED=square = 49"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_polb_dynamic_test.cmake")
+
+        # ... and the loader's cached image may never be the reason a working program stops working.
+        # The harness runs this one twice, ruining the cached image in between; the second run has to
+        # rebuild it and print the same line. Its own bundle name, because the image is keyed by it and
+        # a shared one would mean two tests poisoning each other under `ctest -j`.
+        add_test(NAME bundle_dynamic_survives_a_ruined_cache COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_cache_lib.pol"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_cache_app.pol"
+            "-DEXPECTED=twice = 42"
+            "-DPOISON_CACHE=CacheLib"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_polb_dynamic_test.cmake")
 

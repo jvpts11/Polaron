@@ -1,0 +1,21 @@
+import System.IO.Console;
+import cache.store.Keep;
+program CacheApp;
+
+// Consumes the `cache` bundle dynamically. The harness runs this twice, and between the runs it
+// overwrites the loader's cached image with rubbish: the second run must still print the same line.
+//
+// A cache is an optimisation. It may never be the reason a correct program cannot run -- and before the
+// loader learned to rebuild an image it could not load, a stale one in the temp directory made a working
+// program fail on every run until somebody thought to empty %TEMP%.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int r = Keep.twice(21);
+                System.IO.Console.printf("twice = %d\n", r);
+                return;
+            }
+        }
+    }
+}
