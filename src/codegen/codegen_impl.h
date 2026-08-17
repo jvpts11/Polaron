@@ -592,7 +592,10 @@ struct CodeGenerator::Impl {
     // fingerprint the program compiled against. Their functions become runtime-resolving thunks.
     std::unordered_map<std::string, std::pair<std::string, std::array<std::uint8_t, 32>>> dynamicBundles;
     std::unordered_map<std::string, llvm::GlobalVariable*> dynBundleHandle;  // per-bundle cached handle
-    std::unordered_set<std::string> preludeClasses;  // classes from the embedded prelude (weak in .polb)
+    std::unordered_set<std::string> preludeClasses;  // classes from the embedded prelude, by short name
+    // ...and by KEY, which is what a symbol carries: `ArrayList` for most, `System.Net.Tls.ByteWriter`
+    // for one whose short name is shared. Weakening a .polb's prelude copies needs the key.
+    std::unordered_set<std::string> preludeClassKeys;
     std::unordered_map<std::string, std::vector<std::string>> enums;  // name -> constants (ordinals)
     std::unordered_map<std::string, const ast::EnumDecl*> javaEnums;  // java-style enum decls
     // Catalog-implementing enums kept as enums (int-style ordinals) but carrying

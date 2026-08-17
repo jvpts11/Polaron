@@ -1,21 +1,23 @@
-# The Polaron Language Reference — 1.0.18
+# The Polaron Language Reference
 
-A complete, book-length reference for **Polaron** (Linguagem De Programação 3): an
-object-orientation–mandatory, manually memory-managed systems language that compiles to native
-code through LLVM. Created by João Victor Pereira Tavares.
+A complete, book-length reference for **Polaron**: an object-orientation–mandatory, manually
+memory-managed systems language that compiles to native code through LLVM. Created by João Victor
+Pereira Tavares.
 
-This reference is written to *teach*, not just to enumerate. Every feature is explained in terms of
-what it does, why it exists, how it fits Polaron's philosophy, and how it interacts with the rest of the
+This reference is written to *teach*, not just to enumerate. Every feature is explained in terms of what
+it does, why it exists, how it fits Polaron's philosophy, and how it interacts with the rest of the
 language — each illustrated with short, runnable examples. It is the canonical description of the
-language, cross-checked against the actual compiler and the embedded standard-library prelude, so
-these pages describe **what the compiler accepts today**.
+language, cross-checked against the actual compiler and the embedded standard-library prelude, so these
+pages describe **what the compiler accepts today**.
 
-A single typeset PDF of everything below:
-**[Polaron-Language-Reference-1.0.16.pdf](Polaron-Language-Reference-1.0.16.pdf)**.
-Regenerate it with `python make-pdf.py`, then print `_reference.html` to PDF with a headless browser
-(the exact command is in that script's header). The version stamp lives in `make-pdf.py`, and it is
-**behind the compiler** — the pages describe what the compiler accepts today, but the stamp says
-1.0.16 while `polc` reports 1.0.37.
+Two of those checks are mechanical, and they run in the suite: every keyword the lexer reserves appears
+in [§12](guide/12-keyword-reference.md), and every diagnostic code the compiler can emit appears in
+[§13](guide/13-diagnostics.md). A feature added without a word about it here fails a test.
+
+A single typeset PDF of everything below is produced by `python make-pdf.py`, which prints
+`_reference.html` with a headless browser (the exact command is in that script's header). Its version
+stamp is one of the six places the toolchain's version lives, and `version_sites` in the suite requires
+all six to agree — the stamp sat thirty versions behind the compiler until that check existed.
 
 ---
 

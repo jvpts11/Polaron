@@ -604,6 +604,17 @@ void CodeGenerator::Impl::declareClasses() {
                                             : cls.name;
                 classNamespace[key] = ns.name;
                 classBundle[key] = bundle.name;
+                if (bundle.isPrelude) {
+                    // BY KEY, because that is what a symbol is built from. `preludeClasses` holds the
+                    // short name, and `exportBundleSymbols` looked for it in the first dot-separated
+                    // segment of a symbol -- right for `ArrayList.add`, wrong for
+                    // `System.Net.Tls.ByteWriter.ByteWriter`, whose first segment is `System`. Those
+                    // standard-library classes were therefore emitted into a .polb with strong
+                    // linkage, and a program that used the same ones met LNK2005 on ninety-seven
+                    // symbols it never wrote. It only happens to a prelude class whose short name is
+                    // shared, which is why most libraries link and this one did not.
+                    preludeClassKeys.insert(key);
+                }
                 classes[key] = std::move(layout);
                 if (sharedClassNames.count(cls.name) > 0 && classNamespace.count(cls.name) == 0) {
                     // Remember where the bare name will point; the copy itself waits until the fields
@@ -1272,12 +1283,19 @@ void CodeGenerator::Impl::exportBundleSymbols() {
         const std::size_t dot = name.find('.');
         const std::string owner =
             dot != llvm::StringRef::npos ? name.substr(0, dot).str() : std::string();
+        // A symbol is `<class key>.<member>`, so the class key is everything before the LAST dot. For
+        // most classes that is the short name and the first segment is the same thing; for one whose
+        // short name is shared the key is a full path, and reading only the first segment answered
+        // `System` -- a bundle then carried the standard library's own classes with strong linkage.
+        const std::size_t lastDot = name.rfind('.');
+        const std::string classKey =
+            lastDot != llvm::StringRef::npos ? name.substr(0, lastDot).str() : std::string();
         // Prelude functions and monomorphized generic instances (Box$int) are made weak. The latter
         // are ODR -- a library and its consumer both instantiate ArrayList<String> from the same
         // template, so identical definitions must dedupe at link time instead of colliding (LNK2005).
         const bool weak =
             name.starts_with("literal.") || preludeClasses.count(owner) > 0 ||
-            owner.find('$') != std::string::npos;
+            preludeClassKeys.count(classKey) > 0 || owner.find('$') != std::string::npos;
         if (weak) {
             f.setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
             // A COMDAT keyed on the symbol makes clang emit a real COFF COMDAT (SELECT_ANY) that the
