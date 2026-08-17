@@ -622,6 +622,77 @@ public static method tick(int mode) returns int {
 }
 ```
 
+### Inline assembly: `asm` and `naked`
+
+At the very bottom there are instructions no language construct stands for — `cli`, `lgdt`, a
+`syscall` entry. An **`asm` block** emits verbatim assembly, and it **names the architecture it is
+written for**:
+
+```polaron
+asm("x86_64") {
+    nop
+}
+```
+
+The body is captured raw — the Polaron lexer does not tokenise it — and the block is emitted as
+side-effecting inline assembly, so nothing reorders it away.
+
+**The architecture name is checked** against the one being built for. That is worth more than it
+looks: an unchecked intent tag lets an x86 block travel all the way down to clang's assembler on an
+ARM build, where it fails as `<inline asm>:1:3: error: too few operands for instruction` — a message
+about a file that does not exist, with no path back to the Polaron line that wrote it. Porting
+consists largely of finding exactly these, so the compiler reports it itself, at the right line.
+
+A **`naked`** method takes the same idea up one level: no prologue, no epilogue — no frame set up, no
+registers saved, no return sequence. The body *is* the whole function, which is why it is almost
+always a single `asm` block.
+
+```polaron
+public naked static method _start() returns void {
+    asm("x86_64") {
+        mov $0, %rbp
+        call kmain
+    }
+}
+```
+
+Reach for it where the standard frame would already be wrong before the first instruction runs: an
+entry point the hardware jumps to with no valid stack, a trampoline that runs on the caller's frame,
+a hand-written ABI shim. Everywhere else it is the wrong tool — an ordinary method costs a handful of
+instructions and keeps the debugger, the unwinder and the optimiser working.
+
+### `heap class`
+
+Bare metal there is no allocator until the program declares one. A **`heap class`** is that
+declaration: a class marked `heap` whose two static methods *are* the program's allocator.
+
+```polaron
+public heap class Heap {
+    private static mutable address next;
+    private static mutable boolean armed;
+
+    public static method allocate(address size) returns address {
+        if (!Heap.armed) { Heap.next = 1048576; Heap.armed = true; }
+        address at = Heap.next;
+        Heap.next = Heap.next + size + 15;
+        return at;
+    }
+    public static method release(address p) returns void { return; }
+}
+```
+
+Declaring one is what makes the rest of the language work with no operating system under it. The
+compiler generates its allocator bridge from this class rather than from libc, so `new ... on heap`,
+every collection, `System.Memory.Buffer` and even `String`/`string` compile and link in a
+freestanding program — the `__polaron_str_*` helpers are written purely in terms of allocate, release
+and a memory copy, and codegen emits them against *your* heap. A kernel that declares one needs not a
+single libc symbol.
+
+The example above is a bump allocator that never reclaims, which is the honest starting point for a
+kernel before it has a page allocator. Anything with the same two signatures works: a free list, a
+buddy allocator, a slab. The language's only requirement is that the program says where memory comes
+from, once, in a place the compiler can find.
+
 ### `region at address` for memory-mapped I/O
 
 The freestanding jewel is combining regions with fixed addresses. `itself.at(address, size)`
@@ -667,6 +738,74 @@ runtime to build an `argc`/`argv` array — so the compiler emits an entry named
 your assembly boot stub calls directly, with nothing that needs libc. The result is a bare-metal
 object (for `x86_64-unknown-none`) with predictable layout and no dynamic dependencies, ready to be
 linked into a kernel image.
+
+---
+
+## 11.9b `interrupt`: a method the program does not call
+
+Every other method in this manual is *called*. An **`interrupt`** is **entered** — by something
+outside the program, at a moment the program did not choose, on top of whatever was running. That
+is a different thing, so it is a different declaration form rather than a method with an annotation
+on it.
+
+```polaron
+public class Keyboard {
+    private volatile mutable int scancodes;
+    public constructor Keyboard() { this.scancodes = 0; }
+
+    public interrupt(Trap t) returns void {          // no name: one device, one handler
+        this.scancodes = this.scancodes + 1;
+    }
+    public method count() returns int { return this.scancodes; }
+}
+```
+
+It is **nameless** because a class needs only one, and it belongs to an *object* — which is the
+whole reason it is a declaration form and not a free function: the handler exists to reach the
+device state, and `static` would take that away.
+
+**Getting its address is how you install it, and the two are one act:**
+
+```polaron
+address entry = kbd.interrupt;         // the entry point, bound to this object
+Idt.install(33, entry);                // freestanding: an IDT vector
+signal(SIGINT, entry);                 // hosted: the C runtime's own signal()
+```
+
+A vector holds an address and nothing else, so there is no way to obtain the address without saying
+whose handler it is.
+
+**The rules**, each of them checked:
+
+| Rule | Why |
+|---|---|
+| It cannot be **called** | Calling one is *simulating* an interrupt, which is a different thing wearing the same name |
+| It returns `void` | It is entered, not called, so a returned value has nowhere to go |
+| It cannot be `static` | The object is the point |
+| One per class | Two handlers means two objects — which the driver model already says |
+| Its body cannot **block or allocate** | The lock it would take may be the one the interrupted code is holding, and the handler cannot wait for a holder that cannot run |
+| The frame parameter is read-only | It arrives as a private copy; writing it changes nothing, and pretending otherwise would be worse than refusing |
+
+The blocking rule is about what the body **reaches**, not what it says. A handler that looks
+innocent and calls one method that, two hops down, allocates is refused at the handler.
+
+**State shared with an interrupt must say so.** The handler and the code it preempts both touch it,
+and the language already spells that two ways for two real cases: `volatile` for a plain field, or
+an `atomic<T>` where the update must be indivisible. No third marker was invented.
+
+**It works hosted, too**, and the meaning is what makes it portable — a POSIX signal is exactly
+"entered by something outside the program at a moment it did not choose". Only the lowering differs:
+
+| | entry point | installed with |
+|---|---|---|
+| freestanding | `x86_intrcc`, the CPU frame passed `byval` | `Idt.install(vector, obj.interrupt)` |
+| hosted | `void(i32)`, ordinary C ABI | `signal(SIGINT, obj.interrupt)` |
+
+The **mode** decides the lowering, not the target triple — the triple answers an ABI question, and
+`freestanding` answers a language one. That also shapes the parameter: bare metal hands over the
+frame the CPU pushed, so it is a class; a hosted world hands over a *code* (a signal number), so it
+is an integer. **The parameterless form is the intersection** — a handler that does not care where
+it came from compiles for both worlds unchanged.
 
 ---
 

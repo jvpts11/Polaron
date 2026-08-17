@@ -45,6 +45,7 @@ all six to agree — the stamp sat thirty versions behind the compiler until tha
 | 3 | [Expressions, Statements & Method Calls](guide/03-expressions-statements.md) | The everyday mechanics: variables and assignment, the operator set, expressions, statement kinds, and calling methods (instance, `this`, static, chained). |
 | 4 | [Values & the Type System](guide/04-type-system.md) | Primitives and their names, literals, `String`/`string`, `nullable`, arrays, generics + variance, `record`/`struct`/`union`/`enum`/`catalog`, casting. |
 | 5 | [Memory & Ownership](guide/05-memory-and-ownership.md) | Value semantics and deep copy, `T*`/`T&`, stack/heap, RAII, regions, `move`/`movable`/`unique`/`partitionable`, `defer`/`using`, persistents. |
+| 5b | [The Region Binder](guide/05b-region-binder.md) | The analysis that makes manual memory safe: the four regions and the order between them, how it differs from a garbage collector and from a borrow checker, where each value's region comes from, ownership read out of the destructor, the six ways to answer a refusal, and every diagnostic it emits. |
 | 6 | [Object-Oriented Programming](guide/06-oop.md) | Classes, inheritance, interfaces, `abstract`/`override`/vtables, properties, operators, enums, `sealed`/`permits`. |
 | 7 | [Control Flow](guide/07-control-flow.md) | `if`/`while`/`for`/`foreach`/ranges, `switch`, `match`, labelled `break`/`continue`, and the chaos tetrad. |
 | 8 | [Errors, Results & Contracts](guide/08-errors-and-contracts.md) | Exceptions, `Result`/`Option`/`try?`, `requires`/`ensures`/`invariant`, and the no-UB principle. |
@@ -118,6 +119,7 @@ polc hello.pol -o hello.ll && clang hello.ll polaron_rt.lib -o hello.exe    # or
 | Understand the language's shape in ten minutes | [§1 Introduction](guide/01-introduction.md), then the `examples/` directory — twenty-two programs, each compiled and run by the test suite |
 | Write your first real program | [§18 Building Real Things](guide/18-building-real-things.md) |
 | Know why the compiler refused something | The message itself, then `polaron explain <code>`, then [§13](guide/13-diagnostics.md) |
+| Understand why a pointer was refused, or how this is safe without a GC | [§5b The Region Binder](guide/05b-region-binder.md) |
 | Find out how two features behave together | [§17 How the Pieces Fit Together](guide/17-how-the-pieces-fit.md) |
 | Decide whether to use it at all | [§19 Final Considerations](guide/19-final-considerations.md) |
 | Make something that matches the brand | [§20 The Mark, the Colour and the Icon](guide/20-identity.md) |

@@ -29,6 +29,9 @@ set(SITES
     "src/driver/polaron_main.cpp|kVersion = \"polaron ${version}\""
     "installer/build-msi.ps1|[string]$Version = \"${version}\""
     "installer/polaron.wxs|Version=\"${version}.0\""
+    # Added with the Linux tarball and left out of this list, which is the drift this test is about --
+    # the packager would have shipped a tarball named for whatever version it was written on.
+    "installer/package-linux.sh|VERSION=\"\${VERSION:-${version}}\""
     "docs/reference/make-pdf.py|VERSION = \"${version}\""
     "tests/CMakeLists.txt|PASS_REGULAR_EXPRESSION \"polc ${dotted}\""
     "tests/CMakeLists.txt|PASS_REGULAR_EXPRESSION \"polaron ${dotted}\""

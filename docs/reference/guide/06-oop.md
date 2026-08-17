@@ -319,6 +319,41 @@ Because an interface can never be instantiated on its own — any value of inter
 is really an instance of some concrete class — interface-typed values are always
 references, never copied. The same is true of abstract classes, discussed next.
 
+## 6.7b `partial` classes and `deprecated` members
+
+**`partial`** lets one class be declared in several parts, which may live in different files. The
+compiler folds them into one class before anything else looks at it, so a part can use a field a
+different part declared:
+
+```polaron
+public partial class Dog {
+    private mutable int barks;
+    public constructor Dog() { this.barks = 0; }
+    public method bark() returns void { this.barks = this.barks + 1; }
+}
+
+// Elsewhere — another part of the same class, possibly another file.
+public partial class Dog {
+    public method count() returns int { return this.barks; }
+}
+```
+
+Its use is separating generated code from hand-written code, and splitting a large type along a
+seam that means something. It is not a licence to scatter a class across a project: every part must
+carry `partial`, and the fold happens before analysis, so nothing about the resulting class differs
+from one written in a single piece.
+
+**`deprecated`** marks a declaration as on its way out. Every call site gets a compiler warning and
+the code still runs:
+
+```polaron
+public deprecated static method oldWay(int x) returns int { return x * 2; }
+```
+
+That is the whole feature, and its value is the migration it makes possible: the replacement lands,
+the old name keeps working, and every caller is told — by the compiler, at the exact line — without
+anything breaking on the day of the change.
+
 ## 6.8 Abstract, Final, and Sealed
 
 The `abstract` modifier expresses "incomplete on purpose." An abstract class cannot be
@@ -844,6 +879,43 @@ error, and two equally short paths is an error too, because a composed conversio
 
 This is a **safe way to turn objects into other objects**, or something of one object into something
 of another: a route for an `A` to become a `B` **without necessarily converting vtables**.
+
+### `entrusts`: consenting to be built from outside
+
+`applies` says *"I gain this equipment"*. **`entrusts`** is a different and stronger promise, made by
+the type on the receiving end of a conversion: it hands the transformer the right to **construct**
+this type, filling its storage field by field — private ones included.
+
+```polaron
+public transformer TConverter {
+    public procedure into<each Other>() returns Other;
+}
+
+public class Metres applies TConverter {
+    private mutable int whole;
+    public procedure into<Feet f>() returns Feet {      // `f` is bound, and this fills it
+        f.whole = itself.whole * 3;
+        f.fraction = 0;
+        return f;
+    }
+}
+
+public class Feet entrusts TConverter {                 // "you may assemble me"
+    private mutable int whole;
+    private mutable int fraction;
+}
+```
+
+Only the type itself can agree to that, because only it knows what its invariants are — which is why
+`entrusts` sits on `Feet` and not on `Metres`. What comes back is an ordinary object; nothing about
+it records that it was built from outside.
+
+The consent buys an obligation, and the compiler enforces it: **the assembly must be complete.**
+Leaving `f.fraction` unassigned above is an error, checked with exactly the dataflow a constructor
+already passes — same map, same join at a branch. It matters more than an uninitialised local
+would: a local reads stack garbage, which is usually absurd and fails loudly, while an unassigned
+field reads whatever was last in that storage, so the wrong value is plausible, stable, and
+everything downstream works perfectly with it.
 
 ### The cost
 

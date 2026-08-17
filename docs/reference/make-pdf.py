@@ -2,7 +2,7 @@
 # Assemble the Polaron language reference (docs/reference/*.md) into one styled HTML document, ready to
 # print to PDF with a headless browser. Regenerate the PDF with:
 #   python docs/reference/make-pdf.py
-#   msedge --headless --print-to-pdf=docs/reference/Polaron-Language-Reference-1.0.133.pdf \
+#   msedge --headless --print-to-pdf=docs/reference/Polaron-Language-Reference-1.0.134.pdf \
 #          --no-pdf-header-footer docs/reference/_reference.html
 import datetime
 import html as _html
@@ -12,7 +12,7 @@ import re
 import markdown
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "1.0.133"
+VERSION = "1.0.134"
 
 # Order the documents for the PDF: the eleven language chapters (each already carries its own
 # "# N. Title" heading), then the six standard-library slices. Titles here drive the table of
@@ -23,6 +23,7 @@ DOCS = [
     ("Expressions, Statements & Method Calls", "guide/03-expressions-statements.md"),
     ("Values & the Type System", "guide/04-type-system.md"),
     ("Memory & Ownership", "guide/05-memory-and-ownership.md"),
+    ("The Region Binder", "guide/05b-region-binder.md"),
     ("Object-Oriented Programming", "guide/06-oop.md"),
     ("Control Flow", "guide/07-control-flow.md"),
     ("Errors, Results & Contracts", "guide/08-errors-and-contracts.md"),

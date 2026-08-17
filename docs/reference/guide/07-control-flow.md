@@ -165,6 +165,18 @@ comes in two flavors that share one syntax: iterating a **range** of integers, a
 iterating any **collection** that models `Iterable<T>` (see the collections chapter). In
 both, you may spell the element type explicitly or write `var` and let it be inferred.
 
+**Both spellings exist and mean exactly the same thing.** `foreach` is a keyword of its own, and it
+parses to the same statement as the `for ... in` form:
+
+```polaron
+for (var x in xs) { total = total + x; }
+foreach (var x in xs) { total = total + x; }        // identical
+foreach (index i, int v in xs) { dot = dot + i * v; }
+```
+
+Polaron keeps both so that a C# or Java programmer and a C++ programmer each find the one they
+expect. Pick one per codebase and stay with it; the samples in this manual use `for ... in`.
+
 ### 7.4.1 Ranges
 
 A range literal produces a sequence of integers. `a..b` is *half-open* — it includes `a`

@@ -1,0 +1,37 @@
+program NakedEntry freestanding;
+
+// `naked` -- a method emitted with NO prologue and NO epilogue: no frame set up, no registers saved,
+// no return sequence. The body is the whole function, which is why it is almost always a single `asm`
+// block.
+//
+// It exists for the places where the standard frame is already wrong before the first instruction
+// runs: an entry point the hardware jumps to with no valid stack, a trampoline running on the
+// caller's frame, a hand-written ABI shim. A compiler-emitted prologue there would corrupt precisely
+// the machine state such a body exists to control.
+//
+// The keyword parsed and lowered for a long time with nothing exercising it -- the one shape where a
+// silent regression costs the most, because a missing `naked` attribute produces a function that
+// still compiles, still links, and destroys the stack it was handed. This checks the attribute reaches
+// the IR.
+
+public bundle Kernel {
+    public namespace Boot {
+
+        public class Entry {
+            // What a real `_start` looks like: the hardware jumps here, and the first instruction the
+            // program runs must be its own.
+            public naked static method reset() returns void {
+                asm("x86_64") {
+                    nop
+                }
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Entry.reset();
+                return 0;
+            }
+        }
+    }
+}

@@ -35,6 +35,47 @@ foreach(hit IN LISTS kwHits)
     endif()
 endforeach()
 
+# ---- and every keyword is EXPLAINED somewhere, not only defined ----
+#
+# The check above passes as long as a word has a glossary entry, and that is how five features stayed
+# invisible: `newtype`, `typealias`, `interrupt`, `region class` and `heap class` each had a correct
+# definition in chapter 12 and no page anywhere that showed how to use one. A glossary is a place to
+# look a word up once you know it exists; it is not where anybody learns a feature.
+#
+# So the second bar is that the word appears somewhere ELSE in the reference. It is deliberately low --
+# one mention in one other page clears it -- because the point is to catch the feature that was added
+# and never written about, not to legislate how much prose each keyword deserves.
+#
+# AND IT IS A FLOOR, NOT A GUARANTEE, which is worth saying plainly rather than leaving for somebody to
+# discover the hard way: several keywords are ordinary English words (`on`, `of`, `call`, `index`,
+# `record`), so a page that merely uses the word in a sentence clears the bar for them. A stricter rule
+# -- shown inside a code example -- was measured and rejected: it flags `fastcall`, which IS documented,
+# in a table, correctly. Nothing here removes the need to read the manual as a reader would.
+file(GLOB_RECURSE refPages "${ROOT}/docs/reference/*.md")
+set(unexplained "")
+foreach(hit IN LISTS kwHits)
+    string(REGEX REPLACE "^\\{\"([a-z_]+)\".*$" "\\1" kw "${hit}")
+    set(found FALSE)
+    foreach(page IN LISTS refPages)
+        get_filename_component(pageName "${page}" NAME)
+        if(pageName STREQUAL "12-keyword-reference.md")
+            continue()
+        endif()
+        # The WORD, not one particular way of typesetting it. Requiring backticks around exactly the
+        # keyword failed on every word that is never written alone: `cast<T>`, `on heap`, `mark of
+        # region`, `function<int, int>`. Those are explained at length -- the test was matching the
+        # formatting rather than the coverage.
+        file(READ "${page}" pageText)
+        if(pageText MATCHES "(^|[^A-Za-z_])${kw}([^A-Za-z_]|$)")
+            set(found TRUE)
+            break()
+        endif()
+    endforeach()
+    if(NOT found)
+        list(APPEND unexplained "${kw}")
+    endif()
+endforeach()
+
 # ---- every diagnostic code the compiler can emit ----
 execute_process(COMMAND "${POLC}" --explain OUTPUT_VARIABLE explained RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
@@ -49,18 +90,23 @@ foreach(code IN LISTS codes)
     endif()
 endforeach()
 
-if(missingKw OR missingCode)
+if(missingKw OR missingCode OR unexplained)
     set(report "")
     if(missingKw)
         string(REPLACE ";" ", " kwList "${missingKw}")
         string(APPEND report "\n  keywords absent from 12-keyword-reference.md: ${kwList}")
+    endif()
+    if(unexplained)
+        string(REPLACE ";" ", " unexList "${unexplained}")
+        string(APPEND report "\n  keywords DEFINED in chapter 12 and explained nowhere else: ${unexList}")
     endif()
     if(missingCode)
         string(REPLACE ";" ", " codeList "${missingCode}")
         string(APPEND report "\n  diagnostic codes absent from 13-diagnostics.md: ${codeList}")
     endif()
     message(FATAL_ERROR "the reference no longer covers the language:${report}\n"
-                        "Document each one where it belongs; `polc --explain <code>` has the text for a code.")
+                        "Document each one where it belongs -- a glossary entry alone is not coverage; "
+                        "`polc --explain <code>` has the text for a code.")
 endif()
 
 list(LENGTH codes codeCount)

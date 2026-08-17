@@ -4,7 +4,9 @@ program FfiExtern;
 // FFI (spec 26): `extern <language> [static] method name(params) returns T [symbol("...")];` declares
 // a foreign function (no body) as a class member. The keyword names the LANGUAGE on the other side --
 // cdecl (C), cppdecl (C++), rustdecl, zigdecl -- not a calling convention: see
-// docs/design/ffi-model.md for why the old `stdcall`/`fastcall` were retired. Here
+// docs/design/ffi-model.md. `stdcall` and `fastcall` sit in the same position and mean C plus a
+// 32-bit x86 convention; they were removed once and restored, because the OpenGL library alone
+// declares seventy Win32 entry points with `stdcall` and every i686 target calls Win32 that way. Here
 // two libc functions are declared and called through their class -- the basis for talking to the OS
 // / hardware libraries (and, in freestanding, to functions the kernel provides). On x64 the calling
 // conventions converge on the C ABI.

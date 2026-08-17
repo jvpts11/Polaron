@@ -213,9 +213,32 @@ before the program runs. The available suffixes are `bytes`, `kilobytes`,
 `megabytes`, `gigabytes`, `terabytes`, and `exabytes`. Because the result is a
 distinct `ByteSize` struct rather than a bare `int`, an API that wants a size can
 demand exactly `ByteSize` and thereby refuse a raw, unit-less integer — you
-cannot accidentally hand `1024` to something expecting `1024 bytes`. Defining
-your own suffixes (say, `seconds` or `degrees`) works the same way; see the
-memory chapter for the full rules.
+cannot accidentally hand `1024` to something expecting `1024 bytes`.
+
+**Defining your own** is one declaration. A `comptime literal` is a member like any other — it
+takes exactly one argument, is evaluated at compile time, and its *name* becomes the suffix:
+
+```polaron
+public class Units {
+    public comptime literal kib(int x) returns long { return cast<long>(x) * 1024L; }
+    public comptime literal kib(double x) returns long { return cast<long>(x * 1024.0); }
+}
+
+long a = Units.kib(64);         // qualified: 65536, folded before the program runs
+long b = Units.kib(1.5);        // overloaded by the literal's type: 1536
+```
+
+It may be called two ways: **through its owner**, as above, or — once the owner is imported — as the
+suffix sugar `64 kib`. That import is what makes the sugar available, which is why
+`System.Memory.Units.kilobytes` is imported by name before `64 kilobytes` can be written. Suffixes
+may be **overloaded by the literal's type**, so `1.5 kib` and `2 kib` can take different paths.
+
+Return a distinct type (a `struct` or a `newtype`, §4.12b) rather than a bare number and the unit
+becomes part of the type — which is how `ByteSize` refuses a unit-less integer.
+
+One caution: a suffix name is matched wherever a literal is followed by an identifier, so avoid
+names that read as ordinary words. `step` is reserved for exactly this reason — it would be
+ambiguous against the range syntax.
 
 ### Numeric coercion — there is (almost) none
 
@@ -781,6 +804,46 @@ public class Celsius {
 
 Fahrenheit f = cast<Fahrenheit>(myCelsius);
 ```
+
+---
+
+## 4.12b Naming a type: `typealias` and `newtype`
+
+Two declarations give an existing type a new name, and they differ in exactly one way: whether the
+new name is the **same** type or a **different** one.
+
+**`typealias` is transparent.** The alias and its target are fully interchangeable — it is a
+shorthand, and nothing more:
+
+```polaron
+public typealias Celsius = int;
+public typealias IntFn = function<int, int>;
+
+Celsius t = 20;
+int sum = t + 5;              // fine: Celsius IS int
+```
+
+Reach for it when a type expression is long enough to obscure the code that uses it — a
+`function<int, int>`, a nested generic — and when you genuinely do not want a new type.
+
+**`newtype` is opaque.** It creates a distinct nominal type over the same representation, and the
+two do not mix without a cast:
+
+```polaron
+public newtype OrderId = long;
+public newtype UserId  = long;                // and distinct from OrderId, too
+
+OrderId o = cast<OrderId>(cast<long>(1000));
+long raw = cast<long>(o) + 7;                 // cast out, compute, cast back
+OrderId next = cast<OrderId>(raw);
+```
+
+That is the whole point: an `OrderId` and a `UserId` are both 64-bit integers and passing one where
+the other belongs is a compile error rather than a support ticket. The cost is the cast at each
+boundary, which is also the benefit — every place the raw number is treated as a number is visible.
+
+**Which to use:** if mixing the two would be a bug, use `newtype`. If mixing them is fine and you
+only wanted a shorter name, use `typealias`.
 
 ---
 

@@ -153,6 +153,27 @@ It keeps a visited set, so a **cyclic** graph clones exactly once per node and c
 same shape rather than looping forever. `external` pointers are treated as associations and left
 pointing where they pointed, which is what stops a clone of one node from dragging in the world.
 
+### Fields the copy should not carry: `transient`
+
+Some fields are not part of what an object *is* — a memoised result, a scratch buffer, a cached
+index. A **`transient`** field is declared as derived rather than canonical, and it is left out of
+both of the operations that ask "what is this object's value?": the deep copy, and serialization.
+
+```polaron
+public class Counter {
+    private mutable int value;
+    private transient mutable int cachedDouble;   // derived from value; not canonical
+}
+```
+
+On assignment the copy gets `value` and a **default** `cachedDouble`, so it starts clean and rebuilds
+the cache on demand while the source keeps its own. That is usually what you want from a cache, and
+getting it wrong the other way is a real bug: a copied-over cache that no longer matches the field it
+was derived from.
+
+`transient` and `persistent` contradict each other — one says "not part of the value", the other
+"survive the object" — and writing both is a compile error.
+
 ---
 
 ## 5.2 Sharing on purpose: pointers (`T*`) and references (`T&`)
@@ -329,6 +350,12 @@ The same rule covers storing such an object into something that outlives the cal
 field, or a parameter a callee stores into its own receiver — and it covers a closure
 handed to a `Thread` that captures plain mutable state instead of an `atomic<T>`,
 `Mutex<T>` or `Channel<T>`.
+
+> **The analysis has a chapter of its own: [5b. The region binder](05b-region-binder.md).**
+> What follows here is the shape of it. Chapter 5b is the whole thing — the four regions and
+> the order between them, how it compares to a garbage collector and to a borrow checker, where
+> each value's region comes from, the six ways to answer a refusal, and every diagnostic it
+> emits. Read it once before writing a program that shares objects between long-lived owners.
 
 A **heap** object is not caught, and that distinction is the whole of it: `on heap` means
 the pointer dies at return and the object does not, so handing one out is a factory and
@@ -622,6 +649,34 @@ rollback region tmp to m;            // reclaim everything allocated since m
 only be rolled back on the region it came from — mixing them is a compile error. Marks nest,
 so a hot loop can `mark` / build / `rollback` each iteration and reuse the same memory every
 time.
+
+### 5.7.2 `region class`: a type with one place
+
+Everything above places objects one allocation at a time. A **`region class`** turns that around:
+every instance of the type comes from **one** region owned by the type, and that region holds
+nothing else.
+
+```polaron
+public region class Node {
+    public mutable int value;
+    public constructor Node(int v) { this.value = v; }
+}
+
+Node* a = new Node(10);     // no `on heap`, no `in region`: there is only one place it can go
+Node* b = new Node(20);
+```
+
+The allocation is fast for the same reason any region is, but speed is not what the declaration
+buys — regions already beat `malloc` by roughly 12× in the benchmark suite without it. What only
+**totality** buys is the three things that need *"there is nowhere else"*:
+
+- an O(1) answer to `unimport`'s question *"is any instance of this type still alive?"*,
+- a linear walk over every instance of a type, with no registry to maintain,
+- and, eventually, a `Node*` that is a 32-bit offset rather than a 64-bit pointer.
+
+Totality is also enforced downward: everything reachable beneath a region class must itself live in
+that region. The region binder places `new Node(...)` in the type's own region automatically (§5b.5),
+which is what lets a tree link its own children without a word about lifetimes.
 
 ---
 

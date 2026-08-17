@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.133")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.134")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.133")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.134")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -660,6 +660,18 @@ add_test(NAME codegen_region_class_narrow_layout COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_narrow.pol"
     "-DNEEDLE=%class.Node = type { ptr, i32, i32, i32, i32 }"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# `naked` reaches the IR as an attribute, and this is the first thing that ever checked it. The
+# keyword parsed and lowered for months with no sample anywhere -- found by asking which keywords the
+# reference never shows in use, which turned out to name a hole in the tests as well as in the manual.
+# A lost `naked` does not fail to compile or to link: it produces a function that destroys the stack
+# it was handed, at an entry point, where there is nothing left to print the reason with.
+add_test(NAME codegen_naked_has_no_prologue COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/naked_entry.pol"
+    "-DNEEDLE=attributes #0 = { naked noinline optnone }"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
 
