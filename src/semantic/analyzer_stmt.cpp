@@ -774,6 +774,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             moved_.erase(id->name);  // reassignment reactivates the variable
             activationOwned_.erase(id->name);  // reassigned: no longer the tracked activation-owned object
             extracted_.erase(id->name);  // ... including after an `x = extract x from region R;`
+            // ...AND AFTER A `delete`, WHICH IS THE SAME SITUATION. `delete buf; buf = new int[n]();`
+            // is how a buffer is resized in every program that has one, and the name is alive again
+            // from the assignment on: what a later read reaches is the new object.
+            //
+            // Only `moved_` was cleared here, so the four lines above knew that a reassigned name is
+            // reborn and the free-tracking did not -- and the diagnostic told the author to "redeclare
+            // the name", which is advice to rewrite correct code. The declaration path (VarDeclStmt)
+            // has cleared both since it was written; this one had half of it.
+            freed_.erase(id->name);
+            deleted_.erase(id->name);
             const LocalVar* var = lookupLocal(id->name);
             if (var != nullptr) {
                 checkOwnershipAssign(var->type, *assign->value, assign->loc, "this assignment");
