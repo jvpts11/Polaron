@@ -64,5 +64,8 @@ MUDANCAS.md
 PENDENTE.md
 polaron_analise.md
 ctest_*.log*
+# A scratch file keeps its .tmp and gains an extension: `forge_todo_test.tmp.pol`. `*.tmp` alone does
+# not match that, so two of them from a Forge run sat committed in the repository root -- five lines of
+# nothing, on the front page of a public repository.
 *.tmp
-*.tmp.pol
+*.tmp.*
