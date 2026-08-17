@@ -1,0 +1,53 @@
+import System.IO.Console;
+
+program Generics;
+
+// GENERICS THAT COST NOTHING AT RUN TIME.
+//
+// `Box<int>` and `Box<String>` are two separate types by the time the program runs: the compiler
+// stamps out a copy of the class for each argument it is used with, so a field of type `T` is a real
+// `int` field, not a pointer to a boxed one. There is no type erasure, no reflection at a call site,
+// and nothing to unwrap -- the generated code is what you would have written by hand for that one type.
+//
+//   polaron run examples/generics.pol
+//
+// Prints:
+//   the int box holds 42
+//   the text box holds hello
+//   larger of 3 and 9 is 9
+//   larger of 2.5 and 1.5 is 2.500000
+public bundle Examples {
+    public namespace Generic {
+
+        public class Box<T> {
+            private mutable T item;
+            public constructor Box(T item) { this.item = item; }
+            public method get() returns T { return this.item; }
+            public method put(T item) returns void { this.item = item; }
+        }
+
+        public class Pick {
+            // A generic METHOD: the type parameter belongs to the call, not to the class.
+            public static method larger<T>(T a, T b) returns T {
+                if (a > b) {
+                    return a;
+                }
+                return b;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box<int> numbers = new Box<int>(42);
+                System.IO.Console.println($"the int box holds {numbers.get()}");
+
+                Box<String> words = new Box<String>("hello");
+                System.IO.Console.println($"the text box holds {words.get()}");
+
+                System.IO.Console.printf("larger of 3 and 9 is %d\n", Pick.larger<int>(3, 9));
+                System.IO.Console.printf("larger of 2.5 and 1.5 is %f\n", Pick.larger<double>(2.5, 1.5));
+                return;
+            }
+        }
+    }
+}

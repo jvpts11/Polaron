@@ -1,0 +1,63 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.Iterator;
+
+program Iterators;
+
+// WALKING A SEQUENCE WITHOUT KNOWING WHAT IT IS, AND PRODUCING ONE WITHOUT BUILDING IT.
+//
+// `for (x in things)` works on anything that is `Iterable<T>` -- the standard collections are, and so
+// is anything you write. That is what lets an algorithm be written once against a sequence rather than
+// once per container.
+//
+// A GENERATOR is the other side of it: a method that returns `Iterator<T>` and `yield`s values as it
+// goes. Nothing is stored; each value is produced when it is asked for, so an infinite sequence is a
+// perfectly ordinary thing to write as long as somebody stops taking from it.
+//
+//   polaron run examples/iterators.pol
+//
+// Prints:
+//   from a list: 10 20 30
+//   first six squares: 1 4 9 16 25 36
+//   total of the squares: 91
+public bundle Examples {
+    public namespace Sequences {
+
+        public class Squares {
+            // A generator: it returns an Iterator and produces values one at a time. `count` of them,
+            // computed on demand -- there is no array here.
+            public static method upTo(int count) returns Iterator<int> {
+                for (mutable int i = 1; i <= count; i++) {
+                    yield i * i;
+                }
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> things = new ArrayList<int>() on heap;
+                things.add(10);
+                things.add(20);
+                things.add(30);
+
+                System.IO.Console.printf("from a list:");
+                for (int x in things.toArray()) {
+                    System.IO.Console.printf(" %d", x);
+                }
+                System.IO.Console.println("");
+
+                System.IO.Console.printf("first six squares:");
+                mutable int total = 0;
+                for (int s in Squares.upTo(6)) {
+                    System.IO.Console.printf(" %d", s);
+                    total = total + s;
+                }
+                System.IO.Console.println("");
+                System.IO.Console.println($"total of the squares: {total}");
+
+                delete things;
+                return;
+            }
+        }
+    }
+}

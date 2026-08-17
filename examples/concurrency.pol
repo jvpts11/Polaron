@@ -1,0 +1,68 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+import System.Concurrency.Channel;
+import System.Concurrency.atomic;
+
+program Concurrency;
+
+// THREADS, A CHANNEL, AND A COUNTER NOBODY HAS TO LOCK.
+//
+// Three pieces, and the point of showing them together is that they are the three answers to the same
+// question -- how do two threads touch one thing without corrupting it -- at three different costs:
+//
+//   atomic<T>   one variable, no lock at all. The cheapest, and the least you can say with it.
+//   Channel<T>  no shared variable: values are HANDED OVER. A bounded queue that blocks when full,
+//               which is also how it stops a fast producer from eating all the memory.
+//   Mutex       for when the thing being protected is bigger than one variable.
+//
+// A lambda captures what it needs explicitly -- `[captures: byvalue counter]` -- so what crosses into
+// another thread is written down at the place it crosses.
+//
+//   polaron run examples/concurrency.pol
+//
+// Prints:
+//   two threads counted to 200000
+//   the channel carried 1 2 3 4 5, sum 15
+public bundle Examples {
+    public namespace Concurrent {
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // --- lock-free: two threads, one counter, no mutex ---
+                atomic<int> counter = new atomic<int>(0) on heap;
+                function<void> work = lambda[captures: byvalue counter]() returns void {
+                    for (mutable int i = 0; i < 100000; i++) {
+                        counter.increment();
+                    }
+                };
+                Thread first = new Thread(work) on heap;
+                Thread second = new Thread(work) on heap;
+                first.start();
+                second.start();
+                first.join();
+                second.join();
+                System.IO.Console.printf("two threads counted to %d\n", counter.get());
+
+                // --- handing values over instead of sharing them ---
+                Channel<int> line = new Channel<int>(4) on heap;
+                function<void> producer = lambda[captures: byvalue line]() returns void {
+                    for (mutable int i = 1; i <= 5; i++) {
+                        line.send(i);
+                    }
+                };
+                Thread worker = new Thread(producer) on heap;
+                worker.start();
+                mutable int sum = 0;
+                System.IO.Console.printf("the channel carried");
+                for (mutable int i = 0; i < 5; i++) {
+                    int got = line.receive();
+                    System.IO.Console.printf(" %d", got);
+                    sum = sum + got;
+                }
+                worker.join();
+                System.IO.Console.printf(", sum %d\n", sum);
+                return;
+            }
+        }
+    }
+}

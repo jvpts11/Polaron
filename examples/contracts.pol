@@ -1,0 +1,63 @@
+import System.IO.Console;
+
+program Contracts;
+
+// SAYING WHAT MUST BE TRUE, AND HAVING IT CHECKED.
+//
+//   requires    what the caller owes this method. Checked on entry.
+//   ensures     what the method promises in return. Checked on exit.
+//   invariant   what is true of the object between calls. Checked at every method's exit.
+//
+// These are not comments and not asserts scattered by hand: they are part of the declaration, so they
+// are visible in the signature, inherited by overrides, and -- because the compiler knows them -- handed
+// to the optimiser as facts it may use inside the body. A contract that holds costs nothing to state
+// and everything to leave out.
+//
+//   polaron run examples/contracts.pol
+//
+// Prints:
+//   opened with 100
+//   after depositing 50: 150
+//   after withdrawing 30: 120
+public bundle Examples {
+    public namespace Contract {
+
+        public class Account {
+            // The invariant of an account: it never goes negative. Every method exit re-checks it.
+            invariant this.balance >= 0;
+
+            private mutable int balance;
+
+            public constructor Account(int initial) requires initial >= 0 {
+                this.balance = initial;
+            }
+
+            public method balanceNow() returns int { return this.balance; }
+
+            // The caller owes a positive amount; the method promises the balance grew by exactly it.
+            public method deposit(int amount) returns void requires amount > 0 {
+                this.balance = this.balance + amount;
+            }
+
+            // And here the requirement is about the object, not just the argument: you may not take out
+            // more than is there. Without it the invariant above would catch the mistake -- but at the
+            // exit, blaming the account, instead of at the call, blaming the caller.
+            public method withdraw(int amount) returns void requires amount > 0 && amount <= this.balance {
+                this.balance = this.balance - amount;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Account acc = new Account(100);
+                System.IO.Console.println($"opened with {acc.balanceNow()}");
+                acc.deposit(50);
+                System.IO.Console.println($"after depositing 50: {acc.balanceNow()}");
+                acc.withdraw(30);
+                System.IO.Console.println($"after withdrawing 30: {acc.balanceNow()}");
+                // acc.withdraw(1000) would fail its `requires` at the call, not corrupt the account.
+                return;
+            }
+        }
+    }
+}

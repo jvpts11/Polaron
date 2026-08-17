@@ -1,0 +1,69 @@
+import System.IO.Console;
+
+program PropertiesAndOperators;
+
+// A TYPE THAT READS LIKE THE THING IT MODELS.
+//
+// Two features, and the same idea behind both: the call site should say what is meant, not how it is
+// implemented.
+//
+//   properties   a computed value that reads like a field. `r.area` is not a field and does not cost
+//                storage; it is a method with the syntax of the thing it stands for.
+//   operators    `a + b` on a vector, because that is what the mathematics calls it. Declared with
+//                `operator +`, not a method named `plus`.
+//
+// Neither is free rein: there is no overloading, so a name means one thing, and an operator keeps the
+// arity and precedence the language already gave it.
+//
+//   polaron run examples/properties_and_operators.pol
+//
+// Prints:
+//   a 3x4 rectangle has area 12 and perimeter 14
+//   (1,2) + (3,4) = (4,6)
+//   (4,6) * 2 = (8,12)
+public bundle Examples {
+    public namespace Reads {
+
+        public class Rectangle {
+            private int w;
+            private int h;
+            public constructor Rectangle(int w, int h) { this.w = w; this.h = h; }
+
+            // Computed, get-only: no storage, and the caller writes `r.area`.
+            public int area { get { return this.w * this.h; } }
+            public int perimeter { get { return 2 * (this.w + this.h); } }
+            public int width { get { return this.w; } }
+            public int height { get { return this.h; } }
+        }
+
+        public class Vec2 {
+            public int x;
+            public int y;
+            public constructor Vec2(int x, int y) { this.x = x; this.y = y; }
+
+            public operator + (Vec2 other) returns Vec2 {
+                return new Vec2(this.x + other.x, this.y + other.y);
+            }
+            public operator * (int k) returns Vec2 {
+                return new Vec2(this.x * k, this.y * k);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Rectangle r = new Rectangle(3, 4);
+                System.IO.Console.println(
+                    $"a {r.width}x{r.height} rectangle has area {r.area} and perimeter {r.perimeter}");
+
+                Vec2 a = new Vec2(1, 2);
+                Vec2 b = new Vec2(3, 4);
+                Vec2 sum = a + b;
+                System.IO.Console.println($"(1,2) + (3,4) = ({sum.x},{sum.y})");
+
+                Vec2 scaled = sum * 2;
+                System.IO.Console.println($"(4,6) * 2 = ({scaled.x},{scaled.y})");
+                return;
+            }
+        }
+    }
+}

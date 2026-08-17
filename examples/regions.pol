@@ -1,0 +1,63 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+
+program Regions;
+
+// REGIONS: MANY OBJECTS, ONE LIFETIME.
+//
+// Manual memory does not have to mean one `delete` per `new`. A region is an arena you allocate once
+// and hand out of: every object built in it lives exactly as long as the region does, and the whole
+// thing is released in a single stroke. No garbage collector, no per-object bookkeeping, and no way to
+// leak one of them and not the others.
+//
+// It is also checked. A region declares what it will hold with `accepts`, and putting anything else in
+// it is a compile error -- not a convention, not a comment.
+//
+//   polaron run examples/regions.pol
+//
+// Prints:
+//   the pack: 3 7 2
+//   frame 1: 10 11
+//   frame 2: 20 21
+public bundle Examples {
+    public namespace Memory {
+
+        public class Dog {
+            private int years;
+            public constructor Dog(int years) { this.years = years; }
+            public method age() returns int { return this.years; }
+        }
+
+        public class Cat {
+            private int lives;
+            public constructor Cat(int lives) { this.lives = lives; }
+            public method lives() returns int { return this.lives; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // One arena, three dogs, one release. Nothing here is freed individually and nothing
+                // here can be forgotten.
+                region pen = itself.allocate(1 kilobytes).accepts({Dog});
+                Dog* a = new Dog(3) in region pen;
+                Dog* b = new Dog(7) in region pen;
+                Dog* c = new Dog(2) in region pen;
+                System.IO.Console.println($"the pack: {a.age()} {b.age()} {c.age()}");
+                // `new Cat(9) in region pen;` here is a COMPILE ERROR: the region said Dog.
+                release region pen;
+
+                // THE PATTERN THIS IS FOR: a scratch arena reused every frame. Allocation is a pointer
+                // bump, release is one instruction, and the second frame reuses the first frame's
+                // memory rather than asking the operating system for more.
+                for (mutable int frame = 1; frame <= 2; frame++) {
+                    region scratch = itself.allocate(1 kilobytes).accepts({Dog});
+                    Dog* first = new Dog(frame * 10) in region scratch;
+                    Dog* second = new Dog(frame * 10 + 1) in region scratch;
+                    System.IO.Console.println($"frame {frame}: {first.age()} {second.age()}");
+                    release region scratch;
+                }
+                return;
+            }
+        }
+    }
+}

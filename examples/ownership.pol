@@ -1,0 +1,61 @@
+import System.IO.Console;
+
+program Ownership;
+
+// WHO OWNS THIS, AND WHAT HAPPENS WHEN I ASSIGN IT.
+//
+// Assignment in Polaron is a COPY -- of the whole object, fields and all. That is the default because
+// it is the one that never surprises: after `b = a`, changing `b` cannot change `a`.
+//
+// Some things must not be copied. A file handle, a socket, a buffer somebody else is reading: copying
+// one gives you two owners of one resource and a double release at the end. Two class disciplines say
+// so, and the compiler enforces them rather than trusting a comment:
+//
+//   movable   copying is an error. Say `move` and mean it.
+//   unique    at most one live reference; assignment IS a move, and the source is dead afterwards.
+//
+//   polaron run examples/ownership.pol
+//
+// Prints:
+//   copies are independent: original 1, copy 99
+//   the handle moved, and 7 came with it
+//   after the move the source is gone -- the compiler will not let it be read
+public bundle Examples {
+    public namespace Ownership {
+
+        // An ordinary class: copied on assignment, like everything else.
+        public class Counter {
+            public mutable int value;
+            public constructor Counter(int value) { this.value = value; }
+        }
+
+        // A resource. `movable` means a copy is a compile error and the transfer must be written down.
+        public movable class Handle {
+            private int descriptor;
+            public constructor Handle(int descriptor) { this.descriptor = descriptor; }
+            public method id() returns int { return this.descriptor; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Counter original = new Counter(1);
+                mutable Counter copy = original;      // a copy, not a second name for the same object
+                copy.value = 99;
+                System.IO.Console.println(
+                    $"copies are independent: original {original.value}, copy {copy.value}");
+
+                mutable Handle source = new Handle(7);
+                // `mutable Handle other = source;` would be a compile error: Handle is movable.
+                mutable Handle moved = move source;
+                System.IO.Console.println($"the handle moved, and {moved.id()} came with it");
+
+                // `source.id()` here is a compile error too, and that is the point of writing `move`:
+                // the language knows the value left, so reading it is caught where it is written rather
+                // than becoming a use-after-free somewhere else.
+                System.IO.Console.println(
+                    "after the move the source is gone -- the compiler will not let it be read");
+                return;
+            }
+        }
+    }
+}

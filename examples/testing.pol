@@ -1,0 +1,57 @@
+import System.IO.Console;
+import System.Test.Test;
+
+program Testing;
+
+// TESTS THAT LIVE IN THE LANGUAGE, NOT IN A LIBRARY YOU CHOSE.
+//
+// A method annotated `[Test]` is a test. `polaron test` finds them, runs them, and reports -- no
+// framework to install, no registration list to keep in step, no main() that has to remember to call
+// them. Fixtures are annotations too: `[BeforeEach]` runs before every test in the class.
+//
+//   polaron test                     run every [Test] in the project
+//   polaron test -- --filter adds     run the ones whose name contains "adds"
+//   polaron test -- --list            print the names without running them
+//
+// This file is a program as well, so `polaron run examples/testing.pol` runs `main` and
+// `polaron test` runs the tests. In a real project the tests usually sit beside the code they test.
+//
+// Prints (from main):
+//   2 + 3 = 5
+public bundle Examples {
+    public namespace Tested {
+
+        public class Arith {
+            public static method add(int a, int b) returns int { return a + b; }
+            public static method divide(int a, int b) returns int {
+                if (b == 0) {
+                    return 0;   // deliberately forgiving, so there is something to test
+                }
+                return a / b;
+            }
+        }
+
+        public class ArithTests {
+            [Test]
+            public static method adds_two_numbers() returns void {
+                Test.assertEqual(Arith.add(2, 3), 5);
+                Test.assertEqual(Arith.add(0 - 1, 1), 0);
+                return;
+            }
+
+            [Test]
+            public static method divides_and_survives_zero() returns void {
+                Test.assertEqual(Arith.divide(10, 2), 5);
+                Test.assertEqual(Arith.divide(10, 0), 0);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"2 + 3 = {Arith.add(2, 3)}");
+                return;
+            }
+        }
+    }
+}

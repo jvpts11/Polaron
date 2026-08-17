@@ -1,0 +1,43 @@
+import System.IO.Console;
+
+program Ffi;
+
+// CALLING A C FUNCTION, AND SAYING WHERE IT COMES FROM.
+//
+// An `extern` declaration binds a Polaron name to a foreign symbol. The word after `extern` is the
+// foreign LANGUAGE -- `cdecl` for C, `cppdecl` for C++, `rustdecl`/`zigdecl` reserved, `unknown <world>`
+// for a raw ABI -- rather than a calling convention, because the language is what decides name
+// mangling, how aggregates travel, and whether there is a receiver. (`stdcall` and `fastcall` are still
+// spelled here and mean C plus that 32-bit x86 convention; on x86-64 they lower like `cdecl`.)
+//
+// The class is not decoration. It groups the externs, gives them visibility, and -- with
+// `class LibC library C` -- names the foreign library they come from. That name is OURS: an
+// identifier, the same on every platform, which the build maps to a file per platform in the
+// manifest's `[libraries]` table. `C` is special only in that every platform links it already.
+//
+// `symbol("...")` separates the Polaron name from the linker name, so a binding does not force foreign
+// naming into your code.
+//
+//   polaron run examples/ffi.pol
+//
+// Prints:
+//   magnitude of -5 is 5
+//   the C library rounded 2.7 down to 2
+public bundle Examples {
+    public namespace Foreign {
+
+        public class LibC library C {
+            public extern cdecl static method magnitude(int x) returns int symbol("abs");
+            public extern cdecl static method floorOf(double x) returns double symbol("floor");
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("magnitude of -5 is %d\n", LibC.magnitude(0 - 5));
+                double down = LibC.floorOf(2.7);
+                System.IO.Console.printf("the C library rounded 2.7 down to %d\n", cast<int>(down));
+                return;
+            }
+        }
+    }
+}

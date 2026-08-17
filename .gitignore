@@ -54,11 +54,12 @@ tests/*/build-output/
 
 # Working documents, deliberately not published (see docs/reference/ for the public reference).
 # Removed once already; re-added by a careless `git add -A docs`, so the pattern is written down.
+#
+# The specification and the keyword catalogue used to be listed here under their Polaron names while
+# being tracked under their LDP3 ones -- ignored and published at the same time, which is not a state
+# the file can be in. They are published: the original design document belongs with the language.
 docs/superpowers/
 docs/IMPLEMENTATION_STATUS.md
-docs/POLARON_state.md
-docs/POLARON_specification.md
-docs/POLARON_keywords.md
 NIGHT_PROGRESS*.md
 MUDANCAS.md
 PENDENTE.md
