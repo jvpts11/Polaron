@@ -1,6 +1,11 @@
-# LDP3 — Catálogo Completo de Keywords
+# Polaron — Catálogo Completo de Keywords
 
-Documento de referência para todas as keywords da linguagem LDP3.
+Documento de referência para todas as keywords da linguagem Polaron.
+
+> Escrito quando a linguagem ainda tinha o nome provisório **LDP3**, e com exemplos que em vários
+> pontos contradizem a especificação — quando divergirem, vale
+> [`POLARON_specification.md`](POLARON_specification.md), e a referência pública atualizada é
+> [`docs/reference/`](reference/README.md).
 
 **Total:** 133 keywords principais + 13 contextuais + 20 tipos primitivos (também keywords).
 
@@ -289,7 +294,7 @@ Desativa um label e o bloco de código que ele introduz. O código entre o label
 
 **Forma:**
 
-```ldp3
+```polaron
 public class HardwareDriver {
     public method handleInterrupt() returns void {
         readHardware();              // sempre executa
@@ -330,12 +335,12 @@ Múltiplos `abstainfrom` do mesmo label stackam. Label ativo apenas quando todos
 
 **Removido em modo freestanding** (depende de runtime para reference counting).
 
-LDP3 é a primeira linguagem de produção a implementar `abstainfrom` legitimamente. Ver seção 7.11 da spec para regras completas.
+Polaron é a primeira linguagem de produção a implementar `abstainfrom` legitimamente. Ver seção 7.11 da spec para regras completas.
 
 #### `abstract`
 Modificador de classe ou método. Classe abstract não pode ser instanciada diretamente. Método abstract não tem implementação e deve ser sobrescrito em subclasse concreta.
 
-```ldp3
+```polaron
 public abstract class Animal {
     public abstract method makeSound() returns void;
 }
@@ -344,7 +349,7 @@ public abstract class Animal {
 #### `affinity`
 Hint de cache locality. Agrupa campos como `hot` (acessados frequentemente juntos) ou `cold` (acessados raramente) para otimização de layout em memória.
 
-```ldp3
+```polaron
 public class Particle {
     affinity hot {
         public mutable float32 x;
@@ -362,14 +367,14 @@ public class Particle {
 #### `annotation`
 Declara annotation customizada. Usado para criar metadata aplicável a classes, métodos, campos.
 
-```ldp3
+```polaron
 public annotation Deprecated(string reason, string since) { }
 ```
 
 #### `as`
 Cast explícito de tipos compatíveis. Sintaxe alternativa para `cast<T>(value)` em casos específicos.
 
-```ldp3
+```polaron
 Animal a = getAnimal();
 Dog d = a as Dog;
 ```
@@ -378,7 +383,7 @@ Dog d = a as Dog;
 #### `async`
 Marca método como assíncrono. Pode usar `await` internamente. Executa em pool de workers gerenciado pelo runtime.
 
-```ldp3
+```polaron
 public async method fetchData() returns Result<Data, Error> {
     Response r = await httpClient.get(url);
     return r.parse();
@@ -389,7 +394,7 @@ public async method fetchData() returns Result<Data, Error> {
 #### `await`
 Suspende execução de método async até completar a tarefa awaited.
 
-```ldp3
+```polaron
 int result = await computeAsync();
 ```
 
@@ -399,7 +404,7 @@ int result = await computeAsync();
 #### `bidirectional`
 Declara tipo com conversão bidirecional automática entre duas representações. Útil para unit conversions.
 
-```ldp3
+```polaron
 bidirectional Celsius to Fahrenheit {
     forward { return celsius * 9 / 5 + 32; }
     backward { return (fahrenheit - 32) * 5 / 9; }
@@ -409,14 +414,14 @@ bidirectional Celsius to Fahrenheit {
 #### `boolean`
 Tipo primitivo. Valores `true` ou `false`.
 
-```ldp3
+```polaron
 boolean isReady = true;
 ```
 
 #### `break`
 Sai do loop ou switch atual.
 
-```ldp3
+```polaron
 while (true) {
     if (done) {
         break;
@@ -427,7 +432,7 @@ while (true) {
 #### `bundle`
 Unidade de compilação independente. Contém namespaces. Pode ser compilado, distribuído e carregado separadamente. Suporta build variants.
 
-```ldp3
+```polaron
 public bundle audio {
     public namespace audio.mixers {
         // ...
@@ -442,7 +447,7 @@ Qualificador contextual de `move` que indica que persistents devem seguir o obje
 
 **Escopo:** apenas em expressões `move`.
 
-```ldp3
+```polaron
 Car c2 = move c1 carrying persistents;
 // equivalente ao default: persistents seguem para nova tripla
 
@@ -457,7 +462,7 @@ Ver `move`, `leaving`, `releasing` para detalhes. Ver seção 19.7 da spec.
 #### `case`
 Cláusula em `switch` ou `match`.
 
-```ldp3
+```polaron
 switch (color) {
     case Color.RED: handleRed(); break;
     case Color.BLUE: handleBlue(); break;
@@ -467,7 +472,7 @@ switch (color) {
 #### `cascade`
 **Prefixo universal.** Propaga operação recursivamente através de dependências/referências do alvo. Aplicável a delete, release, unimport, clone, print, qualquer operação que faça sentido propagar.
 
-```ldp3
+```polaron
 cascade delete player;              // delete player + tudo owned
 cascade unimport Dog;                // unimport Dog + subclasses + monomorfizações
 cascade Console.println(tree);       // print tree + filhos recursivamente
@@ -476,14 +481,14 @@ cascade Console.println(tree);       // print tree + filhos recursivamente
 #### `cast`
 Cast explícito entre tipos.
 
-```ldp3
+```polaron
 int x = cast<int>(floatValue);
 ```
 
 #### `catalog`
 Interface para enums. Força que enums implementadores tenham tanto métodos específicos quanto valores específicos (via `byCatalog`).
 
-```ldp3
+```polaron
 public catalog Severity {
     INFO
     int weight();
@@ -499,7 +504,7 @@ public enum LogLevel extends Severity {
 #### `catch`
 Captura exception em bloco try.
 
-```ldp3
+```polaron
 try {
     doSomething();
 } catch (IOException e) {
@@ -509,9 +514,9 @@ try {
 
 
 #### `class`
-Declara classe. Unidade fundamental de OOP em LDP3.
+Declara classe. Unidade fundamental de OOP em Polaron.
 
-```ldp3
+```polaron
 public class Dog {
     private string name;
     public method bark() returns void { /* ... */ }
@@ -525,7 +530,7 @@ Controle de fluxo inverso ao `goto`. Onde `goto` declara o salto no ponto de ori
 
 **Formas:**
 
-```ldp3
+```polaron
 // Comefrom intra-method
 public class Processor {
     public method retry() returns Data {
@@ -577,16 +582,16 @@ public method debug() returns void {
 6. State não é resetado (cleanup é responsabilidade do programador)
 7. Labels implícitas não são alvo (apenas labels declaradas pelo programador)
 8. Labels são statement markers (sintaxe `label nome;`), não prefixos de declarações
-9. IDE LDP3-compliant deve destacar labels que são alvo de comefrom
+9. IDE Polaron-compliant deve destacar labels que são alvo de comefrom
 
 **Use cases reconhecidos:** retry com state preservation, intercepção de loops, restart de state machines, debug points isolados, multi-resource compensation, configuration reload, métodos auxiliares interceptando outros métodos da mesma classe.
 
-LDP3 é a primeira linguagem de produção a implementar `comefrom` como feature legítima, restrita ao escopo de classe, com disciplina de design que evita os problemas que tornaram comefrom joke em INTERCAL.
+Polaron é a primeira linguagem de produção a implementar `comefrom` como feature legítima, restrita ao escopo de classe, com disciplina de design que evita os problemas que tornaram comefrom joke em INTERCAL.
 
 #### `comptime`
 **Prefixo universal.** Executa código durante compilação. Zero overhead runtime. Valor é computado e embutido no binário.
 
-```ldp3
+```polaron
 comptime int FIB_10 = fibonacci(10);
 comptime ArrayList<int> primes = computePrimes(1000);
 ```
@@ -594,14 +599,14 @@ comptime ArrayList<int> primes = computePrimes(1000);
 #### `const`
 Constante de tempo de compilação. Valor não muda durante execução do programa.
 
-```ldp3
+```polaron
 public const int MAX_SIZE = 1024;
 ```
 
 #### `constructor`
 Método especial chamado ao criar instância de classe. Nome igual ao da classe.
 
-```ldp3
+```polaron
 public class Dog {
     public constructor Dog(string name) {
         this.name = name;
@@ -612,7 +617,7 @@ public class Dog {
 #### `continue`
 Salta para próxima iteração do loop atual.
 
-```ldp3
+```polaron
 for (mutable int i in 0..100) {
     if (i % 2 == 0) continue;
     processOdd(i);
@@ -624,7 +629,7 @@ for (mutable int i in 0..100) {
 #### `default`
 Cláusula default em switch. Também usado em interfaces para métodos com implementação padrão.
 
-```ldp3
+```polaron
 switch (status) {
     case Status.OK: handleOk(); break;
     default: handleUnknown(); break;
@@ -634,7 +639,7 @@ switch (status) {
 #### `defer`
 Adia execução de código para fim do escopo atual. LIFO order. Pode ter timeout: `defer within milliseconds(N)`.
 
-```ldp3
+```polaron
 public method process() returns void {
     File* f = openFile("data.txt");
     defer { closeFile(f); }
@@ -645,14 +650,14 @@ public method process() returns void {
 #### `delegate`
 Tipo de referência a método. Permite passar método como argumento ou armazenar em variável.
 
-```ldp3
+```polaron
 delegate IntPredicate(int) returns boolean;
 ```
 
 #### `delete`
 Libera memória alocada com `new`. Chama destrutor.
 
-```ldp3
+```polaron
 Dog* rex = new Dog("Rex") on heap;
 delete rex;
 ```
@@ -660,14 +665,14 @@ delete rex;
 #### `deprecated`
 Marca classe, método, ou campo como deprecated. Gera warning quando usado.
 
-```ldp3
+```polaron
 deprecated public method oldMethod() returns void { /* ... */ }
 ```
 
 #### `destructor`
 Método especial chamado quando objeto é destruído. Sintaxe `~ClassName()`.
 
-```ldp3
+```polaron
 public class Connection {
     public destructor ~Connection() {
         this.close();
@@ -678,7 +683,7 @@ public class Connection {
 #### `do`
 Loop do-while. Executa bloco pelo menos uma vez antes de testar condição.
 
-```ldp3
+```polaron
 do {
     response = readInput();
 } while (response != "quit");
@@ -689,7 +694,7 @@ do {
 #### `else`
 Cláusula em if-else.
 
-```ldp3
+```polaron
 if (condition) {
     doA();
 } else {
@@ -700,7 +705,7 @@ if (condition) {
 #### `ensures`
 Postcondition em contract. Validada após método executar.
 
-```ldp3
+```polaron
 public method withdraw(int amount) returns void
     requires(amount > 0)
     ensures(this.balance == old(this.balance) - amount)
@@ -712,7 +717,7 @@ public method withdraw(int amount) returns void
 #### `enum`
 Tipo enumeração. Pode ter métodos (Java-style) e implementar catalogs.
 
-```ldp3
+```polaron
 public enum Color {
     RED, GREEN, BLUE
     
@@ -723,7 +728,7 @@ public enum Color {
 #### `eternal`
 **Prefixo universal.** Recurso vive durante toda a execução do programa. Sem cleanup explícito necessário. Aplicável a persistents, regions, threads, channels, static fields.
 
-```ldp3
+```polaron
 public eternal persistent int settings = 0;
 public eternal region globalCache = allocate(64) megabytes;
 public eternal thread monitor = new thread(/* ... */);
@@ -732,7 +737,7 @@ public eternal thread monitor = new thread(/* ... */);
 #### `expecting`
 Em unimport/import, declara bloco de validação para verificar autenticidade do código.
 
-```ldp3
+```polaron
 var proof = unimport Dog expecting {
     return Dog.computeFingerprint();
 };
@@ -747,14 +752,14 @@ import Dog expecting proof {
 #### `extends`
 Herança de classe ou interface.
 
-```ldp3
+```polaron
 public class Puppy extends Dog { /* ... */ }
 ```
 
 #### `extern`
 Função externa (FFI). Pode especificar calling convention.
 
-```ldp3
+```polaron
 extern cdecl method printf(const char* format, ...) returns int from "libc";
 ```
 
@@ -763,14 +768,14 @@ extern cdecl method printf(const char* format, ...) returns int from "libc";
 #### `false`
 Literal booleano.
 
-```ldp3
+```polaron
 boolean done = false;
 ```
 
 #### `final`
 **Prefixo universal.** Não modificável, sobrescrevível, ou removível.
 
-```ldp3
+```polaron
 public final class Singleton { /* ... */ }
 public final method criticalOp() returns void { /* ... */ }
 final import Dog;  // não pode ser unimportada
@@ -779,7 +784,7 @@ final import Dog;  // não pode ser unimportada
 #### `finally`
 Bloco em try que sempre executa, mesmo com exception.
 
-```ldp3
+```polaron
 try {
     doWork();
 } finally {
@@ -788,9 +793,9 @@ try {
 ```
 
 #### `for`
-Loop for tradicional. Em LDP3 suporta range syntax.
+Loop for tradicional. Em Polaron suporta range syntax.
 
-```ldp3
+```polaron
 for (mutable int i in 0..10) {
     Console.println(i);
 }
@@ -804,7 +809,7 @@ for (Item x in collection) {
 #### `from`
 Em imports cross-bundle ou cross-program.
 
-```ldp3
+```polaron
 import Dog from bundle pets;
 import audio from program GameEngine bundle audio;
 ```
@@ -817,7 +822,7 @@ Reservada para uso futuro. Atualmente toda função é método.
 #### `get`
 Em properties, define getter automatizado.
 
-```ldp3
+```polaron
 public class Person {
     public int age { get; }
 }
@@ -826,7 +831,7 @@ public class Person {
 #### `goto`
 Salto para label. Suporta label nomeado, número de linha, ou endereço de memória.
 
-```ldp3
+```polaron
 cleanup: 
     delete resource;
     return;
@@ -841,7 +846,7 @@ if (error) goto cleanup;
 #### `if`
 Condicional. Brackets obrigatórios mesmo para uma linha.
 
-```ldp3
+```polaron
 if (x > 0) {
     handlePositive();
 }
@@ -850,14 +855,14 @@ if (x > 0) {
 #### `implements`
 Implementação de interface ou catalog.
 
-```ldp3
+```polaron
 public class FileLogger implements Logger { /* ... */ }
 ```
 
 #### `import`
 Carrega símbolo (classe, namespace, bundle) na memória do programa.
 
-```ldp3
+```polaron
 import Dog;
 import bundle audio;
 import Greeter from bundle ui;
@@ -866,7 +871,7 @@ import Greeter from bundle ui;
 #### `in`
 Em foreach, regions, ou variance.
 
-```ldp3
+```polaron
 for (Item x in collection) { /* ... */ }
 Dog* rex = new Dog() in region pets;
 interface Comparable<in T> { /* contravariant */ }
@@ -875,7 +880,7 @@ interface Comparable<in T> { /* contravariant */ }
 #### `index`
 Em foreach com índice.
 
-```ldp3
+```polaron
 for (Item x in collection index i) {
     Console.println($"{i}: {x}");
 }
@@ -884,7 +889,7 @@ for (Item x in collection index i) {
 #### `init`
 Setter only-at-construction em properties.
 
-```ldp3
+```polaron
 public class Config {
     public string apiKey { get; init; }
 }
@@ -893,7 +898,7 @@ public class Config {
 #### `into`
 Preposição em expressões `move`. Combina transferência de ownership e mudança de region em uma operação atômica.
 
-```ldp3
+```polaron
 Connection c1 = new Connection() in region staging;
 Connection c2 = move c1 into region production;
 // c1 invalidado, c2 é o novo dono, objeto agora vive em production
@@ -907,7 +912,7 @@ Ver `move` para uso completo. Ver seção 19.3 da spec.
 #### `itself`
 Pronome de auto-referência em initializers de declaração. Refere-se à variável sendo declarada na mesma linha.
 
-```ldp3
+```polaron
 region small = itself.allocate(8 kilobytes).accepts({Particle});
 // itself = small
 
@@ -926,7 +931,7 @@ Ver seção 17.9 da spec.
 #### `int8`, `int16`, `int32`, `int64`
 Inteiros sinalizados com bit width específico.
 
-```ldp3
+```polaron
 int8 a = -128;
 int64 large = 9223372036854775807;
 ```
@@ -934,7 +939,7 @@ int64 large = 9223372036854775807;
 #### `interface`
 Declara interface (contrato sem implementação obrigatória).
 
-```ldp3
+```polaron
 public interface Drawable {
     method draw() returns void;
 }
@@ -943,14 +948,14 @@ public interface Drawable {
 #### `internal`
 Modificador de visibilidade. Acessível apenas dentro do mesmo bundle.
 
-```ldp3
+```polaron
 internal class Helper { /* ... */ }
 ```
 
 #### `invariant`
 Contract invariant. Validado antes e depois de cada método público.
 
-```ldp3
+```polaron
 public class Counter {
     invariant(this.count >= 0);
     private int count = 0;
@@ -960,7 +965,7 @@ public class Counter {
 #### `is`
 Type check.
 
-```ldp3
+```polaron
 if (obj is Dog) {
     Dog d = obj as Dog;
 }
@@ -974,7 +979,7 @@ if (obj is Dog) {
 #### `lambda`
 Declara função anônima. Captura explícita de variáveis.
 
-```ldp3
+```polaron
 lambda(int x) returns int => x * 2;
 items.forEach(lambda(Item x) returns void { process(x); });
 ```
@@ -982,7 +987,7 @@ items.forEach(lambda(Item x) returns void { process(x); });
 #### `lazy`
 **Prefixo universal.** Adia execução até primeiro acesso. Thread-safe implícito.
 
-```ldp3
+```polaron
 lazy Dog rex = new Dog("Rex");
 lazy import Dog;
 lazy region cache = allocate(1) gigabytes;
@@ -993,7 +998,7 @@ Qualificador contextual de `move` que indica que persistents devem ficar órfão
 
 **Escopo:** apenas em expressões `move`.
 
-```ldp3
+```polaron
 Car c2 = move c1 leaving persistents;
 // persistents ficam atrelados a (escopo, "c1", region) e ficam órfãos
 // c2 começa sem persistents
@@ -1012,7 +1017,7 @@ Reservada para uso futuro em sistema de bibliotecas.
 #### `literal`
 Declara função como sufixo de literal numérico. Função deve ser `comptime` com exatamente um parâmetro numérico. Expansão em compile-time, zero overhead em runtime.
 
-```ldp3
+```polaron
 public comptime literal kilobytes(int x) returns ByteSize {
     return new ByteSize(x * 1024);
 }
@@ -1046,7 +1051,7 @@ Ver seção 17.10 da spec.
 #### `match`
 Pattern matching exaustivo. Validado em compile-time para sealed classes.
 
-```ldp3
+```polaron
 int result = match(shape) {
     case Circle c -> c.area();
     case Square s -> s.side * s.side;
@@ -1058,7 +1063,7 @@ int result = match(shape) {
 #### `method`
 Declara método em classe. Palavra obrigatória.
 
-```ldp3
+```polaron
 public method bark() returns void { /* ... */ }
 ```
 
@@ -1068,7 +1073,7 @@ Reservada para uso futuro.
 #### `movable`
 Disciplina de ownership de classe. Exige uso explícito de `move` para transferir ownership entre variáveis. Atribuição sem `move` é erro de compilação.
 
-```ldp3
+```polaron
 public movable class Connection {
     private Socket socket;
     public method send(byte[] data) returns void { /* ... */ }
@@ -1091,45 +1096,45 @@ Keyword que transfere ownership de objeto entre variáveis, regions, ou discipli
 
 **Forma básica (entre variáveis):**
 
-```ldp3
+```polaron
 Connection c2 = move c1;   // c1 invalidado, c2 é novo dono
 ```
 
 **Move entre regions:**
 
-```ldp3
+```polaron
 move c from region staging to region production;
 ```
 
 **Move combinando ownership e region:**
 
-```ldp3
+```polaron
 Connection c2 = move c1 into region production;
 ```
 
 **Move com cast de disciplina:**
 
-```ldp3
+```polaron
 ExclusiveConnection e = move c as ExclusiveConnection;
 // upgrade de movable para unique
 ```
 
 **Move em argumentos de método:**
 
-```ldp3
+```polaron
 public method consume(move Connection c) returns void { /* ... */ }
 consume(move c1);   // c1 invalidado após chamada
 ```
 
 **Move em retorno de método:**
 
-```ldp3
+```polaron
 public method create() returns move Connection { /* ... */ }
 ```
 
 **Move com qualificadores de persistents:**
 
-```ldp3
+```polaron
 Car c2 = move c1 carrying persistents;   // default: persistents seguem
 Car c2 = move c1 leaving persistents;     // persistents ficam órfãos
 Car c2 = move c1 releasing persistents;   // persistents liberados
@@ -1137,7 +1142,7 @@ Car c2 = move c1 releasing persistents;   // persistents liberados
 
 **Cascade move (propaga recursivamente):**
 
-```ldp3
+```polaron
 cascade move tree from region old to region new;
 ```
 
@@ -1154,7 +1159,7 @@ Ver `movable`, `unique`, `partitionable`, `into`. Ver seção 19 completa da spe
 #### `mutable`
 Permite modificação. Aplicável a variáveis, parâmetros, métodos (que mutam estado), campos.
 
-```ldp3
+```polaron
 mutable int counter = 0;
 public mutable method increment() returns void { /* ... */ }
 ```
@@ -1164,7 +1169,7 @@ public mutable method increment() returns void { /* ... */ }
 #### `namespace`
 Organização lógica dentro de bundle. Contém classes, interfaces, enums, etc.
 
-```ldp3
+```polaron
 public namespace game.entities {
     public class Player { /* ... */ }
 }
@@ -1173,7 +1178,7 @@ public namespace game.entities {
 #### `new`
 Alocação de instância. Sintaxe completa especifica local.
 
-```ldp3
+```polaron
 Dog rex = new Dog("Rex") on stack;
 Dog* heavyDog = new Dog("Big") on heap;
 Car tesla = new Car() in region garage;
@@ -1182,7 +1187,7 @@ Car tesla = new Car() in region garage;
 #### `newtype`
 Wrapper de tipo com identidade própria. Diferente de `typealias` que é apenas alias.
 
-```ldp3
+```polaron
 newtype UserId = int;
 newtype OrderId = int;
 // UserId e OrderId são distintos mesmo sendo int
@@ -1191,7 +1196,7 @@ newtype OrderId = int;
 #### `null`
 Literal de ausência de valor. Disponível apenas para tipos opcionais.
 
-```ldp3
+```polaron
 Optional<Dog> maybeDog = null;
 ```
 
@@ -1200,14 +1205,14 @@ Optional<Dog> maybeDog = null;
 #### `of`
 Disambiguação em regions.
 
-```ldp3
+```polaron
 Car* tesla of region parking = /* ... */;
 ```
 
 #### `old`
 Em ensures contracts, refere ao valor anterior à execução do método.
 
-```ldp3
+```polaron
 public method increment() returns void
     ensures(this.count == old(this.count) + 1)
 {
@@ -1218,7 +1223,7 @@ public method increment() returns void
 #### `on`
 Especifica local de alocação.
 
-```ldp3
+```polaron
 Dog rex = new Dog() on stack;
 Dog* heavy = new Dog() on heap;
 ```
@@ -1226,7 +1231,7 @@ Dog* heavy = new Dog() on heap;
 #### `onClassLoad`
 Lifecycle hook. Executa quando classe é carregada em memória.
 
-```ldp3
+```polaron
 public class Database {
     onClassLoad { initializeDriver(); }
 }
@@ -1235,7 +1240,7 @@ public class Database {
 #### `onClassUnload`
 Lifecycle hook. Executa quando classe é descarregada (unimport).
 
-```ldp3
+```polaron
 public class Database {
     onClassUnload { cleanupDriver(); }
 }
@@ -1244,7 +1249,7 @@ public class Database {
 #### `onFirstInstance`
 Lifecycle hook. Executa na primeira instanciação da classe.
 
-```ldp3
+```polaron
 public class Logger {
     onFirstInstance { setupLogFile(); }
 }
@@ -1253,7 +1258,7 @@ public class Logger {
 #### `onLastInstanceDestroyed`
 Lifecycle hook. Executa quando última instância é destruída.
 
-```ldp3
+```polaron
 public class ResourcePool {
     onLastInstanceDestroyed { releaseAllResources(); }
 }
@@ -1262,7 +1267,7 @@ public class ResourcePool {
 #### `onFailure`
 Em import com expecting, bloco obrigatório que define comportamento quando validação falha.
 
-```ldp3
+```polaron
 import Dog expecting proof {
     return Dog.fingerprint();
 } onFailure {
@@ -1274,7 +1279,7 @@ import Dog expecting proof {
 #### `operator`
 Declara operator overload em classe.
 
-```ldp3
+```polaron
 public class Vector {
     public operator method +(Vector other) returns Vector { /* ... */ }
 }
@@ -1283,7 +1288,7 @@ public class Vector {
 #### `out`
 Variance covariante em generics. Em parâmetros, indica output parameter.
 
-```ldp3
+```polaron
 interface Producer<out T> { /* ... */ }
 public method getMax(int[] arr, out int index) returns int { /* ... */ }
 ```
@@ -1291,7 +1296,7 @@ public method getMax(int[] arr, out int index) returns int { /* ... */ }
 #### `override`
 Modificador obrigatório quando método sobrescreve método de superclasse.
 
-```ldp3
+```polaron
 public override method makeSound() returns void { /* ... */ }
 ```
 
@@ -1303,7 +1308,7 @@ Reservada para uso futuro em sistema de packages.
 #### `partial`
 Declaração parcial de classe. Permite dividir definição entre arquivos.
 
-```ldp3
+```polaron
 // File 1
 public partial class Game { /* fields */ }
 // File 2
@@ -1313,7 +1318,7 @@ public partial class Game { /* methods */ }
 #### `partitionable`
 Modificador de classe que permite move parcial de campos individuais. Opt-in obrigatório — sem `partitionable`, mover um campo isoladamente é erro de compilação.
 
-```ldp3
+```polaron
 public partitionable class Connection {
     public movable Socket socket;
     public mutable Config config;
@@ -1340,14 +1345,14 @@ Ver `move`, `movable`. Ver seção 19.5 da spec.
 #### `permits`
 Em sealed class, lista subclasses permitidas.
 
-```ldp3
+```polaron
 public sealed class Animal permits Dog, Cat, Bird { /* ... */ }
 ```
 
 #### `persistent`
 Campo sobrevive ao destrutor do objeto pai. Acessível via path após delete. Reataca automaticamente em recriação com mesma identidade (escopo + nome + region).
 
-```ldp3
+```polaron
 public class Car {
     public persistent TipoChassi chassi;
     public Motor motor;
@@ -1360,7 +1365,7 @@ Modificador de visibilidade. Acessível apenas dentro da classe declarante.
 #### `program`
 Declaração de programa. Outermost organizacional unit.
 
-```ldp3
+```polaron
 program myGame;
 ```
 
@@ -1375,14 +1380,14 @@ Modificador de visibilidade. Acessível de qualquer lugar.
 #### `record`
 Tipo imutável tipo DTO. Auto-gera construtor, equals, hashCode, toString.
 
-```ldp3
+```polaron
 public record Point(int x, int y);
 ```
 
 #### `region`
 Porção nomeada de memória com type acceptance rules.
 
-```ldp3
+```polaron
 region pets = allocate(1) megabytes accepts {Dog, Cat} rejects {Wild};
 ```
 
@@ -1391,7 +1396,7 @@ Reativa um label previamente abstained via `abstainfrom`. Implementa reference c
 
 **Escopo:** mesma classe. Mesma regra que `abstainfrom`.
 
-```ldp3
+```polaron
 public class HardwareDriver {
     public method exitLowPower() returns void {
         reinstate handleInterrupt.processing;
@@ -1401,7 +1406,7 @@ public class HardwareDriver {
 
 **Semântica:**
 
-```ldp3
+```polaron
 abstainfrom myLabel;  // counter = 1, abstained
 abstainfrom myLabel;  // counter = 2, abstained
 reinstate myLabel;    // counter = 1, ainda abstained
@@ -1417,7 +1422,7 @@ Ver `abstainfrom` para mais detalhes e seção 7.11 da spec para regras completa
 #### `release`
 Libera persistent ou region.
 
-```ldp3
+```polaron
 release persistent car.chassi;
 release region pets;
 ```
@@ -1427,7 +1432,7 @@ Qualificador contextual de `move` que indica que persistents devem ser explicita
 
 **Escopo:** apenas em expressões `move`.
 
-```ldp3
+```polaron
 Car c2 = move c1 releasing persistents;
 // persistents de (escopo, "c1", region) são liberados
 // c2 começa sem persistents
@@ -1443,7 +1448,7 @@ Ver `move`, `carrying`, `leaving`, `release`. Ver seção 19.7 da spec.
 #### `requires`
 Precondition em contract. Validada antes de método executar.
 
-```ldp3
+```polaron
 public method withdraw(int amount) returns void
     requires(amount > 0 && amount <= this.balance)
 {
@@ -1455,7 +1460,7 @@ public method withdraw(int amount) returns void
 #### `return`
 Retorna de método. Pode incluir valor.
 
-```ldp3
+```polaron
 return 42;
 return;
 ```
@@ -1463,7 +1468,7 @@ return;
 #### `returns`
 Sintaxe de declaração de tipo de retorno.
 
-```ldp3
+```polaron
 public method computeAge() returns int { /* ... */ }
 ```
 
@@ -1475,7 +1480,7 @@ public method computeAge() returns int { /* ... */ }
 #### `sealed`
 Modificador de classe. Restringe subclasses a lista declarada com `permits`. Habilita pattern matching exaustivo.
 
-```ldp3
+```polaron
 public sealed class Shape permits Circle, Square, Triangle { /* ... */ }
 ```
 
@@ -1483,14 +1488,14 @@ public sealed class Shape permits Circle, Square, Triangle { /* ... */ }
 #### `serializable`
 Marca classe ou campo como serializável.
 
-```ldp3
+```polaron
 public serializable class User { /* ... */ }
 ```
 
 #### `set`
 Em properties, define setter automatizado.
 
-```ldp3
+```polaron
 public class Person {
     public int age { get; set; }
 }
@@ -1503,7 +1508,7 @@ Alias para `int16`.
 #### `static`
 Pertence à classe, não a instâncias.
 
-```ldp3
+```polaron
 public static method create() returns Instance { /* ... */ }
 public static int count = 0;
 ```
@@ -1511,14 +1516,14 @@ public static int count = 0;
 #### `static_assert`
 Assertion validada em compile-time.
 
-```ldp3
+```polaron
 static_assert(sizeof(int) == 4, "int must be 32-bit");
 ```
 
 #### `step`
 Em range com step customizado.
 
-```ldp3
+```polaron
 for (mutable int i in 0..100 step 2) {
     /* só pares */
 }
@@ -1527,7 +1532,7 @@ for (mutable int i in 0..100 step 2) {
 #### `string`
 Tipo primitivo de string mutável.
 
-```ldp3
+```polaron
 mutable string buffer = "hello";
 buffer = buffer + " world";
 ```
@@ -1535,14 +1540,14 @@ buffer = buffer + " world";
 #### `String`
 Tipo de string imutável (classe). Distinto de `string`.
 
-```ldp3
+```polaron
 String immutable = "constant value";
 ```
 
 #### `struct`
 Tipo composto value-type. Suporta bit fields.
 
-```ldp3
+```polaron
 public struct PacketHeader {
     public mutable uint8 version : 4;
     public mutable uint8 type : 4;
@@ -1552,7 +1557,7 @@ public struct PacketHeader {
 #### `super`
 Referência a superclasse. Usado para chamar métodos da superclasse.
 
-```ldp3
+```polaron
 public override method makeSound() returns void {
     super.makeSound();
     extraBehavior();
@@ -1562,7 +1567,7 @@ public override method makeSound() returns void {
 #### `switch`
 Switch tradicional com fall-through. Distinto de `match` que é pattern matching.
 
-```ldp3
+```polaron
 switch (status) {
     case 0: handleZero(); break;
     case 1: 
@@ -1574,7 +1579,7 @@ switch (status) {
 #### `synchronized`
 Sincronização com mutex implícito.
 
-```ldp3
+```polaron
 synchronized(sharedResource) using SharedResource& res {
     res.update();
 }
@@ -1586,7 +1591,7 @@ synchronized(sharedResource) using SharedResource& res {
 #### `this`
 Referência a instância atual. Uso obrigatório para acessar campos da própria classe.
 
-```ldp3
+```polaron
 public method setName(string name) returns void {
     this.name = name;
 }
@@ -1596,21 +1601,21 @@ public method setName(string name) returns void {
 #### `throw`
 Lança exception.
 
-```ldp3
+```polaron
 throw new InvalidArgumentException("value out of range");
 ```
 
 #### `throws`
 Em declaração de método, lista exceptions possíveis.
 
-```ldp3
+```polaron
 public method openFile(string path) returns File* throws IOException { /* ... */ }
 ```
 
 #### `transient`
 Campo não-serializável. Não persiste em snapshots ou serialização.
 
-```ldp3
+```polaron
 public class User {
     public string name;
     public transient string sessionToken;  // não serializa
@@ -1623,7 +1628,7 @@ Literal booleano.
 #### `try`
 Bloco try em exception handling. Também usado em try-catch obrigatório para bundles opcionais.
 
-```ldp3
+```polaron
 try {
     File* f = openFile("data.txt");
 } catch (IOException e) {
@@ -1634,7 +1639,7 @@ try {
 #### `typealias`
 Alias de tipo sem identidade nova. Diferente de `newtype`.
 
-```ldp3
+```polaron
 typealias UserList = ArrayList<User>;
 ```
 
@@ -1643,7 +1648,7 @@ typealias UserList = ArrayList<User>;
 #### `uint8`, `uint16`, `uint32`, `uint64`
 Inteiros não-sinalizados com bit width específico.
 
-```ldp3
+```polaron
 uint8 byte = 255;
 uint64 huge = 18446744073709551615;
 ```
@@ -1651,7 +1656,7 @@ uint64 huge = 18446744073709551615;
 #### `union`
 Tipo união. Interpretação alternativa de mesma memória.
 
-```ldp3
+```polaron
 public union FloatBits {
     public float32 asFloat;
     public uint32 asInt;
@@ -1662,7 +1667,7 @@ public union FloatBits {
 #### `unimport`
 Remove referência de símbolo do programa em runtime. Descarrega código da memória.
 
-```ldp3
+```polaron
 unimport Dog;
 unimport namespace audio.mixers;
 unimport bundle audio;
@@ -1671,7 +1676,7 @@ unimport bundle audio;
 #### `unique`
 Disciplina de ownership de classe. Garante que apenas uma referência viva ao objeto existe no programa a qualquer momento. Atribuição é move implícito automaticamente.
 
-```ldp3
+```polaron
 public unique class FileHandle {
     private int fd;
     public method read(byte[] buffer) returns int { /* ... */ }
@@ -1700,7 +1705,7 @@ Ver `movable`, `move`, `partitionable`. Ver seção 19 da spec.
 #### `using`
 Em synchronized, declara variável bound. Em expecting, passa contexto para blocos de validação.
 
-```ldp3
+```polaron
 synchronized(obj) using ObjectType& ref {
     ref.update();
 }
@@ -1715,7 +1720,7 @@ var proof = unimport Dog expecting using challenge {
 #### `var`
 Declaração de variável com type inference.
 
-```ldp3
+```polaron
 var counter = 0;        // int
 var name = "Alice";     // string
 var dog = new Dog();    // Dog
@@ -1727,14 +1732,14 @@ Reservada para versionamento em bundles.
 #### `void`
 Tipo de retorno para métodos sem valor de retorno.
 
-```ldp3
+```polaron
 public method log(string msg) returns void { /* ... */ }
 ```
 
 #### `volatile`
 **Prefixo universal.** Não otimizável pelo compilador. Leituras sempre fazem fetch real.
 
-```ldp3
+```polaron
 public volatile int hardwareRegister = 0;
 ```
 
@@ -1743,7 +1748,7 @@ public volatile int hardwareRegister = 0;
 #### `while`
 Loop while tradicional.
 
-```ldp3
+```polaron
 while (condition) {
     doWork();
 }
@@ -1753,7 +1758,7 @@ while (condition) {
 #### `within`
 Em defer com timeout.
 
-```ldp3
+```polaron
 defer within milliseconds(100) {
     cleanupResources();
 }
@@ -1765,7 +1770,7 @@ defer within milliseconds(100) {
 #### `yield`
 Em generators, retorna valor próximo sem terminar função.
 
-```ldp3
+```polaron
 public method fibonacci() returns Generator<int> {
     mutable int a = 0;
     mutable int b = 1;
@@ -1846,7 +1851,7 @@ Estes não são keywords técnicas mas são reservados pela stdlib e não devem 
 ### `Memory`
 Módulo com operações de baixo nível.
 
-```ldp3
+```polaron
 Memory.getMemory(address);   // endereço físico de persistent
 Memory.read<T>(addr);        // leitura tipada
 Memory.write<T>(addr, val);  // escrita tipada
@@ -1857,7 +1862,7 @@ Memory.copy(src, dst);        // copia memória
 ### `System`
 Módulo principal de I/O e sistema.
 
-```ldp3
+```polaron
 System.IO.printf(...);        // output formatado
 System.IO.readLine();         // input de linha
 System.exit(code);            // termina programa
@@ -1868,7 +1873,7 @@ System.getArgs();             // argumentos da linha de comando
 ### `Console`
 Alias para `System.IO` em algumas operações comuns.
 
-```ldp3
+```polaron
 Console.println(value);
 Console.print(value);
 ```
@@ -1882,7 +1887,7 @@ Seis keywords funcionam como **prefixos universais** com semântica consistente 
 ### `cascade`
 Propagação recursiva através de dependências.
 
-```ldp3
+```polaron
 cascade delete player;
 cascade unimport Dog;
 cascade Console.println(tree);
@@ -1890,7 +1895,7 @@ cascade clone source into dest;
 ```
 
 Parâmetros opcionais:
-```ldp3
+```polaron
 cascade(depth: 3) delete tree;
 cascade(types: {Item}) delete inventory;
 cascade(except: {Pet}) clone player;
@@ -1899,7 +1904,7 @@ cascade(except: {Pet}) clone player;
 ### `eternal`
 Vida igual à duração do programa.
 
-```ldp3
+```polaron
 public eternal persistent int settings = 0;
 public eternal region globalCache = allocate(64) megabytes;
 public eternal thread monitor = startMonitor();
@@ -1910,7 +1915,7 @@ public eternal static ArrayList<Player> players = new ArrayList<Player>();
 ### `lazy`
 Adia execução até primeiro acesso.
 
-```ldp3
+```polaron
 lazy Dog rex = new Dog("Rex");
 lazy result = expensiveCalculation();
 lazy import Dog;
@@ -1921,7 +1926,7 @@ lazy thread monitor = startMonitor();
 ### `comptime`
 Executa em compile-time, zero overhead runtime.
 
-```ldp3
+```polaron
 comptime method fibonacci(int n) returns int { /* ... */ }
 comptime int fib10 = fibonacci(10);
 comptime ArrayList<int> primes = computePrimes(1000);
@@ -1933,7 +1938,7 @@ comptime if (TARGET == "x86") { /* ... */ }
 ### `volatile`
 Não otimizável pelo compilador.
 
-```ldp3
+```polaron
 volatile int hardwareRegister = 0;
 volatile result = Memory.read<int>(0x1000);
 volatile method readSensor() returns int { /* ... */ }
@@ -1943,7 +1948,7 @@ volatile region mmio = at address 0xB8000 size 4000 bytes;
 ### `final`
 Não modificável, sobrescrevível ou removível.
 
-```ldp3
+```polaron
 final class Foo { /* ... */ }
 final method bar() returns void { /* ... */ }
 final region world = allocate(64) megabytes;
@@ -1983,7 +1988,7 @@ Modo freestanding mantém **112 keywords** suficientes para escrever kernels, dr
 
 ### Combinações válidas
 
-```ldp3
+```polaron
 public eternal lazy final static persistent in region globalCache
     HashMap<String, ConfigEntry> settings = loadConfig();
 ```
@@ -2017,14 +2022,14 @@ Para garantir consistência visual e facilitar leitura, compilador impõe ordem 
 ```
 
 Exemplo correto:
-```ldp3
+```polaron
 public movable partitionable eternal lazy final static persistent in region cache
     HashMap<String, int> data = loadData();
 ```
 
 Para classes, a disciplina de ownership (`movable` ou `unique`) aparece logo após a visibilidade:
 
-```ldp3
+```polaron
 public movable class Connection { /* ... */ }
 public unique class FileHandle { /* ... */ }
 public movable partitionable class GameState { /* ... */ }
@@ -2053,4 +2058,4 @@ Para **operações** (não declarações), prefixos aplicáveis são `cascade`, 
 
 ---
 
-*Documento gerado da especificação LDP3 v1.0.*
+*Documento gerado da especificação v1.0.*
