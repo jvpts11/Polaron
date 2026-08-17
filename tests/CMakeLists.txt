@@ -14,12 +14,22 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.129")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.130")
+
+# EVERY EXAMPLE COMPILES, RUNS, AND PRINTS WHAT ITS HEADER SAYS IT PRINTS. An example that does not
+# build is a lie told where a reader is most likely to trust it, and the seven that lived here before
+# had never been built by anything at all.
+add_test(NAME examples_run COMMAND "${CMAKE_COMMAND}"
+    "-DPOLARON=$<TARGET_FILE:polaron>"
+    "-DEXAMPLES=${CMAKE_CURRENT_SOURCE_DIR}/../examples"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_examples_test.cmake")
+set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.129")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.130")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -5436,11 +5446,19 @@ if(POLARON_WITH_LLVM)
         # reading "TLS not available" — a library shipping the protocol and not the transport. These
         # need a network, deliberately: the P-384 gap that made example.com unreachable was invisible
         # to every offline test here, and only a real server showed it.
+        #
+        # IT ASSERTS A STATUS LINE, NOT A PARTICULAR STATUS. Everything this test can honestly promise
+        # happens on our side of the socket: the handshake completes, the record layer decrypts, and an
+        # HTTP response is parsed out of it. WHICH status the far end chooses is the far end's business.
+        # Asserting `200` tied the suite to a third party's uptime, and duly failed on a machine whose
+        # route reached a Cloudflare edge answering 526 (its origin's certificate, not ours) while curl
+        # from the same shell got 200 through a different one. A suite that goes red for that teaches
+        # people to re-run it, which is how a real failure gets waved through.
         add_test(NAME codegen_https_fetch COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/https_client.pol"
-            "-DCONTAINS=status: 200"
+            "-DCONTAINS=status: "
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         set_tests_properties(codegen_https_fetch PROPERTIES TIMEOUT 120)

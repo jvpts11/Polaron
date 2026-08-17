@@ -137,6 +137,14 @@ public record Point(int x, int y);
 #### `operator`
 **hard.** Declares an operator overload. Spec syntax: `operator <op> (...)` (no `method`).
 
+#### `procedure`
+**hard.** A transformer's member: the conversion itself. `static procedure from<Other>(Other value)
+returns itself` names the SOURCE; `procedure into<Fahrenheit f>() returns Fahrenheit` names the target
+and binds it, so the body fills that storage in. A procedure is not a method — it belongs to the
+relation between two types rather than to either one — and the bound target is storage with no
+constructor run over it yet, which is why the body IS its construction and why every field of it must
+be assigned before the body ends.
+
 #### `returns`
 **hard.** Introduces a method's / constructor's return type.
 
@@ -209,6 +217,30 @@ public record Point(int x, int y);
 
 ## 5. Types & type operations
 
+#### `transformer`
+**hard.** Declares a **transformer**: a named relation between types, holding the `procedure`s that
+convert between them and any rule that comes with the conversion. `public mutual transformer TConverter`
+declares one both ends may implement. A transformer is not a value and has no instances; it is the thing
+two types agree about. By convention its name starts with `T` and reads as an agent noun — `TConverter`,
+`TDescriber` — and the compiler warns when it does not.
+
+#### `applies`
+**hard.** `class Celsius applies TDescriber` — the type takes the transformer's behaviour. What the
+transformer brings is written once and every type that applies it has it. Also used in a condition:
+`when itself applies TName`.
+
+#### `entrusts`
+**hard.** `class Fahrenheit entrusts TConverter` — stronger than `applies`, and a different promise: it
+hands the transformer the right to CONSTRUCT this type, filling its storage field by field, private ones
+included. Only the type itself can agree to that, because only it knows what its invariants are. What
+comes back is an ordinary object; nothing about it says it was built from outside.
+
+#### `call`
+**hard.** `call TName.procedureName(args)` — reaches the TRANSFORMER's own body rather than this type's
+override of it. The word exists because there is no receiver to write to the left of the dot: a
+transformer is not a value, so `TName.p()` would be a static call on a type that is not one. It means
+*"my type replaced this, and I want the original anyway"*.
+
 #### `var`
 **hard.** Type inference — permitted **only** for local variables.
 
@@ -279,6 +311,13 @@ Dog* a = new Dog(5) in region pen;   // freed by RAII at scope end
 
 #### `unique`
 **hard.** A class discipline: at most one live reference at a time; assignment is an implicit move, and copying is forbidden.
+
+#### `weak`
+**hard.** A field that points at an object without owning it and without keeping it alive: `private weak
+nullable Cell* watcher;`. When the object it refers to is deleted, the field reads as null rather than
+as a pointer into freed memory — which is what makes an observer, a parent link or a cache safe to hold.
+A weak slot is two pointers wide, not one (the reference plus the registration that lets the delete find
+it), and it must be `nullable`, because becoming null is the whole point.
 
 #### `partitionable`
 **hard.** A class modifier allowing individual fields to be moved out (opt-in via `into`). Contradictory with `unique`.
@@ -471,6 +510,25 @@ conventions are one ABI, it lowers exactly as `cdecl`.
 
 #### `fastcall`
 **hard.** As `stdcall`, with the fastcall convention: the first two integer arguments in ECX and EDX.
+
+#### `unknown`
+**hard.** `extern unknown <world> method …` — a raw ABI with no language behind it, for a binary whose
+origin has to be stated rather than guessed. The world is required: a binary FORMAT (`pe`, `elf`,
+`macho`, resolved per target) or a raw ABI outright (`win64`, `sysv`, `aapcs`). `unknown c` means "this
+target's own C ABI", which is the portable answer and the one a C-facing export wants.
+
+#### `naked`
+**hard.** A method the compiler emits with no prologue and no epilogue — no frame set up, no registers
+saved, no return sequence. The body is the whole function, which is why it is almost always `asm`. For
+an entry point the hardware or another ABI jumps to, where the standard frame would be wrong before the
+first instruction ran. Freestanding (spec 36).
+
+#### `interrupt`
+**hard.** `public interrupt(Trap t) returns void { … }` — a hardware interrupt handler. Freestanding, it
+lowers to `x86_intrcc`: LLVM writes the save of every register the body clobbers, the `cld`, the pop of
+a pushed error code, and the `iretq`. Hosted, the same declaration installs through `signal()`. One per
+class: an interrupt vector has room for an address and nothing else, so the bound receiver waits in a
+single slot.
 
 #### `freestanding`
 **hard.** Marks a `program`/`bundle` as freestanding (bare-metal): forbids async, exceptions, unimport, reflection, and the managed `Console`.

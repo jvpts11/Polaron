@@ -76,7 +76,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "polc 1.0.129";
+constexpr std::string_view kVersion = "polc 1.0.130";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -1043,7 +1043,8 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             bool debugInfo = false, const std::vector<std::string>& remoteDeps = {},
             bool checkOnly = false, bool regionBinder = true, bool verifyStack = false,
             const std::string& foreignLibsOut = "", const std::string& cHeaderOut = "",
-            const std::string& slotsOut = "") {
+            const std::string& slotsOut = "",
+            const std::vector<polaron::PolbForeignLib>& foreignLibMap = {}) {
     polaron::ast::Program program;
     std::string programName;
     // In check mode a broken file must not hide the others: an editor asks about the whole project and
@@ -1511,6 +1512,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         bundle.fingerprint = polaron::polbFingerprint(bundle.polh);
         bundle.code = codegen.toBitcode();
         bundle.vtableSlots = codegen.vtableSlotNames();  // so consumers seed the same slot layout
+        bundle.foreignLibs = foreignLibMap;               // ...and can link it without its manifest
         const std::string polbPath = outPath.empty() ? program.name + ".polb" : outPath;
         const std::string polhPath = polhPathFor(polbPath);
         std::ofstream polb(polbPath, std::ios::binary);
@@ -1745,6 +1747,9 @@ int main(int argc, char** argv) {
     std::string cHeaderOut;
     std::string slotsOut;     // --emit-vtable-slots=<path>: the merged vtable layout
     std::string remapSlots;   // --remap-slots=<path>: renumber an extracted bundle into that layout
+    // --foreign-lib=<logical>:<platform>=<file>, repeatable: the manifest's [libraries] table, written
+    // into the bundle so whoever links it does not need the manifest as well.
+    std::vector<polaron::PolbForeignLib> foreignLibMap;
     for (std::size_t i = 0; i < args.size(); ++i) {
         if (args[i] == "-o") {
             if (i + 1 >= args.size()) {
@@ -1755,6 +1760,27 @@ int main(int argc, char** argv) {
             ++i;
         } else if (args[i] == "--lib") {
             libraryMode = true;
+        } else if (args[i].rfind("--foreign-lib=", 0) == 0) {
+            // `--foreign-lib=OpenGL:windows=opengl32` -- one entry of the manifest's [libraries] table,
+            // handed to the compiler so it can be written INTO the bundle. Only the driver reads the
+            // manifest and only the compiler writes the bundle, so this is where the two meet.
+            //
+            // `*` as the platform is the bare form (`Zlib = "z"`): one file, every platform. An empty
+            // file means the library needs no flag at all, which is how `C` is answered.
+            const std::string spec(args[i].substr(std::string("--foreign-lib=").size()));
+            const auto colon = spec.find(':');
+            const auto eq = spec.find('=', colon == std::string::npos ? 0 : colon);
+            if (colon == std::string::npos || eq == std::string::npos || eq < colon) {
+                std::fprintf(stderr,
+                             "error: --foreign-lib wants <logical>:<platform>=<file>, got '%s'\n",
+                             spec.c_str());
+                return printUsage(argv[0]);
+            }
+            polaron::PolbForeignLib fl;
+            fl.logical = spec.substr(0, colon);
+            fl.platform = spec.substr(colon + 1, eq - colon - 1);
+            fl.file = spec.substr(eq + 1);
+            foreignLibMap.push_back(std::move(fl));
         } else if (args[i] == "--test") {
             testMode = true;
         } else if (args[i] == "--use") {
@@ -1846,5 +1872,5 @@ int main(int argc, char** argv) {
     }
     return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode, debugInfo,
                    remoteDeps, /*checkOnly=*/false, regionBinder, verifyStack, foreignLibsOut,
-                   cHeaderOut, slotsOut);
+                   cHeaderOut, slotsOut, foreignLibMap);
 }

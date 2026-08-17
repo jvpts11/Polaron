@@ -59,26 +59,117 @@ sync with the version you have installed.
 
 ## 13.3 Code ranges
 
-Codes are grouped by the compiler phase that raises them. The ranges are stable; individual
-codes are added over time.
+Codes are grouped by the compiler phase that raises them. The ranges are stable; individual codes are
+added over time.
 
-| Range   | Phase / area                     | Examples |
-|---------|----------------------------------|----------|
-| `00xx`  | Lexing & syntax                  | `0001` unexpected syntax · `0002` cannot read this text |
-| `01xx`  | Name & type resolution           | `0101` undeclared name · `0102` no such field · `0103` no such method · `0104` unknown type |
-| `02xx`  | Visibility                       | `0201` not accessible from here |
-| `03xx`  | Type checking                    | `0301` wrong type · `0302` wrong number of arguments · `0303` return type mismatch · `0305` cast not allowed · `0307` operator on the wrong type |
-| `04xx`  | Mutability & ownership           | `0401` not mutable · `0402` used after move · `0403` cannot be moved · `0404` cannot assign · `0405` a movable value needs an explicit move |
-| `05xx`  | Flow & exhaustiveness            | `0501` not all paths return · `0502` match not exhaustive · `0503` `try?` needs a Result/Option · `0504` `try?` propagates a failure this method cannot carry |
-| `06xx`  | Declarations & inheritance       | `0601` already declared · `0602/0603` duplicate field/member · `0604` inheritance cycle · `0605` cannot extend · `0606` override a final method · `0607` contradictory modifiers · `0608` a static field initializer has no value before the program starts |
-| `07xx`  | Literals & interpolation         | `0701` bad literal suffix · `0702` cannot interpolate this value · `0703` printf needs a literal format |
-| `08xx`  | Feature-specific semantics       | `0801` operator overload · `0802` reflection · `0803` region · `0804` vector/matrix · `0805` unimport/reimport · `0806` static assertion · `0807` must be compile-time constant · `0808` a persistent is never released |
-| `09xx`  | Freestanding mode                | `0901` not available in freestanding mode |
-| `17xx`  | Regions (flavors & operations)   | `1710` a region has one flavor · `1711` fixedslot/ring needs its element type · `1712` growable does not apply · `1713` mark/rollback need a stack region · `1714` checkpoint belongs to another region · `1715` a ring auto-evicts · `1717` use after extract · `1718` cannot extract an object whose field lives in the same region · `1719` a flavor only qualifies a region · `1720` an extract result must be bound · `1721` this hands out a pointer to storage about to disappear |
+| Range  | Phase / area |
+|--------|--------------|
+| `00xx` | Lexing & syntax |
+| `01xx` | Name & type resolution |
+| `02xx` | Visibility |
+| `03xx` | Type checking |
+| `04xx` | Mutability & ownership |
+| `05xx` | Flow & exhaustiveness |
+| `06xx` | Declarations & inheritance |
+| `07xx` | Literals, interpolation & bit widths |
+| `08xx` | Feature-specific semantics (operators, reflection, regions, vectors, unimport, atomics, interrupts, transformers, tests) |
+| `09xx` | Freestanding mode |
+| `0Axx` | Not implemented yet |
+| `0Bxx` | Warnings |
+| `17xx` | Regions: flavors, operations, and the region binder |
 
-Run `polaron explain` with no argument for the authoritative, complete list.
+## 13.4 Every code
 
-## 13.4 In the editor
+The complete list, with the one-line title each carries. The **why / fix / prevent** for any of them is
+in the compiler — `polaron explain Polaron-0405` prints it — because writing that text twice is how the
+two copies come to disagree.
+
+| Code | Title |
+|------|-------|
+| `Polaron-0001` | unexpected syntax here |
+| `Polaron-0002` | cannot read this text |
+| `Polaron-0101` | not declared in this scope |
+| `Polaron-0102` | no such field on this type |
+| `Polaron-0103` | no such method on this type |
+| `Polaron-0104` | unknown type |
+| `Polaron-0105` | no such name |
+| `Polaron-0106` | this name was brought in under a different path |
+| `Polaron-0201` | not accessible from here |
+| `Polaron-0300` | null where a value is required |
+| `Polaron-0301` | wrong type here |
+| `Polaron-0302` | wrong number of arguments |
+| `Polaron-0303` | return type does not match |
+| `Polaron-0304` | argument type does not match the parameter |
+| `Polaron-0305` | this cast is not allowed |
+| `Polaron-0306` | cannot index this |
+| `Polaron-0307` | operator applied to the wrong type |
+| `Polaron-0307b` | type argument does not satisfy the bound |
+| `Polaron-0401` | this is not mutable |
+| `Polaron-0402` | used after it was moved |
+| `Polaron-0403` | this cannot be moved |
+| `Polaron-0404` | cannot assign to this |
+| `Polaron-0405` | a movable value is transferred, never copied — say so |
+| `Polaron-0406` | `weak` describes a reference, and this is not one |
+| `Polaron-0501` | not all paths return a value |
+| `Polaron-0502` | match does not cover every case |
+| `Polaron-0503` | `try?` needs a Result/Option method |
+| `Polaron-0504` | `try?` propagates a failure this method cannot carry |
+| `Polaron-0601` | already declared |
+| `Polaron-0602` | duplicate field |
+| `Polaron-0603` | duplicate member |
+| `Polaron-0604` | inheritance cycle |
+| `Polaron-0605` | cannot extend this type |
+| `Polaron-0606` | cannot override a final method |
+| `Polaron-0607` | these modifiers contradict each other |
+| `Polaron-0608` | this static field's initializer has no value before the program starts |
+| `Polaron-0609` | this program has nowhere to start |
+| `Polaron-0610` | a class has one constructor, and this is the second |
+| `Polaron-0611` | this name already belongs to a type the compiler provides |
+| `Polaron-0612` | this field is left with no value by the constructor |
+| `Polaron-0701` | bad literal suffix |
+| `Polaron-0702` | cannot interpolate this value |
+| `Polaron-0703` | printf needs a literal format string |
+| `Polaron-0704` | this value does not fit the bits the field was given |
+| `Polaron-0801` | malformed operator overload |
+| `Polaron-0802` | reflection used incorrectly |
+| `Polaron-0803` | region used incorrectly |
+| `Polaron-0804` | vector/matrix operation is malformed |
+| `Polaron-0805` | unimport/reimport used incorrectly |
+| `Polaron-0806` | demand |
+| `Polaron-0807` | this must be a compile-time constant |
+| `Polaron-0808` | a persistent is never released |
+| `Polaron-0809` | this is wider than the machine can do atomically |
+| `Polaron-0810` | an interrupt is entered, not called, and it runs where almost nothing is safe |
+| `Polaron-0811` | this transformer's contract is not met here |
+| `Polaron-0812` | this annotation cannot go on this method |
+| `Polaron-0901` | not available in freestanding mode |
+| `Polaron-0A01` | not implemented yet |
+| `Polaron-0B01` | this name reads against the convention the rest of the language follows |
+| `Polaron-0B02` | the standard library already has a type with this short name |
+| `Polaron-0B03` | this local hides a field of the same name |
+| `Polaron-0B04` | this exception leaves the method without being declared |
+| `Polaron-0B05` | a pointer to a class usually points at one object, not at an array |
+| `Polaron-0B06` | this changes a copy, and the caller will not see it |
+| `Polaron-0B07` | the calling convention and the symbol it binds do not agree |
+| `Polaron-0B08` | this still works and is not going to keep working |
+| `Polaron-0B09` | these persistents will be told apart by identity, not by their contents |
+| `Polaron-0B0A` | this test reads a fixture whose setup it does not run |
+| `Polaron-1710` | a region has exactly one flavor |
+| `Polaron-1711` | a fixedslot/ring region needs its single element type |
+| `Polaron-1712` | growable does not apply here |
+| `Polaron-1713` | mark/rollback need a stack region |
+| `Polaron-1714` | this checkpoint belongs to another region |
+| `Polaron-1715` | a ring region auto-evicts; individual delete is not allowed |
+| `Polaron-1717` | use of a variable after it was extracted from its region |
+| `Polaron-1718` | cannot extract an object whose field lives in the same region |
+| `Polaron-1719` | a flavor modifier only qualifies a region |
+| `Polaron-1720` | an `extract` result must be bound |
+| `Polaron-1721` | this hands out a pointer to storage that is about to disappear |
+| `Polaron-1722` | nothing in the program says which of these two dies first |
+| `Polaron-1723` | past this point there is no proof to be had |
+| `Polaron-1724` | what this holds was freed by an earlier call |
+
+## 13.5 In the editor
 
 Forge surfaces the same codes end to end. Its live checker runs the compiler on the unsaved
 buffer, so diagnostics appear as you type; hovering a squiggle shows the code's why/fix/prevent

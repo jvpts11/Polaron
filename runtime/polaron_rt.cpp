@@ -4087,9 +4087,19 @@ void __polaron_reload_fn(void* fn, void** table, long long count) {
     // Through `__polaron_executable_path` rather than `/proc/self/exe` spelled here: FreeBSD does not
     // mount procfs by default, so the literal path opens nothing and `reimport` silently does not
     // reload -- a feature that fails by doing nothing is the worst way for one to fail.
+    // RELEASED THROUGH `__polaron_free`, NOT `std::free`.
+    //
+    // `__polaron_executable_path` allocates with `__polaron_malloc`, which puts a header in front of
+    // the pointer it hands back -- its own comment says so, because the caller usually wraps the result
+    // in a String and a String frees through `__polaron_free`. Passing that pointer to libc's free
+    // hands the allocator an address that is not the start of its block. On Linux that is an immediate
+    // segfault inside free(); on Windows it corrupted the heap quietly.
+    //
+    // Found by running the suite on a second operating system: three `unimport`/`reimport` tests
+    // crashed here, and the same line had been executing on Windows all along.
     char* selfPath = __polaron_executable_path();
     StdioFile exe(selfPath != nullptr && selfPath[0] != 0 ? selfPath : "/proc/self/exe", "rb");
-    std::free(selfPath);
+    __polaron_free(selfPath);
     if (!exe.isOpen()) {
         return;
     }
