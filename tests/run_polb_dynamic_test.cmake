@@ -77,4 +77,51 @@ if(NOT out STREQUAL EXPECTED)
     message(FATAL_ERROR "output mismatch:\n  got:      [${out}]\n  expected: [${EXPECTED}]")
 endif()
 
+# -DPOISON_CACHE=<bundle name>: run it a SECOND time with the loader's cached image ruined, and require
+# the same answer.
+#
+# The image is AOT-compiled once into the temp directory and reused from then on. It depends on the
+# bundle AND on the host it is linked against, and when the key did not say so, three programs rebuilt
+# after their directory was renamed found images from three days earlier, reused them, failed to load
+# them, and went on failing every run -- with no way to tell from inside the program that a file in
+# %TEMP% was the reason. A cache is an optimisation; it may never be why a correct program cannot run.
+#
+# Ruining the file rather than deleting it is deliberate: deleting only proves the loader can build an
+# image, which the first run already proved. What has to hold is that an image which cannot be loaded is
+# replaced rather than trusted.
+if(POISON_CACHE)
+    if(WIN32)
+        set(_tmp "$ENV{TEMP}")
+        set(_ext ".dll")
+    else()
+        set(_tmp "$ENV{TMPDIR}")
+        if(NOT _tmp)
+            set(_tmp "/tmp")
+        endif()
+        set(_ext ".so")
+    endif()
+    file(GLOB _images "${_tmp}/polaron_${POISON_CACHE}_*${_ext}")
+    if(NOT _images)
+        message(FATAL_ERROR "no cached image matched ${_tmp}/polaron_${POISON_CACHE}_*${_ext} -- the "
+                            "first run should have written one, so either the loader stopped caching "
+                            "or the name changed and this test is no longer looking at it")
+    endif()
+    foreach(img IN LISTS _images)
+        file(WRITE "${img}" "this is not a shared library")
+    endforeach()
+    list(LENGTH _images _n)
+    message(STATUS "poisoned ${_n} cached image(s); running again")
+
+    execute_process(COMMAND "${exe}" OUTPUT_VARIABLE out2 RESULT_VARIABLE rc2)
+    if(NOT rc2 EQUAL 0)
+        message(FATAL_ERROR "the second run failed (${rc2}) with a ruined cache image; the loader must "
+                            "rebuild an image it cannot load instead of trusting it\n  output: [${out2}]")
+    endif()
+    string(REGEX REPLACE "[ \t\r\n]+" " " out2 "${out2}")
+    string(STRIP "${out2}" out2)
+    if(NOT out2 STREQUAL EXPECTED)
+        message(FATAL_ERROR "second run output mismatch:\n  got:      [${out2}]\n  expected: [${EXPECTED}]")
+    endif()
+endif()
+
 message(STATUS "OK: ${out}")

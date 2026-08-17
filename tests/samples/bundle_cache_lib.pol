@@ -1,0 +1,14 @@
+program CacheLib;
+
+// A library bundle for the dynamic loader's CACHE test, and its own bundle rather than a reuse of
+// `calc`: the loader keys its compiled image by the bundle's name, so two tests sharing a bundle would
+// be poisoning each other's image under `ctest -j`.
+public bundle cache {
+    public namespace store {
+        public class Keep {
+            public static method twice(int x) returns int {
+                return x + x;
+            }
+        }
+    }
+}
