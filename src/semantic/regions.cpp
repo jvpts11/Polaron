@@ -14,6 +14,8 @@
 //
 // with §3 generating every error: a referring binding may only point at a region that outlives its
 // own.
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -872,6 +874,14 @@ void SemanticAnalyzer::checkKeptArguments(const std::string& ownerClass,
         if (fit != escapesToReceiverField_.end() && anyFieldOwns(ownerClass, fit->second)) {
             continue;
         }
+        // A WEAK SLOT CANNOT OUTLIVE WHAT IT POINTS AT, so there is nothing here to order. `weak T*`
+        // is nulled when its target dies -- that is the whole of the feature -- and the danger this
+        // rule exists to catch, a reference still reachable after its object is freed, is the one
+        // thing a weak reference cannot become. Requiring an ordering as well asked the author to
+        // prove by lifetime what they had already said in the type.
+        if (fit != escapesToReceiverField_.end() && allFieldsWeak(ownerClass, fit->second)) {
+            continue;
+        }
         // A CONTAINER BORROWS ITS ELEMENTS; THE OBJECT HOLDING THE CONTAINER MAY OWN THEM.
         // `ArrayList` frees its storage and nothing in it, so `add` is always a borrow when read on
         // its own -- but `this.rows.add(row)` inside `Table`, whose destructor walks those rows and
@@ -948,6 +958,13 @@ void SemanticAnalyzer::checkKeptArguments(const std::string& ownerClass,
         if (outlivesOrEqual(arg, recv)) {
             continue;
         }
+        // WHERE THE ARGUMENT LANDED, for the reader of a refusal they disagree with. A borrow rule
+        // that says "this is kept" without saying WHERE is a rule you cannot argue with: the answer
+        // turns on which field it went into and whether that field owns, so the field is printable.
+        if (std::getenv("POLARON_TRACE_KEEPS") != nullptr) {
+            std::fprintf(stderr, "keeps: %s.%s#%zu -> [%s]\n", ownerClass.c_str(), methodName.c_str(),
+                         i, fit == escapesToReceiverField_.end() ? "(unrecorded)" : fit->second.c_str());
+        }
         // TWO INCOMPARABLE OBJECTS ARE NOT AN ORDERING, so the sentence must not claim one. The
         // shared template reads "A outlives B, so what it keeps is freed first" -- true when one of
         // them is a frame, false here. Neither is known to outlive the other, and saying otherwise
@@ -1003,6 +1020,62 @@ bool SemanticAnalyzer::anyFieldOwns(const std::string& className,
         at = comma + 1;
     }
     return false;
+}
+
+// EVERY field the value landed in is a `weak` slot -- so the store needs no ordering. One weak and
+// one ordinary field is not enough: the ordinary one still holds a raw pointer after the target dies,
+// and that is the reference the rule is about. Element landings (`*field`) never qualify: `weak` is a
+// property of a slot in an object, and an array of them is not one.
+bool SemanticAnalyzer::allFieldsWeak(const std::string& className,
+                                     const std::string& fieldList) const {
+    const ClassInfo* ci = lookupClass(baseType(className));
+    if (ci == nullptr || fieldList.empty()) {
+        return false;
+    }
+    std::string::size_type at = 0;
+    while (at <= fieldList.size()) {
+        const std::string::size_type comma = fieldList.find(',', at);
+        const std::string one = fieldList.substr(
+            at, comma == std::string::npos ? std::string::npos : comma - at);
+        if (one.empty() || one[0] == '*') {
+            return false;
+        }
+        auto f = ci->fields.find(one);
+        if (f == ci->fields.end()) {
+            // A LANDING FIELD THAT IS NOT OURS. When a method hands its argument to another object --
+            // `this.ed.setHistory(h)` -- the summary carries the field name that other class stored it
+            // in, and only the name. So the name is looked up across the program, and it counts as
+            // weak only if EVERY class declaring it declares it weak: one ordinary field of that name
+            // anywhere and the answer is no, which is the conservative direction.
+            bool seen = false;
+            for (const auto& [cname, other] : classes_) {
+                auto of = other.fields.find(one);
+                if (of == other.fields.end()) {
+                    continue;
+                }
+                if (!of->second.isWeak) {
+                    return false;
+                }
+                seen = true;
+            }
+            if (!seen) {
+                return false;
+            }
+            if (comma == std::string::npos) {
+                break;
+            }
+            at = comma + 1;
+            continue;
+        }
+        if (!f->second.isWeak) {
+            return false;
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        at = comma + 1;
+    }
+    return true;
 }
 
 // ---- The lifetime of a VALUE -------------------------------------------------------------------
@@ -1090,6 +1163,13 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
                     anyFieldOwns(baseType(nw->className), fit->second)) {
                     continue;   // taken, not borrowed: the new object is the owner now
                 }
+                // A WEAK SLOT BINDS NOTHING EITHER. What the constructor kept in one is emptied when
+                // its target dies, so the object being built does not have to die first -- it is a
+                // viewer that survives what it views, which is the whole reason `weak` exists.
+                if (fit != escapesToReceiverField_.end() &&
+                    allFieldsWeak(baseType(nw->className), fit->second)) {
+                    continue;
+                }
                 const Lifetime arg = lifetimeOf(*nw->args[i]);
                 if (arg.kind == RegionKind::Unknown) {
                     continue;
@@ -1133,6 +1213,12 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
         // lowered it to, and Root until one has.
         if (auto acq = acquired_.find(id->name); acq != acquired_.end()) {
             return acq->second;
+        }
+        // A name bound to something another object owns lives in THAT object's region, which is what
+        // its declaration said. Below the fresh-object accumulator, because a local that was filled
+        // here has a bound of its own and this would overwrite it with the source's.
+        if (auto bor = borrowedRegion_.find(id->name); bor != borrowedRegion_.end()) {
+            return bor->second;
         }
         if (const LocalVar* local = lookupLocal(id->name); local != nullptr) {
             // A PARAMETER, OR A LOCAL HOLDING A HEAP OBJECT. Neither dies with this frame -- the

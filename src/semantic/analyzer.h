@@ -91,6 +91,10 @@ struct FieldInfo {
     // spec 37.5. Read by the interrupt check: `volatile` is one of the two ways to say "something
     // that can preempt me also touches this", and a handler may only reach state said to be shared.
     bool isVolatile = false;
+    // spec 19: `weak T*` -- a non-owning slot that is NULLED when the object it points at dies. The
+    // region binder reads it: a reference that cannot outlive its target has nothing to prove, so a
+    // store into one is not an escape and needs no ordering between the two objects.
+    bool isWeak = false;
     // THE WORD THE AUTHOR WROTE, and where they wrote it. Both were missing, which is why `private`
     // was enforced nowhere: the check was not merely absent, the information never reached the table
     // the analyzer consults. It is parsed, carried in the AST, written into the `.polh` and printed
@@ -836,6 +840,7 @@ private:
                             const std::vector<std::string>& paramTypes, bool calleeIsExtern);
     bool ownsField(const std::string& className, const std::string& field) const;
     bool anyFieldOwns(const std::string& className, const std::string& fieldList) const;
+    bool allFieldsWeak(const std::string& className, const std::string& fieldList) const;
     // WHICH PARAMETERS A METHOD FREES, keyed "Class.method". A recursive structure frees itself
     // through a helper -- `~TreeMap` calls `freeSubtree(this.root)` and never writes a `delete` --
     // so without this a tree owned nothing and every rotation in it was an unplaceable reference.
@@ -911,6 +916,11 @@ private:
     // from `this` -- was an unprovable borrow, and so was every other method in the language that
     // builds a collection and hands it back.
     mutable std::unordered_map<std::string, Lifetime> acquired_;
+    // A LOCAL THAT NAMES SOMETHING ANOTHER OBJECT OWNS -> that object's region. `Stir* pass =
+    // wild.stir()` is a borrow of a field `wild` frees, and the region analysis says so at the call;
+    // this is where that answer is kept, so the next line can compare `pass` against `wild` instead
+    // of against a region invented from the local's own name.
+    mutable std::unordered_map<std::string, Lifetime> borrowedRegion_;
     // A METHOD THAT HANDS BACK SOMETHING BORROWED FROM ONE OF ITS PARAMETERS, keyed "Class.method"
     // -> the parameter index. Nothing inside such a method is wrong; the whole question is at the
     // caller, where the source can be emptied while the result is still being read. Without this the
