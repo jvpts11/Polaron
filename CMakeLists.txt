@@ -165,6 +165,18 @@ if(POLARON_CLANG AND NOT POLARON_CLANG STREQUAL "clang")
             "version' inside yvals_core.h. Install a newer LLVM or set POLARON_CLANG to one.")
     endif()
 endif()
+# WHAT THE SHIPPED DRIVER LOOKS FOR IS NOT WHAT THIS BUILD USES. `POLARON_CLANG` is the clang this
+# build compiles the runtime with -- an absolute path, chosen and version-checked above. The same value
+# was also baked into the driver as the clang it should call at run time, which is right for a toolchain
+# staying on this machine and a lie in a tarball: it names a path on the machine that did the building.
+#
+# A distributable build sets `-DPOLARON_DEFAULT_CLANG=clang`, so the shipped driver resolves it through
+# the PATH of whoever installed it (and `POLARON_CLANG` in the environment still overrides that). Setting
+# `POLARON_CLANG=clang` instead -- the obvious-looking move -- breaks the build itself, because the tests
+# then invoke a bare name that CMake resolves against the source directory.
+if(NOT DEFINED POLARON_DEFAULT_CLANG)
+    set(POLARON_DEFAULT_CLANG "${POLARON_CLANG}")
+endif()
 configure_file(src/driver/config.h.in "${CMAKE_BINARY_DIR}/polaron_config.h" @ONLY)
 
 # The region core (runtime/polaron_region_core.hpp) is compiled TWICE: once into polaron_rt above, and once for
@@ -238,6 +250,9 @@ add_library(polaron_driver STATIC
     src/driver/semver.cpp
     src/driver/lockfile.cpp
     src/driver/discovery.cpp
+    # The bundle container: the driver reads an installed .polb to learn what it needs on the link
+    # line, for a library that arrived without its manifest.
+    src/bundle/polb.cpp
     src/driver/jsonout.cpp)
 target_include_directories(polaron_driver PUBLIC src "${CMAKE_BINARY_DIR}")
 

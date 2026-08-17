@@ -1193,6 +1193,26 @@ void CodeGenerator::Impl::fillCodeTable() {
     if (codeTableBase == nullptr) {
         return;
     }
+    // ASK THE MODULE FOR THEM AGAIN, because the strip may have deleted them.
+    //
+    // These two globals are declared before the bodies are emitted -- the code that reads the table
+    // has to be able to refer to them -- and then dead-stripping runs. They are `private`, so if no
+    // emitted code ended up referencing them (a program that declares an unimportable class and never
+    // reaches the code that uses the table), GlobalDCE deletes them and the cached pointers dangle.
+    // `setInitializer` through one of those writes into freed memory.
+    //
+    // It is silent almost always: the freed block usually still looks like a GlobalVariable and
+    // nothing notices. On glibc it eventually surfaced as `corrupted double-linked list` at the END of
+    // compilation, in a destructor, with nothing in the trace pointing here -- and only on two of 891
+    // samples, the two whose allocation pattern happened to put live heap metadata in that block.
+    //
+    // The line below this one already learned exactly this lesson about FUNCTIONS: "the module is the
+    // only thing that knows what is still here". It is just as true of the globals.
+    codeTableBase = module.getNamedGlobal("__polaron_code_base");
+    codeTableCount = module.getNamedGlobal("__polaron_code_count");
+    if (codeTableBase == nullptr || codeTableCount == nullptr) {
+        return;  // stripped, because nothing referenced them: there is no table to fill
+    }
     std::vector<llvm::Constant*> code;
     // WALK THE MODULE, not the `functions` map. This runs after dead-stripping, and anything the
     // strip deleted left a dangling `llvm::Function*` behind in that map -- reading it crashed

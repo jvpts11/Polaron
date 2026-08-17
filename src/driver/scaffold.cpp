@@ -56,7 +56,12 @@ int scaffold(const fs::path& dir, const std::string& name) {
         "[dependencies]\n\n"
         "[build]\n"
         "output = \"build-output/\"\n"
-        "target = \"x86_64-windows\"\n"
+        // No `target` line. An unset target is this machine, which is what a new project wants and
+        // what makes the same project build on Windows, Linux and macOS unchanged. The template wrote
+        // `target = "x86_64-windows"` into every project ever scaffolded -- harmless on Windows, and a
+        // request to cross-compile everywhere else.
+        //
+        //   target = "x86_64-linux"     # or aarch64-linux, x86_64-macos, aarch64-windows, or a triple
         "freestanding = false\n";
 
     const std::string prog = identifierFrom(name);

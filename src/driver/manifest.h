@@ -45,7 +45,11 @@ struct Manifest {
     std::string languageVersion;
     std::string entry;
     std::string outputDir = "build-output/";
-    std::string target = "x86_64-windows";
+    // [build] target = "x86_64-linux" | "aarch64-windows" | a full LLVM triple. EMPTY MEANS THIS
+    // MACHINE. It used to default to "x86_64-windows", which read as a target and behaved as a
+    // default, and the two only agree on Windows: elsewhere a project that named no target resolved
+    // its foreign libraries as Windows ones and asked the linker for kernel32.
+    std::string target;
     std::string sysroot;                 // cross-compile sysroot ([build] sysroot = "..."); empty = host
     std::string environment;             // optional shared environment ([build] environment = "...")
     bool freestanding = false;

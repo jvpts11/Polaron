@@ -13,7 +13,9 @@ namespace {
 constexpr char kMagic[4] = {'P', 'O', 'L', 'B'};
 // 2: the header gained the ABI revision and the producer string. A version-1 container is refused
 // rather than read, because from the inserted field onward its bytes no longer mean what they meant.
-constexpr std::uint16_t kFormatVersion = 2;
+//   3  adds the foreign-library section: what this bundle needs on the link line, and what each of its
+//      logical names means per platform, so a bundle installed without its manifest still links
+constexpr std::uint16_t kFormatVersion = 3;
 
 // A self-contained SHA-256 (FIPS 180-4). The .polb container has no LLVM dependency, so the format
 // library links into both the compiler and the (LLVM-free) runtime loader. Verified by a
@@ -182,6 +184,12 @@ std::string writePolb(const PolbBundle& bundle) {
     for (const std::string& s : bundle.vtableSlots) {
         putStr16(out, s);
     }
+    putU16(out, static_cast<std::uint16_t>(bundle.foreignLibs.size()));
+    for (const PolbForeignLib& fl : bundle.foreignLibs) {
+        putStr16(out, fl.logical);
+        putStr16(out, fl.platform);
+        putStr16(out, fl.file);
+    }
     return out;
 }
 
@@ -223,6 +231,14 @@ bool readPolb(std::string_view bytes, PolbBundle& out) {
     const std::uint16_t vtCount = r.u16();
     for (std::uint16_t i = 0; i < vtCount && r.ok; ++i) {
         out.vtableSlots.push_back(r.str(r.u16()));
+    }
+    const std::uint16_t flCount = r.u16();
+    for (std::uint16_t i = 0; i < flCount && r.ok; ++i) {
+        PolbForeignLib fl;
+        fl.logical = r.str(r.u16());
+        fl.platform = r.str(r.u16());
+        fl.file = r.str(r.u16());
+        out.foreignLibs.push_back(std::move(fl));
     }
     return r.ok;
 }

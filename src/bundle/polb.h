@@ -20,6 +20,24 @@ struct PolbDep {
     std::array<std::uint8_t, 32> fingerprint{};
 };
 
+// WHAT THIS BUNDLE NEEDS ON THE LINK LINE, and what that name means on each platform.
+//
+// A class says which foreign library its externs come from -- `class Wgl library OpenGL` -- and the
+// logical name is deliberately ours, an identifier, the same everywhere, so it can be checked against
+// the declaration that uses it. The FILE it resolves to is theirs: `opengl32.lib` on Windows,
+// `libGL.so.1` on Linux, unspellable as an identifier and different per platform.
+//
+// That mapping is written in the library's manifest, and it used to stay there -- which made the bundle
+// only half a distributable thing. A consumer that installed a `.polb` by hand, without the manifest
+// beside it, linked nothing: the logical name resolved to itself and the linker went looking for
+// `OpenGL.lib`, a file nobody has ever named. The bundle carries the code, the types and the
+// fingerprint; the two or three lines that say how to link it belong in the same box.
+struct PolbForeignLib {
+    std::string logical;   // the name the source declares: `library OpenGL`
+    std::string platform;  // "windows" | "linux" | "macos", or "*" for every platform
+    std::string file;      // what the linker is given; empty means "needs no flag here"
+};
+
 // HOW AN OBJECT IS LAID OUT, as a number.
 //
 // The fingerprint verifies the INTERFACE -- it is a hash of the .polh text -- and that is not the same
@@ -56,6 +74,9 @@ struct PolbBundle {
     // A consumer seeds its own slot numbering from this so cross-bundle virtual dispatch hits the
     // same slots the bundle's baked-in vtables use (spec 2.5 ABI).
     std::vector<std::string> vtableSlots;
+    // The foreign libraries this bundle's classes declare, and what each name means per platform, so a
+    // bundle can be linked by someone who has only the bundle. See PolbForeignLib.
+    std::vector<PolbForeignLib> foreignLibs;
 
     static constexpr std::uint16_t kFreestanding = 1u << 0;
 };

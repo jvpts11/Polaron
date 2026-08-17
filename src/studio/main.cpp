@@ -144,7 +144,7 @@ AppState demoState() {
         m.environment = env;
         m.entry = "src/main.pol";
         m.languageVersion = "1.0";
-        m.target = "x86_64-windows";
+        m.target = "x86_64-windows";  // a sample row for the self-test's rendering, not a default
         return DiscoveredProject{dir, m};
     };
     AppState s;
