@@ -1,13 +1,14 @@
-<!-- Polaron — Linguagem De Programação 3. -->
-
 # Polaron
 
-**Polaron** (*Linguagem De Programação 3*) is an object-orientation–mandatory, manually
-memory-managed systems language that compiles to native code through LLVM. It aims to be
-as fast as C and C++ while being safer by construction — value semantics, no garbage
-collector, and no *exploitable* undefined behaviour.
+**High level, to the bare metal.**
+
+**Polaron** is an object-orientation–mandatory, manually memory-managed systems language that
+compiles to native code through LLVM. It aims to be as fast as C and C++ while being safer by
+construction — value semantics, no garbage collector, and no *exploitable* undefined behaviour.
 
 Created by João Victor Pereira Tavares.
+
+*Formerly `LDP3`, which was a placeholder and is now only the name of some old links.*
 
 ```polaron
 import System.IO.Console;
