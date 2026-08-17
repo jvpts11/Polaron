@@ -1410,6 +1410,7 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         // and already long enough that a reader cannot check it at a glance.
                         info.fields[f->name].visibility = f->visibility;
                         info.fields[f->name].owner = cls.name;
+                        info.fields[f->name].isWeak = f->isWeak;
                         // `atomic<T>` is one `lock`-prefixed instruction when T fits in a word, and
                         // a call to `__atomic_load`/`__atomic_store` when it does not. Bare metal
                         // there is nothing to link those against, so the declaration compiles and
@@ -2830,12 +2831,35 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                         // element; `this.filter = f` is a field.
                         const std::string landing =
                             (intoElement ? "*" : "") + tmem->member;
-                        std::string& seen = escapeScanFieldFor_[p];
-                        if (seen.empty()) {
-                            seen = landing;
-                        } else if (("," + seen + ",").find("," + landing + ",") ==
-                                   std::string::npos) {
-                            seen += "," + landing;
+                        // A COPY IS NOT A KEEP. `this.seenRev = shared.revision()` reads an int out of
+                        // the parameter and stores the NUMBER: nothing of the parameter is reachable
+                        // through that field afterwards, and it cannot dangle. Recorded anyway, it went
+                        // into the landing list beside the real reference and broke both of the call
+                        // site's exemptions -- the field it named neither owns anything nor is weak, so
+                        // an ordinary `attachDocument(shared)` was refused because of an integer.
+                        bool landingAliases = true;
+                        if (!intoElement) {
+                            if (const auto* tobj =
+                                    dynamic_cast<const ast::IdentifierExpr*>(tmem->object.get());
+                                tobj != nullptr && tobj->name == "this") {
+                                const std::string owner =
+                                    escapeScanKey_.substr(0, escapeScanKey_.rfind('.'));
+                                if (const ClassInfo* ci = lookupClass(baseType(owner)); ci != nullptr) {
+                                    auto fld = ci->fields.find(tmem->member);
+                                    if (fld != ci->fields.end()) {
+                                        landingAliases = isRefType(fld->second.type);
+                                    }
+                                }
+                            }
+                        }
+                        if (landingAliases) {
+                            std::string& seen = escapeScanFieldFor_[p];
+                            if (seen.empty()) {
+                                seen = landing;
+                            } else if (("," + seen + ",").find("," + landing + ",") ==
+                                       std::string::npos) {
+                                seen += "," + landing;
+                            }
                         }
                     }
                 } else if (p < static_cast<int>(escapeScanParamTargets_.size()) &&
@@ -4886,6 +4910,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     deleted_.clear();
     alreadyOwnedHere_.clear();
     acquired_.clear();
+    borrowedRegion_.clear();
     borrowsFrom_.clear();
     invalidatedAt_.clear();
     parentRegion_.clear();

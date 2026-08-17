@@ -511,6 +511,23 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         activationOwned_.erase(vd->name);
         acquired_.erase(vd->name);
+        borrowedRegion_.erase(vd->name);
+        // A NAME BOUND TO SOMETHING ANOTHER OBJECT OWNS KEEPS THAT OBJECT'S REGION.
+        //
+        // `Stir* pass = wild.stir();` -- the accessor hands back a field `wild` frees in its
+        // destructor, so the value lives in `wild`'s region and the analysis already says so at the
+        // call. What it did not do was remember it: the next line read `pass` as a local like any
+        // other, whose region is the name itself, and `pass.ready(wild, ...)` then compared two
+        // unrelated objects and refused a program whose ordering was written down one line above.
+        // The lower bound is exactly the induction the borrowed-field rule runs on, one indirection
+        // further out.
+        if (vd->init != nullptr && (dynamic_cast<const ast::CallExpr*>(vd->init.get()) != nullptr ||
+                                    dynamic_cast<const ast::MemberExpr*>(vd->init.get()) != nullptr)) {
+            if (const Lifetime from = lifetimeOf(*vd->init);
+                from.kind == RegionKind::Object && !from.owner.empty() && from.owner != vd->name) {
+                borrowedRegion_[vd->name] = from;
+            }
+        }
         // A local bound to a heap allocation MADE HERE starts unconstrained: nothing owns it yet, so
         // nothing can outlive it. Each borrow stored into it lowers that bound (see `acquired_`).
         if (const auto* fresh = dynamic_cast<const ast::NewExpr*>(vd->init.get());

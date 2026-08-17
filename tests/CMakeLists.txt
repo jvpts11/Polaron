@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.131")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.132")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -37,7 +37,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.131")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.132")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -2982,6 +2982,19 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/shadow_stdlib_name.pol"
             "-DEXPECTED=green=2 red=1 size=4 count=3 after=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # AND READING ITS OWN FIELDS WITHOUT `this.`. The pass that makes the prefix optional kept one
+        # flat name -> declaration map, so a type sharing a short name with the library gathered the
+        # OTHER declaration's fields: every bare field in its own methods came out as an undeclared
+        # variable, on a line whose field is declared four lines above. Found in a real program, where
+        # it read as "structs do not support the optional prefix" -- the struct was a coincidence.
+        add_test(NAME codegen_shadow_stdlib_bare_field_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/shadow_stdlib_bare_field.pol"
+            "-DEXPECTED=x=3 total=7"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
