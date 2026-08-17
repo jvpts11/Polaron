@@ -583,3 +583,51 @@ collection through these two interfaces (spec 34).
 Public members:
 
 - `method iterator() returns Iterator<T>` — returns a fresh iterator over the elements.
+
+---
+
+## The arithmetic and reference exceptions
+
+Four more of the runtime's own, thrown by the language rather than by a library. They are ordinary
+`Exception` subclasses, so `catch` and `throws` treat them like any other — what is unusual is who
+raises them.
+
+| Type | Raised when |
+|---|---|
+| `NullReferenceException` | A `nullable` reference is dereferenced while it is null. |
+| `ArithmeticException` | The base of the two below. |
+| `DivideByZeroException` | Integer division or remainder by zero. **Checked, not undefined** — see the no-UB principle in §8. |
+| `OverflowException` | A checked arithmetic operation left the range of its type. |
+
+Polaron does not have a value that means "this went wrong": a division by zero is not a NaN travelling
+through the program to surface somewhere unrelated. It is an exception at the instruction that did it.
+
+---
+
+## `Parallel`
+
+```polaron
+import System.Concurrency.Parallel;
+```
+
+Data parallelism over a range, on the pool `Thread` uses.
+
+- `public static method forRange(int from, int to, function<void, int> body) returns void` — runs
+  `body(i)` for every `i`, shared between hardware threads.
+- `public static method forChunks(int from, int to, function<void, int, int> body) returns void` —
+  runs `body(lo, hi)` once per chunk, which is what a loop with per-hand scratch state wants: one
+  allocation per chunk instead of one per element.
+
+## `Shared` (interface)
+
+An empty interface, and the whole of what it says is **that its author thought about it**.
+
+The region binder refuses to hand one object to two hands at once, which is right by default and
+wrong for the one case a worker pool is made of: a value everybody reads and nobody writes, or one
+whose writes are already atomic. Marking a type `Shared` is a sentence somebody has to write, so it
+cannot be arrived at by accident — which is the difference between this and a flag that turns the
+check off.
+
+```polaron
+public class Palette implements Shared { ... }   // read by every hand, written by none
+```

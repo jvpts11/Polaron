@@ -985,3 +985,34 @@ code (and this stdlib) self-test.
 - `public method failed() returns int` — number of checks failed.
 - `public method allPassed() returns boolean` — whether every check held.
 - `public method report() returns void` — print the "N passed, M failed" summary.
+
+---
+
+## Retry
+
+```polaron
+import System.App.Retry;
+```
+
+The counter beside `CircuitBreaker` and `TokenBucket`: how many attempts are left, kept as state
+rather than as a loop variable somebody re-derives at each call site.
+
+- `public constructor Retry(int maxAttempts)`.
+- `public method allow() returns boolean` — is there another attempt to be had. **Asked before
+  trying**, so a `maxAttempts` of 3 means three calls and not four.
+- `public method recordFailure() returns void` / `recordSuccess() returns void` — the outcome; a
+  success resets the count.
+
+## Style / TextTable
+
+```polaron
+import System.Terminal.Style;
+import System.Terminal.TextTable;
+```
+
+What a command-line tool needs to be readable, and nothing more.
+
+| Type | Members |
+|---|---|
+| `Style` | `red`, `green`, `yellow`, `blue`, `bold`, `dim` … each wrapping a string in an ANSI sequence, plus `enabled()` / `enable(boolean)` — **one switch**, so a program redirected to a file turns colour off in one place instead of at every call site. |
+| `TextTable` | `column(title, rightAligned)`, `row(cells)`, `rowCount()`, `render()` — columns measured across every row so the output lines up. |

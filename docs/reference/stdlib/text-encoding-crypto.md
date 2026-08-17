@@ -510,3 +510,49 @@ parentheses, by recursive descent. Spaces are ignored; division truncates toward
 
 - `public constructor Calculator(String expr)` — creates an evaluator over the expression string `expr`.
 - `public method evaluate() returns int` — parses and evaluates the expression, returning the integer result.
+
+---
+
+## Sha384 / Sha512
+
+```polaron
+import System.Security.Sha384;
+import System.Security.Sha512;
+```
+
+The other two members of the SHA-2 family, with the same shape as `Sha256`: a 48- and a 64-byte
+digest over the 64-bit compression function. They are here because certificates ask for them by
+name — a chain signed with SHA-384 cannot be verified with anything else.
+
+- `public static method ofString(String s) returns int[]` — the digest of `s`'s bytes.
+- `public static method ofBytes(int[] data, int count) returns int[]` — the digest of `count` bytes.
+- `public static method hex(int[] digest) returns String` — the usual lower-case rendering.
+
+---
+
+## Deflate / Inflate / Gzip
+
+```polaron
+import System.Compress.Gzip;
+```
+
+Real DEFLATE (RFC 1951) and the gzip container (RFC 1952), written in Polaron — the compression a
+`.gz` file, an HTTP `Content-Encoding: gzip` body and a PNG's pixel data are all made of. `Zlib`
+above is the third container over the same codec.
+
+| Type | Members |
+|---|---|
+| `Deflate` | `bytes(int[] data, int len) returns int[]`, `text(String s) returns int[]` — compressed, raw stream. |
+| `Inflate` | `bytes(int[] data, int len) returns int[]`, `text(int[] data, int len) returns String` — back again. |
+| `Gzip` | `compress(int[] data, int len)`, `compressText(String s)`, `decompress(int[] data, int len)` — the same with a gzip header, checksum and length. |
+| `Crc32` | `ofBytes(int[] data, int count) returns long`, `ofString(String s) returns long` — the checksum gzip and PNG both carry. |
+
+### `ByteArray` and `ByteSink`
+
+The two helpers the codecs are written against, useful anywhere bytes are being built:
+
+- `ByteArray.of(String s) returns int[]` — a string's bytes; `ByteArray.text(int[] data, int count)`
+  turns them back.
+- `ByteSink` — a growable byte buffer: `add(b)`, `size()`, `at(i)`, `toArray()`, and
+  `repeatFrom(distance, count)`, which is the back-reference copy every LZ-family decoder needs and
+  the one place an off-by-one silently produces plausible garbage.

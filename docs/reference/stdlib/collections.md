@@ -531,3 +531,53 @@ A map that remembers insertion order (spec 34.1): a `HashMap` for lookup plus a 
 | `public method size() returns int` | Number of entries. |
 | `public method isEmpty() returns boolean` | True when the map has no entries. |
 | `public method keysInOrder() returns ArrayList<K>` | Keys in the order they were first inserted. |
+
+---
+
+## Stream&lt;T&gt; — the lazy half of the pipeline
+
+```polaron
+import System.Collections.Stream;
+```
+
+`ArrayList`'s `map`/`filter`/`reduce` are eager: each one builds a list. A `Stream` is the same
+vocabulary without the intermediate lists — it pulls one element at a time, which is what makes a
+pipeline over a large source (or an endless one) affordable.
+
+| Type | What it is |
+|---|---|
+| `Stream<T>` | The base: `next()`, `hasNext()`, and the operators below, each answering another `Stream`. |
+| `TakeStream<T>` | `take(n)` — the first `n`, then done. |
+| `SkipStream<T>` | `skip(n)` — everything after the first `n`. |
+| `TakeWhileStream<T>` | `takeWhile(pred)` — up to the first element that fails the test, and no further. It caches one element, because deciding to stop means having looked. |
+| `toList()` | Back to an `ArrayList` when the result is small and wanted whole. |
+
+The three wrapper types are public because a `Stream` is extensible: a source of your own extends
+`Stream<T>` and the whole vocabulary applies to it.
+
+## Hashing
+
+```polaron
+import System.Collections.Hashing;
+```
+
+- `public static method mix(long h) returns long` — the avalanche step the hashed containers use.
+
+Exposed because a type writing its own `hash()` should mix with the same function the tables do:
+a hash that is merely *different* from the table's expectation clusters, and clustering is a
+performance bug that looks like a data problem.
+
+## Ints
+
+```polaron
+import System.Collections.Ints;
+```
+
+Primitive-array helpers that do not go through the generic containers — no boxing, no `equalsKey`:
+
+- `public static method sort(int[] a) returns void` — in place.
+- `public static method binarySearch(int[] a, int key) returns int` — the index, or negative.
+- `public static method swap(int[] a, int i, int j) returns void`.
+
+`Arrays` beside it is the general form (`sort`, `reverse`, `shuffle`, `contains`, `indexOf`) over any
+array — including one of objects, which is what nothing could sort before it existed.

@@ -731,3 +731,46 @@ Public members:
 
 - `public constructor JsonParser(String src)` — create a parser positioned at the start of `src`.
 - `public method parseValue() returns Json` — parse the next JSON value at the current position.
+
+---
+
+## Toml
+
+```polaron
+import System.Formats.Toml;
+```
+
+- `public static method parse(String src) returns Json` — a TOML document as a `Json` tree.
+
+Tables, dotted keys, arrays, inline tables, the four scalar kinds and comments. It answers `Json`
+rather than a type of its own so that everything already written against `Json` — `JsonPointer`,
+the getters, the printer — works on a TOML file without a second API. The toolchain's own
+`polaron.toml` is read this way.
+
+## Yaml
+
+```polaron
+import System.Formats.Yaml;
+```
+
+- `public static method parse(String src) returns Json` — a YAML document as a `Json` tree.
+
+The subset that configuration actually uses: nested mappings by indentation, sequences, scalars,
+quoted strings and comments. Not the whole specification — anchors, tags and flow-style edge cases
+are out — and it says so rather than half-supporting them.
+
+## Xml
+
+```polaron
+import System.Formats.Xml;
+```
+
+A small XML tree: elements, attributes and text, with `parse` producing a node and each node
+answering `name()`, `text()`, `attribute(name)`, and its children.
+
+> **Children are a sibling chain and not an `ArrayList<Xml>`**, and `Json` next door made the same
+> choice for the same reason: a container of the type being declared is a generic instantiation over
+> it, that instantiation reaches `indexOf`, which calls `equalsKey`, which resolves onto `Object` —
+> a class a freestanding build does not emit. The list version broke every bare-metal program in the
+> suite with a message about `equalsKey`, pointing into the standard library, from a prelude type
+> the kernel never mentions.

@@ -704,3 +704,42 @@ Members:
 - `public method subscribe(function<void, String> h) returns void` — register a String-taking handler.
 - `public method emit(String arg) returns void` — call every subscribed handler with `arg`.
 - `public method count() returns int` — number of subscribers.
+
+---
+
+## Quadtree / Octree
+
+```polaron
+import System.Spatial.Quadtree;
+import System.Spatial.Octree;
+```
+
+The other answer to "what is near this point". `SpatialGrid` above is a uniform grid, which is the
+right structure for a uniform population and the wrong one for a world where everything is in one
+town: give it that and it becomes a linear scan of one cell. A tree subdivides where the points are.
+
+| Type | Members |
+|---|---|
+| `Quadtree` | `Quadtree(centreX, centreY, halfSize)`, `insert(x, y, id)`, `size()`, and the range and radius queries. |
+| `Octree` | The same in three dimensions: `Octree(centreX, centreY, centreZ, halfSize)`, `insert(x, y, z, id)`, `size()`. |
+
+Nodes are stored as centre and half-extent rather than min/max: it is cheaper to test, and it is what
+subdivision produces anyway.
+
+`Spatial` beside them holds the growth helpers the trees are built on (`growInts`, `growDoubles`) —
+public because a structure of your own in the same style wants the same two.
+
+## Noise
+
+```polaron
+import System.Spatial.Noise;
+```
+
+Gradient (Perlin-style) noise, seeded, for terrain, textures and anything that should look natural
+rather than random.
+
+- `public constructor Noise(int seed)` — a permutation table from the seed; the same seed is the same
+  field, forever, which is what makes a generated world reproducible.
+- `public method at(double x, double y) returns double` — one octave, in [-1, 1].
+- `public method fractal(double x, double y, int octaves, double persistence) returns double` —
+  octaves summed with falling amplitude: the usual way to get coastlines out of it.
