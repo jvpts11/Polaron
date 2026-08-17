@@ -63,8 +63,15 @@ int scaffold(const fs::path& dir, const std::string& name) {
     const std::string main =
         "import System.IO.Console;\n"
         "program " + prog + ";\n\n"
-        "public bundle main {\n"
-        "    public namespace app {\n"
+        // PascalCase, because the compiler asks for it. The template said `bundle main` and
+        // `namespace app`, so the first thing anyone saw after `polaron new` was two warnings about
+        // code they had not written -- from the tool that wrote it. A scaffold is the language's own
+        // example of itself and cannot be the first thing to break its conventions.
+        //
+        // The bundle takes the project's name rather than a generic one: it is the thing being built,
+        // and `bundle Main` beside `class Main` would put the same word on two different kinds.
+        "public bundle " + prog + " {\n"
+        "    public namespace App {\n"
         "        public class Main {\n"
         "            public static method main(string[] args) returns void {\n"
         "                System.IO.Console.println(\"Hello from " + prog + "!\");\n"
