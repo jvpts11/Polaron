@@ -1,0 +1,67 @@
+import System.IO.Console;
+program ShadowStdlibBareField;
+
+// A SHADOWING TYPE READING ITS OWN FIELDS WITHOUT `this.`
+//
+// A name shared only with the standard library is deliberately NOT renamed: yours wins, and the
+// analyzer picks by namespace and imports. The pass that makes `this.` optional did not have that
+// rule. It kept one flat name -> declaration map, so a program declaring a `Turn` beside the
+// library's `Units.Turn` gathered the OTHER type's fields, and every bare field in its own methods
+// came out as `use of undeclared variable 'ca'` -- pointing at a line whose field is declared four
+// lines above it, in a file that never mentioned Units.
+//
+// It reads as "structs do not support the optional prefix", which is what it looked like when a real
+// program hit it, and is why this test exists: the type below is a struct AND shadows a library name,
+// and only the second half is the cause. The class underneath it shadows a library name too and reads
+// a field it INHERITS, which is the other half of the lookup -- a base resolved from the namespace
+// that wrote it rather than from whichever declaration a flat map happened to hold last.
+//
+// Prints: x=3 total=7
+public bundle App {
+    public namespace Own {
+
+        public struct Turn {
+            public mutable float ca;
+            public mutable float sa;
+
+            public constructor Turn(float ca, float sa) {
+                this.ca = ca;
+                this.sa = sa;
+            }
+
+            public method x(float lx, float ly) returns float {
+                return lx * ca - ly * sa;
+            }
+        }
+
+        public class Shape {
+            protected mutable int sides;
+
+            public constructor Shape(int sides) {
+                this.sides = sides;
+            }
+        }
+
+        public class Color extends Shape {
+            private mutable int shade;
+
+            public constructor Color(int shade) {
+                super(2);
+                this.shade = shade;
+            }
+
+            public method total() returns int {
+                return shade + sides;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Turn t = new Turn(1.0, 0.0) on stack;
+                Color c = new Color(5) on stack;
+                System.IO.Console.printf("x=%d total=%d\n", cast<int>(t.x(3.0, 4.0)), c.total());
+                return;
+            }
+        }
+    }
+}

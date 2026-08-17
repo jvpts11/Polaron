@@ -18,18 +18,54 @@ struct Members {
     std::set<std::string> staticFields;
 };
 
-using ClassIndex = std::map<std::string, const ast::ClassDecl*>;
+// WHICH `Turn` -- yours or the standard library's.
+//
+// A name shared only with the standard library is deliberately NOT renamed (see qualifyNamespaces):
+// yours wins, and the analyzer picks by namespace and imports. A flat name->declaration map cannot
+// express that, and the one this pass used answered with whichever declaration it happened to index
+// last. A program that declared a `Turn`, a `Color` or a `Scanner` beside the library's then gathered
+// the OTHER type's fields, and every bare field in its own methods came out as "use of undeclared
+// variable 'ca'" -- pointing at a line where the field is declared four lines above.
+//
+// So the lookup is by namespace first, and the flat fallback prefers the program's own declaration
+// over the prelude's, which is the same rule the rest of the compiler follows.
+struct ClassIndex {
+    std::map<std::string, std::map<std::string, const ast::ClassDecl*>> byNs;
+    std::map<std::string, const ast::ClassDecl*> program;
+    std::map<std::string, const ast::ClassDecl*> prelude;
 
-void gather(const std::string& typeName, const ClassIndex& index, Members& out,
-            std::set<std::string>& seen) {
-    if (!seen.insert(typeName).second) {
+    void add(const std::string& ns, const ast::ClassDecl* c, bool isPrelude) {
+        byNs[ns][c->name] = c;
+        auto& flat = isPrelude ? prelude : program;
+        flat.emplace(c->name, c);  // first declaration of a name wins within its half
+    }
+
+    // `ns` is the namespace the name was WRITTEN in, which is where it must be looked for first.
+    const ast::ClassDecl* find(const std::string& name, const std::string& ns) const {
+        if (auto n = byNs.find(ns); n != byNs.end()) {
+            if (auto it = n->second.find(name); it != n->second.end()) {
+                return it->second;
+            }
+        }
+        if (auto it = program.find(name); it != program.end()) {
+            return it->second;
+        }
+        if (auto it = prelude.find(name); it != prelude.end()) {
+            return it->second;
+        }
+        return nullptr;
+    }
+};
+
+// The type itself is walked from the DECLARATION IN HAND, never looked up by name: the walk knows
+// exactly which class it is on, and asking a map to tell it again is where the wrong answer got in.
+// Only a superclass or an interface is a name, and those are resolved in the namespace that wrote them.
+void gather(const ast::ClassDecl* decl, const std::string& ns, const ClassIndex& index, Members& out,
+            std::set<const ast::ClassDecl*>& seen) {
+    if (decl == nullptr || !seen.insert(decl).second) {
         return;
     }
-    auto it = index.find(typeName);
-    if (it == index.end()) {
-        return;
-    }
-    const ast::ClassDecl& c = *it->second;
+    const ast::ClassDecl& c = *decl;
     for (const ast::MemberPtr& m : c.members) {
         if (const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get())) {
             if (f->isStatic) {
@@ -51,10 +87,10 @@ void gather(const std::string& typeName, const ClassIndex& index, Members& out,
         }
     }
     if (!c.superclass.empty()) {
-        gather(c.superclass, index, out, seen);
+        gather(index.find(c.superclass, ns), ns, index, out, seen);
     }
     for (const std::string& i : c.interfaces) {
-        gather(i, index, out, seen);
+        gather(index.find(i, ns), ns, index, out, seen);
     }
 }
 
@@ -463,7 +499,7 @@ bool resolveImplicitThis(ast::Program& program) {
     for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
-                index[c.name] = &c;
+                index.add(ns.name, &c, b.isPrelude);
                 typeNames.insert(c.name);
             }
             for (auto& e : ns.enums) {
@@ -517,8 +553,8 @@ bool resolveImplicitThis(ast::Program& program) {
         for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
                 Members members;
-                std::set<std::string> seen;
-                gather(c.name, index, members, seen);
+                std::set<const ast::ClassDecl*> seen;
+                gather(&c, ns.name, index, members, seen);
                 doMembers(c.members, c.name, members);
                 auto hook = [&](std::unique_ptr<ast::Block>& blk) {
                     if (blk) {
