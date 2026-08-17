@@ -1,0 +1,63 @@
+import System.IO.Console;
+
+program Transformers;
+
+// A CONVERSION IS A RELATION BETWEEN TWO TYPES, AND IT DESERVES A NAME.
+//
+// Most languages make one side own the conversion: a constructor that takes the other type, or a
+// `toOther()` method. Either way the knowledge lives in one class and the other one is a stranger to
+// it. A `transformer` is the relation itself -- named, declared once, and implemented by both ends.
+//
+// `procedure into<Fahrenheit f>()` names its target AND binds it. `f` is not a Fahrenheit yet: it is
+// storage with no constructor run over it, which is why the body may write its private fields and why
+// every one of them must be assigned before the body ends -- the same rule a constructor passes, for
+// the same reason. That is what `entrusts` means, and why it is a different word from `applies`: the
+// type is handing over the right to establish its own invariants, which only it can agree to.
+//
+//   polaron run examples/transformers.pol
+//
+// Prints:
+//   100C is 212F
+//   212F is 100C
+public bundle Examples {
+    public namespace Convert {
+
+        public mutual transformer TConverter {
+            public procedure into<each Other>() returns Other;
+        }
+
+        public class Celsius entrusts TConverter {
+            private mutable int degrees;
+            public constructor Celsius(int degrees) { this.degrees = degrees; }
+            public method reading() returns int { return this.degrees; }
+
+            public procedure into<Fahrenheit f>() returns Fahrenheit {
+                f.degrees = itself.degrees * 9 / 5 + 32;
+                return f;
+            }
+        }
+
+        public class Fahrenheit entrusts TConverter {
+            private mutable int degrees;
+            public constructor Fahrenheit(int degrees) { this.degrees = degrees; }
+            public method reading() returns int { return this.degrees; }
+
+            public procedure into<Celsius f>() returns Celsius {
+                f.degrees = (itself.degrees - 32) * 5 / 9;
+                return f;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Celsius boiling = new Celsius(100);
+                Fahrenheit hot = boiling.into<Fahrenheit>();
+                System.IO.Console.printf("100C is %dF\n", hot.reading());
+
+                Celsius back = hot.into<Celsius>();
+                System.IO.Console.printf("212F is %dC\n", back.reading());
+                return;
+            }
+        }
+    }
+}

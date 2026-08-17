@@ -1,0 +1,77 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.HashMap;
+
+program Collections;
+
+// THE COLLECTIONS, AND THE FUNCTIONAL SURFACE ON TOP OF THEM.
+//
+// `ArrayList<T>` is a growable array; `HashMap<K, V>` a hash table. Both are ordinary Polaron classes
+// written in Polaron -- there is no privileged built-in container, and reading their source is a
+// reasonable way to learn the language.
+//
+// The interesting part is what sits on top: `filter`, `map`, `reduce`, `any`, `find`, `sortedBy`, each
+// taking a lambda. Because generics are monomorphized, `filter` on an `ArrayList<int>` compiles to a
+// loop over ints -- the lambda is not an object being called through a pointer.
+//
+//   polaron run examples/collections.pol
+//
+// Prints:
+//   numbers: 1 2 3 4 5 6
+//   evens: 2 4 6
+//   doubled evens: 4 8 12
+//   sum of everything: 21
+//   any above five? 1
+//   ana is 31, bruno is 24
+//
+// (A boolean interpolates as 1 or 0, the same way it prints with %d.)
+public bundle Examples {
+    public namespace Data {
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<int> numbers = new ArrayList<int>() on heap;
+                for (mutable int i = 1; i <= 6; i++) {
+                    numbers.add(i);
+                }
+
+                System.IO.Console.printf("numbers:");
+                numbers.forEach(lambda(int x) returns void { System.IO.Console.printf(" %d", x); });
+                System.IO.Console.println("");
+
+                mutable ArrayList<int> evens =
+                    numbers.filter(lambda(int x) returns boolean { return x % 2 == 0; });
+                System.IO.Console.printf("evens:");
+                evens.forEach(lambda(int x) returns void { System.IO.Console.printf(" %d", x); });
+                System.IO.Console.println("");
+
+                mutable ArrayList<int> doubled =
+                    evens.map<int>(lambda(int x) returns int { return x * 2; });
+                System.IO.Console.printf("doubled evens:");
+                doubled.forEach(lambda(int x) returns void { System.IO.Console.printf(" %d", x); });
+                System.IO.Console.println("");
+
+                int total = numbers.reduce<int>(0, lambda(int acc, int x) returns int { return acc + x; });
+                System.IO.Console.println($"sum of everything: {total}");
+
+                boolean big = numbers.any(lambda(int x) returns boolean { return x > 5; });
+                System.IO.Console.println($"any above five? {big}");
+
+                // A map from text to number. `get` answers the value; ask `containsKey` first when the
+                // key may be absent.
+                mutable HashMap<String, int> ages = new HashMap<String, int>() on heap;
+                ages.put("ana", 31);
+                ages.put("bruno", 24);
+                int ana = ages.get("ana");
+                int bruno = ages.get("bruno");
+                System.IO.Console.println($"ana is {ana}, bruno is {bruno}");
+
+                delete ages;
+                delete doubled;
+                delete evens;
+                delete numbers;
+                return;
+            }
+        }
+    }
+}

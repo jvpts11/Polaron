@@ -1,0 +1,59 @@
+import System.IO.Console;
+import System.Text.Strings;
+import System.Text.StringBuilder;
+import System.Collections.ArrayList;
+
+program Strings;
+
+// TEXT: THE IMMUTABLE ONE, THE MUTABLE ONE, AND THE BUILDER.
+//
+//   String    immutable. Copying one is cheap and passing one around is safe: nothing can change it
+//             behind your back, which is why it is the default and what interpolation produces.
+//   string    mutable, for the cases where you really are editing in place.
+//   Strings   the operations that do not belong to any one piece of text -- split, join, padding,
+//             formatting, replacing.
+//
+// `$"..."` is interpolation: the expressions inside the braces are compiled into the concatenation,
+// not parsed at run time.
+//
+//   polaron run examples/strings.pol
+//
+// Prints:
+//   Polaron, high level to the bare metal
+//   upper: POLARON  length: 7
+//   split into 3: red|green|blue
+//   joined back: red-green-blue
+//   padded: [    42]
+//   built: a1b2c3
+public bundle Examples {
+    public namespace Text {
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                String name = "Polaron";
+                String slogan = "high level to the bare metal";
+                System.IO.Console.println($"{name}, {slogan}");
+                System.IO.Console.println($"upper: {name.toUpper()}  length: {name.length()}");
+
+                mutable ArrayList<String> parts = Strings.split("red,green,blue", ",");
+                System.IO.Console.println($"split into {parts.size()}: {parts.get(0)}|{parts.get(1)}|{parts.get(2)}");
+                String rejoined = Strings.join(parts, "-");
+                System.IO.Console.println($"joined back: {rejoined}");
+                delete parts;
+
+                String padded = Strings.padLeft("42", 6, " ");
+                System.IO.Console.println($"padded: [{padded}]");
+
+                // A builder, for when the text is assembled piece by piece: appending to a String
+                // would copy the whole thing every time.
+                mutable StringBuilder* sb = new StringBuilder() on heap;
+                for (mutable int i = 1; i <= 3; i++) {
+                    sb.append("abc".substring(i - 1, i)).append($"{i}");
+                }
+                System.IO.Console.println($"built: {sb.toString()}");
+                delete sb;
+                return;
+            }
+        }
+    }
+}

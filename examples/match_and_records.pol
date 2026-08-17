@@ -1,0 +1,76 @@
+import System.IO.Console;
+
+program MatchAndRecords;
+
+// SAYING WHAT A THING CAN BE, AND HAVING THE COMPILER HOLD YOU TO IT.
+//
+// `sealed ... permits` closes a hierarchy: these are the shapes, and there will be no others. That is
+// what lets `match` be checked for exhaustiveness -- a match over a sealed type with no `default` must
+// cover every permitted case, so adding a third shape turns every match that forgot it into a compile
+// error instead of a silent fall-through.
+//
+// A `record` is a small value type whose fields are its declaration: it exists to be built and read,
+// and it gets its constructor, its fields and its equality without any of them being written out.
+//
+//   polaron run examples/match_and_records.pol
+//
+// Prints:
+//   circle of radius 3 has area 27
+//   square of side 4 has area 16
+//   a point at 2,5
+//   the same point? 1
+public bundle Examples {
+    public namespace Shapes {
+
+        public sealed abstract class Shape permits Circle, Square {
+            public abstract method area() returns int;
+        }
+
+        public class Circle extends Shape {
+            public int radius;
+            public constructor Circle(int radius) { this.radius = radius; }
+            public override method area() returns int {
+                return 3 * this.radius * this.radius;   // pi is 3 here, to keep the output whole
+            }
+        }
+
+        public class Square extends Shape {
+            public int side;
+            public constructor Square(int side) { this.side = side; }
+            public override method area() returns int { return this.side * this.side; }
+        }
+
+        // A record: the fields ARE the declaration. Value semantics, and two records with equal fields
+        // are equal.
+        public record Point(int x, int y) {
+        }
+
+        public class Describe {
+            // No `default` arm, and none is needed: Shape is sealed, so these two ARE all of them.
+            public static method it(Shape* s) returns String {
+                match (s) {
+                    case Circle() { return "circle"; }
+                    case Square() { return "square"; }
+                }
+                return "unknown";
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape* c = new Circle(3) on heap;
+                Shape* q = new Square(4) on heap;
+                System.IO.Console.println($"{Describe.it(c)} of radius 3 has area {c.area()}");
+                System.IO.Console.println($"{Describe.it(q)} of side 4 has area {q.area()}");
+                delete c;
+                delete q;
+
+                Point p = new Point(2, 5);
+                Point same = new Point(2, 5);
+                System.IO.Console.println($"a point at {p.x},{p.y}");
+                System.IO.Console.println($"the same point? {p.equals(same)}");
+                return;
+            }
+        }
+    }
+}

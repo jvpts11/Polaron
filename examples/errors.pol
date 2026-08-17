@@ -1,0 +1,93 @@
+import System.IO.Console;
+import System.Errors.Result;
+
+program Errors;
+
+// TWO WAYS TO FAIL, AND WHEN EACH ONE IS RIGHT.
+//
+//   Result<T, E>   failure is an ordinary outcome the caller must look at. Parsing text, opening a
+//                  file that may not be there, a lookup that may miss. `match` makes the caller
+//                  handle both arms -- there is no way to read the value without saying what happens
+//                  when there is not one.
+//
+//   throw / catch  failure is exceptional: it means something the caller could not reasonably have
+//                  prevented, and unwinding past several frames is the point.
+//
+// The rule of thumb: if a caller could sensibly recover right there, return a Result. If the honest
+// answer is "this whole operation is off", throw.
+//
+//   polaron run examples/errors.pol
+//
+// Prints:
+//   parsed 42
+//   refused: not a number
+//   caught: division by zero
+public bundle Examples {
+    public namespace Failing {
+
+        public class Parsing {
+            // Returns the number, or says why not. The caller cannot get at the value by accident.
+            public static method toInt(String text) returns Result<int, String> {
+                if (text.isEmpty()) {
+                    return Err("empty");
+                }
+                mutable int value = 0;
+                for (mutable int i = 0; i < text.length(); i++) {
+                    char c = text.charAt(i);
+                    if (c < '0' || c > '9') {
+                        return Err("not a number");
+                    }
+                    value = value * 10 + (cast<int>(c) - cast<int>('0'));
+                }
+                return Ok(value);
+            }
+
+            public static method report(String text) returns void {
+                Result<int, String> r = Parsing.toInt(text);
+                match (r) {
+                    case Ok(int v) {
+                        System.IO.Console.println($"parsed {v}");
+                    }
+                    case Err(String why) {
+                        System.IO.Console.println($"refused: {why}");
+                    }
+                }
+                return;
+            }
+        }
+
+        // An exception is an ordinary class. It is thrown on the heap because it outlives the frame
+        // that made it -- unwinding is exactly the act of leaving that frame behind.
+        public class DivideByZero {
+            public String reason;
+            public constructor DivideByZero() { this.reason = "division by zero"; }
+        }
+
+        public class Divide {
+            // `throws` is part of the signature: a caller reading this line knows what can come out of
+            // it sideways. Leaving it off is a warning, not an error -- the compiler tells you the
+            // method throws something it has not declared, at the throw.
+            public static method by(int numerator, int denominator) throws(DivideByZero) returns int {
+                if (denominator == 0) {
+                    throw new DivideByZero() on heap;
+                }
+                return numerator / denominator;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Parsing.report("42");
+                Parsing.report("4x2");
+
+                try {
+                    int bad = Divide.by(10, 0);
+                    System.IO.Console.println($"unreachable {bad}");
+                } catch (DivideByZero e) {
+                    System.IO.Console.println($"caught: {e.reason}");
+                }
+                return;
+            }
+        }
+    }
+}
