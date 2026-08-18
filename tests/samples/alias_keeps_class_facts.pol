@@ -1,0 +1,63 @@
+import System.IO.Console;
+program AliasKeepsClassFacts;
+
+// A `typealias` ANYWHERE MUST NOT CHANGE WHAT ANY OTHER CLASS IS.
+//
+// `resolveTypeAliases` runs every class in the program through `cloneClass` the moment one alias is
+// declared -- and `cloneClass` listed the facts it copied, so everything added to `ClassDecl` after
+// it was written was dropped in silence. One alias in one file stripped `layout`, `union`,
+// `heap class`, `region class`, `final`, every transformer marker and every `applies`/`entrusts`
+// clause from EVERY class in the program.
+//
+// What it looked like from outside: `'Beast' implements 'ThreeToALine', which is not an interface`
+// -- a layout that had stopped being a layout. And once `applies` survived, the second half showed:
+// `cloneMember` was dropping `isProcedure`, so a `procedure` came back as a `method` and the checker
+// told a program to use the word it had already written.
+//
+// This program is the two of them together: an alias, a layout, and a transformer applied by the
+// struct the layout arranges. Prints: 3 4 / 7 / true
+
+public bundle Main {
+    public namespace App {
+
+        public typealias Count = int;
+
+        public layout TwoWide {
+            int x;
+            int y;
+        }
+
+        public transformer TSized {
+            public procedure area() returns int;
+
+            public procedure isBig() returns boolean {
+                return area() > 6;
+            }
+        }
+
+        public struct Dot implements TwoWide applies TSized {
+            public mutable int x;
+            public mutable int y;
+
+            public constructor Dot(int x, int y) {
+                this.x = x;
+                this.y = y;
+            }
+
+            public procedure area() returns int {
+                return x * y;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Dot d = new Dot(3, 4) on stack;
+                Count n = 7;
+                System.IO.Console.println($"{d.x} {d.y}");
+                System.IO.Console.println($"{n}");
+                System.IO.Console.println($"{d.isBig()}");
+                return 0;
+            }
+        }
+    }
+}

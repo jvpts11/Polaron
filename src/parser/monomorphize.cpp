@@ -995,6 +995,25 @@ ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
         }
         n->body = cloneBlock(x->body, s);
         n->annotations = cloneAnnotations(x->annotations, s);
+        // AND WHAT THE DECLARATION SAID ABOUT ITSELF THAT NOTHING ABOVE ASKED FOR -- the same rule
+        // as `cloneClass`: a clone that lists what it keeps forgets whatever is added later.
+        //
+        // `isProcedure` is the one that showed: `Duration applies TComparer` writes
+        // `public procedure compareTo(...)`, the clone came back saying `method`, and the checker
+        // told the prelude to write the word it had already written. It could not fire before,
+        // because `cloneClass` was dropping `applies` at the same time -- two silences that hid
+        // each other, and fixing one revealed the other.
+        n->isProcedure = x->isProcedure;
+        n->fromTransformer = x->fromTransformer;
+        n->boundTargetType = x->boundTargetType;
+        n->boundTargetVia = x->boundTargetVia;
+        n->composedVia = x->composedVia;
+        n->whenSubject = x->whenSubject;
+        n->whenTransformer = x->whenTransformer;
+        n->whenLoc = x->whenLoc;
+        n->law = cloneExpr(x->law.get(), s);   // an expression, so it is cloned rather than shared
+        n->escapeSummary = x->escapeSummary;
+        n->typeParamBounds = x->typeParamBounds;
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::FieldDecl*>(m)) {
@@ -1174,6 +1193,52 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     c.onFirstInstance = cloneHook(d.onFirstInstance);
     c.onLastInstanceDestroyed = cloneHook(d.onLastInstanceDestroyed);
     c.onClassUnload = cloneHook(d.onClassUnload);
+    // EVERYTHING ELSE THE DECLARATION SAID ABOUT ITSELF, and it has to be everything.
+    //
+    // A CLONE THAT FORGETS IS A LANGUAGE THAT FORGETS. This function listed the facts it copied, so
+    // a fact added to `ClassDecl` afterwards was dropped by it silently -- and `resolveTypeAliases`
+    // runs EVERY class in the program through here the moment a single `typealias` is declared
+    // anywhere. So one alias in one file quietly stripped `layout`, `union`, `heap class`,
+    // `region class`, `final`, every transformer marker, every `applies`/`entrusts`/`satisfies`
+    // clause and the FFI library name, from every class in the program.
+    //
+    // What it looked like: `'Beast' implements 'ThreeToALine', which is not an interface`. The
+    // layout was still declared with the word `layout`; the copy of it that reached the analyser had
+    // simply forgotten. Two of the losses -- `typeParams` and `typeParamVariance` -- were already
+    // being patched back at the one call site that noticed, which is this bug found once and
+    // repaired locally rather than here.
+    //
+    // The order below is `ClassDecl`'s own. A field added there and not here is the same defect
+    // again, and it will show up as a keyword that stops meaning anything in a program that happens
+    // to contain an alias.
+    c.isLayout = d.isLayout;
+    c.isUnion = d.isUnion;
+    c.isHeap = d.isHeap;
+    c.isRegionClass = d.isRegionClass;
+    c.isFinal = d.isFinal;
+    c.isPartial = d.isPartial;
+    c.isTransformer = d.isTransformer;
+    c.isMutualTransformer = d.isMutualTransformer;
+    c.isExplicitTransformer = d.isExplicitTransformer;
+    c.isCollectiveTransformer = d.isCollectiveTransformer;
+    c.isFreestandingTransformer = d.isFreestandingTransformer;
+    c.applies = d.applies;
+    c.appliesLocs = d.appliesLocs;
+    c.entrusts = d.entrusts;
+    c.satisfies = d.satisfies;
+    c.satisfiesLocs = d.satisfiesLocs;
+    c.layouts = d.layouts;
+    c.procCalls = d.procCalls;
+    c.appliedClosure = d.appliedClosure;
+    c.foreignLibrary = d.foreignLibrary;
+    c.errorTypes = d.errorTypes;
+    c.sourceText = d.sourceText;
+    c.nameLoc = d.nameLoc;
+    c.declEnd = d.declEnd;
+    // NOT `typeParams`/`typeParamVariance`: a clone is normally a CONCRETE instantiation, and
+    // carrying the parameters over would leave `Box$int` still claiming to be generic. The one
+    // caller that clones a template to keep it generic (`resolveTypeAliases`) restores them itself,
+    // and says so.
     return c;
 }
 
