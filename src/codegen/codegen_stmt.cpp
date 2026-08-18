@@ -281,6 +281,13 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
             llvm::Value* slot = createEntryAlloca(vd->name, lty);
             if (lty->isPointerTy()) {
                 builder.CreateStore(llvm::ConstantPointerNull::get(builder.getPtrTy()), slot);
+            } else if (isFixedArrayType(dt)) {
+                // `int[16] a;` IS the allocation -- there is no `new`, because the extent is in the
+                // type and the storage is right here. Zeroed, which is what `new int[16]()` does for
+                // the dynamic form: a declared array is sixteen zeroes in both spellings, and the
+                // "uninitialized is a real state" rule above cannot apply to a thing whose elements
+                // no definite-assignment proof could ever cover one at a time.
+                builder.CreateStore(llvm::Constant::getNullValue(lty), slot);
             }
             locals[vd->name] = LocalSlot{slot, dt};
             return;

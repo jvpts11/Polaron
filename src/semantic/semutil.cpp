@@ -65,8 +65,37 @@ std::string didYouMean(const std::string& typed, const std::vector<std::string>&
 bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
 }
+// `T[N]`: the extent read back out of the name, or 0 when it is not one. Deliberately strict --
+// every character between the brackets must be a digit and there must be at least one, so a generic
+// mangled name or anything else ending in ']' cannot be mistaken for an extent.
+int fixedExtent(const std::string& t) {
+    if (t.size() < 4 || t.back() != ']') {
+        return 0;
+    }
+    const std::string::size_type open = t.rfind('[');
+    if (open == std::string::npos || open + 1 >= t.size() - 1) {
+        return 0;
+    }
+    int n = 0;
+    for (std::string::size_type i = open + 1; i + 1 < t.size(); ++i) {
+        if (std::isdigit(static_cast<unsigned char>(t[i])) == 0) {
+            return 0;
+        }
+        n = n * 10 + (t[i] - '0');
+    }
+    return n;
+}
+bool isFixedArrayType(const std::string& t) {
+    return fixedExtent(t) > 0;
+}
 std::string elementOf(const std::string& t) {
-    return isArrayType(t) ? t.substr(0, t.size() - 2) : t;
+    if (isArrayType(t)) {
+        return t.substr(0, t.size() - 2);
+    }
+    if (isFixedArrayType(t)) {
+        return t.substr(0, t.rfind('['));
+    }
+    return t;
 }
 // Pointer/reference types end with '*' or '&' (e.g. "Dog*", "Dog&").
 bool isRefType(const std::string& t) {

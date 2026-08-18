@@ -3078,6 +3078,28 @@ ast::TypeRef Parser::parseTypeRef() {
         advance();  // consume the element '*'
         t.arrayElemPointer = true;
     }
+    // `T[N]` -- an array whose EXTENT IS IN THE TYPE, beside `T[]` whose extent is not stated.
+    //
+    // The brackets say "array" in both; what is inside says whether the length is part of the type.
+    // Nothing is hidden by the difference: an extent in the type is an extent the value does not
+    // have to carry, so it needs no header, is not reached through a pointer, lives where it is
+    // declared and dies with its owner -- all of which follows from what was written.
+    if (check(TokenKind::LBracket) && peek(1).kind == TokenKind::IntLiteral &&
+        peek(2).kind == TokenKind::RBracket) {
+        advance();  // '['
+        const Token& n = current();
+        advance();  // the count
+        expect(TokenKind::RBracket, "']'");
+        t.isArray = true;
+        t.arrayDims = 1;
+        t.arrayExtent = static_cast<int>(std::strtol(n.lexeme.c_str(), nullptr, 0));
+        if (t.arrayExtent <= 0) {
+            fail("an array's stated extent must be at least one; `" + t.name + "[" + n.lexeme +
+                     "]` declares storage for nothing, and a length of nought in a type is almost "
+                     "always a count that was meant to be worked out rather than written",
+                 n.loc);
+        }
+    }
     while (match(TokenKind::LBracket)) {  // T[], T[][], ... -- multi-dimensional (spec 25)
         expect(TokenKind::RBracket, "']'");
         t.isArray = true;

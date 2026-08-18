@@ -329,9 +329,37 @@ std::int64_t parseIntLiteral(const std::string& lexeme) {
 bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;
 }
-// The element type of an array type ("int[]" -> "int"); identity if not an array.
+// `T[N]`: the extent stated in the type, or 0. Mirrors semutil's copy -- see the note at the top of
+// semutil.h about the deliberate duplication of these name questions.
+int fixedExtent(const std::string& t) {
+    if (t.size() < 4 || t.back() != ']') {
+        return 0;
+    }
+    const std::string::size_type open = t.rfind('[');
+    if (open == std::string::npos || open + 1 >= t.size() - 1) {
+        return 0;
+    }
+    int n = 0;
+    for (std::string::size_type i = open + 1; i + 1 < t.size(); ++i) {
+        if (std::isdigit(static_cast<unsigned char>(t[i])) == 0) {
+            return 0;
+        }
+        n = n * 10 + (t[i] - '0');
+    }
+    return n;
+}
+bool isFixedArrayType(const std::string& t) {
+    return fixedExtent(t) > 0;
+}
+// The element type of an array type ("int[]" -> "int", "int[16]" -> "int"); identity if not an array.
 std::string elementOf(const std::string& t) {
-    return isArrayType(t) ? t.substr(0, t.size() - 2) : t;
+    if (isArrayType(t)) {
+        return t.substr(0, t.size() - 2);
+    }
+    if (isFixedArrayType(t)) {
+        return t.substr(0, t.rfind('['));
+    }
+    return t;
 }
 
 // Floating-point types. `float`/`float32` lower to f32; `double`/`float64` to f64.

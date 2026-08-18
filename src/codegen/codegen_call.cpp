@@ -1405,6 +1405,13 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         }
     }
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call.callee.get())) {
+        // `T[N].length()`: the extent is in the type, so this is a constant and no load happens.
+        // The dynamic array reads its header below; this one has none to read.
+        if (mem->member == "length" && call.args.empty()) {
+            if (const int extent = fixedExtent(typeName(*mem->object)); extent > 0) {
+                return builder.getInt32(extent);
+            }
+        }
         if (mem->member == "length" && isArrayType(typeName(*mem->object))) {
             // array.length(): read the i64 length header and truncate to int.
             if (call.args.empty()) {

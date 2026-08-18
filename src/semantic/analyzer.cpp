@@ -5280,7 +5280,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
         if (findMethod(baseType(at), "operator[]=")) {
             return;  // operator[]= overload (spec 6.5)
         }
-        if (!at.empty() && !isArrayType(at) && !isRefType(at)) {
+        if (!at.empty() && !isArrayType(at) && !isFixedArrayType(at) && !isRefType(at)) {
             error("cannot index a value of non-array type '" + at + "'", loc);
             return;
         }

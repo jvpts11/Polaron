@@ -3509,6 +3509,27 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `T[N]` -- an array whose extent is in its type. It lives where it is declared (no `new`,
+        # no header, no `delete`), `length()` is a constant rather than a header read, and the
+        # bounds check is against that constant. `int[]` is untouched: the two differ only in
+        # whether the length is part of the type, which is what the spelling says.
+        add_test(NAME codegen_fixed_array_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/fixed_array.pol"
+            "-DEXPECTED=16 0 0 42 3"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # And the storage really is inline: no allocation, no header, no free. `[16 x i32]` in the
+        # IR is the whole claim -- a heap array would be a `ptr` and a call to the allocator.
+        add_test(NAME codegen_fixed_array_is_inline COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/fixed_array.pol"
+            "-DNEEDLE=alloca [16 x i32]"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
         # A generic keeps every statement and expression it was written with. `cloneStmt` and
         # `cloneExpr` build every instantiation and knew 27 of 36 statement kinds and 30 of 35
         # expression kinds; the other fourteen were dropped FROM THE INSTANCE in a program that still

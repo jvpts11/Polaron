@@ -30,6 +30,11 @@ std::string didYouMean(const std::string& typed, const std::vector<std::string>&
 
 // ---- Questions about a type NAME ----
 bool isArrayType(const std::string& t);
+// `T[N]` -- the extent stated in the type. Returns N, or 0 when the name is not one. A stated extent
+// and a dynamic array are different types and neither answers the other's predicate: `int[]` is
+// heap with a length header, `int[16]` is sixteen ints where it is declared.
+int fixedExtent(const std::string& t);
+bool isFixedArrayType(const std::string& t);
 std::string elementOf(const std::string& t);
 bool isRefType(const std::string& t);
 std::string baseType(const std::string& t);

@@ -1246,7 +1246,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (isRefType(at)) {
             return baseType(at);  // p[i] on a raw pointer T* -> T (spec 17.8)
         }
-        if (!isArrayType(at)) {
+        if (!isArrayType(at) && !isFixedArrayType(at)) {
             error("cannot index a value of non-array type '" + at + "'", ix->loc);
             return "";
         }
@@ -2442,6 +2442,21 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 error("mat4 has multiply/transform; '" + mem->member + "' is not one", call->loc);
                 return "";
+            }
+            // `T[N].length()` -- the same question, answered by the type rather than by a header.
+            // Reading it is free; there is deliberately no one-argument form, because an array whose
+            // extent is in its type cannot be resized without becoming a different type.
+            if (isFixedArrayType(objType)) {
+                if (mem->member == "length" && call->args.empty()) {
+                    return "int";
+                }
+                if (mem->member == "length") {
+                    error("`" + objType + "` states its extent in its type, so it cannot be resized: "
+                          "growing it would make it a different type. Use `" + elementOf(objType) +
+                          "[]`, whose length is not part of what it is",
+                          call->loc);
+                    return "void";
+                }
             }
             if (isArrayType(objType)) {
                 if (mem->member == "length" && call->args.empty()) {

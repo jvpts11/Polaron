@@ -1,0 +1,35 @@
+import System.IO.Console;
+program FixedArray;
+
+// AN ARRAY WHOSE EXTENT IS IN THE TYPE.
+//
+// `int[]` is an array whose length is not stated: it lives on the heap, carries a 64-bit length
+// header, is reached through a pointer and is released with `delete`. `int[16]` is the same idea
+// with the length stated, and everything else follows from that one difference -- the value does not
+// carry a length it already has, so there is no header, no pointer and nothing to release: it lives
+// where it is declared and dies with its owner.
+//
+// The brackets say "array" in both. What is between them says whether the length is part of the
+// type. Nothing about `int[]` changes.
+//
+// Prints: 16 / 0 0 / 42 / 3
+
+public bundle Main {
+    public namespace App {
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                // No `new`: the declaration IS the storage. Zeroed, exactly as `new int[16]()` is.
+                mutable int[16] key;
+                System.IO.Console.println($"{key.length()}");
+                System.IO.Console.println($"{key[0]} {key[7]}");
+
+                key[7] = 42;
+                key[0] = key[7] - 39;
+                System.IO.Console.println($"{key[7]}");
+                System.IO.Console.println($"{key[0]}");
+                return 0;
+            }
+        }
+    }
+}

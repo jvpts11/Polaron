@@ -390,6 +390,11 @@ llvm::Type* CodeGenerator::Impl::llvmType(const std::string& t) {
     if (t == "mat4") {
         return llvm::FixedVectorType::get(builder.getFloatTy(), 16);  // SIMD 4x4 matrix
     }
+    // `T[N]`: N elements, in line, with no header and no pointer -- the extent is in the type, so
+    // the value does not carry it. This is the one array form that is not a pointer.
+    if (const int n = fixedExtent(t); n > 0) {
+        return llvm::ArrayType::get(llvmType(elementOf(t)), static_cast<uint64_t>(n));
+    }
     if (isArrayType(t) || isRefType(t)) {
         return builder.getPtrTy();
     }
@@ -2799,6 +2804,35 @@ llvm::Value* CodeGenerator::Impl::emitLValue(const ast::Expr& expr) {
         return builder.CreateStructGEP(cit->second.type, objPtr, fit->second, mem->member);
     }
     if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
+        // `T[N]`: the storage IS the variable, so the element address is a GEP into it and there is
+        // no block to load first. Taken before `emitExpr` on the array, which would load the whole
+        // aggregate as a value -- the one place where an array that is not a pointer needs its own
+        // path rather than the shared one below.
+        if (const int extent = fixedExtent(typeName(*ix->array)); extent > 0) {
+            llvm::Value* base = emitLValue(*ix->array);
+            llvm::Value* index = emitExpr(*ix->index);
+            if (base == nullptr || index == nullptr) {
+                return nullptr;
+            }
+            llvm::Value* i64 = index->getType()->isIntegerTy(64)
+                                   ? index
+                                   : builder.CreateSExt(index, builder.getInt64Ty());
+            if (!ix->unchecked && !noBoundsCheck_) {
+                // ONE UNSIGNED COMPARE, which catches a negative index and one past the end at the
+                // same time -- the same check the dynamic array gets, against a bound that is now a
+                // constant the optimiser can fold away wherever it can prove the index.
+                llvm::Value* oob = builder.CreateICmpUGE(i64, builder.getInt64(extent));
+                llvm::Function* f = currentFn;
+                auto* badBB = llvm::BasicBlock::Create(context, "fidx.bad", f);
+                auto* okBB = llvm::BasicBlock::Create(context, "fidx.ok", f);
+                builder.CreateCondBr(oob, badBB, okBB, coldBranchWeights());
+                builder.SetInsertPoint(badBB);
+                emitPanic("array index out of bounds");
+                builder.SetInsertPoint(okBB);
+            }
+            return builder.CreateGEP(llvmType(typeName(*ix->array)), base,
+                                     {builder.getInt64(0), i64}, "fix.elem");
+        }
         llvm::Value* block = emitExpr(*ix->array);
         if (block == nullptr) {
             return nullptr;

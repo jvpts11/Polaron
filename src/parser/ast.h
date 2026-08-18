@@ -63,6 +63,15 @@ struct TypeRef {
                              // generic's mangled name can itself end in '*' (e.g. HashMap<..,T*> ->
                              // "HashMap$..T*"), which would make counting the outer '*' ambiguous.
     bool arrayElemPointer = false;  // T*[] : array whose ELEMENT is a pointer (not T[]* = pointer to array)
+    // `T[N]` -- an array whose EXTENT IS IN THE TYPE. Zero means the extent is not stated, which is
+    // the ordinary dynamic array (`T[]`, heap, length header, `delete`).
+    //
+    // It is an array, not a struct wearing brackets: N elements of one type, indexed, with a length.
+    // What differs is only where the length lives -- in the type, so the value does not carry it,
+    // does not need a header, lives where it is declared and dies with its owner. The canonical
+    // spelling is `int[16]`, which no existing check mistakes for `int[]` because they test for the
+    // literal "[]".
+    int arrayExtent = 0;
     bool isRef = false;      // T&
     bool isNullable = false;  // `nullable T` (spec 3.7): may hold null; canonical form is "T?"
     bool isMove = false;      // `move T` (spec 19.6): ownership-transfer param/return; transparent
@@ -107,8 +116,9 @@ inline std::string canonicalType(const TypeRef& t) {
     // prelude first; adding one to `namespace Memory` breaks `System.Memory.Units.kilobytes`.)
     const std::string base = t.name == "RegionSnapshot" ? std::string("address") : t.name;
     const std::string core = mangleGeneric(base, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
-                             arrayDimsSuffix(t.arrayDims) + std::string(t.pointerDepth, '*') +
-                             (t.isRef ? "&" : "");
+                             (t.arrayExtent > 0 ? "[" + std::to_string(t.arrayExtent) + "]"
+                                                : arrayDimsSuffix(t.arrayDims)) +
+                             std::string(t.pointerDepth, '*') + (t.isRef ? "&" : "");
     return t.isNullable ? makeNullable(core) : core;
 }
 

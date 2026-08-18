@@ -406,7 +406,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             // A declaration with no initializer enters the *uninitialized* state. `region r;` keeps its
             // old behaviour (it is allocated by a later `r = itself.allocate(...)`, which the region
             // rules already police), so it is not tracked here.
-            const bool deferred = vd->init == nullptr && declType != "region";
+            // `int[16] a;` IS NOT DEFERRED: the declaration is the storage, and it is zeroed the way
+            // `new int[16]()` is. There is no `new` to wait for and no assignment that could ever
+            // initialise it "as a whole" -- an array is written an element at a time, which is
+            // exactly what a definite-assignment proof cannot follow. The extent being in the type
+            // is what makes the storage exist here, so this is that difference arriving.
+            const bool deferred =
+                vd->init == nullptr && declType != "region" && !isFixedArrayType(declType);
             bool heapObj = false;
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
                 heapObj = nw->location == "heap";

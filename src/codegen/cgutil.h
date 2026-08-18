@@ -54,7 +54,9 @@ std::string decimalScaledString(const std::string& text);
 // These traffic in Polaron's canonical type strings ("int", "Box$int", "int[]", "Node*"), which is why
 // they need no LLVM: the answer is in the name.
 bool isArrayType(const std::string& t);
-std::string elementOf(const std::string& t);      // "int[]" -> "int"
+int fixedExtent(const std::string& t);            // "int[16]" -> 16; 0 when the extent is not stated
+bool isFixedArrayType(const std::string& t);
+std::string elementOf(const std::string& t);      // "int[]" -> "int"; "int[16]" -> "int"
 bool isFloatType(const std::string& t);
 bool isF32(const std::string& t);
 unsigned floatBits(const std::string& t);
