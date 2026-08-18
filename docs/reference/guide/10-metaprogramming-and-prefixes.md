@@ -55,6 +55,42 @@ in a `new T[N]()`, another `fixed`.
 > one kind of error a manual cannot be trusted to catch about itself — it reads exactly like the
 > true sentences around it.
 
+### What a type answers about itself
+
+A type can be asked things directly, and every answer is folded into the binary as a constant:
+
+```polaron
+int.sizeof()          // 4
+Dog.typeName()        // "Dog"
+Pace.length()         // how many members a closed family has -- enums only
+Point.isValue()       // true: copied where it stands, not reached through a pointer
+Dog.owns()            // true: destroying one does work
+```
+
+Also available: `align()`, `isMovable()` and `isUnique()`.
+
+**This is not reflection.** Reflection (§10.4) is a runtime service: it costs, and it is unavailable
+in freestanding mode. These are facts the compiler is already holding, so asking costs nothing and
+works everywhere.
+
+**The point is generic code.** Inside `Box<T>` the parameter *is* the concrete type by the time the
+question is answered, so `T` can be asked directly and no constraint has to promise anything:
+
+```polaron
+public class Box<T> {
+    public method holds() returns String { return T.typeName(); }
+    public method frees() returns boolean { return T.owns(); }
+}
+```
+
+Because each instantiation is checked on its own, a `T` that cannot answer is an error **at that
+instantiation**, naming the type that could not — `Pace.length()` is a count, and asking a class or
+a primitive for one is refused rather than answered with a zero.
+
+`owns()` is the one to reach for when writing a container. A container of **values** whose element
+type has a destructor double-frees: each copy destroys what the original holds. Until this existed
+there was no way to ask in advance (§17.1).
+
 ### `comptime` locals
 
 Inside a method you can force a local to be computed at compile time by prefixing it with

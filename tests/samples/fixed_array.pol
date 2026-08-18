@@ -7,17 +7,38 @@ program FixedArray;
 // header, is reached through a pointer and is released with `delete`. `int[16]` is the same idea
 // with the length stated, and everything else follows from that one difference -- the value does not
 // carry a length it already has, so there is no header, no pointer and nothing to release: it lives
-// where it is declared and dies with its owner.
+// where it is declared and dies with its owner, which is the rule this language already has for
+// where a thing lives.
 //
 // The brackets say "array" in both. What is between them says whether the length is part of the
 // type. Nothing about `int[]` changes.
 //
-// Prints: 16 / 0 0 / 42 / 3
+// `int[3][4]` nests, and reads as C, Java and C# read it: three of `int[4]`. The FIRST group is the
+// outer extent, so `grid.length()` is 3 and `grid[0].length()` is 4.
+//
+// Prints: 16 / 0 0 / 42 / 3 / 4 9 7 / 10 / 3 4 / 5 12
 
 public bundle Main {
     public namespace App {
 
+        // A FIELD, which is where a value aggregate can finally hold one: `layout` exists to say how
+        // a struct arranges itself in bytes, and until now there was no array to arrange.
+        public struct Key {
+            public mutable int[4] bytes;
+            public mutable int tag;
+        }
+
         public class Main {
+            // AND A PARAMETER, carried by value with the struct that holds it -- no pointer, no
+            // header, nothing shared with the caller's copy.
+            private static method total(Key k) returns int {
+                mutable int sum = 0;
+                for (int i in 0..k.bytes.length()) {
+                    sum = sum + k.bytes[i];
+                }
+                return sum;
+            }
+
             public static method main(string[] args) returns int {
                 // No `new`: the declaration IS the storage. Zeroed, exactly as `new int[16]()` is.
                 mutable int[16] key;
@@ -28,6 +49,24 @@ public bundle Main {
                 key[0] = key[7] - 39;
                 System.IO.Console.println($"{key[7]}");
                 System.IO.Console.println($"{key[0]}");
+
+                mutable Key k = new Key() on stack;
+                k.bytes[0] = 1;
+                k.bytes[3] = 9;
+                k.tag = 7;
+                System.IO.Console.println($"{k.bytes.length()} {k.bytes[3]} {k.tag}");
+                System.IO.Console.println($"{Main.total(k)}");
+
+                mutable int[3][4] grid;
+                System.IO.Console.println($"{grid.length()} {grid[0].length()}");
+                grid[2][1] = 5;
+                mutable int cells = 0;
+                for (int r in 0..grid.length()) {
+                    for (int c in 0..grid[r].length()) {
+                        cells = cells + 1;
+                    }
+                }
+                System.IO.Console.println($"{grid[2][1]} {cells}");
                 return 0;
             }
         }

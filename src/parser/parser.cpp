@@ -3084,21 +3084,30 @@ ast::TypeRef Parser::parseTypeRef() {
     // Nothing is hidden by the difference: an extent in the type is an extent the value does not
     // have to carry, so it needs no header, is not reached through a pointer, lives where it is
     // declared and dies with its owner -- all of which follows from what was written.
-    if (check(TokenKind::LBracket) && peek(1).kind == TokenKind::IntLiteral &&
-        peek(2).kind == TokenKind::RBracket) {
+    // `int[4][4]` nests, and the canonical name nests with it: the element of `int[4][4]` is
+    // `int[4]`, which is itself an array whose extent is stated. Nothing here has to know that --
+    // the name says it, and the one that reads the extent takes the LAST bracket group.
+    while (check(TokenKind::LBracket) && peek(1).kind == TokenKind::IntLiteral &&
+           peek(2).kind == TokenKind::RBracket) {
         advance();  // '['
         const Token& n = current();
         advance();  // the count
         expect(TokenKind::RBracket, "']'");
-        t.isArray = true;
-        t.arrayDims = 1;
-        t.arrayExtent = static_cast<int>(std::strtol(n.lexeme.c_str(), nullptr, 0));
-        if (t.arrayExtent <= 0) {
+        const int extent = static_cast<int>(std::strtol(n.lexeme.c_str(), nullptr, 0));
+        if (extent <= 0) {
             fail("an array's stated extent must be at least one; `" + t.name + "[" + n.lexeme +
                      "]` declares storage for nothing, and a length of nought in a type is almost "
                      "always a count that was meant to be worked out rather than written",
                  n.loc);
         }
+        if (t.arrayExtent > 0) {
+            // A second `[N]`: fold the one already read into the base name, so `int[4]` becomes the
+            // element type and this extent is the outer one.
+            t.name += "[" + std::to_string(t.arrayExtent) + "]";
+        }
+        t.isArray = true;
+        t.arrayDims = 1;
+        t.arrayExtent = extent;
     }
     while (match(TokenKind::LBracket)) {  // T[], T[][], ... -- multi-dimensional (spec 25)
         expect(TokenKind::RBracket, "']'");

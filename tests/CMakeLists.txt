@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.137")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.138")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.137")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.138")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3509,6 +3509,18 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # What a type answers about itself, and inside a generic about whatever was substituted:
+        # typeName, sizeof, isValue, owns, and an enum's member count. Compile-time facts folded to
+        # constants -- not reflection, which costs and is absent in freestanding. `sizeof` used to
+        # demand a class, so `Box<int>` failed with "use of undeclared variable 'int'".
+        add_test(NAME codegen_type_queries_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/type_queries.pol"
+            "-DEXPECTED=int 4 Dog true 2 true false false true"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # `T[N]` -- an array whose extent is in its type. It lives where it is declared (no `new`,
         # no header, no `delete`), `length()` is a constant rather than a header read, and the
         # bounds check is against that constant. `int[]` is untouched: the two differ only in
@@ -3517,7 +3529,7 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/fixed_array.pol"
-            "-DEXPECTED=16 0 0 42 3"
+            "-DEXPECTED=16 0 0 42 3 4 9 7 10 3 4 5 12"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

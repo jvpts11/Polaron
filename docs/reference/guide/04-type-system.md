@@ -398,6 +398,57 @@ simply reads the header. Every index is **bounds-checked**: an access outside
 memory. A single unsigned comparison catches both negative indices and indices
 past the end, so the check is cheap and there is no undefined behavior to exploit.
 
+### Arrays whose extent is in the type
+
+`int[]` is an array whose length is **not stated**. `int[16]` is an array whose length **is**:
+
+```polaron
+mutable int[16] key;              // sixteen zeroed ints, right here
+key[7] = 42;
+int n = key.length();             // 16, a constant -- no header is read
+```
+
+The brackets say *array* in both. What is between them says whether the length is part of the type,
+and everything else follows from that one difference:
+
+| | `int[]` | `int[16]` |
+|---|---|---|
+| created with | `new int[n]()` | its own declaration |
+| where it lives | the heap | where it is declared |
+| representation | pointer to `[length][elements…]` | the elements, nothing else |
+| `length()` | reads the header | a compile-time constant |
+| released with | `delete` | nothing — it dies with its owner |
+| copied | the pointer is copied | the elements are copied |
+
+A stated extent is an extent the value does not have to carry, so it needs no header; it is not
+reached through a pointer, so there is nothing to allocate; and it lives where it is declared, which
+is the rule this language already has for where things live (§5.3).
+
+It works as a **field**, which is what lets a `layout` (§6.14) finally arrange an array, and as a
+**parameter**, carried by value with the aggregate that holds it:
+
+```polaron
+public struct Key {
+    public mutable int[4] bytes;
+    public mutable int tag;
+}
+```
+
+Extents nest, and read as C, Java and C# read them — the first group is the outer one:
+
+```polaron
+mutable int[3][4] grid;           // three of int[4]
+grid.length()                     // 3
+grid[0].length()                  // 4
+grid[2][1] = 5;
+```
+
+Two rules worth stating outright. A declared fixed array is **zeroed**, exactly as `new int[16]()`
+is — it cannot enter the *uninitialized* state the language otherwise defends, because an array is
+written an element at a time and no definite-assignment proof can follow that. And there is **no
+`length(n)`**: an array whose extent is in its type cannot be resized without becoming a different
+type, and the compiler says so rather than pretending.
+
 ---
 
 ## 4.6 `var`: type inference for locals

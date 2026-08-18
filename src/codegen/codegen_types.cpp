@@ -238,6 +238,11 @@ std::string CodeGenerator::Impl::typeNameUncached(const ast::Expr& expr) {
         if (isRefType(at)) {
             return baseType(at);  // p[i] on a raw pointer T* -> T
         }
+        // `T[N]`'s element, which for a nested extent is itself an array: the element of
+        // `int[3][4]` is `int[3]`, so `grid[r].length()` has something to answer.
+        if (isFixedArrayType(at)) {
+            return elementOf(at);
+        }
         return isArrayType(at) ? at.substr(0, at.size() - 2) : std::string("int");
     }
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(&expr)) {

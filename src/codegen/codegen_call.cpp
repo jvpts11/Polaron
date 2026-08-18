@@ -110,6 +110,51 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
             return builder.getInt32(static_cast<std::uint32_t>(bytes));
         }
     }
+    // THE REST OF WHAT A TYPE ANSWERS ABOUT ITSELF, each folded to a constant here because each is a
+    // fact the compiler is already holding. Inside a generic the parameter is the concrete type by
+    // the time this runs, so `T.owns()` is answered about the type that was actually substituted.
+    if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call.callee.get());
+        sm != nullptr && call.args.empty()) {
+        const std::string subject = baseType(flattenCallee(*sm->object));
+        auto cl = classes.find(clsKey(subject));
+        const bool known = cl != classes.end() || enums.count(subject) > 0 ||
+                           isIntName(subject) || isFloatType(subject) || subject == "boolean" ||
+                           subject == "char";
+        if (known) {
+            if (sm->member == "typeName") {
+                return emitStringObject(subject);
+            }
+            if (sm->member == "align") {
+                llvm::Type* t = llvmType(subject);
+                return builder.getInt32(
+                    static_cast<std::uint32_t>(module.getDataLayout().getABITypeAlign(t).value()));
+            }
+            if (sm->member == "length") {
+                auto e = enums.find(subject);
+                if (e != enums.end()) {
+                    return builder.getInt32(static_cast<std::uint32_t>(e->second.size()));
+                }
+            }
+            // A VALUE is copied where it stands; a class is reached through a pointer. That is the
+            // distinction a container has to make to decide how to store what it is given.
+            if (sm->member == "isValue") {
+                const bool value = cl == classes.end() || cl->second.isStruct || cl->second.isUnion;
+                return builder.getInt1(value);
+            }
+            // DOES DESTROYING ONE DO WORK. The question a container of values must ask before it
+            // holds a type with a destructor -- which double-frees, silently, and cost this project
+            // an afternoon with nothing on the screen to show for it.
+            if (sm->member == "owns") {
+                return builder.getInt1(cl != classes.end() && cl->second.hasDestructor);
+            }
+            if (sm->member == "isMovable") {
+                return builder.getInt1(cl != classes.end() && cl->second.isMovable);
+            }
+            if (sm->member == "isUnique") {
+                return builder.getInt1(cl != classes.end() && cl->second.isUnique);
+            }
+        }
+    }
     // embed("path") (spec 36): read a file AT COMPILE TIME and materialize it as a `byte[]` constant
     // in the image. This is how a freestanding program carries data it must not load from a
     // filesystem it does not have -- a guest binary, a font, a firmware blob -- without dropping to an

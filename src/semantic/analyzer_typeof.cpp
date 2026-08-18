@@ -1487,13 +1487,50 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (name == "checked" && call->args.size() == 1) {  // checked(expr): overflow-trapping, same type
             return typeOf(*call->args[0]);
         }
-        // `T.sizeof()` (spec issue #7): the type answers about itself. The companion spelling,
-        // `Memory.sizeof(x)`, lives with the rest of the Memory API below and is the only one that
-        // takes an expression.
+        // WHAT A TYPE ANSWERS ABOUT ITSELF (spec issue #7 began with `sizeof`, and the rest belong
+        // beside it). These are compile-time facts, folded to constants -- not reflection, which is
+        // a runtime service with a cost and is unavailable in freestanding.
+        //
+        // THE POINT IS GENERIC CODE. Inside `Box<T>` the parameter IS the concrete type after
+        // monomorphization, so the compiler already knows all of this; making the programmer promise
+        // it through a bound would be asking them to declare what the compiler is holding. And
+        // because each instantiation is checked on its own, a `T` that cannot answer is an error at
+        // the instantiation, naming the concrete type -- which is the message that helps.
+        //
+        // `sizeof` USED TO REQUIRE A CLASS, so `T.sizeof()` worked for `Box<Dog>` and failed for
+        // `Box<int>` with "use of undeclared variable 'int'". Codegen had never had that limit.
         if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-            sm != nullptr && sm->member == "sizeof" && call->args.empty() &&
-            lookupClass(baseType(flattenCallee(*sm->object))) != nullptr) {
-            return "int";
+            sm != nullptr && call->args.empty()) {
+            const std::string subject = baseType(flattenCallee(*sm->object));
+            const bool namesAType = lookupClass(subject) != nullptr || enums_.count(subject) > 0 ||
+                                    isIntName(subject) || isFloatType(subject) ||
+                                    subject == "boolean" || subject == "char";
+            if (namesAType) {
+                if (sm->member == "sizeof" || sm->member == "align") {
+                    return "int";
+                }
+                if (sm->member == "typeName") {
+                    return "String";
+                }
+                // How many members a closed family has. Only an enum is one; anything else is an
+                // error HERE rather than a zero, because a count of nought would read as an answer.
+                if (sm->member == "length") {
+                    if (enums_.count(subject) == 0) {
+                        error("`" + subject + ".length()` asks how many members a closed family has, "
+                              "and `" + subject + "` is not one. Enums are; a class, a struct and a "
+                              "primitive have no count of themselves",
+                              call->loc);
+                    }
+                    return "int";
+                }
+                // Facts about the type's discipline, which a generic container needs and cannot ask
+                // for today. `owns()` is the one with a scar: a container of values whose element
+                // has a destructor double-frees, and nothing could ask in advance.
+                if (sm->member == "isValue" || sm->member == "owns" || sm->member == "isMovable" ||
+                    sm->member == "isUnique") {
+                    return "boolean";
+                }
+            }
         }
         // Namespace-level literal suffix function called by name: kilobytes(64).
         if (auto lit = literals_.find(name); lit != literals_.end() && !lit->second.empty()) {

@@ -68,16 +68,20 @@ bool isArrayType(const std::string& t) {
 // `T[N]`: the extent read back out of the name, or 0 when it is not one. Deliberately strict --
 // every character between the brackets must be a digit and there must be at least one, so a generic
 // mangled name or anything else ending in ']' cannot be mistaken for an extent.
+// `T[N]`: the extent stated in the type, or 0. Reads the FIRST bracket group, which is the OUTER
+// one -- `int[3][4]` is three of `int[4]`, the way C, Java and C# all read it. The element type is
+// then the base with that group removed, which is itself an array when more groups follow.
 int fixedExtent(const std::string& t) {
-    if (t.size() < 4 || t.back() != ']') {
+    const std::string::size_type open = t.find('[');
+    if (open == std::string::npos || open + 1 >= t.size()) {
         return 0;
     }
-    const std::string::size_type open = t.rfind('[');
-    if (open == std::string::npos || open + 1 >= t.size() - 1) {
-        return 0;
+    const std::string::size_type close = t.find(']', open);
+    if (close == std::string::npos || close == open + 1) {
+        return 0;   // "[]" -- a dynamic array, whose extent is deliberately not stated
     }
     int n = 0;
-    for (std::string::size_type i = open + 1; i + 1 < t.size(); ++i) {
+    for (std::string::size_type i = open + 1; i < close; ++i) {
         if (std::isdigit(static_cast<unsigned char>(t[i])) == 0) {
             return 0;
         }
@@ -89,11 +93,12 @@ bool isFixedArrayType(const std::string& t) {
     return fixedExtent(t) > 0;
 }
 std::string elementOf(const std::string& t) {
+    if (isFixedArrayType(t)) {
+        const std::string::size_type open = t.find('[');
+        return t.substr(0, open) + t.substr(t.find(']', open) + 1);
+    }
     if (isArrayType(t)) {
         return t.substr(0, t.size() - 2);
-    }
-    if (isFixedArrayType(t)) {
-        return t.substr(0, t.rfind('['));
     }
     return t;
 }

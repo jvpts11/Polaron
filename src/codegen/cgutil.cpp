@@ -331,16 +331,20 @@ bool isArrayType(const std::string& t) {
 }
 // `T[N]`: the extent stated in the type, or 0. Mirrors semutil's copy -- see the note at the top of
 // semutil.h about the deliberate duplication of these name questions.
+// `T[N]`: the extent stated in the type, or 0. Reads the FIRST bracket group -- the OUTER one, so
+// `int[3][4]` is three of `int[4]`, as C, Java and C# all read it. Mirrors semutil's copy; see the
+// note there about the deliberate duplication of these name questions.
 int fixedExtent(const std::string& t) {
-    if (t.size() < 4 || t.back() != ']') {
+    const std::string::size_type open = t.find('[');
+    if (open == std::string::npos || open + 1 >= t.size()) {
         return 0;
     }
-    const std::string::size_type open = t.rfind('[');
-    if (open == std::string::npos || open + 1 >= t.size() - 1) {
-        return 0;
+    const std::string::size_type close = t.find(']', open);
+    if (close == std::string::npos || close == open + 1) {
+        return 0;   // "[]" -- a dynamic array, whose extent is deliberately not stated
     }
     int n = 0;
-    for (std::string::size_type i = open + 1; i + 1 < t.size(); ++i) {
+    for (std::string::size_type i = open + 1; i < close; ++i) {
         if (std::isdigit(static_cast<unsigned char>(t[i])) == 0) {
             return 0;
         }
@@ -351,13 +355,14 @@ int fixedExtent(const std::string& t) {
 bool isFixedArrayType(const std::string& t) {
     return fixedExtent(t) > 0;
 }
-// The element type of an array type ("int[]" -> "int", "int[16]" -> "int"); identity if not an array.
+// The element type of an array type ("int[]" -> "int", "int[16]" -> "int", "int[3][4]" -> "int[4]").
 std::string elementOf(const std::string& t) {
+    if (isFixedArrayType(t)) {
+        const std::string::size_type open = t.find('[');
+        return t.substr(0, open) + t.substr(t.find(']', open) + 1);
+    }
     if (isArrayType(t)) {
         return t.substr(0, t.size() - 2);
-    }
-    if (isFixedArrayType(t)) {
-        return t.substr(0, t.rfind('['));
     }
     return t;
 }

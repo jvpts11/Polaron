@@ -2,10 +2,10 @@
 # Prereqs: a Release build of the Polaron binaries (cmake --build build --config Release), LLVM on PATH or
 # in C:\Program Files\LLVM, and the WiX tool (dotnet tool install --global wix; adds ~\.dotnet\tools to PATH).
 #
-#   ./build-msi.ps1                       # -> installer/dist/Polaron-1.0.137.msi
+#   ./build-msi.ps1                       # -> installer/dist/Polaron-1.0.138.msi
 param(
     [string]$Config = "Release",
-    [string]$Version = "1.0.137"
+    [string]$Version = "1.0.138"
 )
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot

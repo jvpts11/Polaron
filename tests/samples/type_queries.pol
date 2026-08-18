@@ -1,0 +1,78 @@
+import System.IO.Console;
+program TypeQueries;
+
+// WHAT A TYPE ANSWERS ABOUT ITSELF, and the reason it is not reflection.
+//
+// These are facts the compiler is already holding: how big a type is, what it is called, how many
+// members a closed family has, whether it is copied or pointed at, whether destroying one does
+// work. Each folds to a constant -- no runtime service, no cost, and available in freestanding,
+// where reflection is not.
+//
+// THE POINT IS GENERIC CODE. Inside `Box<T>` the parameter IS the concrete type by the time the
+// question is answered, so the compiler knows all of it. Requiring the programmer to promise it
+// through a bound would be asking them to declare what the compiler is already holding -- and
+// because each instantiation is checked on its own, a `T` that cannot answer is an error at that
+// instantiation, naming the type that could not.
+//
+// `owns()` is the one with a scar behind it: a container of VALUES whose element type has a
+// destructor double-frees, silently. Nothing could ask in advance until now.
+//
+// Prints: int 4 / Dog true / 2 / true false / false true
+
+public bundle Main {
+    public namespace App {
+
+        public enum Pace {
+            Slow,
+            Fast
+        }
+
+        public class Dog {
+            private mutable int[] toys;
+            public constructor Dog() { this.toys = new int[2](); }
+            public destructor ~Dog() returns void { delete toys; return; }
+        }
+
+        public struct Point {
+            public mutable int x;
+            public mutable int y;
+        }
+
+        public class Box<T> {
+            private mutable int unused;
+            public constructor Box() { this.unused = 0; }
+
+            // Every one of these is about T, answered per instantiation.
+            public method what() returns String { return T.typeName(); }
+            public method bytes() returns int { return T.sizeof(); }
+            public method byValue() returns boolean { return T.isValue(); }
+            public method frees() returns boolean { return T.owns(); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                // A PRIMITIVE type argument, which is what used to fail: `T.sizeof()` demanded a
+                // class, so `Box<int>` reported "use of undeclared variable 'int'".
+                Box<int>* i = new Box<int>() on heap;
+                System.IO.Console.println($"{i.what()} {i.bytes()}");
+
+                Box<Dog>* d = new Box<Dog>() on heap;
+                System.IO.Console.println($"{d.what()} {d.frees()}");
+
+                // A closed family knows how many of it there are.
+                System.IO.Console.println($"{Pace.length()}");
+
+                // Copied where it stands, or reached through a pointer.
+                System.IO.Console.println($"{i.byValue()} {d.byValue()}");
+
+                Box<Point>* p = new Box<Point>() on heap;
+                System.IO.Console.println($"{p.frees()} {p.byValue()}");
+
+                delete i;
+                delete d;
+                delete p;
+                return 0;
+            }
+        }
+    }
+}
