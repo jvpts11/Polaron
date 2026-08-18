@@ -46,8 +46,14 @@ public class Cfg {
 
 A constant may refer to a sibling constant through its owning type (`Cfg.MAX`), and the evaluator
 resolves the whole chain before any code is generated. Because the result is a true constant, it can
-be used anywhere the language expects a compile-time value — including as the size of a stack array
-or as the condition of a `demand`.
+be used anywhere the language expects a compile-time value — the condition of a `demand`, the count
+in a `new T[N]()`, another `fixed`.
+
+> This paragraph used to end *"including as the size of a stack array"*. There are no stack arrays:
+> every array in Polaron is heap-allocated and dynamic (§4.5), and nothing in the compiler or the
+> samples has ever accepted one. The sentence described a feature that does not exist, which is the
+> one kind of error a manual cannot be trusted to catch about itself — it reads exactly like the
+> true sentences around it.
 
 ### `comptime` locals
 

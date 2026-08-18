@@ -276,6 +276,17 @@ void Rewriter::expr(ast::ExprPtr& slot) {
     }
     if (auto* x = dynamic_cast<ast::BinaryExpr*>(e)) { expr(x->lhs); expr(x->rhs); return; }
     if (auto* x = dynamic_cast<ast::TernaryExpr*>(e)) { expr(x->cond); expr(x->thenExpr); expr(x->elseExpr); return; }
+    // THREE THIS WALK HAD NEVER BEEN TAUGHT, so a bare field name inside one of them was not a
+    // field: `return tag ?? "fallback";` reported `use of undeclared variable 'tag'` about a field
+    // declared six lines above it. `this.` is optional in this language, which means every place an
+    // expression can appear is a place this walk has to reach -- and a walk that enumerates kinds
+    // stops at the first one nobody added.
+    if (auto* x = dynamic_cast<ast::NullCoalesceExpr*>(e)) { expr(x->lhs); expr(x->rhs); return; }
+    if (auto* x = dynamic_cast<ast::AwaitExpr*>(e)) { expr(x->operand); return; }
+    if (auto* x = dynamic_cast<ast::ArrayLiteralExpr*>(e)) {
+        for (auto& el : x->elements) { expr(el); }
+        return;
+    }
     if (auto* x = dynamic_cast<ast::UnaryExpr*>(e)) { expr(x->operand); return; }
     if (auto* x = dynamic_cast<ast::IndexExpr*>(e)) { expr(x->array); expr(x->index); return; }
     if (auto* x = dynamic_cast<ast::MoveExpr*>(e)) { expr(x->operand); return; }

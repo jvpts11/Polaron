@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.136")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.137")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.136")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.137")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3506,6 +3506,20 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_return.pol"
             "-DEXPECTED=a=100 b=200"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A generic keeps every statement and expression it was written with. `cloneStmt` and
+        # `cloneExpr` build every instantiation and knew 27 of 36 statement kinds and 30 of 35
+        # expression kinds; the other fourteen were dropped FROM THE INSTANCE in a program that still
+        # compiled -- `synchronized` losing its lock, `yield` losing what made it a generator,
+        # `await` no longer waiting, the array literal, `??`. And the implicit-`this` walk had the
+        # same shape of hole, so a bare field name inside `??` was reported undeclared.
+        add_test(NAME codegen_generic_keeps_its_body_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/generic_keeps_its_body.pol"
+            "-DEXPECTED=3 6 7 fallback"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

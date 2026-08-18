@@ -1,0 +1,70 @@
+import System.IO.Console;
+program GenericKeepsItsBody;
+
+// A GENERIC MUST KEEP EVERY STATEMENT AND EXPRESSION IT WAS WRITTEN WITH.
+//
+// `cloneStmt` and `cloneExpr` build every generic instantiation, and they knew 27 of 36 statement
+// kinds and 30 of 35 expression kinds. The other fourteen were DROPPED -- from the instance, in a
+// program that still compiled. Among them: `synchronized` (a generic that took a lock stopped
+// taking it), `yield` (a generic generator stopped being one), `await` (a generic stopped waiting),
+// `goto`, `asm`, `cascade`, snapshot/restore, the array literal, and `??`.
+//
+// They did warn -- "cloneStmt does not handle its kind", on stderr, in the middle of a build -- which
+// is the only reason any of it was findable. Nothing failed. The code simply was not there.
+//
+// This holds three of them inside a generic, chosen because they are the ones that fail SILENTLY
+// rather than loudly: an array literal that becomes an uninitialised variable, a `??` that loses its
+// fallback, and a nullable that would read as null without it.
+//
+// Prints: 3 6 / 7 / fallback
+
+public bundle Main {
+    public namespace App {
+
+        public class Holder<T> {
+            private mutable int[] sizes;
+            private mutable nullable String tag;
+
+            public constructor Holder() {
+                // An ARRAY LITERAL inside a generic. Dropped, this left `sizes` uninitialised --
+                // which the analyser then reported as a use-before-initialisation in code that had
+                // plainly initialised it.
+                this.sizes = [3, 6, 9];
+                this.tag = null;
+            }
+
+            public method first() returns int {
+                return sizes[0];
+            }
+
+            public method second() returns int {
+                return sizes[1];
+            }
+
+            public method sum() returns int {
+                return sizes[0] + sizes[1] - 2;
+            }
+
+            // `??` inside a generic. Dropped, the fallback went with it.
+            public method label() returns String {
+                return tag ?? "fallback";
+            }
+
+            public destructor ~Holder() returns void {
+                delete sizes;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Holder<int>* h = new Holder<int>() on heap;
+                System.IO.Console.println($"{h.first()} {h.second()}");
+                System.IO.Console.println($"{h.sum()}");
+                System.IO.Console.println($"{h.label()}");
+                delete h;
+                return 0;
+            }
+        }
+    }
+}

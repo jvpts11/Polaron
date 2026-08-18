@@ -395,6 +395,49 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->elseExpr = cloneExpr(x->elseExpr.get(), s);
         return n;
     }
+    // ---- the five this had never been taught ------------------------------------------------
+    //
+    // Dropped in silence until the warning below was reached, in every generic instantiation and
+    // not only in alias expansion: an `await` inside a generic stopped waiting, an array literal
+    // became an uninitialised variable, and `??` lost its fallback -- in programs that compiled.
+    if (const auto* x = dynamic_cast<const ast::ArrayLiteralExpr*>(e)) {
+        auto n = std::make_unique<ast::ArrayLiteralExpr>();
+        n->loc = x->loc;
+        for (const auto& el : x->elements) {
+            n->elements.push_back(cloneExpr(el.get(), s));
+        }
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::AwaitExpr*>(e)) {
+        auto n = std::make_unique<ast::AwaitExpr>();
+        n->loc = x->loc;
+        n->operand = cloneExpr(x->operand.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::NullCoalesceExpr*>(e)) {
+        auto n = std::make_unique<ast::NullCoalesceExpr>();
+        n->loc = x->loc;
+        n->lhs = cloneExpr(x->lhs.get(), s);
+        n->rhs = cloneExpr(x->rhs.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::SnapshotExpr*>(e)) {
+        auto n = std::make_unique<ast::SnapshotExpr>();
+        n->loc = x->loc;
+        n->region = x->region;
+        n->home = x->home;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::UnimportExpr*>(e)) {
+        auto n = std::make_unique<ast::UnimportExpr>();
+        n->loc = x->loc;
+        n->target = x->target;
+        n->usingVars = x->usingVars;
+        if (x->expecting != nullptr) {
+            n->expecting = std::make_unique<ast::Block>(cloneBlock(*x->expecting, s));
+        }
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::UnaryExpr*>(e)) {
         auto n = std::make_unique<ast::UnaryExpr>();
         n->loc = x->loc;
@@ -840,6 +883,111 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->loc = x->loc;
         n->within = cloneExpr(x->within.get(), s);  // spec 32.10: the cleanup's time budget
         n->body = cloneBlock(x->body, s);
+        return n;
+    }
+    // ---- the ten this had never been taught -------------------------------------------------
+    //
+    // Every one of these was reaching the warning at the bottom and being DROPPED. That is not only
+    // the alias pass: this same function instantiates every generic, so a `synchronized` inside a
+    // generic class lost its lock, a `yield` lost the thing that makes it a generator, and an
+    // `await` (below, in cloneExpr) stopped waiting -- silently, in a program that still compiled.
+    //
+    // The warning did fire, which is the only reason any of this was findable. It said "cloneStmt
+    // does not handle its kind" and nothing else, on stderr, in the middle of a build.
+    if (const auto* x = dynamic_cast<const ast::YieldStmt*>(st)) {
+        auto n = std::make_unique<ast::YieldStmt>();
+        n->loc = x->loc;
+        n->value = cloneExpr(x->value.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::SynchronizedStmt*>(st)) {
+        auto n = std::make_unique<ast::SynchronizedStmt>();
+        n->loc = x->loc;
+        n->mutex = cloneExpr(x->mutex.get(), s);
+        n->bindType = substType(x->bindType, s);
+        n->bindName = x->bindName;
+        n->body = cloneBlock(x->body, s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::AsmStmt*>(st)) {
+        auto n = std::make_unique<ast::AsmStmt>();
+        n->loc = x->loc;
+        n->arch = x->arch;
+        n->dialect = x->dialect;
+        n->body = x->body;      // captured raw: not tokenized, so nothing to substitute inside it
+        for (const auto& e : x->outputs) {
+            n->outputs.push_back(cloneExpr(e.get(), s));
+        }
+        for (const auto& e : x->inputs) {
+            n->inputs.push_back(cloneExpr(e.get(), s));
+        }
+        n->clobbers = x->clobbers;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::GotoStmt*>(st)) {
+        auto n = std::make_unique<ast::GotoStmt>();
+        n->loc = x->loc;
+        n->name = x->name;
+        n->address = cloneExpr(x->address.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::CascadeStmt*>(st)) {
+        auto n = std::make_unique<ast::CascadeStmt>();
+        n->loc = x->loc;
+        n->op = x->op;
+        n->target = cloneExpr(x->target.get(), s);
+        n->dest = cloneExpr(x->dest.get(), s);
+        // A bare type name, substituted the way `cloneClass` does its own: straight through the map.
+        if (auto it = s.find(x->typeName); it != s.end()) {
+            n->typeName = it->second;
+        } else {
+            n->typeName = x->typeName;
+        }
+        n->params = x->params;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::CascadeMoveStmt*>(st)) {
+        auto n = std::make_unique<ast::CascadeMoveStmt>();
+        n->loc = x->loc;
+        n->target = cloneExpr(x->target.get(), s);
+        n->fromRegion = x->fromRegion;
+        n->toRegion = x->toRegion;
+        n->leavingPersistents = x->leavingPersistents;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::AbstainfromStmt*>(st)) {
+        auto n = std::make_unique<ast::AbstainfromStmt>();
+        n->loc = x->loc;
+        n->name = x->name;
+        n->isReinstate = x->isReinstate;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::RestoreStmt*>(st)) {
+        auto n = std::make_unique<ast::RestoreStmt>();
+        n->loc = x->loc;
+        n->region = x->region;
+        n->snapshot = cloneExpr(x->snapshot.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::SnapshotIntoStmt*>(st)) {
+        auto n = std::make_unique<ast::SnapshotIntoStmt>();
+        n->loc = x->loc;
+        n->region = x->region;
+        n->into = cloneExpr(x->into.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::ReimportValidateStmt*>(st)) {
+        auto n = std::make_unique<ast::ReimportValidateStmt>();
+        n->loc = x->loc;
+        n->target = x->target;
+        n->expected = cloneExpr(x->expected.get(), s);
+        n->usingVars = x->usingVars;
+        if (x->expecting != nullptr) {
+            n->expecting = std::make_unique<ast::Block>(cloneBlock(*x->expecting, s));
+        }
+        if (x->onFailure != nullptr) {
+            n->onFailure = std::make_unique<ast::Block>(cloneBlock(*x->onFailure, s));
+        }
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::UsingStmt*>(st)) {
