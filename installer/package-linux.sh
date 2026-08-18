@@ -19,7 +19,7 @@ set -euo pipefail
 
 BUILD_DIR="${BUILD_DIR:-$HOME/polaron-build-dist}"
 LLVM_DIR="${LLVM_DIR:-/usr/lib/llvm-21}"
-VERSION="${VERSION:-1.0.134}"
+VERSION="${VERSION:-1.0.135}"
 OUT="${OUT:-/tmp}"
 while [ $# -gt 0 ]; do
   case "$1" in

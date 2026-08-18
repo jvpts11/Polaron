@@ -3453,6 +3453,19 @@ struct CodeGenerator::Impl {
             if (isFloatType(et)) {
                 fmt += "%g";
                 v = coerce(v, et, "double");  // f64 for the %g vararg
+            } else if (et == "boolean") {
+                // A BOOLEAN INTERPOLATES AS ITS OWN TWO WORDS, which is the only spelling the
+                // language has for it: the literals are `true` and `false`, and `toString()` on one
+                // has always answered that way. Interpolation fell through to the integer case
+                // below and printed 1 and 0, so the same value had two spellings depending on which
+                // way it was printed, and the shorter one was the lossy default.
+                //
+                // The SELECT picks the text, so exactly one of the two globals is read and nothing
+                // branches at runtime -- the same shape `boolean.toString()` lowers to.
+                fmt += "%s";
+                v = builder.CreateSelect(
+                    builder.CreateICmpNE(v, llvm::ConstantInt::get(v->getType(), 0)),
+                    emitBytesLiteral("true"), emitBytesLiteral("false"));
             } else if (et == "char") {
                 fmt += "%c";
             } else if (et == "String" || et == "string") {

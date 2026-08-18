@@ -1,0 +1,35 @@
+import System.IO.Console;
+program InterpBoolean;
+
+// A BOOLEAN INTERPOLATES AS ITS OWN TWO WORDS.
+//
+// `true` and `false` are the only spelling the language has for these values -- they are the
+// literals you write, and `toString()` on one has always answered that way. Interpolation fell
+// through to the integer case and printed 1 and 0, so the same value had two spellings depending on
+// which way it was printed, and the shorter one was the default. Found by printing a comparison and
+// reading `0 1` back.
+//
+// Prints: true false / true false / eq true lt false / true
+
+public bundle Main {
+    public namespace App {
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                boolean yes = true;
+                boolean no = false;
+                System.IO.Console.println($"{yes} {no}");
+                // The same two values, through the method that always got this right -- so the two
+                // ways of asking agree, which is the whole point.
+                System.IO.Console.println($"{yes.toString()} {no.toString()}");
+                // An expression rather than a name: the comparison that started this.
+                int a = 3;
+                int b = 3;
+                System.IO.Console.println($"eq {a == b} lt {a < b}");
+                // And inside a wider sentence, where a bare 1 reads as a count of something.
+                System.IO.Console.println($"{a >= b}");
+                return 0;
+            }
+        }
+    }
+}

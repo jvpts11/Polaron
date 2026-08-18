@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.134")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.135")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.134")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.135")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3509,12 +3509,24 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A boolean interpolates as `true`/`false`, which is the only spelling the language has for
+        # one. It fell through to the integer case and printed 1/0, so `$"{flag}"` and
+        # `$"{flag.toString()}"` disagreed about the same value and the lossy one was the default.
+        # Nine expectations in this file encoded that; they were the defect written down.
+        add_test(NAME codegen_interp_boolean_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interp_boolean.pol"
+            "-DEXPECTED=true false true false eq true lt false true"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # String ==/!= compares content (spec 4), not the buffer pointer (weld-dogfood BUG2).
         add_test(NAME codegen_string_equality_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/string_equality.pol"
-            "-DEXPECTED=eq=1 ne=1 same=0"
+            "-DEXPECTED=eq=true ne=true same=false"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -6929,7 +6941,7 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enums.pol"
-            "-DEXPECTED=is red? 1 blue code = 2"
+            "-DEXPECTED=is red? true blue code = 2"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -7032,7 +7044,7 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/unsigned.pol"
-            "-DEXPECTED=big = 3000000000 half = 1500000000 big > 1 = 1 huge = 18000000000000000000"
+            "-DEXPECTED=big = 3000000000 half = 1500000000 big > 1 = true huge = 18000000000000000000"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -7121,7 +7133,7 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/collection_of_arrays.pol"
             "-DEXPECTED=count 2"
-            "-DCONTAINS=has a 1 has twin 0"
+            "-DCONTAINS=has a true has twin false"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -7230,7 +7242,7 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/records.pol"
-            "-DEXPECTED=sum = 7 p==q 1 p==r 0"
+            "-DEXPECTED=sum = 7 p==q true p==r false"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -7544,7 +7556,7 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/result.pol"
-            "-DEXPECTED=ok: 1 7 err: 0 404"
+            "-DEXPECTED=ok: true 7 err: false 404"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -7553,7 +7565,7 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/option.pol"
-            "-DEXPECTED=a: some=1 val=42 b: some=0 val=99"
+            "-DEXPECTED=a: some=true val=42 b: some=false val=99"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -9030,7 +9042,7 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/sealed_java_enum_match.pol"
-            "-DEXPECTED=how many 2 ordinal 1 label fast score 0.25 0.75 brisk 0 1 held slow 0.25"
+            "-DEXPECTED=how many 2 ordinal 1 label fast score 0.25 0.75 brisk false true held slow 0.25"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
