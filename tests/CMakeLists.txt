@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.145")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.146")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.145")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.146")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1102,6 +1102,24 @@ add_test(NAME lint_allow_demands_a_reason
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+# THE STANDARD LIBRARY IS HELD TO ITS OWN ADVICE, and this is the test that does the holding.
+#
+# Hiding the prelude's warnings is right for somebody compiling their own program -- they cannot act
+# on a diagnostic about code they did not write -- and it left the one code base every program links
+# against as the only one nothing was watching. A warning that fires in the library is not noise: it
+# is a place the library does not follow the language it defines.
+#
+# A ratchet. The counts may fall freely and may never rise, so a rule can be added against the
+# prelude as it stands, the count becomes the debt that rule found, and no later change may add to
+# it. When a count falls the test says so and asks for the baseline to be tightened, which is what
+# stops the debt from coming back.
+add_test(NAME lint_prelude_holds_its_baseline COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol"
+    "-DBASELINE=${CMAKE_CURRENT_SOURCE_DIR}/prelude_advice_baseline.txt"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_prelude_advice_ratchet.cmake")
 
 # THE ADVICE ABOUT TABLES, CONVERSIONS AND ALLOCATION SHAPE.
 add_test(NAME lint_primitive_obsession

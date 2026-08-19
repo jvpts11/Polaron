@@ -1,0 +1,33 @@
+# THE STANDARD LIBRARY'S OWN ADVICE, COUNTED. A ratchet: these may go DOWN, never up.
+#
+# Every number here is a place the library does not follow the language it defines, found by the
+# rule beside it on the day that rule was written. They are not noise and they are not exemptions --
+# they are the debt the advice discovered, written down so that it cannot grow quietly and so that
+# paying it off is visible.
+#
+# The rule when a count rises: fix the code, or write `[Allow(code:, why:)]` where the shape is
+# deliberate. Raising the number is not one of the options.
+# The rule when a count falls: lower it here, in the same change. A ratchet that is not tightened
+# lets the same debt come back.
+#
+# `polc --check tests/samples/hello_world.pol --lint-prelude` prints them.
+
+Polaron-0B0B   4
+Polaron-0B0D 781
+Polaron-0B10  73
+Polaron-0B11   5
+Polaron-0B13   3
+Polaron-0B17 126
+Polaron-0B1A  44
+Polaron-0B1B   7
+Polaron-0B1C  10
+Polaron-0B1D   3
+Polaron-0B1F   5
+Polaron-0B20  14
+Polaron-0B21  16
+Polaron-0B22   2
+Polaron-0B23   1
+Polaron-0B24  31
+Polaron-0B26  10
+Polaron-0B27   5
+Polaron-0B28  58
