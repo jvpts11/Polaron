@@ -1632,6 +1632,76 @@ constexpr Row kCatalog[] = {
         "Pass big values by reference and small ones by value, and let the size decide rather than "
         "the habit. The threshold worth remembering is the cache line." }},
 
+    {Code::ConstantComputedAtRuntime, {
+        "Polaron-0B47", "the compiler can already work this value out",
+        "The obvious objection is that constant folding does this anyway, and it is half true. "
+        "Folding is an OPTIMISATION: it happens at some optimisation levels and not others, so a "
+        "debug build computes it every time -- and either way the value stays anonymous, which is "
+        "the half no optimiser was ever going to fix. A number worth computing is a number worth "
+        "naming.",
+        "Declare it `fixed`: `fixed int SLOTS = 8 * 8;`. It is then a compile-time constant by "
+        "guarantee rather than by hope, it has a name that says what it is for, and it costs nothing "
+        "at any optimisation level.",
+        "Name a computed constant where it is computed. The arithmetic is usually the explanation, "
+        "and `fixed` is how the explanation survives." }},
+
+    {Code::SameGuardAtEveryCallSite, {
+        "Polaron-0B48", "several call sites check the same thing before calling",
+        "That is a precondition living everywhere except the one place it can be enforced. Each "
+        "caller is remembering a rule the method knows and does not state -- and the caller that "
+        "forgets is by definition the one nobody wrote the check in, so nothing anywhere notices.",
+        "Move it into the method as a `requires`. It is then checked once, at every call including "
+        "the ones written later, and the compiler can drop it wherever the caller has already proved "
+        "the condition -- so the callers that were checking stop paying for it.",
+        "When the same guard appears before a second call to one method, it has stopped being the "
+        "caller's business and become the method's contract." }},
+
+    {Code::UnprovenNoAliasInLoop, {
+        "Polaron-0B49", "this loop writes one array and reads another, with nothing separating them",
+        "Two parameters of the same array type might be the same array, and nothing in the "
+        "declaration says otherwise -- so the compiler must assume each write may land in what the "
+        "next read looks at. That single possibility costs the whole loop: the loads cannot be "
+        "hoisted, the bounds check cannot be removed, and it cannot be vectorised, all for a case "
+        "the caller usually knows is impossible.",
+        "Say they are different. A `requires` relating them, distinct types via `newtype`, or -- "
+        "where the arrays really can be the same -- one pass into a scratch buffer and a copy back, "
+        "which makes the possibility explicit instead of implicit.",
+        "Two arrays of one type in one signature is the shape that raises the question. It is worth "
+        "answering in the signature rather than leaving the optimiser to assume the worst." }},
+
+    {Code::CallBlocksVectorization, {
+        "Polaron-0B4A", "element-wise arithmetic with a call in the middle of it",
+        "One operation applied down an array is exactly the shape a vector unit exists for, and the "
+        "call is what stops it: the compiler cannot see through it, so it cannot prove the body is "
+        "free of side effects, so it processes one element at a time. The arithmetic around it "
+        "suggests a loop that is doing four or eight lanes at once, and it is doing one.",
+        "Inline the work, or hoist it out of the loop where it does not depend on the element. Where "
+        "it genuinely must be called per element, `vec2`/`vec3`/`vec4` express the wide operation "
+        "directly for two to four lanes.",
+        "Keep the inside of a numeric loop to arithmetic on the elements. Anything else in there is "
+        "a wall the vectoriser stops at." }},
+
+    {Code::KeptArgumentNeverReused, {
+        "Polaron-0B4B", "this is handed to something that keeps it, and never read again here",
+        "The callee stores it -- the compiler knows this, from the escape summary it computes for "
+        "every method -- and this caller never looks at the variable afterwards. So two names now "
+        "refer to one object, one of them for no reason, and the lifetime the caller is extending is "
+        "being extended for nobody.",
+        "`move` it into the call. Ownership goes with the value, the caller's name is invalidated, "
+        "and a later read of it becomes a compile error instead of a second owner nobody planned.",
+        "When a call takes ownership, say so at the call. Reading it back out of the callee later is "
+        "a different design and a clearer one than two live names." }},
+
+    {Code::OverrideRepeatsTheBase, {
+        "Polaron-0B4C", "this override has the same body as the method it overrides",
+        "The two are word for word the same, so the override changes nothing -- and a reader has to "
+        "read both and compare them to find that out. It also costs a vtable slot and a call the "
+        "base did not need, and it is a place a future edit to the base silently stops reaching: the "
+        "copy keeps doing what the base used to do.",
+        "Delete it. Inheritance already runs the base's version; that is what it is for.",
+        "This shape usually arrives from a generated skeleton, or from a refactor that pulled the "
+        "shared work up into the base and left the copies where they were." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "

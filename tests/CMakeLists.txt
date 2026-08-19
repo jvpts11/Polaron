@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.150")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.151")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.150")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.151")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1102,6 +1102,59 @@ add_test(NAME lint_allow_demands_a_reason
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+# THE SIX RULES THE CATALOGUE DESCRIBES IN TERMS THIS LANGUAGE DOES NOT HAVE.
+#
+# Each was refused once, and each time for the same wrong reason: the analysis the catalogue names is
+# unavailable, so the rule was called impossible. Every one of them has a decidable shape that says
+# the same thing. `super.m()` cannot be written, but an override with the base's body word for word
+# can be compared. `keep` is not a keyword, but the escape summary already says which parameters a
+# method stores. Constant folding does remove the arithmetic, but only at some optimisation levels
+# and it never gives the value a name.
+add_test(NAME lint_constant_computed_at_runtime
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
+set_tests_properties(lint_constant_computed_at_runtime PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B47\\]: 'slots' is 64")
+
+add_test(NAME lint_same_guard_at_every_call_site
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
+set_tests_properties(lint_same_guard_at_every_call_site PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B48\\]: 2 call sites of 'guarded'")
+
+add_test(NAME lint_unproven_no_alias_in_loop
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
+set_tests_properties(lint_unproven_no_alias_in_loop PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B49\\]: this loop writes 'out' and reads 'src'")
+
+add_test(NAME lint_call_blocks_vectorization
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
+set_tests_properties(lint_call_blocks_vectorization PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B4A\\]: this loop is element-wise arithmetic with a call")
+
+add_test(NAME lint_kept_argument_never_reused
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
+set_tests_properties(lint_kept_argument_never_reused PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B4B\\]: 'take' keeps 'later'")
+
+add_test(NAME lint_override_repeats_the_base
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
+set_tests_properties(lint_override_repeats_the_base PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B4C\\]: 'Copy.greet' overrides 'Base.greet' with the same body")
+
+# ...and the two that must stay quiet: an override that does something else, and a numeric loop with
+# nothing standing between it and the vector unit.
+add_test(NAME lint_proof_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
+set_tests_properties(lint_proof_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'Copy.differs'")
+
+add_test(NAME lint_proof_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol"
+    "-DCONTAINS=64 3 2 4 6"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # THE ADVICE ABOUT WHAT A DECLARATION COSTS. The three size-based rules compute an approximate
 # layout here rather than reaching into the code generator: they do not need the exact answer, only

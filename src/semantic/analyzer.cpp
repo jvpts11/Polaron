@@ -3593,6 +3593,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnRegionHeldTooLong(m->body);
                         warnRegionsWithOneLifetime(m->body);
                         warnEternalThatIsReleased(m->body);
+                        warnConstantComputedAtRuntime(*m);
+                        warnUnprovenNoAliasInLoop(*m);
+                        warnCallBlocksVectorization(m->body);
                         popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);

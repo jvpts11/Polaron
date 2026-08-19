@@ -944,6 +944,200 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
         popAllows();
     }
 
+    // ---- an override whose body is the base's body, word for word (catalogue 59) ----
+    //
+    // The catalogue writes this as "an override that only calls super", and that shape cannot be
+    // written here: `super` is legal only as `super(...)` in a constructor. What CAN be written --
+    // and is what the rule is really about -- is an override that repeats what it overrides. The
+    // dumped body is structural, so comparing two of them answers exactly that question.
+    for (const ast::ClassDecl* c : all) {
+        if (c->superclass.empty()) {
+            continue;
+        }
+        auto base = byName.find(baseType(c->superclass));
+        if (base == byName.end()) {
+            continue;
+        }
+        pushAllows(c->annotations, {});
+        for (const ast::MemberPtr& mp : c->members) {
+            const auto* over = dynamic_cast<const ast::MethodDecl*>(mp.get());
+            if (over == nullptr || !over->isOverride || over->body.statements.empty()) {
+                continue;
+            }
+            for (const ast::MemberPtr& bp : base->second->members) {
+                const auto* orig = dynamic_cast<const ast::MethodDecl*>(bp.get());
+                if (orig == nullptr || orig->name != over->name) {
+                    continue;
+                }
+                std::string a;
+                std::string b;
+                for (const ast::StmtPtr& st : over->body.statements) { st->dump(a, 0); }
+                for (const ast::StmtPtr& st : orig->body.statements) { st->dump(b, 0); }
+                if (!a.empty() && a == b) {
+                    warn(diag::Code::OverrideRepeatsTheBase,
+                         "'" + c->name + "." + over->name +
+                             "' overrides '" + base->second->name + "." + orig->name +
+                             "' with the same body",
+                         over->loc);
+                }
+                break;
+            }
+        }
+        popAllows();
+    }
+
+    // ---- the same guard before every call to one method (catalogue 26) ----
+    //
+    // A condition checked at each call site is a precondition living everywhere except where it can
+    // be enforced. The call site that forgets it is the one nobody writes down, and the method it
+    // calls has no way to notice.
+    {
+        struct GuardSite {
+            std::string callee;
+            std::string shape;
+            SourceLocation loc;
+        };
+        std::vector<GuardSite> sites;
+        std::function<void(const ast::Block&)> scan = [&](const ast::Block& blk) {
+            // BOTH SHAPES A GUARDED CALL TAKES: `if (bad) { return; } foo(x);` where the call
+            // follows the guard, and `if (ok) { foo(x); }` where it is inside it. The second is the
+            // commoner of the two and the first version of this rule could not see it at all.
+            auto note = [&](const ast::IfStmt* guard, const ast::Stmt* callStmt) {
+                const auto* es = dynamic_cast<const ast::ExprStmt*>(callStmt);
+                const auto* call =
+                    es != nullptr ? dynamic_cast<const ast::CallExpr*>(es->expr.get()) : nullptr;
+                const auto* mem =
+                    call != nullptr ? dynamic_cast<const ast::MemberExpr*>(call->callee.get())
+                                    : nullptr;
+                if (mem == nullptr || guard->cond == nullptr) {
+                    return;
+                }
+                std::string shape;
+                guard->cond->dump(shape, 0);
+                sites.push_back(GuardSite{mem->member, shape, guard->loc});
+            };
+            for (std::size_t i = 0; i < blk.statements.size(); ++i) {
+                const auto* guard = dynamic_cast<const ast::IfStmt*>(blk.statements[i].get());
+                if (guard == nullptr) {
+                    continue;
+                }
+                if (guard->thenBlock.statements.size() == 1) {
+                    note(guard, guard->thenBlock.statements[0].get());
+                }
+                if (i + 1 < blk.statements.size()) {
+                    note(guard, blk.statements[i + 1].get());
+                }
+            }
+            for (const ast::StmtPtr& st : blk.statements) {
+                if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st.get())) {
+                    scan(iff->thenBlock);
+                    if (iff->elseBlock) {
+                        scan(*iff->elseBlock);
+                    }
+                }
+            }
+        };
+        for (const ast::ClassDecl* c : all) {
+            for (const ast::MemberPtr& mp : c->members) {
+                if (const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get())) {
+                    scan(m->body);
+                }
+            }
+        }
+        std::unordered_map<std::string, int> seen;
+        std::unordered_map<std::string, SourceLocation> first;
+        std::unordered_map<std::string, std::string> callee;
+        for (const GuardSite& s : sites) {
+            const std::string key = s.callee + "\n" + s.shape;
+            if (++seen[key] == 1) {
+                first[key] = s.loc;
+                callee[key] = s.callee;
+            }
+        }
+        for (const auto& [key, n] : seen) {
+            if (n >= 2) {
+                warn(diag::Code::SameGuardAtEveryCallSite,
+                     std::to_string(n) + " call sites of '" + callee[key] +
+                         "' check the same thing before calling it",
+                     first[key]);
+            }
+        }
+    }
+
+    // ---- an argument the callee keeps, that the caller never looks at again (catalogue 42) ----
+    //
+    // The catalogue writes this about a `keep` argument, and `keep` is not a word in this language.
+    // What it describes exists anyway, and the compiler already computes it: a method's escape
+    // summary says which parameters it stores. When the caller hands one over and never reads the
+    // variable again, the copy it is still holding is a lifetime extended for nobody.
+    {
+        std::unordered_map<std::string, std::unordered_set<int>> keeps;
+        for (const ast::ClassDecl* c : all) {
+            for (const ast::MemberPtr& mp : c->members) {
+                const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get());
+                if (m == nullptr) {
+                    continue;
+                }
+                for (const auto& [param, slot] : m->escapeSummary) {
+                    if (slot == -1 && param >= 0) {
+                        keeps[m->name].insert(param);
+                    }
+                }
+            }
+        }
+        if (!keeps.empty()) {
+            for (const ast::ClassDecl* c : all) {
+                pushAllows(c->annotations, {});
+                for (const ast::MemberPtr& mp : c->members) {
+                    const auto* caller = dynamic_cast<const ast::MethodDecl*>(mp.get());
+                    if (caller == nullptr) {
+                        continue;
+                    }
+                    for (std::size_t i = 0; i < caller->body.statements.size(); ++i) {
+                        const auto* es =
+                            dynamic_cast<const ast::ExprStmt*>(caller->body.statements[i].get());
+                        const auto* call =
+                            es != nullptr ? dynamic_cast<const ast::CallExpr*>(es->expr.get())
+                                          : nullptr;
+                        const auto* mem =
+                            call != nullptr
+                                ? dynamic_cast<const ast::MemberExpr*>(call->callee.get())
+                                : nullptr;
+                        if (mem == nullptr || keeps.count(mem->member) == 0) {
+                            continue;
+                        }
+                        for (int idx : keeps[mem->member]) {
+                            if (idx >= static_cast<int>(call->args.size())) {
+                                continue;
+                            }
+                            const auto* id = dynamic_cast<const ast::IdentifierExpr*>(
+                                call->args[static_cast<std::size_t>(idx)].get());
+                            if (id == nullptr) {
+                                continue;
+                            }
+                            bool readAgain = false;
+                            for (std::size_t j = i + 1; j < caller->body.statements.size(); ++j) {
+                                std::string text;
+                                caller->body.statements[j]->dump(text, 0);
+                                if (text.find("'" + id->name + "'") != std::string::npos) {
+                                    readAgain = true;
+                                    break;
+                                }
+                            }
+                            if (!readAgain) {
+                                warn(diag::Code::KeptArgumentNeverReused,
+                                     "'" + mem->member + "' keeps '" + id->name +
+                                         "', and nothing here reads it again",
+                                     es->loc);
+                            }
+                        }
+                    }
+                }
+                popAllows();
+            }
+        }
+    }
+
     // ---- a pointer back to the owner is a cycle (catalogue 9) ----
     //
     // A owns a B and the B points back at the A. Neither side says which is the owner, so a cascade

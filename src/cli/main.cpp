@@ -76,7 +76,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "polc 1.0.150";
+constexpr std::string_view kVersion = "polc 1.0.151";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);

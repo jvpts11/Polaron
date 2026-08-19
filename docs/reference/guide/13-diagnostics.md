@@ -215,6 +215,12 @@ two copies come to disagree.
 | `Polaron-0B44` | this dispatches through an interface on every element |
 | `Polaron-0B45` | the declared field order costs bytes that a layout would recover |
 | `Polaron-0B46` | this takes a large aggregate by value |
+| `Polaron-0B47` | the compiler can already work this value out |
+| `Polaron-0B48` | several call sites check the same thing before calling |
+| `Polaron-0B49` | this loop writes one array and reads another, with nothing separating them |
+| `Polaron-0B4A` | element-wise arithmetic with a call in the middle of it |
+| `Polaron-0B4B` | this is handed to something that keeps it, and never read again here |
+| `Polaron-0B4C` | this override has the same body as the method it overrides |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

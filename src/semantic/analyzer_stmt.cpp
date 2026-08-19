@@ -1504,6 +1504,165 @@ void SemanticAnalyzer::warnVirtualCallInLoop(const ast::Block& loopBody) {
     });
 }
 
+void SemanticAnalyzer::warnConstantComputedAtRuntime(const ast::MethodDecl& m) {
+    // AN EXPRESSION THE COMPILER CAN ALREADY EVALUATE, left to be computed when the program runs.
+    //
+    // The obvious objection is that constant folding does this anyway, and it is why an earlier
+    // version of this file refused the rule. It is only half true: folding is an OPTIMISATION, so it
+    // happens at some optimisation levels and not others, and it leaves the value anonymous either
+    // way. `fixed` is a guarantee rather than a hope, and it gives the number a name at the same
+    // time -- which is the half the optimiser was never going to do.
+    //
+    // A bare literal is excluded: `int n = 4;` is already as plain as it gets, and saying `fixed`
+    // about it would be advice on nearly every line in the language.
+    for (const ast::StmtPtr& st : m.body.statements) {
+        const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get());
+        if (vd == nullptr || vd->isComptime || vd->isMutable || vd->init == nullptr) {
+            continue;
+        }
+        if (dynamic_cast<const ast::IntLiteralExpr*>(vd->init.get()) != nullptr) {
+            continue;
+        }
+        long long folded = 0;
+        if (evalConstInt(*vd->init, folded, &constInts_, &comptimeMethods_, &constDoubles_,
+                         &enums_)) {
+            warn(diag::Code::ConstantComputedAtRuntime,
+                 "'" + vd->name + "' is " + std::to_string(folded) +
+                     ", and the compiler can already work that out",
+                 vd->loc);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnUnprovenNoAliasInLoop(const ast::MethodDecl& m) {
+    // TWO ARRAY PARAMETERS OF ONE ELEMENT TYPE, one written and one read in the same loop. Nothing
+    // says they are different arrays, so the compiler must assume each write may land in what the
+    // next read looks at -- which stops it hoisting the loads, stops it vectorising, and keeps the
+    // bounds check, all for a possibility the caller usually knows is impossible.
+    std::unordered_map<std::string, std::string> arrayParams;
+    for (const ast::Param& p : m.params) {
+        if (const std::string t = typeRefStr(p.type); isArrayType(t)) {
+            arrayParams[p.name] = t;
+        }
+    }
+    if (arrayParams.size() < 2) {
+        return;
+    }
+    auto scanLoop = [&](const ast::Block& blk, SourceLocation loc) {
+        std::unordered_set<std::string> written;
+        std::unordered_set<std::string> read;
+        eachStmt(blk, [&](const ast::Stmt& st) {
+            const auto* as = dynamic_cast<const ast::AssignStmt*>(&st);
+            if (as == nullptr) {
+                return;
+            }
+            if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(as->target.get())) {
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(ix->array.get());
+                    id != nullptr && arrayParams.count(id->name) > 0) {
+                    written.insert(id->name);
+                }
+            }
+            std::function<void(const ast::Expr*)> reads = [&](const ast::Expr* e) {
+                if (e == nullptr) {
+                    return;
+                }
+                if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+                    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(ix->array.get());
+                        id != nullptr && arrayParams.count(id->name) > 0) {
+                        read.insert(id->name);
+                    }
+                    return;
+                }
+                if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+                    reads(bin->lhs.get());
+                    reads(bin->rhs.get());
+                } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+                    reads(un->operand.get());
+                } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+                    reads(cast->operand.get());
+                }
+            };
+            reads(as->value.get());
+        });
+        for (const std::string& w : written) {
+            for (const std::string& r : read) {
+                if (w != r && arrayParams[w] == arrayParams[r]) {
+                    warn(diag::Code::UnprovenNoAliasInLoop,
+                         "this loop writes '" + w + "' and reads '" + r +
+                             "', and nothing says they are different arrays",
+                         loc);
+                    return;
+                }
+            }
+        }
+    };
+    eachStmt(m.body, [&](const ast::Stmt& st) {
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+            scanLoop(ws->body, ws->loc);
+        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+            scanLoop(fs->body, fs->loc);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+            scanLoop(fe->body, fe->loc);
+        }
+    });
+}
+
+void SemanticAnalyzer::warnCallBlocksVectorization(const ast::Block& body) {
+    // AN ELEMENT-WISE NUMERIC LOOP WITH A CALL IN IT. The arithmetic is exactly the shape a vector
+    // unit exists for -- one operation applied down an array -- and the call in the middle is what
+    // stops it: the compiler cannot see through it, so it cannot prove the body is free of side
+    // effects, so it processes one element at a time.
+    auto scanLoop = [&](const ast::Block& blk, SourceLocation loc) {
+        bool elementwise = false;
+        const ast::CallExpr* blocker = nullptr;
+        eachStmt(blk, [&](const ast::Stmt& st) {
+            const auto* as = dynamic_cast<const ast::AssignStmt*>(&st);
+            if (as == nullptr) {
+                return;
+            }
+            if (dynamic_cast<const ast::IndexExpr*>(as->target.get()) == nullptr) {
+                return;
+            }
+            if (dynamic_cast<const ast::BinaryExpr*>(as->value.get()) != nullptr) {
+                elementwise = true;
+            }
+            std::function<void(const ast::Expr*)> findCall = [&](const ast::Expr* e) {
+                if (e == nullptr || blocker != nullptr) {
+                    return;
+                }
+                if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+                    blocker = call;
+                    return;
+                }
+                if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+                    findCall(bin->lhs.get());
+                    findCall(bin->rhs.get());
+                } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+                    findCall(un->operand.get());
+                } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+                    findCall(cast->operand.get());
+                } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+                    findCall(ix->index.get());
+                }
+            };
+            findCall(as->value.get());
+        });
+        if (elementwise && blocker != nullptr) {
+            warn(diag::Code::CallBlocksVectorization,
+                 "this loop is element-wise arithmetic with a call in the middle of it", loc);
+        }
+    };
+    eachStmt(body, [&](const ast::Stmt& st) {
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+            scanLoop(ws->body, ws->loc);
+        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+            scanLoop(fs->body, fs->loc);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+            scanLoop(fe->body, fe->loc);
+        }
+    });
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks

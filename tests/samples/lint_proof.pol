@@ -1,0 +1,113 @@
+import System.IO.Console;
+
+program LintProof;
+
+// THE SIX RULES THE CATALOGUE DESCRIBES IN TERMS THIS LANGUAGE DOES NOT HAVE, written in terms it
+// does. Each was refused once for the wrong reason -- because the analysis the catalogue names is
+// unavailable -- and each turned out to have a decidable shape that says the same thing.
+public bundle Main {
+    public namespace App {
+
+        public class Base {
+            public method greet() returns int {
+                int n = 1;
+                return n + 1;
+            }
+            public method differs() returns int { return 5; }
+        }
+
+        // FIRES (0B4C): word for word the base's body, so the override changes nothing -- and a
+        // reader has to read both and compare them to find that out. (`super.greet()` cannot be
+        // written in this language, which is why the catalogue's own wording does not fit.)
+        public class Copy extends Base {
+            public override method greet() returns int {
+                int n = 1;
+                return n + 1;
+            }
+            // QUIET: it does something else, which is what an override is for.
+            public override method differs() returns int { return 6; }
+        }
+
+        public class Store {
+            public mutable Base* held;
+            public constructor Store(Base* first) { this.held = first; }
+            // Its escape summary says it KEEPS the parameter, which is what makes the rule below
+            // decidable without any new analysis.
+            public method take(Base* v) returns void {
+                this.held = v;
+                return;
+            }
+            public method value() returns int { return this.held.differs(); }
+        }
+
+        public class Proof {
+            // FIRES (0B47): folding is an optimisation and this is a guarantee -- and the number
+            // gets a name, which no optimiser was going to do.
+            public static method computed() returns int {
+                int slots = 8 * 8;
+                return slots;
+            }
+
+            // FIRES (0B49): two arrays of one type, one written and one read, and nothing says they
+            // are different -- so every load stays and the bounds check cannot go.
+            public static method blend(int[] out, int[] src, int n) returns int {
+                for (int i in 0..n) {
+                    out[i] = src[i] + 1;
+                }
+                return out[0];
+            }
+
+            // FIRES (0B4A): one operation down an array, with a call in the middle that the
+            // optimiser cannot see through.
+            public static method scaled(int[] out, int[] src, int n) returns int {
+                for (int i in 0..n) {
+                    out[i] = src[i] * Proof.weight(i);
+                }
+                return out[0];
+            }
+
+            public static method weight(int i) returns int { return i + 1; }
+
+            // QUIET: no call in the body, so nothing is standing in the way.
+            public static method doubled(int[] out, int n) returns int {
+                for (int i in 0..n) {
+                    out[i] = out[i] * 2;
+                }
+                return out[0];
+            }
+
+            public static method guarded(int a, int b) returns int {
+                return a + b;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int[] a = new int[4]();
+                int[] b = new int[4]();
+                b[0] = 2;
+                Base* first = new Base() on heap;
+                Base* later = new Copy() on heap;
+                Store* s = new Store(first) on heap;
+                mutable int total = 0;
+                // FIRES (0B48): the same check before every call is a precondition living
+                // everywhere except where it could be enforced.
+                if (total >= 0) {
+                    Proof.guarded(1, 2);
+                }
+                if (total >= 0) {
+                    Proof.guarded(3, 4);
+                }
+                // FIRES (0B4B): `take` keeps it -- the escape summary says so -- and nothing here
+                // reads `later` again, so two names hold one object and one of them for no reason.
+                s.take(later);
+                System.IO.Console.println($"{Proof.computed()} {Proof.blend(a, b, 4)} {Proof.scaled(a, b, 4)} {Proof.doubled(a, 4)} {s.value()}");
+                delete a;
+                delete b;
+                delete s;
+                delete first;
+                return;
+            }
+        }
+    }
+}

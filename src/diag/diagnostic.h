@@ -197,6 +197,12 @@ enum class Code {
     VirtualCallInLoop,    // dispatch through an interface on every element of a collection
     PaddingFromFieldOrder,    // the declared order costs bytes a `layout` would recover
     LargeValueByValue,    // a big aggregate copied at every call
+    ConstantComputedAtRuntime,  // an expression the compiler can already evaluate
+    SameGuardAtEveryCallSite,   // a precondition living at the call sites instead of on the method
+    UnprovenNoAliasInLoop,      // two arrays of one type, written and read, nothing separating them
+    CallBlocksVectorization,    // element-wise arithmetic with a call the optimiser cannot see through
+    KeptArgumentNeverReused,    // handed to something that stores it, and never read again
+    OverrideRepeatsTheBase,     // an override whose body is the base's body
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First
