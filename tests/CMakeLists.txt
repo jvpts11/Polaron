@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.140")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.141")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.140")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.141")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1043,6 +1043,81 @@ add_test(NAME lint_prelude_advice_can_be_asked_for
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol" --lint-prelude)
 set_tests_properties(lint_prelude_advice_can_be_asked_for PROPERTIES
     PASS_REGULAR_EXPRESSION "Polaron-0B0B")
+
+# `mutable` NEVER MUTATED (Polaron-0B0D). A name is constant unless it says the word, so `mutable` is
+# a declaration that this will change and every reader plans for it. The rule is EXACT rather than
+# conservative, and the sample is where that is pinned: writing an array element through the name,
+# writing a field through it, deleting it and handing it to a call are all things that need no
+# `mutable`, checked against the compiler rather than assumed.
+add_test(NAME lint_mutable_never_mutated
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_shapes.pol")
+set_tests_properties(lint_mutable_never_mutated PROPERTIES
+    PASS_REGULAR_EXPRESSION "warning\\[Polaron-0B0D\\]: 'spare' is declared mutable")
+
+# ...and the loop counter, which really is reassigned, must stay quiet.
+add_test(NAME lint_mutable_spares_a_real_mutation
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_shapes.pol")
+set_tests_properties(lint_mutable_spares_a_real_mutation PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'total' is declared mutable|'i' is declared mutable")
+
+# A CATCH WITH AN EMPTY BODY destroys the evidence at the one point where it existed (Polaron-0B0E).
+add_test(NAME lint_swallowed_catch
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_shapes.pol")
+set_tests_properties(lint_swallowed_catch PROPERTIES
+    PASS_REGULAR_EXPRESSION "warning\\[Polaron-0B0E\\]: this catch has an empty body")
+
+# `async` WITH NOTHING TO SUSPEND ON pays for a state machine, a Task and a scheduling hop and uses
+# none of it (Polaron-0B0F) -- and the method that does await must not be named.
+add_test(NAME lint_async_never_awaits
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_async.pol")
+set_tests_properties(lint_async_never_awaits PROPERTIES
+    PASS_REGULAR_EXPRESSION "warning\\[Polaron-0B0F\\]: 'idle' is async"
+    FAIL_REGULAR_EXPRESSION "'real' is async")
+
+# `[Allow(code:, why:)]` -- THE ESCAPE VALVE. Advice is a rule about a shape, and a shape can be
+# right for a reason the compiler cannot see; without a way to say so the first honest disagreement
+# makes the whole set noise. On the method, and on the class for everything inside it.
+add_test(NAME lint_allow_suppresses_with_a_reason
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow.pol")
+set_tests_properties(lint_allow_suppresses_with_a_reason PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'slot' is declared mutable|'a' is declared mutable|'b' is declared mutable")
+
+# ...and it is a decision per declaration, not a switch somebody flipped for the file.
+add_test(NAME lint_allow_is_not_a_file_switch
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow.pol")
+set_tests_properties(lint_allow_is_not_a_file_switch PROPERTIES
+    PASS_REGULAR_EXPRESSION "warning\\[Polaron-0B0D\\]: 'other' is declared mutable")
+
+# A STALE `[Allow]` IS A CLAIM THAT HAS STOPPED BEING TRUE (Polaron-0B0C) -- the shape it excused was
+# rewritten and the note now describes code that is not there. Worse than no note, because the next
+# reader believes it. This is the failure mode the valve itself introduces, so it is caught.
+add_test(NAME lint_allow_reports_itself_when_stale
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow.pol")
+set_tests_properties(lint_allow_reports_itself_when_stale PROPERTIES
+    PASS_REGULAR_EXPRESSION "warning\\[Polaron-0B0C\\]: this \\[Allow\\] never suppressed anything")
+
+# The reason is MANDATORY, and it costs nothing to enforce: `why` has no default, so the compiler's
+# own required-field check refuses a suppression nobody can review.
+add_test(NAME lint_allow_demands_a_reason
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
+set_tests_properties(lint_allow_demands_a_reason PROPERTIES
+    PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+add_test(NAME lint_shapes_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_shapes.pol"
+    "-DCONTAINS=7 3 2 1 1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+add_test(NAME lint_allow_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow.pol"
+    "-DCONTAINS=3 4 1 2 5"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # EVERY DIAGNOSTIC THE SUITE PRODUCES CARRIES A CODE, and so has a why/fix/prevent behind it.
 #

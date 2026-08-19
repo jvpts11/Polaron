@@ -154,7 +154,12 @@ two copies come to disagree.
 | `Polaron-0B08` | this still works and is not going to keep working |
 | `Polaron-0B09` | these persistents will be told apart by identity, not by their contents |
 | `Polaron-0B0A` | this test reads a fixture whose setup it does not run |
+| `Polaron-0613` | this does not match how the annotation was declared |
 | `Polaron-0B0B` | this builds a String by re-copying it on every iteration |
+| `Polaron-0B0C` | this [Allow] never suppressed anything |
+| `Polaron-0B0D` | nothing ever assigns to this, so `mutable` claims a freedom it does not use |
+| `Polaron-0B0E` | this `catch` neither handles the failure nor lets anyone know it happened |
+| `Polaron-0B0F` | this method is `async` and never awaits anything |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

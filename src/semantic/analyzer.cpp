@@ -66,7 +66,68 @@ void SemanticAnalyzer::error(diag::Code code, std::string message, SourceLocatio
 }
 
 void SemanticAnalyzer::warn(diag::Code code, std::string message, SourceLocation loc) {
+    if (allowed(code)) {
+        return;   // this declaration said, with a reason, that it disagrees
+    }
     warnings_.push_back(SemaError{std::move(message), loc, code});
+}
+
+void SemanticAnalyzer::pushAllows(const std::vector<ast::AnnotationUse>& outer,
+                                  const std::vector<ast::AnnotationUse>& inner) {
+    std::vector<AllowEntry> frame;
+    auto take = [&frame](const std::vector<ast::AnnotationUse>& uses) {
+        for (const ast::AnnotationUse& use : uses) {
+            if (use.name != "Allow") {
+                continue;
+            }
+            for (const ast::AnnotationArg& arg : use.args) {
+                if (arg.name != "code") {
+                    continue;
+                }
+                if (const auto* lit = dynamic_cast<const ast::StringLiteralExpr*>(arg.value.get())) {
+                    frame.push_back(AllowEntry{lit->value, use.loc, false});
+                }
+            }
+        }
+    };
+    take(outer);   // the class's, so one written there covers everything inside it
+    take(inner);
+    allowStack_.push_back(std::move(frame));
+}
+
+void SemanticAnalyzer::popAllows() {
+    if (allowStack_.empty()) {
+        return;
+    }
+    // AN `[Allow]` THAT NEVER SUPPRESSED ANYTHING IS A CLAIM THAT HAS STOPPED BEING TRUE. The code
+    // it excused was rewritten, or the rule was narrowed, and what is left is a note saying this
+    // shape is here deliberately, about a shape that is not here at all. That is worse than no note:
+    // the next reader trusts it. Reported at the annotation, which is the line to delete.
+    for (const AllowEntry& e : allowStack_.back()) {
+        if (!e.used) {
+            warnings_.push_back(SemaError{"this [Allow] never suppressed anything: nothing here "
+                                          "reports " + e.code,
+                                          e.loc, diag::Code::AllowNeverUsed});
+        }
+    }
+    allowStack_.pop_back();
+}
+
+bool SemanticAnalyzer::allowed(diag::Code code) {
+    const std::string want = diag::codeString(code);
+    if (want.empty()) {
+        return false;
+    }
+    bool hit = false;
+    for (std::vector<AllowEntry>& frame : allowStack_) {
+        for (AllowEntry& e : frame) {
+            if (e.code == want) {
+                e.used = true;   // marked in every frame that names it, so neither reads as stale
+                hit = true;
+            }
+        }
+    }
+    return hit;
 }
 
 // A statement that can exit or branch out of straight-line flow (so it could break a comefrom loop).
@@ -1711,17 +1772,20 @@ void SemanticAnalyzer::checkAnnotationUses(const std::vector<ast::AnnotationUse>
             const bool isField = std::any_of(info.fields.begin(), info.fields.end(),
                                              [&](const auto& f) { return f.first == arg.name; });
             if (!isField) {
-                error("annotation '" + use.name + "' has no field '" + arg.name + "'", arg.loc);
+                error(diag::Code::AnnotationMisuse,
+                      "annotation '" + use.name + "' has no field '" + arg.name + "'", arg.loc);
                 continue;
             }
             if (!provided.insert(arg.name).second) {
-                error("duplicate argument '" + arg.name + "' for annotation '" + use.name + "'",
+                error(diag::Code::AnnotationMisuse,
+                      "duplicate argument '" + arg.name + "' for annotation '" + use.name + "'",
                       arg.loc);
             }
         }
         for (const std::string& req : info.required) {
             if (provided.count(req) == 0) {
-                error("annotation '" + use.name + "' requires a value for field '" + req + "'",
+                error(diag::Code::AnnotationMisuse,
+                      "annotation '" + use.name + "' requires a value for field '" + req + "'",
                       use.loc);
             }
         }
@@ -3488,9 +3552,18 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                             }
                         }
                         const auto boundFields = pendingBoundFields_;
+                        // The advice frame for this body: the class's `[Allow]`s come with the
+                        // method's, so one written on the class covers everything inside it.
+                        pushAllows(cls.annotations, m->annotations);
                         analyzeMethodBody(m->body, m->params,
                                           m->isStatic ? std::string() : cls.name, false, contracts,
                                           posts, retT == "void" ? std::string() : retT);
+                        // The structural advice, after the body -- so a lint that reads a type asks
+                        // a table the body has already filled in.
+                        warnMutableNeverMutated(*m);
+                        warnSwallowedCatch(m->body);
+                        warnAsyncNeverAwaits(*m);
+                        popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);
                             if (st == FlowFacts::Init::Init) {

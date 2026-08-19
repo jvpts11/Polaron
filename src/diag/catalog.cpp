@@ -963,6 +963,78 @@ constexpr Row kCatalog[] = {
         "the moment the number of pieces is a loop bound. The rule that catches it early: a `String` "
         "that is assigned more than once is a `StringBuilder` that has not been written yet." }},
 
+    {Code::AnnotationMisuse, {
+        "Polaron-0613", "this does not match how the annotation was declared",
+        "An annotation is a declared type with named fields: which fields exist, which of them are "
+        "required, and what each one holds are written where the annotation is declared. An applied "
+        "one that names a field that is not there, names the same field twice, or leaves a required "
+        "field out is not a small spelling problem -- the thing reading the annotation later, a test "
+        "runner, a serializer, a suppression, will look for a value that was never given.",
+        "Open the annotation's declaration and match it. A field with no `default` is required and "
+        "has to be supplied at every use; one with a default may be left out. A field the "
+        "declaration does not list is either a typo or a field that belongs on a different "
+        "annotation.",
+        "Give an annotation a default wherever a sensible one exists, and leave it out where the "
+        "value genuinely has to be a decision -- a required field is how a declaration makes the "
+        "compiler ask the question, which is worth far more than a default that is quietly wrong." }},
+
+    {Code::AllowNeverUsed, {
+        "Polaron-0B0C", "this [Allow] never suppressed anything",
+        "An `[Allow]` says the code below disagrees with a rule for a reason, and names the rule. "
+        "When nothing below reports that rule any more, what is left is a note asserting something "
+        "about the code that has quietly stopped being true -- the shape it excused was rewritten, "
+        "or the rule was narrowed, and nobody went back. That is worse than having no note, because "
+        "the next reader believes it and works around a constraint that is gone.",
+        "Delete it. If the suppression is still wanted for a rule that moved to another code, name "
+        "the code that actually reports now -- the one in the warning you are trying to silence.",
+        "Write an `[Allow]` on the smallest declaration that needs it, never on a whole class when "
+        "one method is the reason. A narrow one goes stale loudly, the moment its method changes; a "
+        "wide one keeps finding something to suppress and never tells you the reason expired." }},
+
+    {Code::MutableNeverMutated, {
+        "Polaron-0B0D", "nothing ever assigns to this, so `mutable` claims a freedom it does not use",
+        "In Polaron a name is constant unless it says `mutable`, so the word is not decoration: it "
+        "is the declaration that this value will change, and every reader of the line plans for "
+        "that. When nothing assigns to it, the word costs a reader the question `where does this "
+        "change?` -- which has no answer -- on every pass through the code. It also throws away the "
+        "one thing the compiler could have relied on, since a value proven never to change is a "
+        "fact the optimiser can use and a `mutable` one is not.",
+        "Drop the `mutable`. If the plan is to assign to it soon, drop it now anyway and put it back "
+        "with the assignment: the two belong in the same change, and one without the other is what "
+        "leaves these behind.",
+        "Write the declaration without `mutable` first and let the compiler ask for it. Reaching for "
+        "it in advance is how a codebase ends up with the word on everything, at which point it says "
+        "nothing about any particular line." }},
+
+    {Code::SwallowedCatch, {
+        "Polaron-0B0E", "this `catch` neither handles the failure nor lets anyone know it happened",
+        "A catch whose body is empty -- or is only a comment -- turns a failure into silence. The "
+        "program keeps going with whatever state the half-finished operation left, and the evidence "
+        "that anything went wrong is destroyed at the one point where it existed. The bug that "
+        "follows shows up somewhere else entirely, with nothing pointing back here, which is the "
+        "most expensive shape a defect can take.",
+        "Do one of three things, and any of them is enough: rethrow (or let it propagate), report it "
+        "-- a log line, a `Result` returned to the caller -- or write down in the body why the "
+        "failure is genuinely nothing, so the next reader does not have to guess. A comment alone "
+        "does not count as the third: put it in an `[Allow(code: \"Polaron-0B0E\", why: ...)]`, "
+        "where it is a claim somebody can review.",
+        "Decide what a failure means at the moment you write the catch, not later. `catch { }` is "
+        "almost always a note to self that never got finished." }},
+
+    {Code::AsyncNeverAwaits, {
+        "Polaron-0B0F", "this method is `async` and never awaits anything",
+        "`async` is not a label for slow work: it turns the method into a state machine, returns a "
+        "`Task<T>` rather than the value, and puts the body on the scheduler. A body with no `await` "
+        "in it has nothing to suspend on, so all of that is paid and none of it is used -- an "
+        "allocation, an indirection and a scheduling hop, in exchange for making every caller await "
+        "a result that was ready before it asked.",
+        "Remove `async` and return the value directly; the callers lose their `await` with it. If "
+        "the method is async because an interface or a caller demands the shape, that is the reason "
+        "to record in an `[Allow]`.",
+        "Add `async` when the first `await` goes in, not when the method is written. Marking it in "
+        "advance is how a codebase ends up with a scheduler between two functions that could have "
+        "been one call." }},
+
     {Code::ImportNameMismatch, {
         "Polaron-0106", "this name was brought in under a different path",
         "An import names one type by its full path, and inside the file that name means exactly what "

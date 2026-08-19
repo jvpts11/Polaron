@@ -1,0 +1,22 @@
+import System.IO.Console;
+import System.Runtime.Allow;
+
+program LintAllowNoReason;
+
+// A SUPPRESSION NOBODY CAN REVIEW DOES NOT COMPILE. `why` has no default on the annotation, so the
+// compiler's own required-field check is what makes the reason mandatory -- no new rule, no new
+// diagnostic, and no way to write the version of this feature that rots.
+//
+// This sample is EXPECTED TO FAIL to compile. That is what it asserts.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            [Allow(code: "Polaron-0B0D")]
+            public static method main(string[] args) returns void {
+                mutable int spare = 1;
+                System.IO.Console.println($"{spare}");
+                return;
+            }
+        }
+    }
+}

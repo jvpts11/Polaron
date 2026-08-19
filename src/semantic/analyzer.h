@@ -247,8 +247,28 @@ private:
     // from the catalog. The message is still the specific one-line title (it names the actual thing).
     void error(diag::Code code, std::string message, SourceLocation loc);
     void warn(diag::Code code, std::string message, SourceLocation loc);
+    // `[Allow(code:, why:)]` -- the escape valve for structural advice, per declaration.
+    //
+    // Advice is a rule about a SHAPE, and a shape can be right for a reason the compiler cannot see.
+    // Without a way to say so the first honest disagreement makes the whole set noise, and a set
+    // people have learned to skip is worse than no set at all. Pushed once per method, carrying the
+    // enclosing class's allows with it, so writing one on the class covers everything inside it.
+    struct AllowEntry {
+        std::string code;      // e.g. "Polaron-0B0B"
+        SourceLocation loc;
+        bool used = false;
+    };
+    std::vector<std::vector<AllowEntry>> allowStack_;
+    void pushAllows(const std::vector<ast::AnnotationUse>& outer,
+                    const std::vector<ast::AnnotationUse>& inner);
+    void popAllows();
+    bool allowed(diag::Code code);
     // Advice, per loop body: a `String` accumulated by copying itself (Polaron-0B0B).
     void warnStringBuildingInLoop(const ast::Block& body);
+    // Advice, per method: shapes the language has a shorter and safer word for.
+    void warnMutableNeverMutated(const ast::MethodDecl& m);
+    void warnSwallowedCatch(const ast::Block& body);
+    void warnAsyncNeverAwaits(const ast::MethodDecl& m);
     // Best-effort detection of an obvious infinite loop via comefrom (spec 7.10 rule 7).
     void detectComefromLoops(const ast::Block& block);
     bool isValidMainSignature(const ast::MethodDecl& method) const;

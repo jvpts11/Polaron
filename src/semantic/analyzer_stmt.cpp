@@ -102,6 +102,181 @@ void collectDeclaredNames(const ast::Block& body, std::unordered_set<std::string
 
 }  // namespace
 
+// Walk every statement of a block, and every block nested in it, calling `fn` on each.
+static void eachStmt(const ast::Block& blk, const std::function<void(const ast::Stmt&)>& fn) {
+    for (const ast::StmtPtr& st : blk.statements) {
+        if (!st) {
+            continue;
+        }
+        fn(*st);
+        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st.get())) {
+            eachStmt(iff->thenBlock, fn);
+            if (iff->elseBlock) {
+                eachStmt(*iff->elseBlock, fn);
+            }
+        } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(st.get())) {
+            eachStmt(ws->body, fn);
+        } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(st.get())) {
+            eachStmt(dw->body, fn);
+        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(st.get())) {
+            if (fs->init) {
+                fn(*fs->init);
+            }
+            if (fs->update) {
+                fn(*fs->update);
+            }
+            eachStmt(fs->body, fn);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st.get())) {
+            eachStmt(fe->body, fn);
+        } else if (const auto* ts = dynamic_cast<const ast::TryStmt*>(st.get())) {
+            eachStmt(ts->body, fn);
+            for (const ast::CatchClause& c : ts->catches) {
+                eachStmt(c.body, fn);
+            }
+            if (ts->finallyBlock) {
+                eachStmt(*ts->finallyBlock, fn);
+            }
+        }
+    }
+}
+
+void SemanticAnalyzer::warnMutableNeverMutated(const ast::MethodDecl& m) {
+    // `mutable` IS A DECLARATION THAT THIS WILL CHANGE, not decoration. A name is constant unless it
+    // says the word, so every reader of the line plans for a change -- and when nothing assigns to
+    // it, the word costs them the question "where does this change?", which has no answer, on every
+    // pass. It also throws away the one fact the backend could have relied on.
+    //
+    // WHAT COUNTS IS AN ASSIGNMENT TO THE NAME, and nothing else does -- checked against the
+    // compiler rather than assumed, because the near-misses are what decide whether this is usable:
+    //
+    //   a[0] = 1     writes an element THROUGH the name; needs no `mutable` (verified)
+    //   b.value = 5  writes a field through it; needs no `mutable` (verified)
+    //   delete a     needs no `mutable` (verified)
+    //   f(x)         cannot reassign the caller's name: a `T&` parameter is itself not assignable,
+    //                and `mutable T&` is not even syntax (verified). A call can write through a
+    //                pointer to whatever it points at, which is not the binding this word governs.
+    //
+    // So the rule is exact rather than conservative, which is why it can be `provado` severity: the
+    // word declares that this NAME will be given a new value, and either a statement does that or
+    // nothing does.
+    struct Decl {
+        std::string name;
+        SourceLocation loc;
+    };
+    std::vector<Decl> declared;
+    std::unordered_set<std::string> touched;
+
+    eachStmt(m.body, [&](const ast::Stmt& st) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            // `persistent`, `lazy` and `volatile` locals are written by machinery rather than by a
+            // statement here, so their `mutable` is not this lint's business.
+            if (vd->isMutable && !vd->isPersistent && !vd->isLazy && !vd->isVolatile) {
+                declared.push_back(Decl{vd->name, vd->loc});
+            }
+            return;
+        }
+        if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
+                touched.insert(id->name);
+            }
+            return;
+        }
+        if (const auto* inc = dynamic_cast<const ast::IncDecStmt*>(&st)) {
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(inc->target.get())) {
+                touched.insert(id->name);
+            }
+        }
+    });
+
+    for (const Decl& d : declared) {
+        if (touched.count(d.name) == 0) {
+            warn(diag::Code::MutableNeverMutated,
+                 "'" + d.name + "' is declared mutable and nothing ever assigns to it", d.loc);
+        }
+    }
+}
+
+// NOTE, for whoever reaches the lint catalogue's entry 59 ("an override that only calls super"):
+// that shape cannot be written in Polaron. `super` is legal only as `super(...)` in a constructor,
+// so `super.describe()` is an error, not a smell -- the lint was drafted against a language with
+// explicit super-calls and has nothing to detect here. Shipping it would mean a rule that can never
+// fire on code that compiles, which is worse than an absent one: it reads as coverage.
+
+void SemanticAnalyzer::warnSwallowedCatch(const ast::Block& body) {
+    // A CATCH WITH AN EMPTY BODY destroys the evidence at the one point where it existed. The
+    // program carries on with whatever state the half-finished operation left, and the bug shows up
+    // somewhere else with nothing pointing back here.
+    //
+    // Empty is the whole test, and deliberately so: a body with anything in it -- a rethrow, a log
+    // line, a flag -- is a decision somebody made, and second-guessing it needs to know what the
+    // failure means, which is exactly what the compiler does not know.
+    eachStmt(body, [&](const ast::Stmt& st) {
+        const auto* ts = dynamic_cast<const ast::TryStmt*>(&st);
+        if (ts == nullptr) {
+            return;
+        }
+        for (const ast::CatchClause& c : ts->catches) {
+            if (c.body.statements.empty()) {
+                warn(diag::Code::SwallowedCatch,
+                     "this catch has an empty body, so the failure it caught leaves no trace", c.loc);
+            }
+        }
+    });
+}
+
+void SemanticAnalyzer::warnAsyncNeverAwaits(const ast::MethodDecl& m) {
+    // `async` TURNS THE METHOD INTO A STATE MACHINE: a `Task<T>` instead of the value, an allocation,
+    // and a scheduling hop. A body with no `await` has nothing to suspend on, so all of it is paid
+    // and none of it is used -- and every caller awaits a result that was ready before it asked.
+    if (!m.isAsync) {
+        return;
+    }
+    bool awaits = false;
+    std::function<void(const ast::Expr*)> look = [&](const ast::Expr* e) {
+        if (e == nullptr || awaits) {
+            return;
+        }
+        if (dynamic_cast<const ast::AwaitExpr*>(e) != nullptr) {
+            awaits = true;
+            return;
+        }
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+            look(bin->lhs.get());
+            look(bin->rhs.get());
+        } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+            look(un->operand.get());
+        } else if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+            look(call->callee.get());
+            for (const ast::ExprPtr& a : call->args) {
+                look(a.get());
+            }
+        } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+            look(mem->object.get());
+        } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+            look(cast->operand.get());
+        }
+    };
+    eachStmt(m.body, [&](const ast::Stmt& st) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            look(vd->init.get());
+        } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+            look(as->value.get());
+        } else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+            look(es->expr.get());
+        } else if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&st)) {
+            look(rs->value.get());
+        } else if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
+            look(iff->cond.get());
+        } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+            look(ws->cond.get());
+        }
+    });
+    if (!awaits) {
+        warn(diag::Code::AsyncNeverAwaits,
+             "'" + m.name + "' is async and never awaits anything", m.loc);
+    }
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks

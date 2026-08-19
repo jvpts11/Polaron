@@ -1,0 +1,79 @@
+import System.IO.Console;
+import System.Runtime.Exception;
+
+program LintShapes;
+
+// THE STRUCTURAL ADVICE, one shape per method, plus the shapes that look like them and are not.
+//
+// Each of these is a rule about a SHAPE the language has a shorter and safer word for. What makes
+// the set worth having is the second half of every case: the near-miss that must stay quiet, because
+// a lint that fires on the thing it recommends is a lint people turn off.
+public bundle Main {
+    public namespace App {
+
+        public class Shapes {
+            // FIRES (0B0D): nothing ever assigns to `spare`, so `mutable` claims a freedom it does
+            // not use -- and in a language where a name is constant unless it says otherwise, the
+            // word costs every reader the question "where does this change?".
+            public static method unusedMutable() returns int {
+                mutable int spare = 7;
+                return spare;
+            }
+
+            // QUIET: a loop counter really is reassigned. An array element written THROUGH the name
+            // is not an assignment to the name, and does not need `mutable` -- checked, not assumed.
+            public static method realMutation() returns int {
+                mutable int total = 0;
+                for (mutable int i = 0; i < 3; i++) {
+                    total = total + i;
+                }
+                int[] slots = new int[2]();
+                slots[0] = total;
+                int got = slots[0];
+                delete slots;
+                return got;
+            }
+
+            // FIRES (0B0D): handing a name to a call is not reassigning it. A `T&` parameter is
+            // itself not assignable and `mutable T&` is not syntax, so no call can give this name a
+            // new value -- checked against the compiler, which is what lets the rule be exact.
+            public static method handedOver() returns int {
+                mutable int n = 1;
+                return Shapes.twice(n);
+            }
+
+            public static method twice(int n) returns int {
+                return n * 2;
+            }
+
+            // FIRES (0B0E): the failure leaves no trace at all -- the evidence is destroyed at the
+            // one point where it existed.
+            public static method swallow() returns int {
+                mutable int seen = 0;
+                try {
+                    seen = 1;
+                } catch (Exception e) {
+                }
+                return seen;
+            }
+
+            // QUIET: the catch does something, and what that is worth is not the compiler's call.
+            public static method handles() returns int {
+                mutable int seen = 0;
+                try {
+                    seen = 1;
+                } catch (Exception e) {
+                    seen = 2;
+                }
+                return seen;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"{Shapes.unusedMutable()} {Shapes.realMutation()} {Shapes.handedOver()} {Shapes.swallow()} {Shapes.handles()}");
+                return;
+            }
+        }
+    }
+}

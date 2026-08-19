@@ -1,0 +1,31 @@
+import System.IO.Console;
+import System.Concurrency.Task;
+
+program LintAsync;
+
+// `async` IS NOT A LABEL FOR SLOW WORK. It turns the method into a state machine, returns a `Task<T>`
+// rather than the value, and puts the body on the scheduler. A body with no `await` has nothing to
+// suspend on, so all of that is paid and none of it is used -- and every caller awaits a result that
+// was ready before it asked.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            // FIRES (0B0F): a scheduler between two functions that could have been one call.
+            public static async method idle() returns int {
+                return 7;
+            }
+
+            // QUIET: it awaits, which is the whole reason the machinery is there.
+            public static async method real() returns int {
+                int a = await Main.idle();
+                return a + 1;
+            }
+
+            public static method main(string[] args) returns void {
+                int r = await Main.real();
+                System.IO.Console.println($"{r}");
+                return;
+            }
+        }
+    }
+}

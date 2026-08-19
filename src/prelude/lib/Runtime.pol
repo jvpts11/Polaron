@@ -66,4 +66,17 @@
             public constructor OverflowException() {}
             public override method message() returns String { return "integer overflow"; }
         }
+        // `[Allow(code: "Polaron-0B0B", why: "the buffer is bounded by one record")]` -- the escape
+        // valve for the structural advice, on the class or the method the advice lands in.
+        //
+        // Advice is a rule about a SHAPE, and a shape can be right for a reason the compiler cannot
+        // see. Without a way to say so, the first honest disagreement makes the whole set noise, and
+        // a set people have learned to skip is worse than no set at all.
+        //
+        // `why` has no default ON PURPOSE, so the compiler's own required-field check makes the
+        // reason mandatory. A suppression with no reason is a suppression nobody can review, which
+        // is how a temporary exception becomes permanent -- and an `[Allow]` that never suppresses
+        // anything is reported in its turn (Polaron-0B0C), because a stale one is a claim about the
+        // code that has quietly stopped being true.
+        public annotation Allow { String code; String why; }
     }

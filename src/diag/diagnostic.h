@@ -117,6 +117,8 @@ enum class Code {
     // 09xx -- context restrictions
     FreestandingRestriction,  // a feature unavailable in freestanding mode (spec 36.3)
 
+    AnnotationMisuse,     // an applied `[Name(...)]` that does not match the annotation's declaration
+
     // 0Axx -- not-yet-implemented corners
     NotSupportedYet,      // a valid construct the current compiler does not implement yet
 
@@ -136,6 +138,10 @@ enum class Code {
     PersistentIdentity,   // a persistent keyed by identity because its key fields are values
     FixtureLifecycle,     // a test reading a fixture whose [BeforeAll]/[AfterAll] it does not run
     StringBuildingInLoop, // `s = s + piece` on an immutable String inside a loop -- quadratic
+    AllowNeverUsed,       // an `[Allow]` that suppressed nothing: the shape it excused is gone
+    MutableNeverMutated,  // `mutable` on something nothing ever assigns to
+    SwallowedCatch,       // a `catch` whose body neither rethrows, reports nor records
+    AsyncNeverAwaits,     // an `async` method with no `await` in it -- a scheduler for nothing
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First
