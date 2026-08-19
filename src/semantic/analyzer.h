@@ -280,6 +280,9 @@ private:
     void warnHeapWithLexicalLifetime(const ast::Block& body);
     void warnRepeatedCleanup(const ast::MethodDecl& m);
     void warnThrowInLoop(const ast::Block& body);
+    void warnMoveInsteadOfCopy(const ast::MethodDecl& m);
+    void warnListWithoutCapacity(const ast::Block& body);
+    void warnDeadStoreOfACopy(const ast::Block& body);
     void warnManyOfOneKindInAScope(const ast::Block& body);
     void warnRuntimeCheckOfConstants(const ast::Block& body);
     void warnRegionWithOneAllocation(const ast::Block& body);

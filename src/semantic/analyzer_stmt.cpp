@@ -1021,6 +1021,160 @@ void SemanticAnalyzer::warnSequentialIndependentAwaits(const ast::Block& body) {
     }
 }
 
+void SemanticAnalyzer::warnMoveInsteadOfCopy(const ast::MethodDecl& m) {
+    // A DEEP COPY OF SOMETHING NOBODY READS AGAIN. Assignment copies in this language, so every
+    // field is duplicated -- and the original is then never touched, which means the duplicate was
+    // the only thing ever wanted. `move` transfers instead: the same result, none of the copying.
+    //
+    // Straight-line only. The source must not be read after this statement anywhere in the method,
+    // and a read inside a branch or a loop counts, so the question asked is the simple one: does
+    // the name appear again at all?
+    std::vector<const ast::VarDeclStmt*> copies;
+    for (const ast::StmtPtr& st : m.body.statements) {
+        const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get());
+        if (vd == nullptr || vd->isVar || vd->init == nullptr) {
+            continue;
+        }
+        if (dynamic_cast<const ast::IdentifierExpr*>(vd->init.get()) == nullptr) {
+            continue;
+        }
+        const std::string t = typeRefStr(vd->type);
+        if (t.find('*') != std::string::npos || isRefType(t) || isArrayType(t) ||
+            lookupClass(baseType(t)) == nullptr) {
+            continue;   // a pointer assignment copies a word; this is about the whole object
+        }
+        copies.push_back(vd);
+    }
+    if (copies.empty()) {
+        return;
+    }
+    // Everything the rest of the method mentions, from each copy onwards.
+    for (const ast::VarDeclStmt* vd : copies) {
+        const auto* src = dynamic_cast<const ast::IdentifierExpr*>(vd->init.get());
+        bool seenIt = false;
+        bool readAfter = false;
+        for (const ast::StmtPtr& st : m.body.statements) {
+            if (st.get() == vd) {
+                seenIt = true;
+                continue;
+            }
+            if (!seenIt) {
+                continue;
+            }
+            std::string text;
+            st->dump(text, 0);
+            // Word-boundary-ish: the dump writes identifiers whole, and a bare `find` would match
+            // `n` inside `count`. Checked around the hit instead.
+            for (std::size_t at = text.find(src->name); at != std::string::npos;
+                 at = text.find(src->name, at + 1)) {
+                const bool leftOk = at == 0 || (std::isalnum(static_cast<unsigned char>(text[at - 1])) == 0 &&
+                                                text[at - 1] != '_');
+                const std::size_t end = at + src->name.size();
+                const bool rightOk = end >= text.size() ||
+                                     (std::isalnum(static_cast<unsigned char>(text[end])) == 0 &&
+                                      text[end] != '_');
+                if (leftOk && rightOk) {
+                    readAfter = true;
+                    break;
+                }
+            }
+            if (readAfter) {
+                break;
+            }
+        }
+        if (!readAfter) {
+            warn(diag::Code::MoveInsteadOfCopy,
+                 "'" + vd->name + "' deep-copies '" + src->name +
+                     "', which nothing reads afterwards",
+                 vd->loc);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnListWithoutCapacity(const ast::Block& body) {
+    // A LIST BUILT FROM EMPTY IN A LOOP reallocates and copies as it grows, log-many times, and the
+    // count is usually right there in the loop's bound.
+    std::unordered_set<std::string> emptyLists;
+    std::unordered_map<std::string, SourceLocation> where;
+    for (const ast::StmtPtr& st : body.statements) {
+        const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get());
+        if (vd == nullptr) {
+            continue;
+        }
+        if (const auto* ne = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+            ne != nullptr && ne->className.rfind("ArrayList", 0) == 0 && ne->args.empty()) {
+            emptyLists.insert(vd->name);
+            where[vd->name] = vd->loc;
+        }
+    }
+    if (emptyLists.empty()) {
+        return;
+    }
+    auto scanLoop = [&](const ast::Block& blk) {
+        eachStmt(blk, [&](const ast::Stmt& st) {
+            const auto* es = dynamic_cast<const ast::ExprStmt*>(&st);
+            const auto* call = es != nullptr ? dynamic_cast<const ast::CallExpr*>(es->expr.get())
+                                             : nullptr;
+            if (call == nullptr) {
+                return;
+            }
+            const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            if (mem == nullptr || mem->member != "add") {
+                return;
+            }
+            const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+            if (id == nullptr || emptyLists.count(id->name) == 0) {
+                return;
+            }
+            warn(diag::Code::ListWithoutCapacity,
+                 "'" + id->name + "' starts empty and is filled in a loop, reallocating as it grows",
+                 where[id->name]);
+            emptyLists.erase(id->name);   // one report per list, not one per add
+        });
+    };
+    eachStmt(body, [&](const ast::Stmt& st) {
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+            scanLoop(ws->body);
+        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+            scanLoop(fs->body);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+            scanLoop(fe->body);
+        }
+    });
+}
+
+// NOTE: the raw-address rule (catalogue 63) lives in advice.cpp, on the FIELD, and this note is
+// where its first version was. It looked for the word `address` in the assigned VALUE -- and the
+// value is `Allocator.alloc(8)`, which does not contain it. What identifies the shape is the
+// declared TYPE of the field, which is a question about a declaration and belongs with the others.
+
+void SemanticAnalyzer::warnDeadStoreOfACopy(const ast::Block& body) {
+    // WRITTEN, THEN WRITTEN AGAIN, with nothing reading it in between. The first store is work
+    // thrown away -- and where the type is a class, "the store" is a deep copy of every field, so
+    // what is thrown away is the whole object rather than a word.
+    for (std::size_t i = 1; i < body.statements.size(); ++i) {
+        const auto* a = dynamic_cast<const ast::AssignStmt*>(body.statements[i - 1].get());
+        const auto* b = dynamic_cast<const ast::AssignStmt*>(body.statements[i].get());
+        if (a == nullptr || b == nullptr) {
+            continue;
+        }
+        const auto* ta = dynamic_cast<const ast::IdentifierExpr*>(a->target.get());
+        const auto* tb = dynamic_cast<const ast::IdentifierExpr*>(b->target.get());
+        if (ta == nullptr || tb == nullptr || ta->name != tb->name) {
+            continue;
+        }
+        // The second must not READ the first's value: `x = 1; x = x + 1;` is not a dead store.
+        std::string second;
+        b->value->dump(second, 0);
+        if (second.find(tb->name) != std::string::npos) {
+            continue;
+        }
+        warn(diag::Code::DeadStoreOfACopy,
+             "'" + ta->name + "' is written here and written again before anything reads it",
+             a->loc);
+    }
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks

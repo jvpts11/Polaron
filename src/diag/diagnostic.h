@@ -180,6 +180,14 @@ enum class Code {
     FieldNeverRead,       // a field carried in every instance and never asked about
     PublicWrittenOnlyInside,  // a public field only its own class writes
     OwnershipCycle,       // two pointers at each other, neither saying which owns which
+    TagWithExclusiveFields,  // an enum beside a crowd of fields it silently chooses between
+    MutexOverOnePrimitive,   // a lock guarding one integer, which an `atomic` does lock-free
+    LazyAlwaysNeeded,     // a `lazy` the constructor reads, so it is never deferred
+    ChannelNeverConsumed, // a channel nothing ever receives from
+    MoveInsteadOfCopy,    // a deep copy of something never read again: a `move`
+    ListWithoutCapacity,  // a list built in a loop from empty, reallocating as it goes
+    ForeignAddressStored, // a raw `address` kept past the call that produced it
+    DeadStoreOfACopy,     // a value written and overwritten with nothing reading it between
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

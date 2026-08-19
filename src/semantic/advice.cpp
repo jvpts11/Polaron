@@ -137,7 +137,11 @@ void indexExpr(const ast::Expr* e, const std::string& bundle, ProgramUse& use,
         return;
     }
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
-        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+        // Calls made BY THE PRELUDE do not count: it arrives with every program, so counting them
+        // meant `receive` was always called somewhere and the channel-with-no-reader rule could
+        // never fire on anybody's code. What a rule asks about is what the author wrote.
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            mem != nullptr && bundle != "System") {
             use.methodsCalled.insert(mem->member);
         }
         indexExpr(call->callee.get(), bundle, use, localTypes);
@@ -451,6 +455,87 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
         }
     }
 
+    // ---- a tag beside the fields it chooses between (catalogue 13) ----
+    //
+    // An enum field plus a crowd of others is almost always "which of these is meaningful". Nothing
+    // says which go with which value, so every reader has to reconstruct the pairing from the code
+    // that branches on the tag -- and every instance carries all of them, including the ones this
+    // one's tag says are meaningless.
+    {
+        const ast::FieldDecl* tag = nullptr;
+        int others = 0;
+        for (const ast::FieldDecl* f : fields) {
+            if (f->isStatic) {
+                continue;
+            }
+            if (tag == nullptr && enums_.count(baseType(typeRefStr(f->type))) > 0) {
+                tag = f;
+            } else {
+                ++others;
+            }
+        }
+        if (tag != nullptr && others >= 4 && !c.isUnion) {
+            warn(diag::Code::TagWithExclusiveFields,
+                 "'" + c.name + "." + tag->name + "' is an enum beside " + std::to_string(others) +
+                     " other fields, and nothing says which of them it chooses between",
+                 tag->loc);
+        }
+    }
+
+    // ---- a raw address kept in a field (catalogue 63) ----
+    //
+    // A field outlives the call that produced the value; a local does not. The binder proves
+    // lifetimes on this side of a foreign boundary and nothing at all on the other, so a bare
+    // address in a field is a lifetime with no proof behind it.
+    for (const ast::FieldDecl* f : fields) {
+        if (isAddressName(baseType(typeRefStr(f->type)))) {
+            warn(diag::Code::ForeignAddressStored,
+                 "'" + c.name + "." + f->name +
+                     "' keeps a raw address, which outlives the call that produced it",
+                 f->loc);
+        }
+    }
+
+    // ---- a lock over one primitive is an atomic (catalogue 53) ----
+    for (const ast::FieldDecl* f : fields) {
+        const std::string t = baseType(typeRefStr(f->type));
+        if (t.rfind("Mutex", 0) != 0) {
+            continue;
+        }
+        const std::size_t lt = t.find('$');
+        const std::string inner = lt == std::string::npos ? std::string() : t.substr(lt + 1);
+        if (isIntName(inner) || inner == "boolean") {
+            warn(diag::Code::MutexOverOnePrimitive,
+                 "'" + c.name + "." + f->name + "' locks a single '" + inner + "'", f->loc);
+        }
+    }
+
+    // ---- a `lazy` field the constructor reads (catalogue 58) ----
+    //
+    // `lazy` buys one thing: the cost is not paid unless somebody asks. Asking in the constructor
+    // means everybody asks, always -- so what is left is the initialised-yet check, on every read,
+    // for a value that was already there.
+    for (const ast::MemberPtr& mp : c.members) {
+        const auto* ctor = dynamic_cast<const ast::ConstructorDecl*>(mp.get());
+        if (ctor == nullptr) {
+            continue;
+        }
+        // Asked through the index rather than by searching the dumped text: `dump` writes
+        // `Member '.table'` on its own line with the object underneath, so `this.table` never
+        // appears as a contiguous string and the text search silently found nothing, ever.
+        ProgramUse inCtor;
+        std::unordered_map<std::string, std::string> ctorLocals;
+        indexBlock(ctor->body, currentBundle_, c.name, inCtor, ctorLocals);
+        for (const ast::FieldDecl* f : fields) {
+            if (f->isLazy && inCtor.membersRead.count(f->name) > 0) {
+                warn(diag::Code::LazyAlwaysNeeded,
+                     "'" + c.name + "." + f->name +
+                         "' is lazy and the constructor reads it, so it is never deferred",
+                     f->loc);
+            }
+        }
+    }
+
     // ---- two parameters of one primitive, in a row (catalogue 15) ----
     //
     // `place(int x, int y)` is fine because the pair is the concept. `move(int from, int to)` is not:
@@ -668,6 +753,16 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     const auto* f = dynamic_cast<const ast::FieldDecl*>(mp.get());
                     if (f == nullptr || f->isStatic) {
                         continue;
+                    }
+                    // A channel nothing ever takes from (catalogue 57). Every send either blocks
+                    // forever once the buffer fills or is thrown away, and the work that produced
+                    // the value was done for nobody.
+                    if (baseType(typeRefStr(f->type)).rfind("Channel", 0) == 0 &&
+                        use.methodsCalled.count("receive") == 0) {
+                        warn(diag::Code::ChannelNeverConsumed,
+                             "'" + c.name + "." + f->name +
+                                 "' is a channel and nothing in this program ever receives from one",
+                             f->loc);
                     }
                     // A field nothing reads (catalogue 64). It is written, carried in every
                     // instance, copied by every copy, and never asked about.

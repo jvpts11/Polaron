@@ -12,7 +12,7 @@ import re
 import markdown
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "1.0.148"
+VERSION = "1.0.149"
 
 # Order the documents for the PDF: the eleven language chapters (each already carries its own
 # "# N. Title" heading), then the six standard-library slices. Titles here drive the table of

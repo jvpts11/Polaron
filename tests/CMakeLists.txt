@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.148")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.149")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.148")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.149")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1102,6 +1102,59 @@ add_test(NAME lint_allow_demands_a_reason
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+# THE LAST OF THE STRUCTURAL ADVICE. Eight rules, and two of them were looking at the wrong thing
+# until this sample said so: the lazy rule searched the DUMPED TEXT for `this.field`, which `dump`
+# never writes contiguously (it puts `Member '.field'` on its own line), so it found nothing ever;
+# and the raw-address rule searched the assigned VALUE for the word `address`, when what identifies
+# the shape is the declared TYPE of the field.
+add_test(NAME lint_tag_with_exclusive_fields
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_tag_with_exclusive_fields PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B36\\]: 'Piece.kind' is an enum beside")
+
+add_test(NAME lint_mutex_over_one_primitive
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_mutex_over_one_primitive PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B37\\]: 'Counters.hits' locks a single 'int'")
+
+add_test(NAME lint_lazy_always_needed
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_lazy_always_needed PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B38\\]: 'Counters.table' is lazy and the constructor reads it")
+
+add_test(NAME lint_channel_never_consumed
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_channel_never_consumed PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B39\\]: 'Counters.outbox' is a channel")
+
+add_test(NAME lint_move_instead_of_copy
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_move_instead_of_copy PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B3A\\]: 'taken' deep-copies 'source'")
+
+add_test(NAME lint_list_without_capacity
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_list_without_capacity PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B3B\\]: 'got' starts empty and is filled in a loop")
+
+add_test(NAME lint_foreign_address_stored
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_foreign_address_stored PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B3C\\]: 'Borrowed.held' keeps a raw address")
+
+add_test(NAME lint_dead_store_of_a_copy
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_dead_store_of_a_copy PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B3D\\]: 'slot' is written here and written again")
+
+add_test(NAME lint_final_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol"
+    "-DCONTAINS=1 0 4 3 8"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # THE ADVICE THAT NEEDS THE WHOLE PROGRAM: the difference between what a declaration promises and
 # what anything actually does with it. None can be decided by reading one file.

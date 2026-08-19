@@ -1,0 +1,131 @@
+import System.IO.Console;
+import System.Concurrency.Mutex;
+import System.Concurrency.Channel;
+import System.Collections.ArrayList;
+import System.Memory.Allocator;
+
+program LintFinal;
+
+// THE LAST OF THE STRUCTURAL ADVICE: a tag beside the fields it chooses between, a lock over one
+// integer, a `lazy` that is never deferred, a channel with no reader, a copy that wanted to be a
+// move, a list grown from empty, and a store written twice.
+public bundle Main {
+    public namespace App {
+
+        public enum Shape { Round, Boxy, Flat }
+
+        public class Weights {
+            public mutable int total;
+            public constructor Weights(int total) { this.total = total; }
+        }
+
+        // FIRES (0B36): an enum next to five fields, and nothing says which go with which value --
+        // so every reader reconstructs the pairing from whatever branches on the tag.
+        public class Piece {
+            public mutable Shape kind;
+            public mutable int radius;
+            public mutable int side;
+            public mutable int width;
+            public mutable int height;
+            public constructor Piece() {
+                this.kind = Shape.Round;
+                this.radius = 1;
+                this.side = 0;
+                this.width = 0;
+                this.height = 0;
+            }
+            public method size() returns int {
+                return this.radius + this.side + this.width + this.height + cast<int>(this.kind);
+            }
+        }
+
+        public class Counters {
+            // FIRES (0B37): a system object and a trip through the scheduler, to protect something
+            // the machine updates atomically in one instruction.
+            private mutable Mutex<int> hits;
+            // FIRES (0B39): every send blocks forever or is dropped, and nothing ever takes one.
+            private mutable Channel<int> outbox;
+            // FIRES (0B38): read in the constructor, so the deferral never happens and what is left
+            // is the initialised-yet check on every read from here on.
+            private lazy mutable Weights table;
+
+            public constructor Counters() {
+                this.hits = new Mutex<int>(0) on heap;
+                this.outbox = new Channel<int>(4) on heap;
+                this.table = new Weights(7) on heap;
+                int warmed = this.table.total;
+            }
+
+            public method send(int n) returns void {
+                this.outbox.send(n);
+                return;
+            }
+
+            public method count() returns int {
+                mutable int got = 0;
+                synchronized (this.hits) using int& n {
+                    got = n;
+                }
+                return got;
+            }
+        }
+
+        // FIRES (0B3C): a field outlives the call that produced the value, and the binder proves
+        // nothing about the other side of a foreign boundary.
+        public class Borrowed {
+            public mutable address held;
+            public constructor Borrowed() {
+                this.held = Allocator.alloc(8);
+            }
+            public destructor ~Borrowed() returns void {
+                Allocator.free(this.held);
+                return;
+            }
+        }
+
+        public class Work {
+            // FIRES (0B3A): every field of the source is duplicated and the source is never touched
+            // again, so the duplicate was the only thing ever wanted.
+            public static method copies() returns int {
+                Weights source = new Weights(4) on stack;
+                Weights taken = source;
+                return taken.total;
+            }
+
+            // FIRES (0B3B): reallocating and copying as it grows, to discover a number the loop
+            // already has.
+            public static method fills(int n) returns int {
+                ArrayList<int>* got = new ArrayList<int>() on heap;
+                for (int i in 0..n) {
+                    got.add(i);
+                }
+                int size = got.size();
+                delete got;
+                return size;
+            }
+
+            // FIRES (0B3D): the first store is a whole object thrown away, and the line reads as if
+            // it establishes something.
+            public static method twice() returns int {
+                mutable int slot = 0;
+                slot = 3;
+                slot = 8;
+                return slot;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Piece* p = new Piece() on heap;
+                Counters* c = new Counters() on heap;
+                Borrowed* b = new Borrowed() on heap;
+                c.send(1);
+                System.IO.Console.println($"{p.size()} {c.count()} {Work.copies()} {Work.fills(3)} {Work.twice()}");
+                delete p;
+                delete c;
+                delete b;
+                return;
+            }
+        }
+    }
+}

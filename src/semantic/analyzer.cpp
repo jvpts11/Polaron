@@ -3585,6 +3585,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnLinearSearchInLoop(m->body);
                         warnLockAroundSlowWork(m->body);
                         warnSequentialIndependentAwaits(m->body);
+                        warnMoveInsteadOfCopy(*m);
+                        warnListWithoutCapacity(m->body);
+                        warnDeadStoreOfACopy(m->body);
                         popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);

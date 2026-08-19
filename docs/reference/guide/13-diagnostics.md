@@ -198,6 +198,14 @@ two copies come to disagree.
 | `Polaron-0B33` | nothing reads this field |
 | `Polaron-0B34` | this field is public and only its own class ever writes it |
 | `Polaron-0B35` | these two point at each other, and neither says which one owns the other |
+| `Polaron-0B36` | an enum beside a crowd of fields it silently chooses between |
+| `Polaron-0B37` | this lock guards a single integer |
+| `Polaron-0B38` | this is lazy and the constructor reads it |
+| `Polaron-0B39` | nothing in this program ever receives from a channel |
+| `Polaron-0B3A` | this deep-copies something nothing reads afterwards |
+| `Polaron-0B3B` | this list starts empty and is filled in a loop |
+| `Polaron-0B3C` | this keeps a raw address in a field |
+| `Polaron-0B3D` | this is written and written again before anything reads it |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

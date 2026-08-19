@@ -1436,6 +1436,98 @@ constexpr Row kCatalog[] = {
         "second field. A cycle with no owner is a decision that was never made rather than one that "
         "was made badly." }},
 
+    {Code::TagWithExclusiveFields, {
+        "Polaron-0B36", "an enum beside a crowd of fields it silently chooses between",
+        "A tag next to many fields almost always means `which of these is meaningful`, and nothing "
+        "in the declaration says which go with which value. Every reader has to reconstruct the "
+        "pairing from whatever branches on the tag; every instance carries all the fields, including "
+        "the ones its own tag says are meaningless; and reading the wrong one for the current tag "
+        "compiles and returns a stale value.",
+        "Say it in the type. A `union` makes the fields share one storage so only the live one "
+        "exists, with the tag deciding how it is read; a `sealed` base with one subtype per case "
+        "lets a `match` bind exactly the fields that case has, and be checked for completeness.",
+        "When a second field becomes conditional on the tag, the type has become a sum type. That is "
+        "the moment, and it is much cheaper than the moment three functions have learned the "
+        "pairing." }},
+
+    {Code::MutexOverOnePrimitive, {
+        "Polaron-0B37", "this lock guards a single integer",
+        "A mutex is a system object: acquiring it is a call, contention is a trip through the "
+        "scheduler, and holding it serialises every thread that wants the value. For one integer "
+        "that is the whole cost of mutual exclusion to protect something the machine can update "
+        "atomically in one instruction.",
+        "Use `atomic<T>`. Its reads, writes, `add` and `compareAndSet` are lock-free, so a "
+        "contending thread never sleeps and never waits behind one that was descheduled while "
+        "holding the lock.",
+        "Reach for a mutex when there is an INVARIANT across several fields to keep. One value has "
+        "no invariant across anything." }},
+
+    {Code::LazyAlwaysNeeded, {
+        "Polaron-0B38", "this is lazy and the constructor reads it",
+        "`lazy` buys one thing: the cost is not paid unless somebody asks for the value. Asking in "
+        "the constructor means everybody asks, always -- so the deferral never happens, and what is "
+        "left is the has-it-been-initialised check on every read from then on, for a value that was "
+        "there before the object existed.",
+        "Remove `lazy` and initialise it in the constructor, which is what is happening anyway. If "
+        "the constructor's read is the accident, move that read to where the value is really needed "
+        "and the deferral starts working.",
+        "Add `lazy` when profiling shows the initialisation is being paid for and not used. Adding "
+        "it in advance is a guess, and this is what the guess looks like when it was wrong." }},
+
+    {Code::ChannelNeverConsumed, {
+        "Polaron-0B39", "nothing in this program ever receives from a channel",
+        "Every send either fills the buffer and blocks the sender forever, or is dropped. Either way "
+        "the work that produced the value was done for nobody, and the failure looks like a thread "
+        "that stopped rather than like a channel with no reader.",
+        "Receive from it, or delete it and the sends with it. A channel with one end is a queue "
+        "nobody empties.",
+        "Write the receiving side first. A consumer with nothing to consume is obvious immediately; "
+        "a producer with no consumer is invisible until something hangs." }},
+
+    {Code::MoveInsteadOfCopy, {
+        "Polaron-0B3A", "this deep-copies something nothing reads afterwards",
+        "Assignment copies in Polaron, so every field of the source is duplicated -- and the source "
+        "is then never touched again, which means the duplicate was the only thing ever wanted. The "
+        "copy is pure cost, and it grows with the object: a struct of five fields copies five, a "
+        "class holding a collection copies the collection.",
+        "Write `move` instead. Ownership transfers, nothing is duplicated, and the compiler "
+        "invalidates the source so a later read of it becomes an error rather than a surprise.",
+        "Ask, at each assignment, whether the source is still wanted. Where the answer is no, the "
+        "assignment was a transfer that was written as a copy." }},
+
+    {Code::ListWithoutCapacity, {
+        "Polaron-0B3B", "this list starts empty and is filled in a loop",
+        "Growing from nothing reallocates and copies as it goes -- log-many times, each one copying "
+        "everything already in it. The count is usually right there in the loop's bound, so the "
+        "whole sequence is being paid to discover a number the code already has.",
+        "Give it the capacity when it is made: `new ArrayList<T>(n)`. One allocation, no copies, and "
+        "the loop does only the work it looks like it is doing.",
+        "When the loop that fills a collection has a bound, that bound is the capacity. They are "
+        "written three lines apart and belong on the same line." }},
+
+    {Code::ForeignAddressStored, {
+        "Polaron-0B3C", "this keeps a raw address in a field",
+        "The region binder proves lifetimes on this side of the boundary and nothing at all on the "
+        "other. A raw address in a local dies with the scope, which bounds the damage; in a field it "
+        "outlives the call that produced it, and when the foreign side frees or moves the memory the "
+        "field goes on pointing at it. The read that follows is somebody else's memory, and it "
+        "usually succeeds.",
+        "Copy what is needed into memory this program owns before the call returns, or wrap the "
+        "address in a type that owns it and frees it through the same foreign interface that "
+        "produced it -- so the lifetime has one place that knows about it.",
+        "Treat an address from outside as valid only for the call that handed it over. Anything "
+        "longer than that is a lifetime somebody has to prove, and it is not the compiler." }},
+
+    {Code::DeadStoreOfACopy, {
+        "Polaron-0B3D", "this is written and written again before anything reads it",
+        "The first store is work thrown away. Where the type is a class or a struct, `the store` is "
+        "a deep copy of every field, so what is discarded is a whole object rather than a word -- "
+        "and the line reads as if it establishes something, which is why it survives review.",
+        "Delete the first assignment. If it was meant to be read between the two, the read is what "
+        "is missing, and this warning has found a bug rather than a redundancy.",
+        "Declare a value where it gets its real value. A declaration initialised with a placeholder "
+        "and corrected two lines later is this, waiting to happen." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "
