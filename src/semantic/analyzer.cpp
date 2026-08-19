@@ -3588,6 +3588,11 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnMoveInsteadOfCopy(*m);
                         warnListWithoutCapacity(m->body);
                         warnDeadStoreOfACopy(m->body);
+                        warnPointerThatIsABorrow(*m);
+                        warnCheckRepeatsItsContract(*m);
+                        warnRegionHeldTooLong(m->body);
+                        warnRegionsWithOneLifetime(m->body);
+                        warnEternalThatIsReleased(m->body);
                         popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);

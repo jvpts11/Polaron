@@ -188,6 +188,15 @@ enum class Code {
     ListWithoutCapacity,  // a list built in a loop from empty, reallocating as it goes
     ForeignAddressStored, // a raw `address` kept past the call that produced it
     DeadStoreOfACopy,     // a value written and overwritten with nothing reading it between
+    PointerThatIsABorrow, // a `T*` parameter the body only reads through: a `T&`
+    CheckRepeatsItsContract,  // a check inside the body that negates the method's own `requires`
+    IndexBoundNotTheArray,    // a loop bound the range analysis cannot relate to the array
+    RegionHeldTooLong,    // a region released long after the last thing put into it
+    RegionsWithOneLifetime,   // two regions opened and closed in one block: one region, two names
+    EternalThatIsReleased,    // `eternal` says never; the release says now
+    VirtualCallInLoop,    // dispatch through an interface on every element of a collection
+    PaddingFromFieldOrder,    // the declared order costs bytes a `layout` would recover
+    LargeValueByValue,    // a big aggregate copied at every call
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

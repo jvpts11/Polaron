@@ -206,6 +206,15 @@ two copies come to disagree.
 | `Polaron-0B3B` | this list starts empty and is filled in a loop |
 | `Polaron-0B3C` | this keeps a raw address in a field |
 | `Polaron-0B3D` | this is written and written again before anything reads it |
+| `Polaron-0B3E` | this takes a pointer and only ever reads through it |
+| `Polaron-0B3F` | this tests the negation of the method's own `requires` |
+| `Polaron-0B40` | this loop indexes an array with a bound that is not its length |
+| `Polaron-0B41` | this region is released long after the last thing put into it |
+| `Polaron-0B42` | two regions are opened and released in the same block |
+| `Polaron-0B43` | this is declared eternal and released by hand |
+| `Polaron-0B44` | this dispatches through an interface on every element |
+| `Polaron-0B45` | the declared field order costs bytes that a layout would recover |
+| `Polaron-0B46` | this takes a large aggregate by value |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

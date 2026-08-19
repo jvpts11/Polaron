@@ -1528,6 +1528,110 @@ constexpr Row kCatalog[] = {
         "Declare a value where it gets its real value. A declaration initialised with a placeholder "
         "and corrected two lines later is this, waiting to happen." }},
 
+    {Code::PointerThatIsABorrow, {
+        "Polaron-0B3E", "this takes a pointer and only ever reads through it",
+        "A `T*` parameter leaves three questions open at every call: can it be null, can the body "
+        "rebind it, and does anything keep it after the call returns. This body answers all three "
+        "with no -- it never assigns to the name, never stores it, never returns it and never hands "
+        "it to anything else -- so the questions are being asked of every reader for nothing.",
+        "Declare it `T&`. A reference cannot be null, cannot be rebound, and cannot be stored, so "
+        "the signature answers what the body was answering. The call sites do not change shape; what "
+        "changes is that the answer is now in the declaration.",
+        "Take a reference by default and a pointer when the body really needs one of the three "
+        "freedoms. Written the other way round, the pointer is what everything gets and nothing says "
+        "which ones meant it." }},
+
+    {Code::CheckRepeatsItsContract, {
+        "Polaron-0B3F", "this tests the negation of the method's own `requires`",
+        "The precondition is already on the signature, where the compiler can drop the check "
+        "wherever a caller has proved the condition and where a violation names the caller. The copy "
+        "inside the body can be dropped by nothing, runs on every call including the ones already "
+        "proved, and will still be here after somebody strengthens the contract above it.",
+        "Delete the check. The `requires` is doing its job, which is the whole reason it is there.",
+        "Write the contract or the check, not both. The contract is the one that can be checked "
+        "at the call site and removed when it is redundant." }},
+
+    {Code::IndexBoundNotTheArray, {
+        "Polaron-0B40", "this loop indexes an array with a bound that is not its length",
+        "The bounds check on each element can only be removed when something relates the index to "
+        "the array's own length. A loop counted to some other number gives the range analysis "
+        "nothing to work from, so the check stays: one compare and one branch per element, on the "
+        "path that is usually hot -- and it is invisible, because the source says `a[i]` either way.",
+        "Loop to `a.length()`, or use `foreach`, which says the relation without any arithmetic at "
+        "all. Where the two lengths really are different quantities that happen to agree, an "
+        "`invariant` stating so is what lets the compiler use it.",
+        "Count over the thing being indexed. A separate count is a second source of truth about the "
+        "same number, and the bounds check is the cheapest of the things that go wrong with it." }},
+
+    {Code::RegionHeldTooLong, {
+        "Polaron-0B41", "this region is released long after the last thing put into it",
+        "The arena stays reserved for all of it -- memory held, untouched and unavailable to "
+        "anything else -- and the objects in it stay alive with nothing left to do, which also means "
+        "their destructors run at a moment nobody chose rather than when the work finished.",
+        "Move the `release` up to where the region stops being used. Where something in between "
+        "still reads objects that live in it, that is the reason the release is where it is, and "
+        "worth an `[Allow]` saying which.",
+        "Put the release at the end of the work the region was opened for, not at the end of the "
+        "method. Those are the same line surprisingly rarely." }},
+
+    {Code::RegionsWithOneLifetime, {
+        "Polaron-0B42", "two regions are opened and released in the same block",
+        "One lifetime between them, so they are one region with two names: two reserves, two bases "
+        "to keep, two teardowns, and a reader who has to work out which objects went into which in "
+        "order to discover that it never mattered.",
+        "Merge them. Where the split is there because one of them is reset while the other is kept, "
+        "the lifetimes are genuinely different and the flavours say so -- a `bump` reset per "
+        "iteration beside a `pool` that outlives it -- which is a real reason and belongs in an "
+        "`[Allow]`.",
+        "Open a second region when its lifetime differs from the first's. Two names for one lifetime "
+        "is bookkeeping the reader pays for." }},
+
+    {Code::EternalThatIsReleased, {
+        "Polaron-0B43", "this is declared eternal and released by hand",
+        "`eternal` means one thing in this compiler: suppress the automatic teardown, because this "
+        "outlives everything. A hand-written release says the opposite. One of the two is wrong, and "
+        "which one it is decides whether the storage class is the mistake or the release is -- so "
+        "the declaration and the code are currently disagreeing about the lifetime in public.",
+        "Drop `eternal` if it really is released, or drop the release if it really is eternal.",
+        "Choose the storage class from how long the thing actually lives, and let the automatic "
+        "teardown do the rest. `eternal` plus a release is a decision made twice, differently." }},
+
+    {Code::VirtualCallInLoop, {
+        "Polaron-0B44", "this dispatches through an interface on every element",
+        "Per iteration: load the vtable pointer, load the slot, call through it. None of the three "
+        "can be seen through, so nothing in the callee inlines and the loop stops being something "
+        "the optimiser can reason about at all -- it becomes a sequence of opaque calls that happen "
+        "to be next to each other.",
+        "Hoist the decision out of the loop: `match` on the type once and run a loop per arm, so "
+        "each loop calls one body directly. Where the collection is genuinely mixed and the work per "
+        "element is large, the dispatch is a rounding error and this is worth an `[Allow]`.",
+        "Ask whether the collection is really heterogeneous. Often it is one type throughout and the "
+        "interface is there because that is how the field was declared." }},
+
+    {Code::PaddingFromFieldOrder, {
+        "Polaron-0B45", "the declared field order costs bytes that a layout would recover",
+        "Fields are laid out in the order written, and each one starts at a multiple of its own "
+        "alignment -- so a small field between two large ones leaves a hole, and the hole is carried "
+        "in every instance, copied by every copy, and fetched by every cache line that touches the "
+        "object. On a pool of thousands it is the difference between two cache lines per object and "
+        "one.",
+        "Implement a `layout`. That authorises the compiler to order the fields widest-first, which "
+        "removes the holes without anybody maintaining the order by hand -- and a `layout` with "
+        "`fitWithin` states the budget, so the day a field pushes it over, the build says so.",
+        "Let a layout own the order. Keeping fields widest-first by hand works until the tenth field "
+        "is added in a hurry, and nothing anywhere says it was ever a rule." }},
+
+    {Code::LargeValueByValue, {
+        "Polaron-0B46", "this takes a large aggregate by value",
+        "Assignment copies in this language, and so does an argument: every field is duplicated into "
+        "the callee's frame on every call. For something the size of a cache line or more that is "
+        "memcpy work at each call site, per argument, and it does not appear anywhere in the source "
+        "-- the call reads exactly like one taking an integer.",
+        "Take it as `T&` where the callee only reads it, or `move` it where ownership is genuinely "
+        "handing over. Both cost one word.",
+        "Pass big values by reference and small ones by value, and let the size decide rather than "
+        "the habit. The threshold worth remembering is the cache line." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "

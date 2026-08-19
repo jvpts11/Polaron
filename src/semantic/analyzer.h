@@ -280,6 +280,14 @@ private:
     void warnHeapWithLexicalLifetime(const ast::Block& body);
     void warnRepeatedCleanup(const ast::MethodDecl& m);
     void warnThrowInLoop(const ast::Block& body);
+    void warnPointerThatIsABorrow(const ast::MethodDecl& m);
+    void warnCheckRepeatsItsContract(const ast::MethodDecl& m);
+    void warnRegionHeldTooLong(const ast::Block& body);
+    void warnRegionsWithOneLifetime(const ast::Block& body);
+    void warnEternalThatIsReleased(const ast::Block& body);
+    // These two ask `typeOf`, so they run from the loop handlers, with the names still in scope.
+    void warnIndexBoundNotTheArray(const ast::Block& loopBody, const ast::Expr* bound);
+    void warnVirtualCallInLoop(const ast::Block& loopBody);
     void warnMoveInsteadOfCopy(const ast::MethodDecl& m);
     void warnListWithoutCapacity(const ast::Block& body);
     void warnDeadStoreOfACopy(const ast::Block& body);

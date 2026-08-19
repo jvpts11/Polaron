@@ -26,6 +26,20 @@ public bundle Main {
             public override method area() returns int { return this.side * this.side; }
         }
 
+        public sealed abstract class Solid permits Ball, Cube {
+            public abstract method bulk() returns int;
+        }
+        public class Ball extends Solid {
+            private int r;
+            public constructor Ball(int r) { this.r = r; }
+            public override method bulk() returns int { return this.r; }
+        }
+        public class Cube extends Solid {
+            private int side;
+            public constructor Cube(int side) { this.side = side; }
+            public override method bulk() returns int { return this.side; }
+        }
+
         public class Flow {
             // FIRES (0B15): a default over a sealed type gives up the one thing a closed set buys --
             // the compiler naming every dispatcher the day a permit is added. Collapsing members
@@ -39,11 +53,15 @@ public bundle Main {
                 return 0;
             }
 
-            // QUIET: every permit listed, no default. A third shape becomes a compile error here.
-            public static method describeWell(Shape* s) returns int {
+            // QUIET: every permit listed, no default. A third solid becomes a compile error here.
+            //
+            // On its OWN sealed type, so the test can tell the two matches apart: with both over
+            // `Shape` the two diagnostics would read identically, and a narrowness test that cannot
+            // name what must stay quiet is a test that cannot fail for the right reason.
+            public static method describeWell(Solid* s) returns int {
                 match (s) {
-                    case Round(int r) { return r; }
-                    case Boxy(int side) { return side; }
+                    case Ball(int r) { return r; }
+                    case Cube(int side) { return side; }
                 }
                 return 0;
             }
@@ -116,7 +134,7 @@ public bundle Main {
         public class Main {
             public static method main(string[] args) returns void {
                 Shape* one = new Round(3) on heap;
-                Shape* two = new Boxy(4) on heap;
+                Solid* two = new Cube(4) on heap;
                 System.IO.Console.println($"{Flow.describe(one)} {Flow.describeWell(two)} {Flow.rank(22)} {Flow.mixed(44, 0)} {Flow.sized()} {Flow.local()} {Flow.ignores()} {Flow.reads()}");
                 delete one;
                 delete two;

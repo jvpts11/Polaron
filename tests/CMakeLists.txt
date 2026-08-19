@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.149")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.150")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.149")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.150")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1103,6 +1103,54 @@ add_test(NAME lint_allow_demands_a_reason
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
 
+# THE ADVICE ABOUT WHAT A DECLARATION COSTS. The three size-based rules compute an approximate
+# layout here rather than reaching into the code generator: they do not need the exact answer, only
+# whether the written order wastes a noticeable fraction and whether a parameter is big.
+add_test(NAME lint_check_repeats_its_contract
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_cost.pol")
+set_tests_properties(lint_check_repeats_its_contract PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B3F\\]: this tests the negation")
+
+add_test(NAME lint_region_held_too_long
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_cost.pol")
+set_tests_properties(lint_region_held_too_long PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B41\\]: region 'pen' is released 8 statements after")
+
+add_test(NAME lint_regions_with_one_lifetime
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_cost.pol")
+set_tests_properties(lint_regions_with_one_lifetime PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B42\\]: 2 regions are opened and released")
+
+add_test(NAME lint_eternal_that_is_released
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_cost.pol")
+set_tests_properties(lint_eternal_that_is_released PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B43\\]: 'keep' is declared eternal and released")
+
+add_test(NAME lint_padding_from_field_order
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_cost.pol")
+set_tests_properties(lint_padding_from_field_order PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B45\\]: 'Ragged' is 32 bytes as written and 24 widest-first")
+
+add_test(NAME lint_large_value_by_value
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_cost.pol")
+set_tests_properties(lint_large_value_by_value PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B46\\]: 'weigh' takes 'load' by value")
+
+# ...and the two that must stay quiet: a struct already ordered widest-first, and the three members
+# the COMPILER writes for a value aggregate, whose signatures are nobody's decision to act on.
+add_test(NAME lint_cost_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_cost.pol")
+set_tests_properties(lint_cost_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'Tidy' is|'equalsKey' takes|'compareTo' takes")
+
+add_test(NAME lint_cost_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_cost.pol"
+    "-DCONTAINS=7 6 24 9 7 1 1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # THE LAST OF THE STRUCTURAL ADVICE. Eight rules, and two of them were looking at the wrong thing
 # until this sample said so: the lazy rule searched the DUMPED TEXT for `this.field`, which `dump`
 # never writes contiguously (it puts `Member '.field'` on its own line), so it found nothing ever;
@@ -1456,7 +1504,7 @@ set_tests_properties(lint_result_never_examined PROPERTIES
 add_test(NAME lint_flow_shapes_are_narrow
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
 set_tests_properties(lint_flow_shapes_are_narrow PROPERTIES
-    FAIL_REGULAR_EXPRESSION "describeWell|compare 'a'|compare 'b'")
+    FAIL_REGULAR_EXPRESSION "sealed type 'Solid'|compare 'a'|compare 'b'")
 
 add_test(NAME lint_flow_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"

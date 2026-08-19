@@ -1,0 +1,114 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+
+program LintCost;
+
+// THE ADVICE ABOUT WHAT A DECLARATION COSTS: padding the written order leaves behind, an aggregate
+// copied at every call, a contract checked twice, and three regions that are held wrong.
+public bundle Main {
+    public namespace App {
+
+        // FIRES (0B45): a small field between two large ones leaves a hole, and the hole is in every
+        // instance, every copy, and every cache line that touches one.
+        public struct Ragged {
+            public mutable byte flag;
+            public mutable long first;
+            public mutable byte other;
+            public mutable long second;
+        }
+
+        // QUIET: widest-first already, so there is nothing for a layout to recover.
+        public struct Tidy {
+            public mutable long first;
+            public mutable long second;
+            public mutable byte flag;
+        }
+
+        // Sixty-four bytes of it: eight longs.
+        public struct Bulk {
+            public mutable long a;
+            public mutable long b;
+            public mutable long c;
+            public mutable long d;
+            public mutable long e;
+            public mutable long f;
+            public mutable long g;
+            public mutable long h;
+        }
+
+        public class Tag {
+            public mutable int id;
+            public constructor Tag(int id) { this.id = id; }
+        }
+
+        public class Cost {
+            // FIRES (0B46): every field duplicated into the callee's frame, at every call, and the
+            // call site reads exactly like one taking an integer.
+            public static method weigh(Bulk load) returns long {
+                return load.a + load.h;
+            }
+
+            // FIRES (0B3F): the precondition is already on the signature, where it can be dropped
+            // wherever a caller has proved it. The copy inside can be dropped by nothing.
+            public static method scaled(int by) returns int requires by >= 0 {
+                if (by < 0) {
+                    return 0;
+                }
+                return by * 2;
+            }
+
+            // FIRES (0B41): the arena is held, untouched, for the rest of the method, and the
+            // objects in it stay alive with nothing left to do.
+            public static method lingers() returns int {
+                region pen = itself.allocate(1 kilobytes);
+                Tag* one = new Tag(1) in region pen;
+                Tag* two = new Tag(2) in region pen;
+                mutable int total = one.id + two.id;
+                total = total + 1;
+                total = total + 2;
+                total = total + 3;
+                total = total + 4;
+                total = total + 5;
+                total = total + 6;
+                release region pen;
+                return total;
+            }
+
+            // FIRES (0B43): `eternal` says the teardown never runs; the release says it runs now.
+            // One of the two is wrong, and the declaration and the code are disagreeing in public.
+            public static method forever() returns int {
+                eternal region keep = itself.allocate(1 kilobytes);
+                Tag* held = new Tag(9) in region keep;
+                int got = held.id;
+                release region keep;
+                return got;
+            }
+
+            // FIRES (0B42): one lifetime between them, so they are one region with two names.
+            public static method twoOfThem() returns int {
+                region left = itself.allocate(1 kilobytes);
+                region right = itself.allocate(1 kilobytes);
+                Tag* a = new Tag(3) in region left;
+                Tag* b = new Tag(4) in region right;
+                int total = a.id + b.id;
+                release region left;
+                release region right;
+                return total;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Bulk load = new Bulk() on stack;
+                load.a = 2;
+                load.h = 5;
+                Ragged r = new Ragged() on stack;
+                r.flag = 1;
+                Tidy t = new Tidy() on stack;
+                t.flag = 1;
+                System.IO.Console.println($"{Cost.weigh(load)} {Cost.scaled(3)} {Cost.lingers()} {Cost.forever()} {Cost.twoOfThem()} {r.flag} {t.flag}");
+                return;
+            }
+        }
+    }
+}

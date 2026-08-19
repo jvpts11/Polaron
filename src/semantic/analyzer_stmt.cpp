@@ -1175,6 +1175,335 @@ void SemanticAnalyzer::warnDeadStoreOfACopy(const ast::Block& body) {
     }
 }
 
+// A comparable spelling of an expression, for the two rules that ask whether two conditions say the
+// same thing. `dump` is stable and structural, which is what makes it usable for equality even
+// though it is useless for searching (see the notes on the substring traps above).
+static std::string shapeOf(const ast::Expr* e) {
+    if (e == nullptr) {
+        return {};
+    }
+    std::string out;
+    e->dump(out, 0);
+    return out;
+}
+
+void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
+    // A `T*` PARAMETER THE BODY ONLY READS THROUGH is a borrow written as a pointer. `T&` says that:
+    // it cannot be rebound, so a reader knows the name means one object for the whole method; it
+    // cannot be null, so there is no branch to wonder about; and it cannot be stored, so its
+    // lifetime question is answered by the signature instead of by reading the body.
+    for (const ast::Param& p : m.params) {
+        const std::string t = typeRefStr(p.type);
+        if (t.find('*') == std::string::npos || isNullableType(t) || isArrayType(t)) {
+            continue;
+        }
+        if (lookupClass(baseType(t)) == nullptr) {
+            continue;   // `int*` and friends are machine-level, and are somebody else's rule
+        }
+        bool escapes = false;
+        eachStmt(m.body, [&](const ast::Stmt& st) {
+            if (escapes) {
+                return;
+            }
+            // Rebound, returned, or stored: any of the three and it is not a borrow.
+            if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(as->target.get());
+                    id != nullptr && id->name == p.name) {
+                    escapes = true;
+                }
+                if (const auto* v = dynamic_cast<const ast::IdentifierExpr*>(as->value.get());
+                    v != nullptr && v->name == p.name) {
+                    escapes = true;   // stored into a field or another name
+                }
+            } else if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&st)) {
+                if (const auto* v = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get());
+                    v != nullptr && v->name == p.name) {
+                    escapes = true;
+                }
+            } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+                if (const auto* v = dynamic_cast<const ast::IdentifierExpr*>(vd->init.get());
+                    v != nullptr && v->name == p.name) {
+                    escapes = true;
+                }
+            } else if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&st)) {
+                if (const auto* v = dynamic_cast<const ast::IdentifierExpr*>(del->target.get());
+                    v != nullptr && v->name == p.name) {
+                    escapes = true;   // it is owned here, not borrowed
+                }
+            }
+            // HANDED TO A CALL, and that is an escape this method cannot see the end of: the callee
+            // may store it, and nothing in these statements would show that. Without this the rule
+            // fired 344 times on the game -- not because the game passes pointers where references
+            // are meant, but because the rule was calling a pointer a borrow on the strength of
+            // never having looked at where it went.
+            // At ANY depth: `g.setBiome(x, y, biomeFor(s, ...))` hands `s` to a call from inside
+            // another call's argument list, and a version that only looked at the top of the
+            // statement called that pointer a borrow.
+            std::function<void(const ast::Expr*)> args = [&](const ast::Expr* e) {
+                if (e == nullptr || escapes) {
+                    return;
+                }
+                if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+                    for (const ast::ExprPtr& a : call->args) {
+                        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(a.get());
+                            id != nullptr && id->name == p.name) {
+                            escapes = true;
+                            return;
+                        }
+                        args(a.get());
+                    }
+                    args(call->callee.get());
+                    return;
+                }
+                if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+                    args(mem->object.get());
+                } else if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+                    args(bin->lhs.get());
+                    args(bin->rhs.get());
+                } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+                    args(un->operand.get());
+                } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+                    args(cast->operand.get());
+                } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+                    args(ix->array.get());
+                    args(ix->index.get());
+                }
+            };
+            if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+                args(es->expr.get());
+            } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+                args(vd->init.get());
+            } else if (const auto* as2 = dynamic_cast<const ast::AssignStmt*>(&st)) {
+                args(as2->value.get());
+            } else if (const auto* rs2 = dynamic_cast<const ast::ReturnStmt*>(&st)) {
+                args(rs2->value.get());
+            }
+        });
+        if (!escapes) {
+            warn(diag::Code::PointerThatIsABorrow,
+                 "'" + m.name + "' takes '" + p.name +
+                     "' as a pointer and only ever reads through it",
+                 p.loc);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnCheckRepeatsItsContract(const ast::MethodDecl& m) {
+    // A CHECK THAT REPEATS THE METHOD'S OWN `requires`. The precondition is already on the
+    // signature, where the compiler can drop it wherever the caller has proved it; the copy inside
+    // the body cannot be dropped by anything, and it will still be there long after somebody
+    // strengthens the contract.
+    if (m.requiresClauses.empty() || m.body.statements.empty()) {
+        return;
+    }
+    auto mirrorOf = [](const std::string& op) -> std::string {
+        if (op == ">=") { return "<"; }
+        if (op == ">") { return "<="; }
+        if (op == "<=") { return ">"; }
+        if (op == "<") { return ">="; }
+        if (op == "==") { return "!="; }
+        if (op == "!=") { return "=="; }
+        return {};
+    };
+    for (const ast::ExprPtr& req : m.requiresClauses) {
+        const auto* rb = dynamic_cast<const ast::BinaryExpr*>(req.get());
+        if (rb == nullptr) {
+            continue;
+        }
+        const std::string want = mirrorOf(rb->op);
+        if (want.empty()) {
+            continue;
+        }
+        eachStmt(m.body, [&](const ast::Stmt& st) {
+            const auto* iff = dynamic_cast<const ast::IfStmt*>(&st);
+            if (iff == nullptr) {
+                return;
+            }
+            const auto* cb = dynamic_cast<const ast::BinaryExpr*>(iff->cond.get());
+            if (cb == nullptr || cb->op != want) {
+                return;
+            }
+            if (shapeOf(cb->lhs.get()) == shapeOf(rb->lhs.get()) &&
+                shapeOf(cb->rhs.get()) == shapeOf(rb->rhs.get())) {
+                warn(diag::Code::CheckRepeatsItsContract,
+                     "this tests the negation of the method's own `requires`", iff->loc);
+            }
+        });
+    }
+}
+
+void SemanticAnalyzer::warnIndexBoundNotTheArray(const ast::Block& loopBody, const ast::Expr* bound) {
+    // AN INDEX WHOSE LOOP BOUND IS NOT THE ARRAY'S OWN LENGTH gives the range analysis nothing to
+    // work with, so the bounds check stays in the loop -- one compare and one branch per element,
+    // on a path that is usually the hot one. Looping to `a.length()` is the same loop with the
+    // relation written down, and `foreach` says it without any arithmetic at all.
+    if (bound == nullptr) {
+        return;
+    }
+    const std::string boundShape = shapeOf(bound);
+    std::unordered_set<std::string> reported;
+    eachStmt(loopBody, [&](const ast::Stmt& st) {
+        auto look = [&](const ast::Expr* e) {
+            const auto* ix = dynamic_cast<const ast::IndexExpr*>(e);
+            if (ix == nullptr) {
+                return;
+            }
+            const auto* arr = dynamic_cast<const ast::IdentifierExpr*>(ix->array.get());
+            if (arr == nullptr || reported.count(arr->name) > 0) {
+                return;
+            }
+            // Is the bound this array's own length? `a.length()` dumps with `.length` and `a` in it.
+            if (boundShape.find("'." + std::string("length") + "'") != std::string::npos &&
+                boundShape.find("'" + arr->name + "'") != std::string::npos) {
+                return;
+            }
+            reported.insert(arr->name);
+            warn(diag::Code::IndexBoundNotTheArray,
+                 "this loop indexes '" + arr->name +
+                     "' with a bound that is not its length, so the check cannot be proved away",
+                 ix->loc);
+        };
+        if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+            look(as->target.get());
+            look(as->value.get());
+        } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            look(vd->init.get());
+        }
+    });
+}
+
+void SemanticAnalyzer::warnRegionHeldTooLong(const ast::Block& body) {
+    // A REGION RELEASED LONG AFTER ITS LAST ALLOCATION holds its arena for all of it. The memory is
+    // reserved, untouched and unavailable, and the objects it owns are alive with nothing to do --
+    // which also means their destructors run at a moment nobody chose.
+    std::unordered_map<std::string, std::size_t> lastUse;
+    std::unordered_map<std::string, std::size_t> releasedAt;
+    std::unordered_map<std::string, SourceLocation> releaseLoc;
+    for (std::size_t i = 0; i < body.statements.size(); ++i) {
+        const ast::Stmt* st = body.statements[i].get();
+        if (st == nullptr) {
+            continue;
+        }
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) {
+            if (const auto* ne = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+                ne != nullptr && !ne->region.empty()) {
+                lastUse[ne->region] = i;
+            }
+        } else if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(st)) {
+            if (!rel->region.empty()) {
+                releasedAt[rel->region] = i;
+                releaseLoc[rel->region] = rel->loc;
+            }
+        }
+    }
+    for (const auto& [name, at] : releasedAt) {
+        auto last = lastUse.find(name);
+        if (last == lastUse.end() || at <= last->second + 5) {
+            continue;   // released where it stopped being used, give or take
+        }
+        warn(diag::Code::RegionHeldTooLong,
+             "region '" + name + "' is released " + std::to_string(at - last->second) +
+                 " statements after the last thing put into it",
+             releaseLoc[name]);
+    }
+}
+
+void SemanticAnalyzer::warnRegionsWithOneLifetime(const ast::Block& body) {
+    // TWO REGIONS OPENED AND CLOSED IN ONE BLOCK have one lifetime between them, so they are one
+    // region with two names: two reserves, two bases to carry, two teardowns, and a reader who has
+    // to work out which objects went where in order to learn that it never mattered.
+    std::vector<std::pair<std::string, SourceLocation>> opened;
+    std::unordered_set<std::string> closed;
+    for (const ast::StmtPtr& st : body.statements) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get())) {
+            if (typeRefStr(vd->type) == "region") {
+                opened.emplace_back(vd->name, vd->loc);
+            }
+        } else if (const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(st.get())) {
+            if (!rel->region.empty()) {
+                closed.insert(rel->region);
+            }
+        }
+    }
+    std::vector<std::pair<std::string, SourceLocation>> both;
+    for (const auto& [name, loc] : opened) {
+        if (closed.count(name) > 0) {
+            both.emplace_back(name, loc);
+        }
+    }
+    if (both.size() >= 2) {
+        warn(diag::Code::RegionsWithOneLifetime,
+             std::to_string(both.size()) +
+                 " regions are opened and released in this one block, so they share a lifetime",
+             both.front().second);
+    }
+}
+
+void SemanticAnalyzer::warnEternalThatIsReleased(const ast::Block& body) {
+    // `eternal` MEANS "NEVER NEEDS RELEASING" -- it is the word that suppresses the automatic
+    // teardown. Releasing one by hand says the opposite, so one of the two is wrong, and which one
+    // decides whether the storage class is a mistake or the release is.
+    std::unordered_set<std::string> eternals;
+    for (const ast::StmtPtr& st : body.statements) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get()); vd != nullptr &&
+                                                                             vd->isEternal) {
+            eternals.insert(vd->name);
+        }
+    }
+    if (eternals.empty()) {
+        return;
+    }
+    eachStmt(body, [&](const ast::Stmt& st) {
+        const auto* rel = dynamic_cast<const ast::ReleaseStmt*>(&st);
+        if (rel == nullptr) {
+            return;
+        }
+        const std::string name =
+            !rel->region.empty()
+                ? rel->region
+                : (dynamic_cast<const ast::IdentifierExpr*>(rel->target.get()) != nullptr
+                       ? dynamic_cast<const ast::IdentifierExpr*>(rel->target.get())->name
+                       : std::string());
+        if (!name.empty() && eternals.count(name) > 0) {
+            warn(diag::Code::EternalThatIsReleased,
+                 "'" + name + "' is declared eternal and released by hand", rel->loc);
+        }
+    });
+}
+
+void SemanticAnalyzer::warnVirtualCallInLoop(const ast::Block& loopBody) {
+    // A CALL THROUGH AN INTERFACE OR AN ABSTRACT BASE, PER ITERATION. The vtable is loaded and the
+    // target read on every element, and the optimiser cannot see through any of them -- so nothing
+    // in the body inlines, and the loop is a sequence of opaque calls rather than a loop.
+    eachStmt(loopBody, [&](const ast::Stmt& st) {
+        auto look = [&](const ast::Expr* e) {
+            const auto* call = dynamic_cast<const ast::CallExpr*>(e);
+            if (call == nullptr) {
+                return;
+            }
+            const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            if (mem == nullptr || dynamic_cast<const ast::IndexExpr*>(mem->object.get()) == nullptr) {
+                return;   // an element of a collection is the shape this is about
+            }
+            const std::string t = baseType(typeOf(*mem->object));
+            const ClassInfo* ci = lookupClass(t);
+            if (ci == nullptr || (!ci->isInterface && !ci->isAbstract)) {
+                return;
+            }
+            warn(diag::Code::VirtualCallInLoop,
+                 "'" + mem->member + "' is dispatched through '" + t + "' on every iteration",
+                 call->loc);
+        };
+        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+            look(es->expr.get());
+        } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            look(vd->init.get());
+        } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+            look(as->value.get());
+        }
+    });
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks
@@ -1374,6 +1703,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             analyzeBlock(fe->body);
             warnStringBuildingInLoop(fe->body);
             warnCopyHoistableOutOfLoop(fe->body);
+            warnVirtualCallInLoop(fe->body);
             popScope();
             return;
         }
@@ -1423,6 +1753,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         analyzeBlock(fe->body);
         warnStringBuildingInLoop(fe->body);
         warnCopyHoistableOutOfLoop(fe->body);
+        warnVirtualCallInLoop(fe->body);
         popScope();
         return;
     }
@@ -2254,6 +2585,12 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         analyzeBlock(ws->body);
         warnStringBuildingInLoop(ws->body);
         warnCopyHoistableOutOfLoop(ws->body);
+        warnVirtualCallInLoop(ws->body);
+        // The bound of a `while (i < N)` is its right-hand side: that is what the range analysis
+        // would have to relate to the array's length, and usually cannot.
+        if (const auto* wb = dynamic_cast<const ast::BinaryExpr*>(ws->cond.get())) {
+            warnIndexBoundNotTheArray(ws->body, wb->rhs.get());
+        }
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
         return;
@@ -2288,6 +2625,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         analyzeBlock(fs->body);
         warnStringBuildingInLoop(fs->body);
         warnCopyHoistableOutOfLoop(fs->body);
+        warnVirtualCallInLoop(fs->body);
+        if (const auto* fb = dynamic_cast<const ast::BinaryExpr*>(fs->cond.get())) {
+            warnIndexBoundNotTheArray(fs->body, fb->rhs.get());
+        }
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
         popScope();

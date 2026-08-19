@@ -95,6 +95,99 @@ std::string commonPrefix(const std::vector<std::string>& names) {
 
 }  // namespace
 
+// AN APPROXIMATE LAYOUT, COMPUTED HERE RATHER THAN ASKED OF THE BACKEND.
+//
+// Three rules need to know how big a thing is and how it is aligned. The real answer lives in the
+// code generator, which is the wrong place for advice to reach into -- and it does not need the real
+// answer: it needs to know whether the declared order wastes a noticeable fraction, and whether a
+// parameter is big. Both are decided by the same arithmetic every ABI on this target uses, so the
+// numbers here are the machine's for every case these rules act on, and where they are not, they are
+// wrong in the direction of saying nothing.
+struct Extent {
+    long long size = 0;
+    long long align = 1;
+};
+
+namespace {
+
+Extent primitiveExtent(const std::string& t) {
+    if (t == "boolean" || t == "byte" || t == "int8" || t == "uint8") { return {1, 1}; }
+    if (t == "short" || t == "int16" || t == "uint16") { return {2, 2}; }
+    if (t == "int" || t == "int32" || t == "uint32" || t == "float" || t == "char") { return {4, 4}; }
+    if (t == "long" || t == "int64" || t == "uint64" || t == "double") { return {8, 8}; }
+    if (t == "vec2") { return {8, 8}; }
+    if (t == "vec3" || t == "vec4") { return {16, 16}; }
+    return {};
+}
+
+long long roundUp(long long n, long long to) {
+    return to <= 1 ? n : ((n + to - 1) / to) * to;
+}
+
+}  // namespace
+
+// The extent of a named type, resolving classes through `byName` up to a small depth: a cycle can
+// only happen through a pointer, which stops the walk anyway.
+static Extent extentOf(const std::string& type,
+                       const std::unordered_map<std::string, const ast::ClassDecl*>& byName,
+                       int depth);
+
+static Extent aggregateExtent(const ast::ClassDecl& c,
+                              const std::unordered_map<std::string, const ast::ClassDecl*>& byName,
+                              int depth, bool widestFirst) {
+    std::vector<Extent> parts;
+    for (const ast::MemberPtr& mp : c.members) {
+        const auto* f = dynamic_cast<const ast::FieldDecl*>(mp.get());
+        if (f == nullptr || f->isStatic) {
+            continue;
+        }
+        const Extent e = extentOf(typeRefStr(f->type), byName, depth + 1);
+        if (e.size == 0) {
+            return {};   // something unmeasurable: say nothing rather than guess
+        }
+        parts.push_back(e);
+    }
+    if (parts.empty()) {
+        return {};
+    }
+    if (widestFirst) {
+        std::sort(parts.begin(), parts.end(),
+                  [](const Extent& a, const Extent& b) { return a.align > b.align; });
+    }
+    long long at = 0;
+    long long worst = 1;
+    for (const Extent& e : parts) {
+        at = roundUp(at, e.align) + e.size;
+        worst = std::max(worst, e.align);
+    }
+    return {roundUp(at, worst), worst};
+}
+
+static Extent extentOf(const std::string& type,
+                       const std::unordered_map<std::string, const ast::ClassDecl*>& byName,
+                       int depth) {
+    const std::string base = baseType(type);
+    if (type.find('*') != std::string::npos || isRefType(type) || isArrayType(type) ||
+        isAddressName(base)) {
+        return {8, 8};   // a pointer, whatever it points at
+    }
+    if (const Extent p = primitiveExtent(base); p.size != 0) {
+        return p;
+    }
+    if (depth > 4) {
+        return {};
+    }
+    auto it = byName.find(base);
+    if (it == byName.end()) {
+        return {};
+    }
+    // A class is reached by pointer; a struct or record is stored inline.
+    if (!it->second->isStruct && !it->second->isRecord) {
+        return {8, 8};
+    }
+    return aggregateExtent(*it->second, byName, depth, false);
+}
+
 // WHAT THE WHOLE PROGRAM DOES, gathered once.
 //
 // Several rules are about the difference between what a declaration promises and what anything
@@ -788,6 +881,67 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                 popAllows();
             }
         }
+    }
+
+    // ---- what the declared field order costs, and what a big value costs to pass ----
+    std::unordered_map<std::string, const ast::ClassDecl*> byName;
+    for (const ast::ClassDecl* c : all) {
+        byName[c->name] = c;
+    }
+    for (const ast::ClassDecl* c : all) {
+        if (!c->isStruct && !c->isRecord) {
+            continue;   // only an inline aggregate has a layout the author's order decides
+        }
+        pushAllows(c->annotations, {});
+        // Padding the declared order costs (catalogue 27). A `layout` authorises the compiler to
+        // order the fields widest-first; without one, the order written is the order used, and the
+        // holes between differently-sized fields are carried in every instance.
+        const Extent asWritten = aggregateExtent(*c, byName, 0, false);
+        const Extent packed = aggregateExtent(*c, byName, 0, true);
+        if (asWritten.size > 0 && packed.size > 0 && c->layouts.empty() &&
+            asWritten.size >= packed.size + std::max<long long>(2, packed.size / 8)) {
+            warn(diag::Code::PaddingFromFieldOrder,
+                 "'" + c->name + "' is " + std::to_string(asWritten.size) +
+                     " bytes as written and " + std::to_string(packed.size) + " widest-first",
+                 c->loc);
+        }
+        popAllows();
+    }
+    for (const ast::ClassDecl* c : all) {
+        pushAllows(c->annotations, {});
+        for (const ast::MemberPtr& mp : c->members) {
+            const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get());
+            if (m == nullptr) {
+                continue;
+            }
+            // The members the COMPILER writes for a value aggregate are not the author's decision,
+            // so advice about their signatures is advice nobody can act on. A struct gets these
+            // three for free, and the by-value rule fired on all of them before this line.
+            if (m->name == "equalsKey" || m->name == "hashCode" || m->name == "compareTo" ||
+                m->name == "toString" || m->name == "equals") {
+                continue;
+            }
+            for (const ast::Param& p : m->params) {
+                const std::string t = typeRefStr(p.type);
+                if (t.find('*') != std::string::npos || isRefType(t) || isArrayType(t)) {
+                    continue;
+                }
+                auto it = byName.find(baseType(t));
+                if (it == byName.end() || (!it->second->isStruct && !it->second->isRecord)) {
+                    continue;
+                }
+                // A big value copied at every call (catalogue 34). The threshold is a cache line:
+                // below it the copy is one or two moves, above it the call is doing memcpy work
+                // nobody asked for, per call, per argument.
+                if (const Extent e = extentOf(t, byName, 0); e.size >= 64) {
+                    warn(diag::Code::LargeValueByValue,
+                         "'" + m->name + "' takes '" + p.name + "' by value, and a '" +
+                             baseType(t) + "' is about " + std::to_string(e.size) + " bytes",
+                         p.loc);
+                }
+            }
+        }
+        popAllows();
     }
 
     // ---- a pointer back to the owner is a cycle (catalogue 9) ----
