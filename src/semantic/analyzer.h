@@ -259,6 +259,11 @@ private:
         bool used = false;
     };
     std::vector<std::vector<AllowEntry>> allowStack_;
+    // Places already advised about, so a generic walked once per instantiation reports once.
+    std::unordered_set<std::string> warnedAt_;
+    // The dumped invariants of the class being analysed, for the rules that must not repeat advice
+    // about something the class has already stated.
+    std::vector<std::string> currentClassInvariants_;
     void pushAllows(const std::vector<ast::AnnotationUse>& outer,
                     const std::vector<ast::AnnotationUse>& inner);
     void popAllows();

@@ -69,6 +69,21 @@ void SemanticAnalyzer::warn(diag::Code code, std::string message, SourceLocation
     if (allowed(code)) {
         return;   // this declaration said, with a reason, that it disagrees
     }
+    // ONE SOURCE LINE IS ONE FINDING, however many times the compiler walked it.
+    //
+    // A generic's body is analysed once per instantiation, so every rule inside `ArrayList<T>` fired
+    // once for `ArrayList<int>`, once for `ArrayList<String>`, and so on -- 517 reports of what were
+    // 304 lines, in one file. Worse than the inflation: the number then depended on which types a
+    // program happened to instantiate, so it was not a property of the library at all and nothing
+    // built on top of it could be stable.
+    //
+    // Keyed on the code as well as the place: two different rules with something to say about one
+    // line are two findings, and the reader wants both.
+    const std::string key = std::string(loc.file) + ":" + std::to_string(loc.line) + ":" +
+                            std::to_string(loc.col) + ":" + diag::codeString(code);
+    if (!warnedAt_.insert(key).second) {
+        return;
+    }
     warnings_.push_back(SemaError{std::move(message), loc, code});
 }
 
@@ -3365,6 +3380,17 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
             currentNamespace_ = ns.name;
             for (const ast::ClassDecl& cls : ns.classes) {
                 currentClass_ = cls.name;  // keep accurate for checkTypeAccessible's mono exemption
+                // What this class has already stated about itself. One rule reads it: an index
+                // whose bound is related to the array by an invariant is an index the compiler CAN
+                // prove, so saying otherwise would be advice about a fix already applied.
+                currentClassInvariants_.clear();
+                for (const ast::ExprPtr& inv : cls.invariants) {
+                    if (inv) {
+                        std::string text;
+                        inv->dump(text, 0);
+                        currentClassInvariants_.push_back(std::move(text));
+                    }
+                }
                 currentClassDecl_ = &cls;  // so a delegating call can be followed into its own body
                 enclosingClass_ = cls.name;  // active from here so field inits resolve unqualified calls too
                 owningClassForRefs_ = cls.name;  // what this class's code drags in (see noteClassRef)

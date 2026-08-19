@@ -1,9 +1,8 @@
 # THE STANDARD LIBRARY'S OWN ADVICE, COUNTED. A ratchet: these may go DOWN, never up.
 #
 # Every number here is a place the library does not follow the language it defines, found by the
-# rule beside it on the day that rule was written. They are not noise and they are not exemptions --
-# they are the debt the advice discovered, written down so that it cannot grow quietly and so that
-# paying it off is visible.
+# rule beside it. They are not noise and they are not exemptions -- they are the debt the advice
+# discovered, written down so that it cannot grow quietly and so that paying it off is visible.
 #
 # The rule when a count rises: fix the code, or write `[Allow(code:, why:)]` where the shape is
 # deliberate. Raising the number is not one of the options.
@@ -13,7 +12,7 @@
 # `polc --check tests/samples/hello_world.pol --lint-prelude` prints them.
 
 Polaron-0B0B   4
-Polaron-0B0D 781
+Polaron-0B0D 657
 Polaron-0B10  73
 Polaron-0B11   5
 Polaron-0B13   3
@@ -23,27 +22,27 @@ Polaron-0B1B   7
 Polaron-0B1C  10
 Polaron-0B1D   3
 Polaron-0B1F   5
-Polaron-0B20  14
+Polaron-0B20   3
 Polaron-0B21  16
 Polaron-0B22   2
 Polaron-0B23   1
 Polaron-0B24  31
-Polaron-0B26  10
+Polaron-0B26   7
 Polaron-0B27   5
-Polaron-0B28  58
+Polaron-0B28  25
 Polaron-0B29   2
 Polaron-0B2D   5
-Polaron-0B32  14
+Polaron-0B32   3
 Polaron-0B33   6
 Polaron-0B34  27
 Polaron-0B39   3
 Polaron-0B3A   1
-Polaron-0B3B  52
+Polaron-0B3B  22
 Polaron-0B3C   2
 Polaron-0B3E  35
-Polaron-0B40 517
+Polaron-0B40 344
 Polaron-0B47   3
-Polaron-0B48   9
+Polaron-0B48   8
 Polaron-0B49   5
 Polaron-0B4A  20
-Polaron-0B4B  30
+Polaron-0B4B  28

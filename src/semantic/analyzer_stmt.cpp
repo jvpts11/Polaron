@@ -1341,6 +1341,25 @@ void SemanticAnalyzer::warnIndexBoundNotTheArray(const ast::Block& loopBody, con
         return;
     }
     const std::string boundShape = shapeOf(bound);
+    // ALREADY ANSWERED: if the class states an invariant about the bound, the relation the range
+    // analysis needs is written down and handed to the optimiser as an assumption, so the check IS
+    // provable and this advice would be about a fix that has been applied.
+    //
+    // `ArrayList` is the case that found this: it declares `invariant count <= data.length()`, and
+    // the rule was telling 304 of its lines to loop to `data.length()` instead -- which would copy
+    // past the live elements. A rule whose fix breaks the code is worse than no rule.
+    for (const std::string& inv : currentClassInvariants_) {
+        // The bound's own leading member name is enough: `this.count` against an invariant that
+        // mentions `count`.
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(bound);
+            mem != nullptr && inv.find("'." + mem->member + "'") != std::string::npos) {
+            return;
+        }
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(bound);
+            id != nullptr && inv.find("'" + id->name + "'") != std::string::npos) {
+            return;
+        }
+    }
     std::unordered_set<std::string> reported;
     eachStmt(loopBody, [&](const ast::Stmt& st) {
         auto look = [&](const ast::Expr* e) {
