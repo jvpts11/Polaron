@@ -1722,7 +1722,6 @@ void CodeGenerator::Impl::declareFunctions() {
                             fn->addFnAttr(llvm::Attribute::OptimizeNone);
                         }
                         markReceiver(fn, cls.name, m->isStatic);
-                        markObjectParams(fn, pnames);
                         functions[mangled] = fn;
                         paramTypeNames[fn] = pnames;
                         if (m->isInterrupt &&
@@ -1746,7 +1745,6 @@ void CodeGenerator::Impl::declareFunctions() {
                         const std::string mangled = ck + "." + cls.name;
                         llvm::Function* cf = llvm::Function::Create(
                             ty, llvm::Function::ExternalLinkage, mangled, module);
-                        markObjectParams(cf, pnames);
                         functions[mangled] = cf;
                         paramTypeNames[cf] = pnames;
                     } else if (dynamic_cast<const ast::DestructorDecl*>(member.get()) !=
