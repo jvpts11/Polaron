@@ -170,6 +170,11 @@ two copies come to disagree.
 | `Polaron-0B17` | this number is written out several times in one method |
 | `Polaron-0B18` | this try raises and catches its own exception |
 | `Polaron-0B19` | this call returns a Result or Option and the statement drops it |
+| `Polaron-0B1A` | this is allocated on the heap and deleted in the same block |
+| `Polaron-0B1B` | this cleanup is repeated before more than one return |
+| `Polaron-0B1C` | this throw is inside a loop |
+| `Polaron-0B1D` | every subtype of this is in this program, and the declaration does not say so |
+| `Polaron-0B1E` | this abstract class has exactly one subtype |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

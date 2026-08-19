@@ -470,6 +470,123 @@ void SemanticAnalyzer::warnResultNeverExamined(const ast::ExprStmt& es,
     }
 }
 
+void SemanticAnalyzer::warnHeapWithLexicalLifetime(const ast::Block& body) {
+    // A `new ... on heap` AND ITS `delete` IN ONE BLOCK is a stack object that took the long way.
+    // The lifetime is lexical and written down -- both ends are visible in the same braces -- so the
+    // allocator is being asked a question the block has already answered. On the stack it is a
+    // pointer bump, it cannot leak on an early return, and the object is where the cache wants it.
+    //
+    // Same block only, and deliberately: the moment either end moves into a branch or a loop, the
+    // lifetime stops being lexical and the heap is the right answer.
+    std::unordered_map<std::string, SourceLocation> allocated;
+    std::unordered_set<std::string> released;
+    for (const ast::StmtPtr& st : body.statements) {
+        if (!st) {
+            continue;
+        }
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get())) {
+            if (const auto* ne = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+                ne != nullptr && ne->location == "heap") {
+                allocated[vd->name] = vd->loc;
+            }
+        } else if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(st.get())) {
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(del->target.get())) {
+                released.insert(id->name);
+            }
+        }
+    }
+    for (const auto& [name, loc] : allocated) {
+        if (released.count(name) > 0) {
+            warn(diag::Code::HeapWithLexicalLifetime,
+                 "'" + name + "' is allocated on the heap and deleted in the same block", loc);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnRepeatedCleanup(const ast::MethodDecl& m) {
+    // THE SAME CLEANUP BEFORE EVERY `return` is a `defer` that has not been written. It is correct
+    // exactly as long as nobody adds a fourth exit -- and the fourth exit is always added, usually
+    // in a hurry, usually inside a branch where the cleanup is easiest to miss. A `defer` runs on
+    // every path out of the method, including the ones that do not exist yet.
+    std::unordered_map<std::string, int> before;
+    std::unordered_map<std::string, SourceLocation> where;
+    // Walk each block's statements in order, looking at what sits immediately before a `return`.
+    std::function<void(const ast::Block&)> scan = [&](const ast::Block& blk) {
+        for (std::size_t i = 0; i < blk.statements.size(); ++i) {
+            const ast::Stmt* st = blk.statements[i].get();
+            if (st == nullptr) {
+                continue;
+            }
+            if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st)) {
+                scan(iff->thenBlock);
+                if (iff->elseBlock) {
+                    scan(*iff->elseBlock);
+                }
+                continue;
+            }
+            if (dynamic_cast<const ast::ReturnStmt*>(st) == nullptr || i == 0) {
+                continue;
+            }
+            const auto* del = dynamic_cast<const ast::DeleteStmt*>(blk.statements[i - 1].get());
+            if (del == nullptr) {
+                continue;
+            }
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(del->target.get())) {
+                if (++before[id->name] == 1) {
+                    where[id->name] = del->loc;
+                }
+            }
+        }
+    };
+    scan(m.body);
+    for (const auto& [name, count] : before) {
+        if (count >= 2) {
+            warn(diag::Code::RepeatedCleanup,
+                 "'delete " + name + "' is repeated before " + std::to_string(count) +
+                     " of this method's returns",
+                 where[name]);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnThrowInLoop(const ast::Block& body) {
+    // A `throw` INSIDE A LOOP is control flow paying unwinding prices on the hot path: a table
+    // lookup, a landing pad, and an edge the optimiser cannot see through, per iteration that takes
+    // it. Unwinding is built for the failure that leaves the method, not for the one that ends a
+    // loop -- and a loop that ends by throwing usually wanted `break` or a `Result`.
+    // Every loop ANYWHERE in the method, not just the ones at the top: the first version missed a
+    // loop nested inside a `try`, which is where a throwing loop most often is. Collected into a set
+    // first, because `eachStmt` walks into nested loops and a throw two loops deep would otherwise
+    // be reported once per loop around it.
+    std::unordered_set<const ast::Stmt*> throwsInLoops;
+    std::vector<const ast::ThrowStmt*> found;
+    auto collect = [&](const ast::Block& blk) {
+        eachStmt(blk, [&](const ast::Stmt& st) {
+            if (const auto* ts = dynamic_cast<const ast::ThrowStmt*>(&st)) {
+                if (throwsInLoops.insert(ts).second) {
+                    found.push_back(ts);
+                }
+            }
+        });
+    };
+    eachStmt(body, [&](const ast::Stmt& st) {
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+            collect(ws->body);
+        } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&st)) {
+            collect(dw->body);
+        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+            collect(fs->body);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+            collect(fe->body);
+        }
+    });
+    for (const ast::ThrowStmt* ts : found) {
+        warn(diag::Code::ThrowInLoop,
+             "this throw is inside a loop, where unwinding is paid on every iteration that takes it",
+             ts->loc);
+    }
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks

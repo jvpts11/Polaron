@@ -1,0 +1,98 @@
+import System.IO.Console;
+import System.Runtime.Exception;
+import System.Runtime.OverflowException;
+
+program LintMemory;
+
+// THE ADVICE ABOUT LIFETIME, CLEANUP AND HIERARCHY, each beside the shape that looks like it and is
+// not. All five are about something the declaration already knows and has not said.
+public bundle Main {
+    public namespace App {
+
+        // FIRES (0B1D): both subtypes are right here, and the base does not say so -- so no match
+        // over it can be checked, and a third one is a surprise rather than a compile error.
+        public class Note {
+            public method weight() returns int { return 1; }
+        }
+        public class Heavy extends Note {
+            public override method weight() returns int { return 9; }
+        }
+        public class Light extends Note {
+            public override method weight() returns int { return 2; }
+        }
+
+        // FIRES (0B1D and 0B1E): abstract with exactly one subtype is two names for one thing.
+        public abstract class Lone {
+            public abstract method value() returns int;
+        }
+        public class OnlyOne extends Lone {
+            public override method value() returns int { return 4; }
+        }
+
+        // QUIET: sealed says the set is closed, which is the thing being recommended.
+        public sealed abstract class Closed permits Left, Right {
+            public abstract method side() returns int;
+        }
+        public class Left extends Closed {
+            public override method side() returns int { return 0; }
+        }
+        public class Right extends Closed {
+            public override method side() returns int { return 1; }
+        }
+
+        public class Uses {
+            // FIRES (0B1A): both ends of the lifetime are in one block, so the block has already
+            // answered the question the allocator is being asked.
+            public static method lexical() returns int {
+                Note n = new Note() on heap;
+                int w = n.weight();
+                delete n;
+                return w;
+            }
+
+            // QUIET: it escapes, so the heap is the right answer and nothing here can free it.
+            public static method escapes() returns Note* {
+                Note* n = new Note() on heap;
+                return n;
+            }
+
+            // FIRES (0B1B): correct until somebody adds a third exit, which somebody always does.
+            public static method twoExits(boolean early) returns int {
+                Note* n = new Note() on heap;
+                if (early) {
+                    delete n;
+                    return 1;
+                }
+                delete n;
+                return 2;
+            }
+
+            // FIRES (0B1C): unwinding priced for the rare path, paid on every iteration that takes it.
+            public static method throwsInside(int n) returns int {
+                mutable int seen = 0;
+                try {
+                    for (int i in 0..n) {
+                        if (i == 2) {
+                            throw new OverflowException() on heap;
+                        }
+                        seen = seen + 1;
+                    }
+                } catch (Exception e) {
+                    seen = seen + 100;
+                }
+                return seen;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Note* kept = Uses.escapes();
+                Closed* c = new Left() on heap;
+                System.IO.Console.println($"{Uses.lexical()} {kept.weight()} {Uses.twoExits(false)} {Uses.throwsInside(5)} {c.side()}");
+                delete kept;
+                delete c;
+                return;
+            }
+        }
+    }
+}

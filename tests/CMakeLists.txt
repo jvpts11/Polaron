@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.142")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.143")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.142")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.143")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1102,6 +1102,50 @@ add_test(NAME lint_allow_demands_a_reason
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+# THE ADVICE ABOUT LIFETIME, CLEANUP AND HIERARCHY. All five are about something the declaration
+# already knows and has not said. The throw-in-a-loop rule is here rather than with the flow ones
+# because the first version only looked at loops at the top of a method and missed the one nested in
+# a `try`, which is where a throwing loop usually is.
+add_test(NAME lint_heap_with_lexical_lifetime
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_memory.pol")
+set_tests_properties(lint_heap_with_lexical_lifetime PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B1A.*'n' is allocated on the heap and deleted in the same block")
+
+add_test(NAME lint_repeated_cleanup
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_memory.pol")
+set_tests_properties(lint_repeated_cleanup PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B1B.*'delete n' is repeated before 2")
+
+add_test(NAME lint_throw_in_loop
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_memory.pol")
+set_tests_properties(lint_throw_in_loop PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B1C.*this throw is inside a loop")
+
+add_test(NAME lint_hierarchy_not_sealed
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_memory.pol")
+set_tests_properties(lint_hierarchy_not_sealed PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B1D.*'Note' is extended only by Heavy, Light")
+
+add_test(NAME lint_abstract_with_one_subtype
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_memory.pol")
+set_tests_properties(lint_abstract_with_one_subtype PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B1E.*'Lone' is abstract and 'OnlyOne' is its only subtype")
+
+# ...and the near-misses: a `sealed` base is the thing being recommended, and a heap object that
+# escapes its block is the case the heap exists for.
+add_test(NAME lint_memory_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_memory.pol")
+set_tests_properties(lint_memory_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'Closed' is|'Left' is|'Right' is|0B1E.*'Closed'")
+
+add_test(NAME lint_memory_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_memory.pol"
+    "-DCONTAINS=1 1 2 102 0"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # THE ADVICE THAT READS CONTROL FLOW. Five rules, each beside the shape that looks like it and is
 # not. Two of these were nearly shipped wrong and the sample is why: `default` is REQUIRED on a

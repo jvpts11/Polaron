@@ -152,6 +152,11 @@ enum class Code {
     RepeatedMagicNumber,  // one number written out three or more times in a method
     ThrowCaughtHere,      // a try that raises and catches its own exception: local control flow
     ResultNeverExamined,  // a call returning Result/Option whose statement drops it
+    HeapWithLexicalLifetime, // `new ... on heap` and its `delete` in one block: a stack object
+    RepeatedCleanup,      // the same cleanup written before more than one `return`: a `defer`
+    ThrowInLoop,          // a `throw` inside a loop, where unwinding is paid per iteration
+    HierarchyNotSealed,   // every subtype is in this program and the base does not say so
+    AbstractWithOneSubtype,  // an abstract class with exactly one subtype: two names for one thing
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

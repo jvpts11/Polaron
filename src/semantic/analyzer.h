@@ -277,6 +277,9 @@ private:
     void warnIfChainOnOneSubject(const ast::Block& body);
     void warnRepeatedMagicNumber(const ast::MethodDecl& m);
     void warnThrowCaughtHere(const ast::Block& body);
+    void warnHeapWithLexicalLifetime(const ast::Block& body);
+    void warnRepeatedCleanup(const ast::MethodDecl& m);
+    void warnThrowInLoop(const ast::Block& body);
     // Advice, per declaration (advice.cpp): shapes a class's own text gives away.
     void adviseOnDeclarations(const ast::Program& program);
     void adviseOnClass(const ast::ClassDecl& c);

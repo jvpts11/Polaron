@@ -1094,6 +1094,68 @@ constexpr Row kCatalog[] = {
         "compiler will start insisting on this the day `mustuse` lands; until then the rule is the "
         "same and this is what says so." }},
 
+    {Code::HeapWithLexicalLifetime, {
+        "Polaron-0B1A", "this is allocated on the heap and deleted in the same block",
+        "Both ends of the lifetime are written in one set of braces, so the block has already "
+        "answered the question the allocator is being asked. What the heap costs here is a call out "
+        "to the allocator and back, an object placed wherever the free list happened to point, and "
+        "one more path on which an early return leaks it.",
+        "Write `on stack` and drop the `delete`. The object is destroyed when the block ends -- "
+        "including on every early return and every path out through a failure -- the allocation is a "
+        "pointer bump, and the object sits where the rest of the frame already is.",
+        "Start on the stack and move to the heap when something has to outlive the block. Going that "
+        "way, the heap always has a reason; going the other way, it never had one." }},
+
+    {Code::RepeatedCleanup, {
+        "Polaron-0B1B", "this cleanup is repeated before more than one return",
+        "Cleanup copied before each exit is correct exactly as long as nobody adds another exit. "
+        "Another exit is always added -- usually in a hurry, usually inside a branch, usually the "
+        "one place the copy is easiest to forget -- and the leak that follows is invisible at the "
+        "line that caused it.",
+        "Write `defer delete x;` once, at the point the resource is acquired. It runs on every path "
+        "out of the method, in reverse order, including the paths that do not exist yet. `using` is "
+        "the same idea where the scope is narrower than the method.",
+        "Pair the acquisition with its `defer` on the same line you write it, before there is any "
+        "control flow to get it wrong in." }},
+
+    {Code::ThrowInLoop, {
+        "Polaron-0B1C", "this throw is inside a loop",
+        "Unwinding is priced for the rare path: a table lookup, a landing pad, and an edge the "
+        "optimiser cannot see through, so the loop around it stops being a loop it can reason about. "
+        "A failure that ends a loop is usually not exceptional at all -- it is the loop finishing "
+        "early, which is what `break` is for, or a failure the caller should be handed as a value.",
+        "Break out of the loop and decide outside it, or return a `Result` from the step that can "
+        "fail and `match` on it. Keep the `throw` for the failure that has to leave the method, and "
+        "leave the hot path clean.",
+        "Ask what should happen next when writing the `throw`. If the answer is `stop looping`, the "
+        "answer is `break`." }},
+
+    {Code::HierarchyNotSealed, {
+        "Polaron-0B1D", "every subtype of this is in this program, and the declaration does not say so",
+        "An open base type is a promise that anybody may extend it, and that promise costs exactly "
+        "what it is worth: no `match` over the type can be checked for completeness, no call through "
+        "it can be resolved to a body, and a subtype nobody planned for is a run-time surprise rather "
+        "than a compile error. When every subtype is already here, none of that is being paid for "
+        "anything.",
+        "Write `sealed <base> permits A, B`. The compiler then checks that a `match` covers them, "
+        "resolves calls where it can, and refuses the day somebody adds a subtype without adding it "
+        "to the list -- which is the reminder that would otherwise never come. A base genuinely "
+        "meant to be extended from outside is what `[Allow]` is for.",
+        "Seal by default and open deliberately. Opening later is one word; discovering later that "
+        "half the program assumed the set was closed is not." }},
+
+    {Code::AbstractWithOneSubtype, {
+        "Polaron-0B1E", "this abstract class has exactly one subtype",
+        "Two types describing one thing. The base cannot be instantiated and the subtype is the only "
+        "way to get one, so the split buys no polymorphism at all -- what it costs is a vtable, a "
+        "call the compiler cannot see through, and a reader holding two files open to follow one "
+        "object.",
+        "Fold them into one class. Where the split is there because a second subtype is coming, that "
+        "is a real reason and the `[Allow]` is where it goes -- with the name of the one that is "
+        "coming, so the note expires when it arrives.",
+        "Introduce the abstraction at the second implementation, not the first. One implementation "
+        "behind an interface is a guess about the future written in a place that charges rent." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "

@@ -3566,6 +3566,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnIfChainOnOneSubject(m->body);
                         warnRepeatedMagicNumber(*m);
                         warnThrowCaughtHere(m->body);
+                        warnHeapWithLexicalLifetime(m->body);
+                        warnRepeatedCleanup(*m);
+                        warnThrowInLoop(m->body);
                         popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);

@@ -216,6 +216,57 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
 void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
     const std::string savedNs = currentNamespace_;
     const std::string savedBundle = currentBundle_;
+
+    // THE TWO RULES THAT NEED THE WHOLE PROGRAM, so the subtype map is built once, first. Both are
+    // about a set of subtypes the compiler can already see and the declaration has not admitted to.
+    std::unordered_map<std::string, std::vector<const ast::ClassDecl*>> children;
+    std::vector<const ast::ClassDecl*> all;
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& c : ns.classes) {
+                all.push_back(&c);
+                if (!c.superclass.empty()) {
+                    children[baseType(c.superclass)].push_back(&c);
+                }
+            }
+        }
+    }
+    for (const ast::ClassDecl* c : all) {
+        auto kids = children.find(c->name);
+        if (kids == children.end() || kids->second.empty()) {
+            continue;
+        }
+        pushAllows(c->annotations, {});
+        // ---- a closed hierarchy that has not said so (catalogue 21) ----
+        //
+        // Every subtype is right here, in this program, and the base does not say so. Saying it with
+        // `sealed ... permits` is what lets a `match` be checked for completeness and lets a call
+        // through the base be resolved rather than dispatched -- and it turns the arrival of a
+        // subtype nobody planned for into a compile error rather than a surprise at run time.
+        if (!c->isSealed && !c->isFinal && !c->isInterface) {
+            std::string names;
+            for (const ast::ClassDecl* k : kids->second) {
+                names += (names.empty() ? "" : ", ") + k->name;
+            }
+            warn(diag::Code::HierarchyNotSealed,
+                 "'" + c->name + "' is extended only by " + names +
+                     ", and every one of them is in this program",
+                 c->loc);
+        }
+        // ---- an abstract class with exactly one subtype (catalogue 60) ----
+        //
+        // Two types describing one thing. The base cannot be instantiated and the subtype is the
+        // only way to get one, so the split buys no polymorphism -- it costs a vtable, an indirect
+        // call the compiler cannot see through, and a reader two files to hold at once.
+        if (c->isAbstract && kids->second.size() == 1) {
+            warn(diag::Code::AbstractWithOneSubtype,
+                 "'" + c->name + "' is abstract and '" + kids->second.front()->name +
+                     "' is its only subtype",
+                 c->loc);
+        }
+        popAllows();
+    }
+
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
             currentNamespace_ = ns.name;
