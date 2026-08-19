@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.138")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.139")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.138")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.139")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -674,6 +674,60 @@ add_test(NAME codegen_naked_has_no_prologue COMMAND "${CMAKE_COMMAND}"
     "-DNEEDLE=attributes #0 = { naked noinline optnone }"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# EVERY OBJECT PARAMETER IS A LIVE OBJECT OF ITS CLASS, and the receiver was only the first one.
+#
+# `markReceiver` has said this about `this` for a while and measured what it is worth: without
+# `dereferenceable` + `align`, LICM will not speculate a load through the pointer, so a field read
+# stays inside the loop and is redone every iteration. The argument was never about the receiver, and
+# the language makes the same two promises about an ordinary parameter -- non-null unless it says
+# `nullable`, and at least as large as its class. These four tests are the promises, one per shape,
+# because a lost attribute changes no behaviour: it only makes the program quietly slower.
+add_test(NAME codegen_object_param_carries_its_facts COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/param_facts.pol"
+    "-DNEEDLE=@Facts.plain(ptr nonnull align 8 dereferenceable(16)"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# `unique` says "only one variable in the whole program references the object", which is the whole of
+# what `noalias` claims -- promised by a declaration the compiler already enforces at every
+# assignment, argument and return, rather than recovered by an analysis that has to give up.
+add_test(NAME codegen_unique_param_is_noalias COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/param_facts.pol"
+    "-DNEEDLE=@Facts.sole(ptr noalias nonnull align 8 dereferenceable(16)"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# ...and the two shapes that must NOT be marked, which are the half that keeps this sound. A
+# `nullable` parameter may legitimately be null, so `nonnull` on it would turn a defined trap into
+# undefined behaviour.
+add_test(NAME codegen_nullable_param_is_left_alone COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/param_facts.pol"
+    "-DNEEDLE=@Facts.maybe(ptr nonnull"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+
+# An array is not one of its elements: `Holder[]` is a pointer to a block that begins with an i64
+# length, so the element's size is the wrong number and an empty array is not even as large as one
+# element. Written as a test because `baseType` strips the array marker as readily as the pointer one,
+# and the wrong answer here is a `dereferenceable` that lies.
+add_test(NAME codegen_array_param_is_not_an_element COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/param_facts.pol"
+    "-DNEEDLE=@Facts.many(ptr nonnull"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+
+add_test(NAME codegen_param_facts_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/param_facts.pol"
+    "-DCONTAINS=3 1 7 2"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 add_test(NAME codegen_region_class_narrow_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"

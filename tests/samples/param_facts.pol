@@ -1,0 +1,63 @@
+import System.IO.Console;
+
+program ParamFacts;
+
+// WHAT THE DECLARATION ALREADY PROMISES, HANDED TO THE BACKEND.
+//
+// Every type in Polaron is non-null unless it says `nullable`, and an object parameter denotes a
+// whole, live object of its class -- the same two facts `markReceiver` states about `this`, and they
+// are just as true of an ordinary parameter. This sample exists so the attributes that say so cannot
+// disappear in silence: four parameters, and the emitted signature of each is an assertion.
+public bundle Main {
+    public namespace App {
+
+        public class Holder {
+            public mutable int value;
+            public constructor Holder(int v) { this.value = v; }
+        }
+
+        // `unique` promises "only one variable in the whole program references the object", which is
+        // the whole of what `noalias` claims.
+        public unique class Sole {
+            public mutable int fd;
+            public constructor Sole(int fd) { this.fd = fd; }
+        }
+
+        public class Facts {
+            // Marked: non-nullable, so non-null, and at least as large as Holder.
+            public static method plain(Holder h) returns int {
+                return h.value;
+            }
+
+            // NOT marked: `nullable` is the one spelling that says a null may legitimately arrive.
+            public static method maybe(nullable Holder h) returns int {
+                if (h == null) { return 0; }
+                return 1;
+            }
+
+            // Marked, and `noalias` besides.
+            public static method sole(Sole s) returns int {
+                return s.fd;
+            }
+
+            // NOT marked: an array is not one of its elements. The pointer is to a block that begins
+            // with an i64 length, so the element's size is the wrong number entirely.
+            public static method many(Holder[] hs) returns int {
+                return hs.length();
+            }
+
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Holder one = new Holder(3) on heap;
+                Sole s = new Sole(7) on heap;
+                Holder[] hs = new Holder[2]();
+                hs[0] = one;
+                System.IO.Console.println($"{Facts.plain(one)} {Facts.maybe(one)} {Facts.sole(s)} {Facts.many(hs)}");
+                delete hs;
+                return;
+            }
+        }
+    }
+}

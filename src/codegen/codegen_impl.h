@@ -3331,6 +3331,7 @@ struct CodeGenerator::Impl {
     // Mark a method's `this` as nonnull + dereferenceable, so LLVM may speculate loads through it.
     // See the definition: this is what lets LICM hoist a field load out of a probe loop.
     void markReceiver(llvm::Function* fn, const std::string& cls, bool isStatic);
+    void markObjectParams(llvm::Function* fn, const std::vector<std::string>& pnames);
     // "Does this target have that feature?" -- reports and answers false when it does not.
     // See the definition for why this is one place rather than a check at each site.
     bool requireTargetFeature(const char* feature, const std::string& what,

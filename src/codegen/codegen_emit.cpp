@@ -415,6 +415,71 @@ void CodeGenerator::Impl::markReceiver(llvm::Function* fn, const std::string& cl
                             context, module.getDataLayout().getABITypeAlign(cit->second.type)));
 }
 
+void CodeGenerator::Impl::markObjectParams(llvm::Function* fn,
+                                           const std::vector<std::string>& pnames) {
+    // THE RECEIVER IS ONLY THE FIRST OBJECT PARAMETER, and every other one is owed the same facts.
+    //
+    // `markReceiver` above argues that `this` is non-null and at least as large as its class, and
+    // measured what saying so is worth: without `dereferenceable` + `align`, LICM will not speculate
+    // a load through the pointer, so a field read stays inside the loop and is redone every
+    // iteration. NOTHING in that argument is about the receiver. It is about a pointer denoting a
+    // whole, live object -- and the language says exactly that about an ordinary parameter too:
+    //
+    //     "null binds ONLY to a `nullable T` target -- never to a non-nullable type, whatever its
+    //      kind" (analyzer.cpp) -- every type in Polaron is non-null unless it says otherwise.
+    //
+    // So the declaration already carries both facts and the backend was simply not being told. This
+    // is the same footing, not a new promise: a guarantee of the type system, not an analysis of the
+    // body. (A pointer forged by `address` in freestanding code can violate it, exactly as it can
+    // already violate the receiver's -- casting an integer to `T*` is the declared escape hatch, and
+    // it does not get a weaker guarantee here than everywhere else.)
+    //
+    // A SUBTYPE PASSED WHERE A BASE IS DECLARED only makes the object bigger and its alignment no
+    // weaker, because a subclass carries its base as a prefix. The base's size and alignment
+    // therefore stay true, which is why an interface- or abstract-typed parameter is included rather
+    // than skipped -- and those are the ones a virtual call reads a vtable pointer out of.
+    for (size_t i = 0; i < pnames.size(); ++i) {
+        const std::string& pt = pnames[i];
+        // An empty name is the receiver's own slot (marked by markReceiver); `nullable T` is the one
+        // spelling that says a null may legitimately arrive.
+        if (pt.empty() || ast::typeIsNullable(pt)) {
+            continue;
+        }
+        if (isArrayType(pt) || isFixedArrayType(pt)) {
+            // AN ARRAY IS NOT ONE OF ITS ELEMENTS. `Box[]` is a pointer to a block that begins with
+            // an `i64` length, so the element's size is the wrong number and an empty array is not
+            // even as large as one element -- and `baseType` below would happily hand back `Box`.
+            continue;
+        }
+        if (i >= fn->arg_size() || !fn->getArg(static_cast<unsigned>(i))->getType()->isPointerTy()) {
+            continue;   // a value struct, a primitive: nothing here applies
+        }
+        if (fn->getArg(static_cast<unsigned>(i))->hasByValAttr()) {
+            continue;   // byval already carries its own dereferenceability
+        }
+        auto cit = classes.find(baseType(pt));
+        if (cit == classes.end() || cit->second.type == nullptr || !cit->second.type->isSized()) {
+            continue;
+        }
+        const auto idx = static_cast<unsigned>(i);
+        fn->addParamAttr(idx, llvm::Attribute::NonNull);
+        fn->addParamAttr(idx, llvm::Attribute::getWithDereferenceableBytes(
+                                  context, module.getDataLayout().getTypeAllocSize(cit->second.type)));
+        fn->addParamAttr(idx, llvm::Attribute::getWithAlignment(
+                                  context, module.getDataLayout().getABITypeAlign(cit->second.type)));
+        // AND `unique` IS `noalias`, spelled in the language rather than at the IR.
+        //
+        // The discipline's own words are "at any instant only one variable in the whole program
+        // references the object" -- which is the whole of what `noalias` claims, promised by a
+        // declaration the compiler already enforces at every assignment, argument and return. Every
+        // other discipline is weaker on purpose: `movable` forbids the silent copy but says nothing
+        // about how many references exist, so it gets nothing here.
+        if (cit->second.isUnique) {
+            fn->addParamAttr(idx, llvm::Attribute::NoAlias);
+        }
+    }
+}
+
 bool CodeGenerator::Impl::requireTargetFeature(const char* feature, const std::string& what,
                                                const SourceLocation& loc) {
     // ONE PLACE THAT ANSWERS "does this machine have that", so a program built for an old or a small
