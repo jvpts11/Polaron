@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.144")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.145")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.144")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.145")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1102,6 +1102,47 @@ add_test(NAME lint_allow_demands_a_reason
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+# THE ADVICE ABOUT TABLES, CONVERSIONS AND ALLOCATION SHAPE.
+add_test(NAME lint_primitive_obsession
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol")
+set_tests_properties(lint_primitive_obsession PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B24.*'place' takes 3 parameters of type 'int'")
+
+add_test(NAME lint_parallel_array_table
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol")
+set_tests_properties(lint_parallel_array_table PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B25.*3 static arrays here are one row read sideways")
+
+add_test(NAME lint_hand_written_conversion_pair
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol")
+set_tests_properties(lint_hand_written_conversion_pair PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B26.*'Metres' converts to and from 'Feet' by hand")
+
+add_test(NAME lint_alloc_free_in_loop
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol")
+set_tests_properties(lint_alloc_free_in_loop PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B27.*this loop allocates and frees on every iteration")
+
+add_test(NAME lint_array_grown_by_hand
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol")
+set_tests_properties(lint_array_grown_by_hand PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B28.*'grow' allocates a new array, copies into it")
+
+# ...and the near-misses: one array is a list rather than a table, and a pair of coordinates is the
+# concept rather than the problem.
+add_test(NAME lint_table_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol")
+set_tests_properties(lint_table_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "0B25.*'Single'|'at' takes")
+
+add_test(NAME lint_tables_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol"
+    "-DCONTAINS=5 0 27 3 6 9 3 6"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # THE ADVICE ABOUT OWNERSHIP AND CONTRACT: five claims a declaration is making without saying so.
 add_test(NAME lint_ownership_by_discipline

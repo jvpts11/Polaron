@@ -265,6 +265,82 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
         }
     }
 
+    // ---- two parameters of one primitive, in a row (catalogue 15) ----
+    //
+    // `place(int x, int y)` is fine because the pair is the concept. `move(int from, int to)` is not:
+    // the two are different things wearing one type, and the compiler will accept them in either
+    // order for as long as the program exists. Three or more of one primitive is where the odds stop
+    // being on the author's side.
+    for (const ast::MethodDecl* m : methods) {
+        std::unordered_map<std::string, int> byType;
+        for (const ast::Param& p : m->params) {
+            const std::string t = typeRefStr(p.type);
+            if (isIntName(baseType(t)) || baseType(t) == "boolean") {
+                ++byType[baseType(t)];
+            }
+        }
+        for (const auto& [t, n] : byType) {
+            if (n >= 3) {
+                warn(diag::Code::PrimitiveObsession,
+                     "'" + m->name + "' takes " + std::to_string(n) + " parameters of type '" + t +
+                         "', which the compiler will accept in any order",
+                     m->loc);
+            }
+        }
+    }
+
+    // ---- parallel static arrays are a table with no type (catalogue 16) ----
+    //
+    // Three or more static arrays in one class, read by the same index, are one row spread sideways.
+    // Nothing keeps them the same length, nothing keeps a row complete, and a row added to one and
+    // forgotten in the others reads as a zero -- which is a value, so nothing complains.
+    {
+        int columns = 0;
+        SourceLocation first{};
+        for (const ast::FieldDecl* f : fields) {
+            if (f->isStatic && isArrayType(typeRefStr(f->type))) {
+                if (columns == 0) {
+                    first = f->loc;
+                }
+                ++columns;
+            }
+        }
+        if (columns >= 3) {
+            warn(diag::Code::ParallelArrayTable,
+                 std::to_string(columns) +
+                     " static arrays here are one row read sideways, and nothing keeps them in step",
+                 first);
+        }
+    }
+
+    // ---- `toX`/`fromX` pairs are a transformer (catalogue 20) ----
+    //
+    // A pair of hand-written conversions is a relation between two types kept in two places. A
+    // `transformer` declares the relation once; the compiler expands it into both sides, checks with
+    // `entrusts` that the assembly is complete field by field, and -- with `collective` -- completes
+    // the graph so N types cost N edges rather than N squared.
+    {
+        std::unordered_set<std::string> tos;
+        std::unordered_set<std::string> froms;
+        for (const ast::MethodDecl* m : methods) {
+            if (m->name.rfind("to", 0) == 0 && m->name.size() > 2 &&
+                std::isupper(static_cast<unsigned char>(m->name[2])) != 0) {
+                tos.insert(m->name.substr(2));
+            } else if (m->name.rfind("from", 0) == 0 && m->name.size() > 4 &&
+                       std::isupper(static_cast<unsigned char>(m->name[4])) != 0) {
+                froms.insert(m->name.substr(4));
+            }
+        }
+        for (const std::string& other : tos) {
+            if (froms.count(other) > 0) {
+                warn(diag::Code::HandWrittenConversionPair,
+                     "'" + c.name + "' converts to and from '" + other +
+                         "' by hand, which is a relation kept in two places",
+                     c.loc);
+            }
+        }
+    }
+
     // ---- Hungarian notation (catalogue 1) ----
     //
     // A prefix that agrees with the resolved type is a type written twice: once where the compiler

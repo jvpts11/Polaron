@@ -3571,6 +3571,8 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnThrowInLoop(m->body);
                         warnBooleanOutParameter(*m);
                         warnValidationThatIsAContract(*m);
+                        warnAllocFreeInLoop(m->body);
+                        warnArrayGrownByHand(*m);
                         popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);

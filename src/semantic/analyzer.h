@@ -280,6 +280,8 @@ private:
     void warnHeapWithLexicalLifetime(const ast::Block& body);
     void warnRepeatedCleanup(const ast::MethodDecl& m);
     void warnThrowInLoop(const ast::Block& body);
+    void warnAllocFreeInLoop(const ast::Block& body);
+    void warnArrayGrownByHand(const ast::MethodDecl& m);
     void warnBooleanOutParameter(const ast::MethodDecl& m);
     void warnValidationThatIsAContract(const ast::MethodDecl& m);
     void warnNullCheckOnNonNullable(const ast::Expr& cond);   // called while names are in scope

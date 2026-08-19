@@ -180,6 +180,11 @@ two copies come to disagree.
 | `Polaron-0B21` | this returns a boolean and writes its real answer through a parameter |
 | `Polaron-0B22` | this public method opens by rejecting its argument |
 | `Polaron-0B23` | this compares a non-nullable value against null |
+| `Polaron-0B24` | several parameters of one primitive type, which any order will satisfy |
+| `Polaron-0B25` | these static arrays are one row read sideways |
+| `Polaron-0B26` | this converts to and from another type by hand |
+| `Polaron-0B27` | this loop allocates and frees on every iteration |
+| `Polaron-0B28` | this allocates a bigger array, copies into it, and frees the old one |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

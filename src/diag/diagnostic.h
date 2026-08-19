@@ -162,6 +162,11 @@ enum class Code {
     BooleanOutParameter,  // `boolean m(T* out)` -- a Result written before the language had one
     ValidationThatIsAContract,  // a public method opening by rejecting its argument
     NullCheckOnNonNullable,  // a comparison against null that the type has already answered
+    PrimitiveObsession,   // several parameters of one primitive, accepted in any order
+    ParallelArrayTable,   // three or more static arrays that are one row read sideways
+    HandWrittenConversionPair,  // toX/fromX kept in two places: a transformer's relation
+    AllocFreeInLoop,      // allocate and free on every iteration: a region's question
+    ArrayGrownByHand,     // a bigger array, a copy loop and a delete: ArrayList rewritten
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

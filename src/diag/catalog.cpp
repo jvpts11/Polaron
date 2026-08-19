@@ -1219,6 +1219,70 @@ constexpr Row kCatalog[] = {
         "Let the type carry the question. A null check on a non-nullable is usually a habit brought "
         "from a language where every reference could be null, and where it therefore said nothing." }},
 
+    {Code::PrimitiveObsession, {
+        "Polaron-0B24", "several parameters of one primitive type, which any order will satisfy",
+        "Three integers in a row are three different things wearing one type. Nothing at the call "
+        "site distinguishes them, so swapping two compiles, runs, and returns a plausible answer "
+        "from the wrong inputs -- which is the failure that costs the most and leaves the least "
+        "evidence, because there is nothing to find at the line that caused it.",
+        "Give the ones that must not be interchanged a `newtype`: `newtype CellId = int;`. It is the "
+        "same integer at run time -- no wrapper, no cost -- and the compiler then refuses the "
+        "swapped call. Where the parameters really are one concept (`x`, `y`), they are not the "
+        "problem this describes, and the `[Allow]` says so.",
+        "A pair of coordinates is a pair. A third parameter of the same primitive usually means two "
+        "of them are unrelated, and that is the moment to name them." }},
+
+    {Code::ParallelArrayTable, {
+        "Polaron-0B25", "these static arrays are one row read sideways",
+        "Arrays read by a shared index are a table with no type. Nothing keeps them the same length, "
+        "nothing keeps a row complete, and a row added to one array and forgotten in the others "
+        "reads back as zero -- which is a value rather than an absence, so nothing complains and "
+        "everything downstream works perfectly with the wrong number.",
+        "Declare the row. A java-style `enum` carries its own columns in its constructor arguments, "
+        "so a member cannot be added without them; a `catalog` implemented by family enums does the "
+        "same across several groups and makes the count a `demand` the build checks. The packed "
+        "columns can stay if a hot loop needs them -- what should not stay is the columns being the "
+        "place the data is WRITTEN.",
+        "Ask where a new row is added. If the answer is 'in N places, and nothing checks', the table "
+        "has no type yet." }},
+
+    {Code::HandWrittenConversionPair, {
+        "Polaron-0B26", "this converts to and from another type by hand",
+        "A `toX`/`fromX` pair is one relation kept in two places, and the two drift: a field added "
+        "to either type is carried by whichever direction the author was looking at. Nothing checks "
+        "that a conversion is complete, so the field that was missed arrives as whatever its storage "
+        "held, which is plausible and stable and wrong.",
+        "Declare a `transformer` and have both types take part. The relation is written once, "
+        "`entrusts` lets the compiler check the assembly field by field with the same dataflow a "
+        "constructor gets, and `collective` completes the graph -- so three types converting between "
+        "each other cost three procedures rather than six conversions.",
+        "Write the transformer at the second conversion. The first one is a function; the second one "
+        "is a relation, and a relation written twice is a relation that will disagree with itself." }},
+
+    {Code::AllocFreeInLoop, {
+        "Polaron-0B27", "this loop allocates and frees on every iteration",
+        "The allocator is being asked the same question on every pass and giving back the same "
+        "answer. Each turn pays a call out and a call back, the free list churns, and the objects "
+        "land wherever it happened to point -- so a loop over many of one thing gets exactly the "
+        "layout a loop over many of one thing does not want.",
+        "Put them in a region and reset it per iteration: a `bump` region hands out memory by moving "
+        "a pointer and frees the whole thing in one instruction, and the objects come out "
+        "contiguous. Where a single object is being reused rather than replaced, hoisting it out of "
+        "the loop is shorter still.",
+        "Notice the pairing. `new` and `delete` in one loop body means the lifetime is the "
+        "iteration, and an allocator is a poor way to say `the iteration`." }},
+
+    {Code::ArrayGrownByHand, {
+        "Polaron-0B28", "this allocates a bigger array, copies into it, and frees the old one",
+        "That is `ArrayList` written again. The library's version has its growth policy argued about "
+        "and measured, handles the empty and the one-element cases that hand-written growth usually "
+        "gets wrong the first time, and -- the part that matters most -- is one implementation "
+        "rather than one per class, so a defect in it is fixed once for everybody.",
+        "Use `ArrayList<T>` and let it grow. Where the array really is fixed at a size known when it "
+        "is made, `T[N]` puts the extent in the type and there is nothing to grow.",
+        "Reach for the collection first. Hand-rolled growth is almost always the second thing "
+        "written, after a fixed array turned out not to be big enough." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "

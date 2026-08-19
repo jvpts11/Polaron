@@ -1,0 +1,92 @@
+import System.IO.Console;
+
+program LintTables;
+
+// THE ADVICE ABOUT TABLES, CONVERSIONS AND ALLOCATION SHAPE. Five rules, each beside the shape that
+// looks like it and is not.
+public bundle Main {
+    public namespace App {
+
+        // FIRES (0B25): three static arrays read by one index are a table with no type. A row added
+        // to one and forgotten in the others reads back as zero, which is a value rather than an
+        // absence -- so nothing complains and everything downstream works with the wrong number.
+        public class Kinds {
+            private static mutable int[] COST;
+            private static mutable int[] YIELD;
+            private static mutable int[] HANDS;
+            public static method cost(int k) returns int { return Kinds.COST[k]; }
+            public static method load() returns void {
+                Kinds.COST = new int[2]();
+                Kinds.YIELD = new int[2]();
+                Kinds.HANDS = new int[2]();
+                Kinds.COST[0] = 5;
+                return;
+            }
+        }
+
+        // QUIET: one array is a list, not a table.
+        public class Single {
+            private static mutable int[] ONLY;
+            public static method load() returns void { Single.ONLY = new int[1](); return; }
+            public static method first() returns int { return Single.ONLY[0]; }
+        }
+
+        // FIRES (0B26): one relation kept in two places, and the two drift the day either type
+        // gains a field.
+        public class Metres {
+            public mutable int whole;
+            public constructor Metres(int whole) { this.whole = whole; }
+            public method toFeet() returns int { return this.whole * 3; }
+            public static method fromFeet(int feet) returns int { return feet / 3; }
+        }
+
+        public class Work {
+            // FIRES (0B24): three integers in a row, which the compiler will accept in any order.
+            public static method place(int at, int width, int depth) returns int {
+                return at + width + depth;
+            }
+
+            // QUIET: two coordinates are a pair, which is the concept rather than the problem.
+            public static method at(int x, int y) returns int {
+                return x + y;
+            }
+
+            // FIRES (0B27): the allocator asked the same question on every pass, and the objects
+            // land wherever the free list happened to point.
+            public static method churn(int n) returns int {
+                mutable int total = 0;
+                for (int i in 0..n) {
+                    int[] scratch = new int[4]();
+                    scratch[0] = i;
+                    total = total + scratch[0];
+                    delete scratch;
+                }
+                return total;
+            }
+
+            // FIRES (0B28): ArrayList written again, growth policy and all.
+            public static method grow(int[] old, int had) returns int {
+                int[] bigger = new int[had * 2]();
+                for (int i in 0..had) {
+                    bigger[i] = old[i];
+                }
+                int got = bigger[0];
+                delete bigger;
+                return got;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Kinds.load();
+                Single.load();
+                Metres m = new Metres(9) on stack;
+                int[] some = new int[2]();
+                some[0] = 6;
+                System.IO.Console.println($"{Kinds.cost(0)} {Single.first()} {m.toFeet()} {Metres.fromFeet(9)} {Work.place(1, 2, 3)} {Work.at(4, 5)} {Work.churn(3)} {Work.grow(some, 2)}");
+                delete some;
+                return;
+            }
+        }
+    }
+}

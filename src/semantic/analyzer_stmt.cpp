@@ -668,6 +668,75 @@ void SemanticAnalyzer::warnNullCheckOnNonNullable(const ast::Expr& cond) {
          cond.loc);
 }
 
+void SemanticAnalyzer::warnAllocFreeInLoop(const ast::Block& body) {
+    // ALLOCATE AND FREE ON EVERY TURN is the allocator being asked the same question over and over
+    // and given back the same answer. Each pass costs a call out and a call back, the free list
+    // churns, and the objects land wherever it happened to point -- which is the opposite of what a
+    // loop over many of the same thing wants.
+    std::unordered_set<const ast::Stmt*> reported;
+    auto scanLoop = [&](const ast::Block& blk, SourceLocation loopLoc) {
+        bool allocates = false;
+        bool frees = false;
+        eachStmt(blk, [&](const ast::Stmt& st) {
+            if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+                if (dynamic_cast<const ast::NewExpr*>(vd->init.get()) != nullptr ||
+                    dynamic_cast<const ast::NewArrayExpr*>(vd->init.get()) != nullptr) {
+                    allocates = true;
+                }
+            } else if (dynamic_cast<const ast::DeleteStmt*>(&st) != nullptr) {
+                frees = true;
+            }
+        });
+        if (allocates && frees) {
+            warn(diag::Code::AllocFreeInLoop,
+                 "this loop allocates and frees on every iteration", loopLoc);
+        }
+    };
+    eachStmt(body, [&](const ast::Stmt& st) {
+        if (!reported.insert(&st).second) {
+            return;
+        }
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+            scanLoop(ws->body, ws->loc);
+        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+            scanLoop(fs->body, fs->loc);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+            scanLoop(fe->body, fe->loc);
+        }
+    });
+}
+
+void SemanticAnalyzer::warnArrayGrownByHand(const ast::MethodDecl& m) {
+    // A BIGGER ARRAY, A COPY LOOP AND A `delete` is `ArrayList` rewritten in place, once per class
+    // that needed a list. The standard library's version has the growth policy already argued about
+    // and measured, and -- more to the point -- it is one implementation rather than one per author,
+    // so a bug in it is fixed once.
+    bool allocatesArray = false;
+    bool copies = false;
+    bool frees = false;
+    SourceLocation at{};
+    eachStmt(m.body, [&](const ast::Stmt& st) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            if (dynamic_cast<const ast::NewArrayExpr*>(vd->init.get()) != nullptr) {
+                allocatesArray = true;
+                at = vd->loc;
+            }
+        } else if (dynamic_cast<const ast::DeleteStmt*>(&st) != nullptr) {
+            frees = true;
+        } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+            // `a[i] = b[j]` -- an element moved from one array into another.
+            if (dynamic_cast<const ast::IndexExpr*>(as->target.get()) != nullptr &&
+                dynamic_cast<const ast::IndexExpr*>(as->value.get()) != nullptr) {
+                copies = true;
+            }
+        }
+    });
+    if (allocatesArray && copies && frees) {
+        warn(diag::Code::ArrayGrownByHand,
+             "'" + m.name + "' allocates a new array, copies into it and frees the old one", at);
+    }
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks
