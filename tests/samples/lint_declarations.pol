@@ -1,0 +1,83 @@
+import System.IO.Console;
+
+program LintDeclarations;
+
+// THE ADVICE THAT READS A DECLARATION, one shape per class, each beside the near-miss that must stay
+// quiet. Every rule here is about a structure the compiler can see without guessing what anyone
+// meant -- and where the shape is deliberate anyway, `[Allow(code:, why:)]` is where the reason goes.
+public bundle Main {
+    public namespace App {
+
+        // FIRES (0B10): three static methods and no state is a namespace with a class round it.
+        // A transformer says the same thing and reaches `itself` instead of taking the subject.
+        public class Helpers {
+            public static method twice(int n) returns int { return n * 2; }
+            public static method half(int n) returns int { return n / 2; }
+            public static method negate(int n) returns int { return 0 - n; }
+        }
+
+        // QUIET: it has state, so the methods are guarding something.
+        public class Counter {
+            private mutable int count;
+            public constructor Counter() { this.count = 0; }
+            public static method zero() returns int { return 0; }
+            public static method one() returns int { return 1; }
+            public static method two() returns int { return 2; }
+        }
+
+        // FIRES (0B11): public fields, no methods, no invariant -- a row, and a row is a record.
+        public class Point {
+            public mutable int x;
+            public mutable int y;
+        }
+
+        // QUIET: it is already a record, which is the thing being recommended -- and a record's
+        // fields are its primary constructor parameters, so there is no field list to mistake for
+        // the shape above.
+        public record Stretch(int from, int to) {
+            public method width() returns int { return this.to - this.from; }
+        }
+
+        // FIRES (0B12): three int constants sharing a prefix are a set kept by hand -- nothing stops
+        // two being equal, and no match over them can be checked for completeness.
+        public class Speeds {
+            public static fixed int SPEED_SLOW = 1;
+            public static fixed int SPEED_FAIR = 2;
+            public static fixed int SPEED_FAST = 3;
+            public static method fastest() returns int { return Speeds.SPEED_FAST; }
+        }
+
+        // QUIET: constants that are not a set. No shared prefix, nothing to enumerate.
+        public class Limits {
+            public static fixed int WIDTH = 80;
+            public static fixed int DEPTH = 4;
+            public static fixed int RETRIES = 3;
+            public static method widest() returns int { return Limits.WIDTH; }
+        }
+
+        // FIRES (0B13) on `combine`: a static method whose first parameter is its own class is an
+        // instance method with the receiver written out.
+        // FIRES (0B14) on `nTimes`: the prefix spells the type the declaration already gives.
+        public class Bag {
+            private mutable int held;
+            public constructor Bag(int held) { this.held = held; }
+            public method count() returns int { return this.held; }
+            public static method combine(Bag other, int nTimes) returns int {
+                return other.count() * nTimes;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Point p = new Point() on stack;
+                p.x = 2;
+                p.y = 3;
+                Bag b = new Bag(5) on heap;
+                Stretch s = new Stretch(1, 4);
+                System.IO.Console.println($"{Helpers.twice(4)} {Counter.two()} {p.x + p.y} {s.width()} {Speeds.fastest()} {Limits.widest()} {Bag.combine(b, 2)}");
+                delete b;
+                return;
+            }
+        }
+    }
+}

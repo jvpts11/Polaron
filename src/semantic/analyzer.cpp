@@ -3563,6 +3563,9 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnMutableNeverMutated(*m);
                         warnSwallowedCatch(m->body);
                         warnAsyncNeverAwaits(*m);
+                        warnIfChainOnOneSubject(m->body);
+                        warnRepeatedMagicNumber(*m);
+                        warnThrowCaughtHere(m->body);
                         popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);
@@ -3974,6 +3977,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     analyzeBodies(program);
     analyzeLiteralBodies(program);
     validateAnnotations(program);  // spec 14.3: applied [Name(...)] match a declared annotation
+    adviseOnDeclarations(program);  // the structural advice a class's own text gives away
     validateTestDeclarations(program);  // spec 32.11: [Test]/[Cases]/hooks are well formed
     checkPersistentReleases();  // spec 18.15: after all bodies, so releases are collected
     checkInterruptReach();      // after all bodies, so the call graph is whole

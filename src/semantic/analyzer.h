@@ -269,6 +269,17 @@ private:
     void warnMutableNeverMutated(const ast::MethodDecl& m);
     void warnSwallowedCatch(const ast::Block& body);
     void warnAsyncNeverAwaits(const ast::MethodDecl& m);
+    // These two take the type their caller already resolved: asking `typeOf` after the body has
+    // been analysed asks about names whose scope has been popped, and it REPORTS an undeclared
+    // name rather than shrugging at it.
+    void warnDefaultOverAClosedSet(const ast::MatchStmt& ms, const std::string& subjectType);
+    void warnResultNeverExamined(const ast::ExprStmt& es, const std::string& valueType);
+    void warnIfChainOnOneSubject(const ast::Block& body);
+    void warnRepeatedMagicNumber(const ast::MethodDecl& m);
+    void warnThrowCaughtHere(const ast::Block& body);
+    // Advice, per declaration (advice.cpp): shapes a class's own text gives away.
+    void adviseOnDeclarations(const ast::Program& program);
+    void adviseOnClass(const ast::ClassDecl& c);
     // Best-effort detection of an obvious infinite loop via comefrom (spec 7.10 rule 7).
     void detectComefromLoops(const ast::Block& block);
     bool isValidMainSignature(const ast::MethodDecl& method) const;

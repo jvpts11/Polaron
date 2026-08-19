@@ -1,0 +1,127 @@
+import System.IO.Console;
+import System.Errors.Result;
+import System.Errors.Ok;
+import System.Errors.Err;
+import System.Runtime.Exception;
+import System.Runtime.OverflowException;
+
+program LintFlow;
+
+// THE ADVICE THAT READS CONTROL FLOW. Five rules, each beside the shape that looks like it and is
+// not -- which is the half that decides whether the set is usable rather than merely correct.
+public bundle Main {
+    public namespace App {
+
+        public sealed abstract class Shape permits Round, Boxy {
+            public abstract method area() returns int;
+        }
+        public class Round extends Shape {
+            private int r;
+            public constructor Round(int r) { this.r = r; }
+            public override method area() returns int { return this.r * this.r * 3; }
+        }
+        public class Boxy extends Shape {
+            private int side;
+            public constructor Boxy(int side) { this.side = side; }
+            public override method area() returns int { return this.side * this.side; }
+        }
+
+        public class Flow {
+            // FIRES (0B15): a default over a sealed type gives up the one thing a closed set buys --
+            // the compiler naming every dispatcher the day a permit is added. Collapsing members
+            // into a fallback is legitimate and the language allows it; the warning is what makes
+            // that deliberate rather than indistinguishable from having forgotten.
+            public static method describe(Shape* s) returns int {
+                match (s) {
+                    case Round(int r) { return r; }
+                    default { return 9; }
+                }
+                return 0;
+            }
+
+            // QUIET: every permit listed, no default. A third shape becomes a compile error here.
+            public static method describeWell(Shape* s) returns int {
+                match (s) {
+                    case Round(int r) { return r; }
+                    case Boxy(int side) { return side; }
+                }
+                return 0;
+            }
+
+            // FIRES (0B16): three branches comparing the same value one after another is a match
+            // written the long way -- it tests in order and nothing checks the arms are complete.
+            public static method rank(int code) returns int {
+                if (code == 11) {
+                    return 1;
+                } else if (code == 22) {
+                    return 2;
+                } else if (code == 33) {
+                    return 3;
+                }
+                return 0;
+            }
+
+            // QUIET: the branches test different things, so there is no discriminant to match on.
+            public static method mixed(int a, int b) returns int {
+                if (a == 44) {
+                    return 1;
+                } else if (b == 55) {
+                    return 2;
+                }
+                return 0;
+            }
+
+            // FIRES (0B17): one decision recorded in three places.
+            public static method sized() returns int {
+                int room = 96;
+                int half = 96 / 2;
+                int over = 96 + 1;
+                return room + half + over;
+            }
+
+            // FIRES (0B18): raised and caught four lines apart is local control flow wearing the
+            // machinery built for failures that leave the method.
+            public static method local() returns int {
+                mutable int got = 0;
+                try {
+                    throw new OverflowException() on heap;
+                } catch (Exception e) {
+                    got = 7;
+                }
+                return got;
+            }
+
+            public static method mayFail(boolean fine) returns Result<int, int>* {
+                if (fine) {
+                    return new Ok<int, int>(1) on heap;
+                }
+                return new Err<int, int>(404) on heap;
+            }
+
+            // FIRES (0B19): the signature made the failure visible and the call site drops it.
+            public static method ignores() returns int {
+                Flow.mayFail(true);
+                return 0;
+            }
+
+            // QUIET: the result is looked at, which is what the type was for.
+            public static method reads() returns int {
+                Result<int, int>* r = Flow.mayFail(true);
+                int got = r.valueOr(0);
+                delete r;
+                return got;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape* one = new Round(3) on heap;
+                Shape* two = new Boxy(4) on heap;
+                System.IO.Console.println($"{Flow.describe(one)} {Flow.describeWell(two)} {Flow.rank(22)} {Flow.mixed(44, 0)} {Flow.sized()} {Flow.local()} {Flow.ignores()} {Flow.reads()}");
+                delete one;
+                delete two;
+                return;
+            }
+        }
+    }
+}

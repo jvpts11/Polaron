@@ -160,6 +160,16 @@ two copies come to disagree.
 | `Polaron-0B0D` | nothing ever assigns to this, so `mutable` claims a freedom it does not use |
 | `Polaron-0B0E` | this `catch` neither handles the failure nor lets anyone know it happened |
 | `Polaron-0B0F` | this method is `async` and never awaits anything |
+| `Polaron-0B10` | this class is only static methods, which is a namespace with a class round it |
+| `Polaron-0B11` | this is public fields with no methods and no invariant, which is a record |
+| `Polaron-0B12` | these constants share a prefix, which is a set being kept by hand |
+| `Polaron-0B13` | this is an instance method with the receiver written out |
+| `Polaron-0B14` | this name spells a type the declaration already gives |
+| `Polaron-0B15` | this has a default over a set whose members the compiler already knows |
+| `Polaron-0B16` | these branches all compare the same thing, one after another |
+| `Polaron-0B17` | this number is written out several times in one method |
+| `Polaron-0B18` | this try raises and catches its own exception |
+| `Polaron-0B19` | this call returns a Result or Option and the statement drops it |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

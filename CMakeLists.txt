@@ -30,6 +30,7 @@ set(POLARON_CORE_SOURCES
     src/semantic/asmcheck.cpp  # semantic analysis of inline assembly, per architecture and dialect
     src/semantic/implicitthis.cpp  # a bare name finds the enclosing class's own member
     src/semantic/layouts.cpp  # `layout`: an interface for memory, implemented by value aggregates
+    src/semantic/advice.cpp   # the structural advice that reads a declaration rather than a statement
     src/diag/catalog.cpp  # rich-diagnostic catalog: why/fix/prevent per error code
     src/diag/render.cpp   # rich-diagnostic renderer: snippet + caret + sections, or one concise line
     src/bundle/polh.cpp  # public-API header (.polh) generation; AST-only, no LLVM

@@ -142,6 +142,16 @@ enum class Code {
     MutableNeverMutated,  // `mutable` on something nothing ever assigns to
     SwallowedCatch,       // a `catch` whose body neither rethrows, reports nor records
     AsyncNeverAwaits,     // an `async` method with no `await` in it -- a scheduler for nothing
+    StaticsWithoutState,  // a class that is only static methods: a namespace, or a transformer
+    DataWithoutBehaviour, // public fields, no methods, no invariant: a `record`
+    ConstantsThatAreAnEnum,  // int constants sharing a prefix: a set kept by hand
+    StaticTakesItsOwnClass,  // a static method whose first parameter is its own class
+    HungarianNotation,    // a name whose prefix spells the type the declaration already gives
+    DefaultOverAClosedSet,   // a `default` over an enum or a sealed type, whose members are known
+    IfChainIsAMatch,      // three or more `else if`s comparing the same thing against a value
+    RepeatedMagicNumber,  // one number written out three or more times in a method
+    ThrowCaughtHere,      // a try that raises and catches its own exception: local control flow
+    ResultNeverExamined,  // a call returning Result/Option whose statement drops it
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

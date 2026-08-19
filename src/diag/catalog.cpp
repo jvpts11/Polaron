@@ -963,6 +963,137 @@ constexpr Row kCatalog[] = {
         "the moment the number of pieces is a loop bound. The rule that catches it early: a `String` "
         "that is assigned more than once is a `StringBuilder` that has not been written yet." }},
 
+    {Code::StaticsWithoutState, {
+        "Polaron-0B10", "this class is only static methods, which is a namespace with a class round it",
+        "A class earns its name from state plus the behaviour that guards it. With no fields, "
+        "nothing is guarded: what is left is a list of functions that happen to share a prefix, and "
+        "every call carries the subject in as an argument, where nothing checks that it is the right "
+        "one of its type.",
+        "Make it a `transformer` and have the types that want the behaviour `apply` it. The "
+        "procedures are expanded into each applying type at compile time, so they reach `itself` "
+        "instead of taking the subject as a parameter, they cost no call and no vtable, and the "
+        "relation is declared where a reader will look for it. Where the methods really do belong to "
+        "no type -- pure arithmetic over primitives -- the class is the right home and this is worth "
+        "an `[Allow]` saying so.",
+        "Ask what the subject is before writing the first static method. If every one of them takes "
+        "the same first argument, the subject already exists and the class is describing it from "
+        "outside." }},
+
+    {Code::DataWithoutBehaviour, {
+        "Polaron-0B11", "this is public fields with no methods and no invariant, which is a record",
+        "A class with nothing to protect still costs what a class costs: identity rather than value, "
+        "a reference where a copy was meant, and equality that compares addresses. Two of these with "
+        "the same contents are not equal, which is almost never what a row of data is supposed to "
+        "mean, and the day somebody needs them to be equal the comparison gets written by hand -- "
+        "usually in one of the three places that need it.",
+        "Declare it a `record`. Equality, hashing and copying come with it, defined over the fields "
+        "rather than the address, and the type says at its first line that it is a value.",
+        "Reach for `record` first for anything that is a row -- a point, a range, a parsed header -- "
+        "and move to `class` when an invariant appears. Going that way costs one word; going the "
+        "other way costs every use site that came to rely on identity." }},
+
+    {Code::ConstantsThatAreAnEnum, {
+        "Polaron-0B12", "these constants share a prefix, which is a set being kept by hand",
+        "Constants with a common prefix are a type nobody declared. Nothing stops two of them "
+        "holding the same value, nothing stops an integer that is none of them arriving where one is "
+        "expected, and no `match` over them can be checked for completeness -- so the day a member "
+        "is added, every place that handles them keeps compiling and quietly handles one fewer case.",
+        "Declare an `enum`. The constants become values of their own type, a `match` over them is "
+        "checked for exhaustiveness, and a new member turns every dispatcher that has not heard "
+        "about it into a compile error. Where the numbers are a wire format or a foreign ABI rather "
+        "than a set of alternatives, they are genuinely integers and this is worth an `[Allow]`.",
+        "When a second constant joins the first with the same prefix, that is the moment: the set "
+        "exists from then on, and the only question is whether the compiler knows about it." }},
+
+    {Code::StaticTakesItsOwnClass, {
+        "Polaron-0B13", "this is an instance method with the receiver written out",
+        "A static method whose first parameter is its own class is doing what `this` does, without "
+        "any of what `this` gives. A receiver dispatches, so a subclass can answer differently; it "
+        "cannot be handed the wrong object of the right type, because there is no argument to swap; "
+        "and it is a fact the compiler carries into the backend, which a parameter is not.",
+        "Make it an instance method and drop the parameter. The call site changes from "
+        "`Thing.act(t, x)` to `t.act(x)`, which is also the order a reader expects: subject first.",
+        "The shape usually arrives from a language without methods, or from a helper that grew until "
+        "it was really about one type. Notice it the second time the same first parameter appears." }},
+
+    {Code::HungarianNotation, {
+        "Polaron-0B14", "this name spells a type the declaration already gives",
+        "A prefix that repeats the type writes the type twice: once where the compiler checks it and "
+        "once where nothing does. The unchecked copy is the one that survives a change of type, and "
+        "from then on the name is wrong in a way that reads as authoritative -- `nCount` that is now "
+        "a `long`, `pNode` that is now a reference, `strName` that is now a `String` object rather "
+        "than bytes.",
+        "Rename it to what the value IS rather than what it is stored as: `count`, `node`, `name`. "
+        "Where the prefix was carrying a distinction the type does not -- two integers that must "
+        "never be swapped -- the answer is a `newtype`, which makes the compiler keep them apart "
+        "instead of asking the reader to.",
+        "Name a value after its role in the domain. The type is already on the line, and it is "
+        "already checked." }},
+
+    {Code::DefaultOverAClosedSet, {
+        "Polaron-0B15", "this has a default over a set whose members the compiler already knows",
+        "The point of an enum and of a `sealed` hierarchy is that the whole set is written down, so "
+        "a match that lists every member turns the day a member is added into a compile error naming "
+        "every place that has not heard about it. A `default` gives that up and replaces it with "
+        "silence: the new member falls into the catch-all, the program keeps running, and it does "
+        "whatever the fallback did -- which was written for cases nobody had thought of, not for "
+        "this one.",
+        "List the members and delete the `default`. Collapsing several members into one fallback is "
+        "a legitimate thing to want, and the language allows it on purpose -- so where that is the "
+        "intention, the `[Allow]` is how it stops being indistinguishable from having forgotten. "
+        "(This is about `match` only: a `switch` is required to carry a default, so there is no "
+        "choice there to advise about.)",
+        "Add the case at the same time as the member. The compiler will name every site for you, "
+        "which is the whole reason the type is closed." }},
+
+    {Code::IfChainIsAMatch, {
+        "Polaron-0B16", "these branches all compare the same thing, one after another",
+        "A chain of `else if`s over one value is a match written the long way. It tests in order, so "
+        "the last case pays for every one before it; nothing checks that the cases are distinct, so "
+        "two arms can quietly cover the same value; and nothing notices when one is missing, because "
+        "a chain has no idea what the complete set would be.",
+        "Rewrite it as a `match`. Over an enum or a `sealed` type the compiler then checks the arms "
+        "are complete, and the dispatch becomes a jump rather than a run of comparisons.",
+        "Reach for `match` at the second branch, not the fourth. The shape is the same either way, "
+        "and converting later means re-reading every arm to be sure none of them overlapped." }},
+
+    {Code::RepeatedMagicNumber, {
+        "Polaron-0B17", "this number is written out several times in one method",
+        "The same literal in three places is one decision recorded three times, and nothing says "
+        "whether they mean the same thing or merely happen to be equal. When it changes -- and a "
+        "number that appears three times is a number that will -- they change one at a time, and the "
+        "one that is missed is a bug that looks like arithmetic.",
+        "Give it a name with `fixed`: `fixed int SLOTS = 64;`. It is a compile-time constant, so "
+        "nothing is paid for the name, and every use now says what the number is for rather than "
+        "what it is.",
+        "Name a number the second time you write it. The first time it is an answer; the second time "
+        "it is a decision, and a decision belongs somewhere a reader can find it." }},
+
+    {Code::ThrowCaughtHere, {
+        "Polaron-0B18", "this try raises and catches its own exception",
+        "Unwinding is built for the case where the code that fails and the code that knows what to "
+        "do are far apart -- across a call, across a layer. When they are four lines apart it buys "
+        "nothing and costs a table lookup, a landing pad, and an edge in the control-flow graph the "
+        "optimiser cannot see through, to express what an `if` or a `Result` says in the type.",
+        "Return a `Result<T, E>` from the failing step and `match` on it, or, where it really is a "
+        "local decision, use an `if` and skip the machinery altogether. Keep the exception for "
+        "failures that leave this method.",
+        "Ask, when writing the `throw`, who is meant to hear it. If the answer is the same method, "
+        "the failure is a value, not an event." }},
+
+    {Code::ResultNeverExamined, {
+        "Polaron-0B19", "this call returns a Result or Option and the statement drops it",
+        "The signature went to the trouble of making the failure visible, and the call site undoes "
+        "it. What is left reads like a call that cannot fail -- there is nothing at the site to "
+        "suggest otherwise -- and the failure that did happen goes nowhere at all. That is worse "
+        "than an unchecked error code, because the type promised somebody was looking.",
+        "Look at it: `match` on it, take the value with `valueOr`, or propagate with `try?`. Where "
+        "the failure genuinely does not matter here, say so once -- discard it into a named local, "
+        "or write the `[Allow]` -- so the next reader knows it was a decision.",
+        "Treat a `Result` like a value that has to go somewhere, because that is what it is. The "
+        "compiler will start insisting on this the day `mustuse` lands; until then the rule is the "
+        "same and this is what says so." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "

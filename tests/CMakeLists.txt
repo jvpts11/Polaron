@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.141")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.142")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.141")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.142")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1102,6 +1102,96 @@ add_test(NAME lint_allow_demands_a_reason
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+# THE ADVICE THAT READS CONTROL FLOW. Five rules, each beside the shape that looks like it and is
+# not. Two of these were nearly shipped wrong and the sample is why: `default` is REQUIRED on a
+# `switch`, so the rule is about `match` alone; and asking `typeOf` after a body is analysed asks
+# about names whose scope has been popped, which invented errors in the prelude until the lints
+# moved to where the names are still live.
+add_test(NAME lint_default_over_a_closed_set
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
+set_tests_properties(lint_default_over_a_closed_set PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B15.*default over sealed type 'Shape'"
+    FAIL_REGULAR_EXPRESSION ": error")
+
+add_test(NAME lint_if_chain_is_a_match
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
+set_tests_properties(lint_if_chain_is_a_match PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B16.*3 branches here compare 'code'")
+
+add_test(NAME lint_repeated_magic_number
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
+set_tests_properties(lint_repeated_magic_number PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B17.*number 96 is written out 3 times")
+
+add_test(NAME lint_throw_caught_here
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
+set_tests_properties(lint_throw_caught_here PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B18.*raises and catches its own exception")
+
+add_test(NAME lint_result_never_examined
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
+set_tests_properties(lint_result_never_examined PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B19.*returns a 'Result.*' and the statement drops it")
+
+# ...and the near-misses: a match that lists every permit, branches over different subjects, and a
+# result that is read.
+add_test(NAME lint_flow_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
+set_tests_properties(lint_flow_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "describeWell|compare 'a'|compare 'b'")
+
+add_test(NAME lint_flow_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol"
+    "-DCONTAINS=3 4 2 1 241 7 0 1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# THE ADVICE THAT READS A DECLARATION. Five rules, and the sample carries each one beside the
+# near-miss that must stay quiet -- a class WITH state, a type that is already a record, constants
+# that are not a set, and a record whose fields are its constructor parameters.
+add_test(NAME lint_declaration_shapes
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
+set_tests_properties(lint_declaration_shapes PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B10.*'Helpers' is 3 static methods")
+
+add_test(NAME lint_data_without_behaviour
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
+set_tests_properties(lint_data_without_behaviour PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B11.*'Point' is 2 public fields")
+
+add_test(NAME lint_constants_that_are_an_enum
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
+set_tests_properties(lint_constants_that_are_an_enum PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B12.*share the prefix 'SPEED_'")
+
+add_test(NAME lint_static_takes_its_own_class
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
+set_tests_properties(lint_static_takes_its_own_class PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B13.*'Bag.combine' is static and takes a 'Bag'")
+
+add_test(NAME lint_hungarian_notation
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
+set_tests_properties(lint_hungarian_notation PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B14.*'nTimes' spells an integer")
+
+# ...and the five near-misses. This is the half that decides whether the set is usable: a class with
+# state is guarding something, a `record` is the thing being recommended, and constants with no
+# shared prefix are not a set.
+add_test(NAME lint_declaration_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
+set_tests_properties(lint_declaration_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'Counter' is|'Stretch' is|'Limits'|prefix 'WIDTH'|'Bag' is 1 public")
+
+add_test(NAME lint_declarations_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol"
+    "-DCONTAINS=8 2 5 3 3 80 10"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 add_test(NAME lint_shapes_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"

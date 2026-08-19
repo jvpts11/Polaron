@@ -277,6 +277,199 @@ void SemanticAnalyzer::warnAsyncNeverAwaits(const ast::MethodDecl& m) {
     }
 }
 
+void SemanticAnalyzer::warnDefaultOverAClosedSet(const ast::MatchStmt& ms,
+                                                 const std::string& subjectType) {
+    // A `default` OVER A CLOSED SET IS A HOLE WITH A LID ON IT. The whole point of an enum or a
+    // `sealed` hierarchy is that the compiler knows every member -- so a match that lists them all
+    // turns the day a member is added into a compile error naming every dispatcher that has not
+    // heard. A `default` takes that away and replaces it with silence.
+    //
+    // Called from the MATCH ARM OF `analyzeStatement`, with the subject's type already resolved
+    // there, and that placement is load-bearing: asking `typeOf` after the body has been analysed
+    // asks it about names whose scope has been popped, and `typeOf` REPORTS an undeclared name
+    // rather than shrugging at it. Doing that invented errors in the user's program and in the
+    // prelude -- found by a sample, which is the only reason it is not in the shipped compiler.
+    //
+    // `match` only, and that is not an oversight: a `switch` is REQUIRED to carry a default (spec
+    // 7.3), so flagging one would be flagging the language rather than the program.
+    if (ms.defaultBody == nullptr) {
+        return;
+    }
+    const std::string t = baseType(subjectType);
+    if (t.empty()) {
+        return;
+    }
+    std::string what;
+    if (enums_.count(t) > 0) {
+        what = "enum '" + t + "'";
+    } else if (const ClassInfo* ci = lookupClass(t); ci != nullptr && ci->isSealed) {
+        what = "sealed type '" + t + "'";
+    }
+    if (!what.empty()) {
+        warn(diag::Code::DefaultOverAClosedSet,
+             "this has a default over " + what + ", whose members the compiler already knows",
+             ms.loc);
+    }
+}
+
+void SemanticAnalyzer::warnIfChainOnOneSubject(const ast::Block& body) {
+    // THREE OR MORE `else if`s COMPARING THE SAME THING is a `match` written the long way. The chain
+    // tests in order, so it costs a run of comparisons where a jump table would do; nothing checks
+    // that the cases are distinct; and nothing notices when one of them is missing.
+    std::function<void(const ast::Stmt&)> look = [&](const ast::Stmt& st) {
+        const auto* iff = dynamic_cast<const ast::IfStmt*>(&st);
+        if (iff == nullptr) {
+            return;
+        }
+        // The discriminant: `x == <literal>`, and every arm must compare the same left-hand side.
+        auto subjectOf = [](const ast::Expr* cond) -> std::string {
+            const auto* bin = dynamic_cast<const ast::BinaryExpr*>(cond);
+            if (bin == nullptr || bin->op != "==") {
+                return {};
+            }
+            const auto* id = dynamic_cast<const ast::IdentifierExpr*>(bin->lhs.get());
+            const auto* mem = dynamic_cast<const ast::MemberExpr*>(bin->lhs.get());
+            if (id != nullptr) {
+                return id->name;
+            }
+            return mem != nullptr ? mem->member : std::string();
+        };
+        const std::string subject = subjectOf(iff->cond.get());
+        if (subject.empty()) {
+            return;
+        }
+        int arms = 1;
+        const ast::IfStmt* walk = iff;
+        while (walk->elseBlock != nullptr && walk->elseBlock->statements.size() == 1) {
+            const auto* next =
+                dynamic_cast<const ast::IfStmt*>(walk->elseBlock->statements[0].get());
+            if (next == nullptr || subjectOf(next->cond.get()) != subject) {
+                break;
+            }
+            ++arms;
+            walk = next;
+        }
+        if (arms >= 3) {
+            warn(diag::Code::IfChainIsAMatch,
+                 std::to_string(arms) + " branches here compare '" + subject +
+                     "' against a value, one after another",
+                 iff->loc);
+        }
+    };
+    // Only the OUTERMOST if of a chain is looked at: `eachStmt` walks into the else blocks too, and
+    // reporting each link would name the same chain three times.
+    for (const ast::StmtPtr& st : body.statements) {
+        if (st) {
+            look(*st);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnRepeatedMagicNumber(const ast::MethodDecl& m) {
+    // THE SAME NUMBER WRITTEN OUT THREE TIMES is one decision recorded in three places, and the
+    // fourth reader has no way to tell whether they mean the same thing or happen to be equal. When
+    // it changes, they change one at a time.
+    //
+    // 0, 1 and 2 are excluded: they are almost never a decision, and including them would bury the
+    // ones that are.
+    std::unordered_map<long long, int> seen;
+    std::unordered_map<long long, SourceLocation> first;
+    std::function<void(const ast::Expr*)> scan = [&](const ast::Expr* e) {
+        if (e == nullptr) {
+            return;
+        }
+        if (dynamic_cast<const ast::IntLiteralExpr*>(e) != nullptr) {
+            if (long long v = 0; readIntLiteral(*e, v) && (v > 2 || v < -2)) {
+                if (++seen[v] == 1) {
+                    first[v] = e->loc;
+                }
+            }
+            return;
+        }
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+            scan(bin->lhs.get());
+            scan(bin->rhs.get());
+        } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+            scan(un->operand.get());
+        } else if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+            for (const ast::ExprPtr& a : call->args) {
+                scan(a.get());
+            }
+        } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+            scan(ix->index.get());
+        } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+            scan(cast->operand.get());
+        }
+    };
+    eachStmt(m.body, [&](const ast::Stmt& st) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            scan(vd->init.get());
+        } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+            scan(as->value.get());
+        } else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+            scan(es->expr.get());
+        } else if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&st)) {
+            scan(rs->value.get());
+        } else if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
+            scan(iff->cond.get());
+        } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+            scan(ws->cond.get());
+        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+            scan(fs->cond.get());
+        }
+    });
+    for (const auto& [value, count] : seen) {
+        if (count >= 3) {
+            warn(diag::Code::RepeatedMagicNumber,
+                 "the number " + std::to_string(value) + " is written out " +
+                     std::to_string(count) + " times in this method",
+                 first[value]);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnThrowCaughtHere(const ast::Block& body) {
+    // AN EXCEPTION RAISED AND CAUGHT IN THE SAME METHOD is a `goto` with a type on it. Unwinding is
+    // built for the case where the code that can fail and the code that knows what to do about it
+    // are far apart; when they are four lines apart it pays for a lookup, a landing pad and an
+    // opaque edge the optimiser cannot see through, to express what a `Result` says in the type.
+    eachStmt(body, [&](const ast::Stmt& st) {
+        const auto* ts = dynamic_cast<const ast::TryStmt*>(&st);
+        if (ts == nullptr || ts->catches.empty()) {
+            return;
+        }
+        bool throwsHere = false;
+        eachStmt(ts->body, [&](const ast::Stmt& inner) {
+            if (dynamic_cast<const ast::ThrowStmt*>(&inner) != nullptr) {
+                throwsHere = true;
+            }
+        });
+        if (throwsHere) {
+            warn(diag::Code::ThrowCaughtHere,
+                 "this try raises and catches its own exception, which is local control flow",
+                 ts->loc);
+        }
+    });
+}
+
+void SemanticAnalyzer::warnResultNeverExamined(const ast::ExprStmt& es,
+                                               const std::string& valueType) {
+    // A `Result` OR `Option` NOBODY LOOKS AT undoes the one thing the type was for. The failure was
+    // made visible in the signature and then dropped at the call, so what is left is a call that
+    // cannot fail as far as any reader can tell, and a failure that goes nowhere.
+    //
+    // Takes the type already resolved by the caller, for the reason in warnDefaultOverAClosedSet:
+    // this must be asked while the names are still in scope.
+    if (dynamic_cast<const ast::CallExpr*>(es.expr.get()) == nullptr) {
+        return;
+    }
+    const std::string t = baseType(valueType);
+    if (t.rfind("Result", 0) == 0 || t.rfind("Option", 0) == 0) {
+        warn(diag::Code::ResultNeverExamined,
+             "this call returns a '" + t + "' and the statement drops it", es.loc);
+    }
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks
@@ -1223,6 +1416,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     }
     if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&stmt)) {
         const std::string subjType = typeOf(*ms->subject);
+        warnDefaultOverAClosedSet(*ms, subjType);   // while the subject's name is still in scope
         const std::string subjBaseM = baseType(subjType);
         const auto subjDollarM = subjBaseM.find('$');
         // AN ENUM SUBJECT: the cases name CONSTANTS, not types.
@@ -1396,7 +1590,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                   "write `T* out = extract ...;`, or use `delete X from region R;` to just destroy it",
                   es->expr->loc);
         }
-        typeOf(*es->expr);
+        warnResultNeverExamined(*es, typeOf(*es->expr));   // while the names are still in scope
         return;
     }
     if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {

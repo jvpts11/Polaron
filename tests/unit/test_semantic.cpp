@@ -39,6 +39,28 @@ int warningCount(const std::string& src) {
     return static_cast<int>(sema.warnings().size());
 }
 
+// The same, counting only ONE code. A test about one rule that counts every warning is a test that
+// breaks the day an unrelated rule is added -- which is what happened the day the structural advice
+// arrived, to a case that was asserting "no undeclared-throw warning" by asserting "no warnings".
+int warningCountOf(const std::string& src, diag::Code code) {
+    Lexer lexer(src, "test");
+    Parser parser(lexer.tokenize(), "test");
+    ast::Program prog = parser.parse();
+    if (parser.hasErrors()) return -1;
+    resolveTypeAliases(prog);
+    qualifyNamespaces(prog);
+    if (!monomorphize(prog)) return -1;
+    SemanticAnalyzer sema;
+    sema.analyze(prog);
+    int n = 0;
+    for (const SemaError& w : sema.warnings()) {
+        if (w.code == code) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 // Wraps a class member in a minimal program with a public class Main. Imports go before `program`
 // (spec 2.7). Tests run sema without the prelude, so a minimal System bundle stub (bundle System,
 // namespace IO, class Console) is included so `import System.IO.Console` resolves by its full
@@ -1746,16 +1768,23 @@ TEST_CASE("an undeclared, uncaught throw warns (spec 21.1)") {
         "   public mutable int c; public constructor Err() { this.c = 1; } }"
         " public class Main {";
     const char* tail = "   public static method main(string[] args) returns void { } } } }";
+    // Counted by CODE rather than in total: this case is about the undeclared-throw rule alone, and
+    // the caught form now also earns the advice that raising and catching in one method is local
+    // control flow (Polaron-0B18). Both are true; only one of them is what this test is asking.
+    const diag::Code undeclared = diag::Code::UndeclaredThrow;
     // Uncaught and not in a throws clause -> one warning.
-    CHECK(warningCount(std::string(head) +
-        " public static method m() returns void { throw new Err() on heap; }" + tail) == 1);
+    CHECK(warningCountOf(std::string(head) +
+        " public static method m() returns void { throw new Err() on heap; }" + tail,
+        undeclared) == 1);
     // Declared in throws -> no warning.
-    CHECK(warningCount(std::string(head) +
-        " public static method m() throws(Err) returns void { throw new Err() on heap; }" + tail) == 0);
+    CHECK(warningCountOf(std::string(head) +
+        " public static method m() throws(Err) returns void { throw new Err() on heap; }" + tail,
+        undeclared) == 0);
     // Caught by an enclosing try -> no warning.
-    CHECK(warningCount(std::string(head) +
+    CHECK(warningCountOf(std::string(head) +
         " public static method m() returns void {"
-        "   try { throw new Err() on heap; } catch (Err e) { return; } }" + tail) == 0);
+        "   try { throw new Err() on heap; } catch (Err e) { return; } }" + tail,
+        undeclared) == 0);
 }
 
 TEST_CASE("a class need not override an interface default method (spec 9)") {
