@@ -1283,6 +1283,86 @@ constexpr Row kCatalog[] = {
         "Reach for the collection first. Hand-rolled growth is almost always the second thing "
         "written, after a fixed array turned out not to be big enough." }},
 
+    {Code::ManyOfOneKindInAScope, {
+        "Polaron-0B29", "several of one type are allocated here one at a time",
+        "Each goes to the allocator on its own and lands wherever the free list happened to point, "
+        "so things that are used together end up scattered across memory -- and they are freed the "
+        "same way, one call each. The cost is not the allocator: it is that a walk over them "
+        "afterwards touches a different cache line every time.",
+        "Put them in a `pool` region. Allocation becomes a pointer bump, they come out contiguous "
+        "so a walk over them is a walk over memory, and the whole set is released in one operation "
+        "instead of one call per object.",
+        "When a scope makes three of a thing, it is making a collection of them, and a collection "
+        "wants one home rather than N." }},
+
+    {Code::RuntimeCheckOfConstants, {
+        "Polaron-0B2A", "this condition is decided at compile time",
+        "The condition folds to a constant, so the failure it guards is not a possibility: it either "
+        "always happens or never does. If it always happens, the program is broken and the customer "
+        "is the one who finds out; if it never does, the check and its message are shipped to be "
+        "false forever, and the reader has to work out which of the two it is.",
+        "Write it as `demand <condition> otherwise \"...\";`. The same sentence is then asked while "
+        "the program is being built, where a failure stops the build and names the line -- and it "
+        "leaves nothing behind in the binary.",
+        "A check over constants belongs to the build. If the values can only change when somebody "
+        "edits the source, so should the failure." }},
+
+    {Code::RegionWithOneAllocation, {
+        "Polaron-0B2B", "this region is set up and torn down for one object",
+        "A region earns its keep by amortising: reserve once, hand out many, release all at once. "
+        "With a single allocation in it, the reserve, the base pointer and the teardown are all paid "
+        "to do what one `new` would have done -- so it is strictly more work than the allocator it "
+        "was brought in to replace, plus a name the reader has to follow.",
+        "Allocate it directly. Where the region is there because more objects are coming, that is a "
+        "real reason and belongs in an `[Allow]`, with what is coming named in it.",
+        "Introduce the region when the second thing goes into it." }},
+
+    {Code::CopyHoistableOutOfLoop, {
+        "Polaron-0B2C", "this copies the same value on every iteration",
+        "Assignment in Polaron copies, so this is not a pointer being re-read: it is the whole "
+        "object rebuilt on every turn of the loop, and the loop never changes what it is copying. N "
+        "iterations produce N identical copies, of which one would have done.",
+        "Move the declaration above the loop. If the copy is there to protect the original from what "
+        "the body does, the body is changing it after all and this warning is wrong -- which is what "
+        "the `[Allow]` is for, with that sentence in it.",
+        "A declaration inside a loop should depend on the iteration. One that does not is a "
+        "declaration that got carried in with the code around it." }},
+
+    {Code::LinearSearchInLoop, {
+        "Polaron-0B2D", "this walks the whole collection, inside a loop",
+        "`contains` and `indexOf` are loops one word long. Around another loop that makes the work "
+        "quadratic in something that usually grows, and nothing about the line looks expensive -- "
+        "which is why this shape survives review and then shows up as a program that was fine with "
+        "a hundred and is unusable with ten thousand.",
+        "Use a structure that answers by key: `HashSet<T>` for membership, `HashMap<K, V>` for a "
+        "lookup. Building it costs one pass over the collection; every question after that is one "
+        "step instead of N.",
+        "Ask what the inner call does, not how long it is. A method that has to look at everything "
+        "is a loop whether or not it is written like one." }},
+
+    {Code::LockAroundSlowWork, {
+        "Polaron-0B2E", "this holds a lock across work that has nothing to do with what it protects",
+        "Console, file and socket work are orders of magnitude longer than the update sitting beside "
+        "them, and every other thread waits for all of it. From outside this does not look like a "
+        "lock problem -- it looks like the whole program being slow under load, which is the hardest "
+        "thing to trace back to four lines that are individually correct.",
+        "Narrow the lock to the state it guards: read or compute what is needed, release, then do "
+        "the slow part. Where the slow call must be inside because the state is being written from "
+        "it, that is worth the `[Allow]` and worth writing down why.",
+        "A critical section should be short enough to read in one glance. When it grows past that, "
+        "something in it is not about the shared state." }},
+
+    {Code::SequentialIndependentAwaits, {
+        "Polaron-0B2F", "these two waits are added together and did not have to be",
+        "Nothing in the second line reads the first's result, so their order is an accident of how "
+        "they were typed -- and the program waits for the sum of two things when it only ever needed "
+        "to wait for the longer of them. On two calls of a hundred milliseconds that is a hundred "
+        "milliseconds given away for nothing.",
+        "Start both, then await both: keep the `Task<T>`s and await them after they are both in "
+        "flight. The waits then overlap and the total is the slower one.",
+        "Await at the point the value is USED, not at the point the call is made. Written that way, "
+        "independent work overlaps by default." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "

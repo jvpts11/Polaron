@@ -3558,8 +3558,14 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         analyzeMethodBody(m->body, m->params,
                                           m->isStatic ? std::string() : cls.name, false, contracts,
                                           posts, retT == "void" ? std::string() : retT);
-                        // The structural advice, after the body -- so a lint that reads a type asks
-                        // a table the body has already filled in.
+                        // THE STRUCTURAL ADVICE, AFTER THE BODY -- and NONE of it may call `typeOf`.
+                        //
+                        // The scopes the body opened are gone by here, and `typeOf` REPORTS an
+                        // undeclared name rather than returning nothing, so a lint that asks it from
+                        // this list invents errors in code that is perfectly fine. That happened
+                        // three times while these were written, twice reaching the prelude. A rule
+                        // that needs a type either reads the DECLARED one off the AST, or is called
+                        // from inside the statement walk with the type its caller already resolved.
                         warnMutableNeverMutated(*m);
                         warnSwallowedCatch(m->body);
                         warnAsyncNeverAwaits(*m);
@@ -3573,6 +3579,12 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnValidationThatIsAContract(*m);
                         warnAllocFreeInLoop(m->body);
                         warnArrayGrownByHand(*m);
+                        warnManyOfOneKindInAScope(m->body);
+                        warnRuntimeCheckOfConstants(m->body);
+                        warnRegionWithOneAllocation(m->body);
+                        warnLinearSearchInLoop(m->body);
+                        warnLockAroundSlowWork(m->body);
+                        warnSequentialIndependentAwaits(m->body);
                         popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);

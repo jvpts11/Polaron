@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.146")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.147")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.146")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.147")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1102,6 +1102,71 @@ add_test(NAME lint_allow_demands_a_reason
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+# THE ADVICE ABOUT THINGS THAT ONLY HURT AT SCALE. Every one is correct at ten and a problem at ten
+# thousand, which is why none of them looks wrong at the line where it is written.
+add_test(NAME lint_many_of_one_kind
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
+set_tests_properties(lint_many_of_one_kind PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B29.*3 'Tag' are allocated one at a time")
+
+add_test(NAME lint_runtime_check_of_constants
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
+set_tests_properties(lint_runtime_check_of_constants PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B2A.*decided at compile time")
+
+add_test(NAME lint_region_with_one_allocation
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
+set_tests_properties(lint_region_with_one_allocation PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B2B.*region 'pen' is set up and torn down for a single allocation")
+
+add_test(NAME lint_copy_hoistable_out_of_loop
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
+set_tests_properties(lint_copy_hoistable_out_of_loop PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B2C.*'each' copies 'source' on every iteration")
+
+add_test(NAME lint_linear_search_in_loop
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
+set_tests_properties(lint_linear_search_in_loop PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B2D.*'contains' walks the whole collection")
+
+# ...and the near-misses, plus the proof that none of it invents an error: one allocation is one
+# allocation, a condition on an argument is a real check, and nothing is copied per iteration.
+add_test(NAME lint_scale_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
+set_tests_properties(lint_scale_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'plain'|: error")
+
+add_test(NAME lint_scale_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol"
+    "-DCONTAINS=6 8 7 20 1 18"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# THE ADVICE ABOUT WAITING. Both are correct code that makes other work wait for no reason.
+#
+# The independent-awaits rule shipped broken once and the sample caught it: it asked whether the
+# second line mentions the first by searching the dumped TEXT, and a one-letter name is a substring
+# of half the program -- `a` is inside `Waits.slow(2)` -- which silently turned the rule off for
+# exactly the case it exists for. It looks for the identifier now.
+add_test(NAME lint_lock_around_slow_work
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_concurrency.pol")
+set_tests_properties(lint_lock_around_slow_work PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B2E.*holds the lock across work")
+
+add_test(NAME lint_sequential_independent_awaits
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_concurrency.pol")
+set_tests_properties(lint_sequential_independent_awaits PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B2F.*'b' does not depend on 'a'")
+
+# ...and the two that must stay quiet: a lock that covers only what it guards, and a wait that
+# really does depend on the one before it.
+add_test(NAME lint_concurrency_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_concurrency.pol")
+set_tests_properties(lint_concurrency_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "quietUpdate|does not depend on 'a'.*chained")
 
 # THE STANDARD LIBRARY IS HELD TO ITS OWN ADVICE, and this is the test that does the holding.
 #

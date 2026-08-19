@@ -737,6 +737,290 @@ void SemanticAnalyzer::warnArrayGrownByHand(const ast::MethodDecl& m) {
     }
 }
 
+// NOTE, for whoever reaches the catalogue's entry 23 ("a comptime-provable expression evaluated at
+// runtime"): it is deliberately absent. The gain it claims -- "it disappears from the binary" -- is
+// one constant folding already delivers, at every optimisation level, for exactly the expressions
+// the rule can recognise. A rule whose fix changes nothing is worse than a missing one: it spends a
+// reader's attention and returns nothing. Entry 25 below is the half of it that IS worth saying,
+// because a check the compiler can decide is a check that should have failed the BUILD.
+
+void SemanticAnalyzer::warnManyOfOneKindInAScope(const ast::Block& body) {
+    // THREE OF ONE TYPE, ALLOCATED ONE AT A TIME, in one scope. Each goes through the allocator on
+    // its own and lands wherever the free list pointed, so things that are used together end up
+    // scattered -- and they are freed one at a time too, which is the same walk again.
+    std::unordered_map<std::string, int> made;
+    std::unordered_map<std::string, SourceLocation> first;
+    for (const ast::StmtPtr& st : body.statements) {
+        const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get());
+        if (vd == nullptr) {
+            continue;
+        }
+        const auto* ne = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+        if (ne == nullptr || ne->location != "heap" || !ne->region.empty()) {
+            continue;
+        }
+        if (++made[ne->className] == 1) {
+            first[ne->className] = vd->loc;
+        }
+    }
+    for (const auto& [cls, n] : made) {
+        if (n >= 3) {
+            warn(diag::Code::ManyOfOneKindInAScope,
+                 std::to_string(n) + " '" + cls + "' are allocated one at a time in this scope",
+                 first[cls]);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnRuntimeCheckOfConstants(const ast::Block& body) {
+    // A CHECK THE COMPILER CAN ALREADY DECIDE, kept until the program runs. If the condition folds
+    // to a constant then the failure is not a possibility -- it either always happens or never
+    // does -- and the one that always happens should have stopped the build rather than the
+    // customer. `demand` is the same sentence, asked while there is still somebody to tell.
+    eachStmt(body, [&](const ast::Stmt& st) {
+        const auto* iff = dynamic_cast<const ast::IfStmt*>(&st);
+        if (iff == nullptr || iff->cond == nullptr || iff->thenBlock.statements.empty()) {
+            return;
+        }
+        if (dynamic_cast<const ast::ThrowStmt*>(iff->thenBlock.statements[0].get()) == nullptr) {
+            return;
+        }
+        long long folded = 0;
+        if (!evalConstInt(*iff->cond, folded, &constInts_, &comptimeMethods_, &constDoubles_,
+                          &enums_)) {
+            return;   // it depends on something only the run knows: a real check
+        }
+        warn(diag::Code::RuntimeCheckOfConstants,
+             "this condition is decided at compile time, so the failure it guards is not a "
+             "possibility -- it is either certain or impossible",
+             iff->loc);
+    });
+}
+
+void SemanticAnalyzer::warnRegionWithOneAllocation(const ast::Block& body) {
+    // A REGION EXISTS TO AMORTISE. One object in it pays the whole setup -- reserve, base, teardown
+    // -- to hand out a single allocation, which is more work than the allocator it replaced.
+    std::unordered_map<std::string, int> used;
+    std::unordered_map<std::string, SourceLocation> declared;
+    for (const ast::StmtPtr& st : body.statements) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get())) {
+            if (typeRefStr(vd->type) == "region") {
+                declared[vd->name] = vd->loc;
+                used[vd->name] += 0;
+            }
+        }
+    }
+    if (declared.empty()) {
+        return;
+    }
+    eachStmt(body, [&](const ast::Stmt& st) {
+        auto count = [&](const ast::Expr* e) {
+            if (const auto* ne = dynamic_cast<const ast::NewExpr*>(e);
+                ne != nullptr && !ne->region.empty()) {
+                ++used[ne->region];
+            }
+        };
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            count(vd->init.get());
+        } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+            count(as->value.get());
+        } else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+            count(es->expr.get());
+        }
+    });
+    for (const auto& [name, loc] : declared) {
+        if (used[name] == 1) {
+            warn(diag::Code::RegionWithOneAllocation,
+                 "region '" + name + "' is set up and torn down for a single allocation", loc);
+        }
+    }
+}
+
+void SemanticAnalyzer::warnCopyHoistableOutOfLoop(const ast::Block& loopBody) {
+    // THE SAME DEEP COPY, EVERY ITERATION, of something the loop never changes. Assignment copies in
+    // this language, so this is not a pointer being re-read: it is the whole object, rebuilt N times
+    // to produce N identical results.
+    //
+    // IT DOES NOT ASK `typeOf`, AND THAT IS THE POINT. Three separate rules in this file were first
+    // written asking the type of an expression after the body had been analysed, where the names are
+    // out of scope and `typeOf` REPORTS an undeclared variable rather than shrugging -- inventing
+    // errors in code that is fine. The declared type on the left of the `=` answers the same
+    // question (is this a value copy?) from the AST alone, and the class table is global, so nothing
+    // here depends on when it runs.
+    auto scanLoop = [&](const ast::Block& blk) {
+        // What the loop assigns: a source that changes is a source that has to be re-read.
+        std::unordered_set<std::string> written;
+        eachStmt(blk, [&](const ast::Stmt& st) {
+            if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
+                    written.insert(id->name);
+                }
+            } else if (const auto* inc = dynamic_cast<const ast::IncDecStmt*>(&st)) {
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(inc->target.get())) {
+                    written.insert(id->name);
+                }
+            }
+        });
+        for (const ast::StmtPtr& st : blk.statements) {
+            const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get());
+            if (vd == nullptr || vd->init == nullptr) {
+                continue;
+            }
+            const auto* src = dynamic_cast<const ast::IdentifierExpr*>(vd->init.get());
+            if (src == nullptr || written.count(src->name) > 0) {
+                continue;
+            }
+            // Only a VALUE copy is worth saying this about: a pointer assignment copies a word.
+            // Read off the DECLARED type, so nothing here needs a live scope.
+            if (vd->isVar) {
+                continue;   // the type is inferred, and inferring it is what needs the scope
+            }
+            const std::string t = typeRefStr(vd->type);
+            if (t.empty() || t.find('*') != std::string::npos || isRefType(t) || isArrayType(t) ||
+                lookupClass(baseType(t)) == nullptr) {
+                continue;
+            }
+            warn(diag::Code::CopyHoistableOutOfLoop,
+                 "'" + vd->name + "' copies '" + src->name +
+                     "' on every iteration, and the loop never changes it",
+                 vd->loc);
+        }
+    };
+    scanLoop(loopBody);
+}
+
+void SemanticAnalyzer::warnLinearSearchInLoop(const ast::Block& body) {
+    // A SCAN INSIDE A LOOP IS THE OTHER LOOP NOBODY WROTE. `contains` and `indexOf` walk the whole
+    // collection, so a loop around them is quadratic in something that usually grows -- and it is
+    // invisible, because the inner loop is a method call one word long.
+    auto scanLoop = [&](const ast::Block& blk) {
+        eachStmt(blk, [&](const ast::Stmt& st) {
+            auto look = [&](const ast::Expr* e) {
+                const auto* call = dynamic_cast<const ast::CallExpr*>(e);
+                if (call == nullptr) {
+                    return;
+                }
+                const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+                if (mem == nullptr) {
+                    return;
+                }
+                if (mem->member == "contains" || mem->member == "indexOf" ||
+                    mem->member == "lastIndexOf") {
+                    warn(diag::Code::LinearSearchInLoop,
+                         "'" + mem->member + "' walks the whole collection, and this is inside a loop",
+                         call->loc);
+                }
+            };
+            if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+                look(vd->init.get());
+            } else if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
+                look(iff->cond.get());
+            } else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+                look(es->expr.get());
+            }
+        });
+    };
+    eachStmt(body, [&](const ast::Stmt& st) {
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+            scanLoop(ws->body);
+        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+            scanLoop(fs->body);
+        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+            scanLoop(fe->body);
+        }
+    });
+}
+
+void SemanticAnalyzer::warnLockAroundSlowWork(const ast::Block& body) {
+    // A LOCK HELD ACROSS SOMETHING SLOW makes every other thread wait for work that has nothing to
+    // do with the thing being protected. Console and file work are the two that show up: they are
+    // orders of magnitude longer than the update they are sitting beside, and the contention they
+    // create does not look like a lock problem from outside.
+    eachStmt(body, [&](const ast::Stmt& st) {
+        const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(&st);
+        if (sy == nullptr) {
+            return;
+        }
+        eachStmt(sy->body, [&](const ast::Stmt& inner) {
+            const auto* es = dynamic_cast<const ast::ExprStmt*>(&inner);
+            const auto* call = es != nullptr
+                                   ? dynamic_cast<const ast::CallExpr*>(es->expr.get())
+                                   : nullptr;
+            if (call == nullptr) {
+                return;
+            }
+            std::string callee;
+            call->callee->dump(callee, 0);
+            if (callee.find("Console") != std::string::npos ||
+                callee.find("File") != std::string::npos ||
+                callee.find("Socket") != std::string::npos ||
+                callee.find("sleep") != std::string::npos) {
+                warn(diag::Code::LockAroundSlowWork,
+                     "this holds the lock across work that has nothing to do with what it protects",
+                     call->loc);
+            }
+        });
+    });
+}
+
+void SemanticAnalyzer::warnSequentialIndependentAwaits(const ast::Block& body) {
+    // TWO AWAITS IN A ROW THAT DO NOT DEPEND ON EACH OTHER turn two waits into their sum, when the
+    // program only had to wait for the longer of the two. Nothing in the second line reads the
+    // first's result, so the ordering is an accident of how they were typed.
+    for (std::size_t i = 1; i < body.statements.size(); ++i) {
+        const auto* a = dynamic_cast<const ast::VarDeclStmt*>(body.statements[i - 1].get());
+        const auto* b = dynamic_cast<const ast::VarDeclStmt*>(body.statements[i].get());
+        if (a == nullptr || b == nullptr || a->init == nullptr || b->init == nullptr) {
+            continue;
+        }
+        if (dynamic_cast<const ast::AwaitExpr*>(a->init.get()) == nullptr ||
+            dynamic_cast<const ast::AwaitExpr*>(b->init.get()) == nullptr) {
+            continue;
+        }
+        // Does the second READ the first? Asked by looking for the identifier, not by searching the
+        // dumped text: a one-letter name matches half the program as a substring -- `a` is inside
+        // `Waits.slow(2)` -- which silently turned this rule off for exactly the case it exists for.
+        bool dependsOnFirst = false;
+        std::function<void(const ast::Expr*)> reads = [&](const ast::Expr* e) {
+            if (e == nullptr || dependsOnFirst) {
+                return;
+            }
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+                dependsOnFirst = (id->name == a->name);
+                return;
+            }
+            if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(e)) {
+                reads(aw->operand.get());
+            } else if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+                reads(call->callee.get());
+                for (const ast::ExprPtr& arg : call->args) {
+                    reads(arg.get());
+                }
+            } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+                reads(mem->object.get());
+            } else if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+                reads(bin->lhs.get());
+                reads(bin->rhs.get());
+            } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+                reads(un->operand.get());
+            } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+                reads(cast->operand.get());
+            } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+                reads(ix->array.get());
+                reads(ix->index.get());
+            }
+        };
+        reads(b->init.get());
+        if (dependsOnFirst) {
+            continue;   // the second waits on the first: the order is the meaning
+        }
+        warn(diag::Code::SequentialIndependentAwaits,
+             "'" + b->name + "' does not depend on '" + a->name +
+                 "', so these two waits are being added together",
+             b->loc);
+    }
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks
@@ -935,6 +1219,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             declareLocal(fe->varName, LocalVar{et, false});
             analyzeBlock(fe->body);
             warnStringBuildingInLoop(fe->body);
+            warnCopyHoistableOutOfLoop(fe->body);
             popScope();
             return;
         }
@@ -983,6 +1268,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         declareLocal(fe->varName, LocalVar{et, false});
         analyzeBlock(fe->body);
         warnStringBuildingInLoop(fe->body);
+        warnCopyHoistableOutOfLoop(fe->body);
         popScope();
         return;
     }
@@ -1813,6 +2099,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         analyzeBlock(ws->body);
         warnStringBuildingInLoop(ws->body);
+        warnCopyHoistableOutOfLoop(ws->body);
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
         return;
@@ -1822,6 +2109,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const FlowFacts entry = snapshotFlow();
         analyzeBlock(dw->body);
         warnStringBuildingInLoop(dw->body);
+        warnCopyHoistableOutOfLoop(dw->body);
         invalidateAcrossBackEdge(entry);
         const std::string ct = typeOf(*dw->cond);
         if (!ct.empty() && ct != "boolean") {
@@ -1845,6 +2133,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const FlowFacts entry = snapshotFlow();
         analyzeBlock(fs->body);
         warnStringBuildingInLoop(fs->body);
+        warnCopyHoistableOutOfLoop(fs->body);
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
         popScope();

@@ -280,6 +280,13 @@ private:
     void warnHeapWithLexicalLifetime(const ast::Block& body);
     void warnRepeatedCleanup(const ast::MethodDecl& m);
     void warnThrowInLoop(const ast::Block& body);
+    void warnManyOfOneKindInAScope(const ast::Block& body);
+    void warnRuntimeCheckOfConstants(const ast::Block& body);
+    void warnRegionWithOneAllocation(const ast::Block& body);
+    void warnCopyHoistableOutOfLoop(const ast::Block& body);
+    void warnLinearSearchInLoop(const ast::Block& body);
+    void warnLockAroundSlowWork(const ast::Block& body);
+    void warnSequentialIndependentAwaits(const ast::Block& body);
     void warnAllocFreeInLoop(const ast::Block& body);
     void warnArrayGrownByHand(const ast::MethodDecl& m);
     void warnBooleanOutParameter(const ast::MethodDecl& m);

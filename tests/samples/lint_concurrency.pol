@@ -1,0 +1,79 @@
+import System.IO.Console;
+import System.Concurrency.Mutex;
+import System.Concurrency.Task;
+
+program LintConcurrency;
+
+// THE ADVICE ABOUT WAITING. Both of these are correct code that makes other work wait for no reason,
+// and neither looks wrong at the line where it is written.
+public bundle Main {
+    public namespace App {
+
+        public class Shared {
+            private mutable Mutex<int> guard;
+            public constructor Shared() {
+                this.guard = new Mutex<int>(0) on heap;
+            }
+
+            // FIRES (0B2E): every other thread waits for the console, which has nothing to do with
+            // the integer being protected.
+            public method loudUpdate(int by) returns void {
+                synchronized (this.guard) using int& n {
+                    n = n + by;
+                    System.IO.Console.println("updated");
+                }
+                return;
+            }
+
+            // QUIET: the lock covers the state it guards and nothing else.
+            public method quietUpdate(int by) returns void {
+                synchronized (this.guard) using int& n {
+                    n = n + by;
+                }
+                return;
+            }
+
+            public method value() returns int {
+                mutable int got = 0;
+                synchronized (this.guard) using int& n {
+                    got = n;
+                }
+                return got;
+            }
+        }
+
+        public class Waits {
+            public static async method slow(int n) returns int {
+                return n * 2;
+            }
+
+            // FIRES (0B2F): nothing in the second line reads the first, so the program waits for the
+            // sum of two things when it only had to wait for the longer of them.
+            public static async method both() returns int {
+                int a = await Waits.slow(1);
+                int b = await Waits.slow(2);
+                return a + b;
+            }
+
+            // QUIET: the second wait depends on the first, so the order IS the meaning.
+            public static async method chained() returns int {
+                int a = await Waits.slow(3);
+                int b = await Waits.slow(a);
+                return b;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shared* s = new Shared() on heap;
+                s.loudUpdate(2);
+                s.quietUpdate(3);
+                int one = await Waits.both();
+                int two = await Waits.chained();
+                System.IO.Console.println($"{s.value()} {one} {two}");
+                delete s;
+                return;
+            }
+        }
+    }
+}

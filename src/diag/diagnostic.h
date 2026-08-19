@@ -167,6 +167,13 @@ enum class Code {
     HandWrittenConversionPair,  // toX/fromX kept in two places: a transformer's relation
     AllocFreeInLoop,      // allocate and free on every iteration: a region's question
     ArrayGrownByHand,     // a bigger array, a copy loop and a delete: ArrayList rewritten
+    ManyOfOneKindInAScope,   // several of one type allocated one at a time: a pool's question
+    RuntimeCheckOfConstants, // a check the compiler can already decide, kept until the run
+    RegionWithOneAllocation, // a region set up and torn down for a single object
+    CopyHoistableOutOfLoop,  // the same deep copy every iteration, of something never changed
+    LinearSearchInLoop,   // `contains`/`indexOf` inside a loop: the other loop nobody wrote
+    LockAroundSlowWork,   // a lock held across console, file or socket work
+    SequentialIndependentAwaits,  // two waits added together that could have overlapped
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

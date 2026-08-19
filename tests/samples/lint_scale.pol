@@ -1,0 +1,106 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+import System.Collections.ArrayList;
+import System.Runtime.OverflowException;
+
+program LintScale;
+
+// THE ADVICE ABOUT THINGS THAT ONLY HURT AT SCALE. Every one of these is correct at ten and a
+// problem at ten thousand, which is why none of them looks wrong when it is written.
+public bundle Main {
+    public namespace App {
+
+        public class Tag {
+            public mutable int id;
+            public constructor Tag(int id) { this.id = id; }
+        }
+
+        public class Holder {
+            public mutable int n;
+            public constructor Holder(int n) { this.n = n; }
+        }
+
+        public class Scale {
+            public static fixed int SLOTS = 8;
+
+            // FIRES (0B29): three of one type through the allocator one at a time, landing wherever
+            // the free list pointed -- so a walk over them afterwards touches three cache lines.
+            public static method three() returns int {
+                Tag* a = new Tag(1) on heap;
+                Tag* b = new Tag(2) on heap;
+                Tag* c = new Tag(3) on heap;
+                int sum = a.id + b.id + c.id;
+                delete a;
+                delete b;
+                delete c;
+                return sum;
+            }
+
+            // FIRES (0B2A): the condition folds, so the failure is not a possibility -- it is either
+            // certain or impossible, and the build is where that should have been settled.
+            public static method guard() returns int {
+                if (Scale.SLOTS < 0) {
+                    throw new OverflowException() on heap;
+                }
+                return Scale.SLOTS;
+            }
+
+            // FIRES (0B2B): reserve, base pointer and teardown, all paid to hand out one object.
+            public static method lonely() returns int {
+                region pen = itself.allocate(1 kilobytes);
+                Tag* only = new Tag(7) in region pen;
+                int got = only.id;
+                release region pen;
+                return got;
+            }
+
+            // FIRES (0B2C): assignment copies, so this rebuilds the whole object every turn to
+            // produce the same value each time.
+            public static method copies(int n) returns int {
+                Holder source = new Holder(5) on stack;
+                mutable int total = 0;
+                for (int i in 0..n) {
+                    Holder each = source;
+                    total = total + each.n;
+                }
+                return total;
+            }
+
+            // FIRES (0B2D): `contains` is a loop one word long, and this puts another around it.
+            public static method scans(int n) returns int {
+                ArrayList<int>* seen = new ArrayList<int>() on heap;
+                seen.add(3);
+                mutable int hits = 0;
+                for (int i in 0..n) {
+                    if (seen.contains(i)) {
+                        hits = hits + 1;
+                    }
+                }
+                delete seen;
+                return hits;
+            }
+
+            // QUIET: one allocation is one allocation, the condition depends on the argument, and
+            // nothing is copied per iteration.
+            public static method plain(int n) returns int {
+                Tag* one = new Tag(9) on heap;
+                mutable int total = 0;
+                if (n < 0) {
+                    total = 0;
+                }
+                for (int i in 0..n) {
+                    total = total + one.id;
+                }
+                delete one;
+                return total;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"{Scale.three()} {Scale.guard()} {Scale.lonely()} {Scale.copies(4)} {Scale.scans(5)} {Scale.plain(2)}");
+                return;
+            }
+        }
+    }
+}

@@ -185,6 +185,13 @@ two copies come to disagree.
 | `Polaron-0B26` | this converts to and from another type by hand |
 | `Polaron-0B27` | this loop allocates and frees on every iteration |
 | `Polaron-0B28` | this allocates a bigger array, copies into it, and frees the old one |
+| `Polaron-0B29` | several of one type are allocated here one at a time |
+| `Polaron-0B2A` | this condition is decided at compile time |
+| `Polaron-0B2B` | this region is set up and torn down for one object |
+| `Polaron-0B2C` | this copies the same value on every iteration |
+| `Polaron-0B2D` | this walks the whole collection, inside a loop |
+| `Polaron-0B2E` | this holds a lock across work that has nothing to do with what it protects |
+| `Polaron-0B2F` | these two waits are added together and did not have to be |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |
