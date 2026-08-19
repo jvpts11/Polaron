@@ -945,6 +945,24 @@ constexpr Row kCatalog[] = {
         "Keep a fixture and the tests that depend on it in one class. A test should be runnable on "
         "its own, and that is only true when its setup is its own." }},
 
+    {Code::StringBuildingInLoop, {
+        "Polaron-0B0B", "this builds a String by re-copying it on every iteration",
+        "A `String` is immutable, so `s = s + piece` does not append: it allocates a new string and "
+        "copies everything already accumulated into it. Inside a loop that makes the work quadratic "
+        "in the length of the result -- the first iteration copies nothing and the last copies the "
+        "whole thing -- and the cost is invisible at the call site, because the line that pays it is "
+        "the shortest one in the loop. Measured on this compiler's own benchmarks: 18.5x slower than "
+        "the same loop building through a `StringBuilder`, and the gap widens with the output.",
+        "Build through a `System.Text.StringBuilder`: `append` each piece in the loop and call "
+        "`toString()` once after it. The pieces are written end to end and the result is copied out a "
+        "single time, which is linear. For the two common special cases the standard library is "
+        "shorter still -- `Strings.join` for a separator between elements, and `Strings.format` or "
+        "`$\"...\"` for a fixed shape with holes in it.",
+        "Read `+` on a `String` as \"allocate and copy both sides\", because that is what it is. It "
+        "is the right thing for a handful of pieces whose number you can see, and the wrong thing "
+        "the moment the number of pieces is a loop bound. The rule that catches it early: a `String` "
+        "that is assigned more than once is a `StringBuilder` that has not been written yet." }},
+
     {Code::ImportNameMismatch, {
         "Polaron-0106", "this name was brought in under a different path",
         "An import names one type by its full path, and inside the file that name means exactly what "

@@ -135,6 +135,7 @@ enum class Code {
     Deprecated,           // a call to something marked deprecated
     PersistentIdentity,   // a persistent keyed by identity because its key fields are values
     FixtureLifecycle,     // a test reading a fixture whose [BeforeAll]/[AfterAll] it does not run
+    StringBuildingInLoop, // `s = s + piece` on an immutable String inside a loop -- quadratic
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

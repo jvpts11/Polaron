@@ -154,6 +154,7 @@ two copies come to disagree.
 | `Polaron-0B08` | this still works and is not going to keep working |
 | `Polaron-0B09` | these persistents will be told apart by identity, not by their contents |
 | `Polaron-0B0A` | this test reads a fixture whose setup it does not run |
+| `Polaron-0B0B` | this builds a String by re-copying it on every iteration |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

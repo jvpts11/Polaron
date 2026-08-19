@@ -247,6 +247,8 @@ private:
     // from the catalog. The message is still the specific one-line title (it names the actual thing).
     void error(diag::Code code, std::string message, SourceLocation loc);
     void warn(diag::Code code, std::string message, SourceLocation loc);
+    // Advice, per loop body: a `String` accumulated by copying itself (Polaron-0B0B).
+    void warnStringBuildingInLoop(const ast::Block& body);
     // Best-effort detection of an obvious infinite loop via comefrom (spec 7.10 rule 7).
     void detectComefromLoops(const ast::Block& block);
     bool isValidMainSignature(const ast::MethodDecl& method) const;

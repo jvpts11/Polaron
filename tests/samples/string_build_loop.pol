@@ -1,0 +1,69 @@
+import System.IO.Console;
+import System.Text.StringBuilder;
+
+program StringBuildLoop;
+
+// A `String` REBUILT ON EVERY TURN OF A LOOP -- the shape this compiler's own benchmarks measured at
+// 18.5x. The warning has to fire on the two spellings that mean the same thing (`s = s + p` and its
+// desugared twin `s += p`, plus `s = s.concat(p)`), and has to stay quiet on the three shapes that
+// look like it and are not: an accumulator declared inside the loop, a concatenation of a handful of
+// pieces outside any loop, and the same loop written through a builder.
+public bundle Main {
+    public namespace App {
+
+        public class Main {
+            // FIRES: the accumulator is declared outside, so every turn copies everything so far.
+            public static method quadratic(int n) returns int {
+                mutable String out = "";
+                for (int i in 0..n) {
+                    out = out + "x";
+                }
+                return out.length();
+            }
+
+            // FIRES: `+=` parses to `out = out + piece`, which is the same statement.
+            public static method quadraticCompound(int n) returns int {
+                mutable String out = "";
+                mutable int i = 0;
+                while (i < n) {
+                    out += "y";
+                    i = i + 1;
+                }
+                return out.length();
+            }
+
+            // QUIET: a fresh String every iteration accumulates nothing.
+            public static method perIteration(int n) returns int {
+                mutable int total = 0;
+                for (int i in 0..n) {
+                    mutable String line = "";
+                    line = line + "z";
+                    total = total + line.length();
+                }
+                return total;
+            }
+
+            // QUIET: three pieces, no loop, and the number of pieces is visible.
+            public static method fixed(String a, String b) returns int {
+                String joined = a + " " + b;
+                return joined.length();
+            }
+
+            // QUIET: the builder is the fix, and the fix must not warn.
+            public static method linear(int n) returns int {
+                mutable StringBuilder sb = new StringBuilder() on heap;
+                for (int i in 0..n) {
+                    sb.append("x");
+                }
+                String out = sb.toString();
+                delete sb;
+                return out.length();
+            }
+
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"{Main.quadratic(4)} {Main.quadraticCompound(3)} {Main.perIteration(5)} {Main.fixed("a", "b")} {Main.linear(6)}");
+                return;
+            }
+        }
+    }
+}

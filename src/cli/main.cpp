@@ -76,7 +76,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "polc 1.0.139";
+constexpr std::string_view kVersion = "polc 1.0.140";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -117,6 +117,10 @@ std::optional<std::string> readSource(const std::string& path) {
 // content when an overlay is in effect -- the snippet must show what was actually compiled.
 std::map<std::string, std::string> g_sources;
 bool g_concise = false;  // --concise: one machine-parseable line per diagnostic (implied by --check)
+// --lint-prelude: also report the ADVICE the standard library earns for itself. Off by default,
+// because advice about code the reader did not write and cannot change is noise -- see the note at
+// the warning loop. On, it is how the prelude gets linted at all.
+bool g_lintPrelude = false;
 
 // The 1-based `line` of `file`'s compiled source, or "" if unavailable (e.g. the embedded prelude).
 std::string sourceLineAt(std::string_view file, int line) {
@@ -565,7 +569,10 @@ int printUsage(const char* prog) {
                  "                       without the why/fix/prevent write-up. `polc --explain\n"
                  "                       <code>` still has it.\n"
                  "  --color / --no-color force colour on or off. The default follows the output:\n"
-                 "                       a terminal gets it, a pipe or a file does not.\n",
+                 "                       a terminal gets it, a pipe or a file does not.\n"
+                 "  --lint-prelude       also report the advice the standard library earns for\n"
+                 "                       itself. Off by default: it arrives with every program and\n"
+                 "                       nothing in your own file can change a line of it.\n",
                  prog, prog, prog, prog, prog, prog, prog, prog);
     return 2;
 }
@@ -1377,7 +1384,19 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // `--check` (used by the editor's live check) and `--concise` want one machine-parseable line per
     // diagnostic; a normal build shows the full rich explanation.
     const bool concise = checkOnly || g_concise;
+    // A WARNING ABOUT CODE THE READER DID NOT WRITE IS NOISE, and the standard library is exactly
+    // that: it arrives with every program, it is the same in all of them, and nothing the reader
+    // does to their own file can change a line of it. The first structural lint made the point
+    // immediately -- a genuine quadratic buffer in `Tls.pol` printed four times on every hello-world,
+    // which is how a useful warning teaches people to stop reading warnings.
+    //
+    // `--lint-prelude` is the other half: the prelude still earns its advice, and there has to be a
+    // way to be shown it, or the standard library becomes the one code base the lints never see.
+    // Errors are never filtered -- an error inside the prelude is a compiler bug and must be loud.
     for (const polaron::SemaError& w : sema.warnings()) {
+        if (!g_lintPrelude && std::string_view(w.loc.file).rfind("<prelude", 0) == 0) {
+            continue;
+        }
         printSemaDiag("warning", w, concise);
     }
     if (!semaOk) {
@@ -1569,6 +1588,11 @@ int main(int argc, char** argv) {
                 color = false;
             } else if (a == "--noVerbose") {
                 polaron::diag::setVerbose(false);
+            } else if (a == "--lint-prelude") {
+                // Read here with the other display flags, because `--check` has its own argument
+                // parser that only NAMES this one -- and a flag that is accepted in one mode and
+                // ignored in it is worse than one that is refused.
+                g_lintPrelude = true;
             }
         }
         if (color) {
@@ -1645,9 +1669,11 @@ int main(int argc, char** argv) {
             } else if (args[i] == "--region-binder") {
                 regionBinder = true;
             } else if (args[i] == "--color" || args[i] == "--no-color" ||
-                       args[i] == "--noVerbose") {
+                       args[i] == "--noVerbose" || args[i] == "--lint-prelude") {
                 // Read before any of this, in main, because a diagnostic can come from the first
                 // thing the compiler does. Named here so they are not mistaken for input files.
+                // `--lint-prelude` belongs in this list too: the editor's live check is exactly where
+                // somebody working ON the standard library wants to be shown its own advice.
             } else if (args[i] == "--no-region-binder") {
                 regionBinder = false;
             } else if (args[i] == "--strict-regions") {
@@ -1855,6 +1881,8 @@ int main(int argc, char** argv) {
             // program and mean it -- one flag, visible in the build, rather than a per-line
             // annotation that reads as ordinary code six months later.
             regionBinder = false;
+        } else if (args[i] == "--lint-prelude") {
+            g_lintPrelude = true;  // report the standard library's own advice too
         } else if (args[i] == "--concise" || args[i] == "-q") {
             g_concise = true;  // one machine-parseable line per diagnostic (CI / huge broken builds)
         } else if (args[i] == "--color" || args[i] == "--no-color" || args[i] == "--noVerbose") {

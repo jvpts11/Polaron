@@ -16,6 +16,140 @@ namespace polaron {
 
 using namespace semutil;   // NOLINT(google-build-using-namespace): as in analyzer.cpp
 
+namespace {
+
+// A comparable spelling for the few lvalues an accumulator is ever written as: a plain local, or a
+// field of the enclosing object. Anything else answers empty, which the caller reads as "not a shape
+// I can reason about" rather than as a mismatch.
+std::string lvalueKey(const ast::Expr& e) {
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
+        return id->name;
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&e)) {
+        if (const auto* obj = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+            obj != nullptr && obj->name == "this") {
+            return "this." + mem->member;
+        }
+    }
+    return {};
+}
+
+// Is this assignment the accumulate shape -- the target appearing on the right of its own `+`, or
+// receiving `.concat(...)` on itself? `s += piece` parses to `s = s + piece`, so one test covers
+// both spellings, which is why the parser's desugaring is worth relying on here.
+bool isSelfAccumulation(const ast::AssignStmt& as) {
+    const std::string key = lvalueKey(*as.target);
+    if (key.empty()) {
+        return false;
+    }
+    if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(as.value.get())) {
+        return bin->op == "+" &&
+               (lvalueKey(*bin->lhs) == key || lvalueKey(*bin->rhs) == key);
+    }
+    if (const auto* call = dynamic_cast<const ast::CallExpr*>(as.value.get())) {
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+            return mem->member == "concat" && lvalueKey(*mem->object) == key;
+        }
+    }
+    return false;
+}
+
+// Every name a declaration inside these statements introduces, however deep -- including inside
+// nested loops, because an accumulator declared in an inner loop is still declared inside this one.
+void collectDeclaredNames(const ast::Block& body, std::unordered_set<std::string>& out);
+
+void collectFromStmt(const ast::Stmt& st, std::unordered_set<std::string>& out) {
+    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+        out.insert(vd->name);
+        return;
+    }
+    if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
+        collectDeclaredNames(iff->thenBlock, out);
+        if (iff->elseBlock) {
+            collectDeclaredNames(*iff->elseBlock, out);
+        }
+        return;
+    }
+    if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+        collectDeclaredNames(ws->body, out);
+        return;
+    }
+    if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&st)) {
+        collectDeclaredNames(dw->body, out);
+        return;
+    }
+    if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+        if (fs->init) {
+            collectFromStmt(*fs->init, out);
+        }
+        collectDeclaredNames(fs->body, out);
+        return;
+    }
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+        out.insert(fe->varName);
+        collectDeclaredNames(fe->body, out);
+        return;
+    }
+}
+
+void collectDeclaredNames(const ast::Block& body, std::unordered_set<std::string>& out) {
+    for (const ast::StmtPtr& st : body.statements) {
+        if (st) {
+            collectFromStmt(*st, out);
+        }
+    }
+}
+
+}  // namespace
+
+void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
+    // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
+    // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks
+    // expensive: `s = s + piece` is the shortest line in the body and it is the one that copies
+    // everything accumulated so far.
+    //
+    // Decidable, and deliberately narrow. The accumulator must be declared OUTSIDE this loop -- one
+    // declared inside starts empty every iteration, so there is no accumulation to be quadratic --
+    // and the shape must be the target appearing on the right of its own `+` or `.concat`. Nested
+    // loops are not walked: each loop checks its own body, so the report lands on the innermost loop
+    // that actually repeats the copy, which is where the fix goes.
+    std::unordered_set<std::string> declaredInside;
+    collectDeclaredNames(body, declaredInside);
+
+    std::function<void(const ast::Block&)> scan = [&](const ast::Block& blk) {
+        for (const ast::StmtPtr& st : blk.statements) {
+            if (!st) {
+                continue;
+            }
+            if (const auto* as = dynamic_cast<const ast::AssignStmt*>(st.get())) {
+                if (!isSelfAccumulation(*as)) {
+                    continue;
+                }
+                const std::string key = lvalueKey(*as->target);
+                if (declaredInside.count(key) > 0) {
+                    continue;   // a fresh string each iteration: nothing accumulates
+                }
+                if (typeOf(*as->target) != "String") {
+                    continue;   // only the immutable one copies on every `+`
+                }
+                warn(diag::Code::StringBuildingInLoop,
+                     "'" + key + "' is rebuilt by copying it on every iteration of this loop",
+                     as->loc);
+                continue;
+            }
+            if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st.get())) {
+                scan(iff->thenBlock);
+                if (iff->elseBlock) {
+                    scan(*iff->elseBlock);
+                }
+            }
+            // A nested loop is left to its own check, on purpose: reporting it here would name the
+            // outer loop for a copy the inner one repeats.
+        }
+    };
+    scan(body);
+}
+
 // A borrow that arrived from somewhere else, and a call that empties where it came from. Both are
 // read here, before the statement is analysed, so the diagnostic lands on the READ that comes after
 // -- which is the only one of the three statements that is actually wrong.
@@ -165,6 +299,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             }
             declareLocal(fe->varName, LocalVar{et, false});
             analyzeBlock(fe->body);
+            warnStringBuildingInLoop(fe->body);
             popScope();
             return;
         }
@@ -212,6 +347,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         declareLocal(fe->varName, LocalVar{et, false});
         analyzeBlock(fe->body);
+        warnStringBuildingInLoop(fe->body);
         popScope();
         return;
     }
@@ -1039,6 +1175,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             nonNull_.insert(provenBody);
         }
         analyzeBlock(ws->body);
+        warnStringBuildingInLoop(ws->body);
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
         return;
@@ -1047,6 +1184,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // A do-while body always runs once, so what it initializes really is initialized afterwards.
         const FlowFacts entry = snapshotFlow();
         analyzeBlock(dw->body);
+        warnStringBuildingInLoop(dw->body);
         invalidateAcrossBackEdge(entry);
         const std::string ct = typeOf(*dw->cond);
         if (!ct.empty() && ct != "boolean") {
@@ -1069,6 +1207,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // Same as `while`: zero iterations is possible, so nothing the body establishes escapes it.
         const FlowFacts entry = snapshotFlow();
         analyzeBlock(fs->body);
+        warnStringBuildingInLoop(fs->body);
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
         popScope();

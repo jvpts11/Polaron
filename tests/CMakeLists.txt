@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.139")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.140")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.139")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.140")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1064,6 +1064,39 @@ add_test(NAME warnings_are_coloured_yellow
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol" --color)
 set_tests_properties(warnings_are_coloured_yellow PROPERTIES
     PASS_REGULAR_EXPRESSION "${POLARON_ESC}\\[33mwarning\\[Polaron-0B01\\]${POLARON_ESC}\\[0m")
+
+# A `String` REBUILT ON EVERY TURN OF A LOOP (Polaron-0B0B). `String` is immutable, so `s = s + piece`
+# allocates and copies everything accumulated so far -- 18.5x on this compiler's own benchmarks, and
+# invisible at the site, because the line that pays is the shortest one in the body.
+add_test(NAME lint_string_building_in_a_loop
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/string_build_loop.pol")
+set_tests_properties(lint_string_building_in_a_loop PROPERTIES
+    PASS_REGULAR_EXPRESSION "warning\\[Polaron-0B0B\\]: 'out' is rebuilt")
+
+# ...and it is NARROW, which is the half that makes it worth having. An accumulator declared inside
+# the loop starts empty every iteration, a fixed number of pieces outside a loop is what `+` is for,
+# and the builder is the fix -- so none of the three may be named. A lint that fires on the fix it
+# recommends is a lint people turn off.
+add_test(NAME lint_string_building_is_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/string_build_loop.pol")
+set_tests_properties(lint_string_building_is_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'line' is rebuilt|'joined' is rebuilt|'sb' is rebuilt")
+
+# ADVICE ABOUT THE STANDARD LIBRARY IS NOT THE READER'S PROBLEM. The prelude arrives with every
+# program, is the same in all of them, and nothing in the reader's own file can change a line of it.
+# The first structural lint made the point at once: a real (and bounded) re-copying buffer in
+# `Tls.pol` printed four times on every hello-world, which is how a useful warning teaches people to
+# stop reading warnings.
+add_test(NAME lint_prelude_advice_is_hidden_by_default
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol")
+set_tests_properties(lint_prelude_advice_is_hidden_by_default PROPERTIES
+    FAIL_REGULAR_EXPRESSION "Polaron-0B0B")
+
+# ...and the other half, or the standard library becomes the one code base the lints never see.
+add_test(NAME lint_prelude_advice_can_be_asked_for
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol" --lint-prelude)
+set_tests_properties(lint_prelude_advice_can_be_asked_for PROPERTIES
+    PASS_REGULAR_EXPRESSION "Polaron-0B0B")
 
 # EVERY DIAGNOSTIC THE SUITE PRODUCES CARRIES A CODE, and so has a why/fix/prevent behind it.
 #
