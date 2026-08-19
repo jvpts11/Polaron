@@ -2422,6 +2422,34 @@ void resolveTypeAliases(ast::Program& program) {
             }
         }
     }
+    // IMPORTING A TRANSPARENT ALIAS IS IMPORTING ITS TARGET, and the import has to say so once the
+    // alias is gone.
+    //
+    // Every use of `Bill` has just been rewritten to `Tally$Goods`, so by the time the analyzer runs
+    // the name does not exist -- and `import Agents.World.Bill;` was reported as an import of an
+    // unknown symbol, about a type declared in the file next to it. The alias is not a second type
+    // to make visible; it is another spelling of one, so the import is rewritten to name what it
+    // spells. The base name is enough: a generic's arguments are not part of what is imported.
+    for (auto& b : program.bundles) {
+        for (auto& imp : b.imports) {
+            if (imp.path.empty()) {
+                continue;
+            }
+            auto it = g_aliases.find(imp.path.back());
+            if (it != g_aliases.end()) {
+                imp.path.back() = it->second.name;
+            }
+        }
+    }
+    for (auto& imp : program.imports) {
+        if (imp.path.empty()) {
+            continue;
+        }
+        auto it = g_aliases.find(imp.path.back());
+        if (it != g_aliases.end()) {
+            imp.path.back() = it->second.name;
+        }
+    }
     g_aliases.clear();  // done: later passes must not see alias rewrites
 }
 
