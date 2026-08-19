@@ -70,3 +70,17 @@ ctest_*.log*
 # nothing, on the front page of a public repository.
 *.tmp
 *.tmp.*
+# Local working notes and per-tool configuration. They drive the work; they are not part of it.
+# Kept out until now by never being added, which is a habit standing in for a rule -- and one
+# blanket `git add` is all it takes for a habit to fail.
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+CONVENTIONS.md
+.claude/
+.codex/
+.cursor/
+.cursorrules
+.aider*
+.windsurfrules
+.github/copilot-instructions.md

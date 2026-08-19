@@ -8,8 +8,9 @@
 
 namespace polaron {
 
-// A lexical diagnostic with location. The lexer collects these instead of
-// aborting on the first problem (CLAUDE.md: accumulate errors when sensible).
+// A lexical diagnostic with location. The lexer collects these instead of aborting on the first
+// problem: one bad character usually means several, and a reader who has to recompile once per
+// typo learns to distrust the whole run.
 struct LexError {
     std::string message;
     SourceLocation loc;

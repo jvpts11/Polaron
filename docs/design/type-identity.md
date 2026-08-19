@@ -95,8 +95,9 @@ apart. What it does instead is **invent** a difference: a pass in `monomorphize.
 declarations and every reference to them, `Color` becoming `Spatial__Color` and `App__Color`. That is
 a qualified name faked with a `__` in the middle, because there is nowhere to put a real one.
 
-**This is a stopgap, and it is already recorded as one.** `CLAUDE.md`'s F4 list has carried the line
-*"nomes qualificados completos (app.Foo≠lib.Foo)"* since before today.
+**This is a stopgap, and it has been recorded as one since before today.** Fully qualified names --
+so that `app.Foo` and `lib.Foo` are two types rather than one name fought over -- are outstanding
+work on the type system, not something this document is proposing for the first time.
 
 ### What it cost on 2026-08-15
 
