@@ -1,0 +1,84 @@
+import System.IO.Console;
+import Tools.Kit.Coupon;
+
+program LintProgram;
+
+// THE ADVICE THAT NEEDS THE WHOLE PROGRAM: six rules about the difference between what a declaration
+// promises and what anything actually does with it. None of them can be decided by reading one file,
+// which is why they run once over everything rather than per class.
+public bundle Tools {
+    public namespace Kit {
+
+        // FIRES (0B31): public is a promise to everyone, and only its own bundle collects it.
+        public class Widget {
+            public mutable int size;
+            public constructor Widget(int size) { this.size = size; }
+            public method area() returns int { return this.size * this.size; }
+        }
+
+        // QUIET: the other bundle mentions this one, so the promise is being collected.
+        public class Coupon {
+            public mutable int id;
+            public constructor Coupon(int id) { this.id = id; }
+            public method value() returns int { return this.id; }
+        }
+
+        // FIRES (0B32): nothing declares a variable, field or parameter of this type, so no call
+        // through it is ever polymorphic -- a vtable paid for a naming convention.
+        public interface Nameable {
+            method label() returns int;
+        }
+
+        // FIRES (0B30): the discipline changes every assignment and nothing ever transfers one.
+        public movable class Ticket {
+            public mutable int serial;
+            public constructor Ticket(int serial) { this.serial = serial; }
+        }
+    }
+}
+
+public bundle Main {
+    public namespace App {
+
+        public class Parent {
+            public mutable Child* only;
+            // FIRES (0B33): written, carried in every instance, and nothing ever asks what it holds.
+            public mutable int unreadTally;
+            // FIRES (0B34): public, and only Parent ever writes it -- so the wider declaration is
+            // withholding a fact from the analysis and inviting nobody.
+            public mutable int touched;
+            public constructor Parent() {
+                this.only = new Child() on heap;
+                this.unreadTally = 0;
+                this.touched = 0;
+                this.only.owner = this;
+            }
+            public method bump() returns int {
+                this.touched = this.touched + 1;
+                return this.touched;
+            }
+            public destructor ~Parent() returns void {
+                delete this.only;
+                return;
+            }
+        }
+
+        // FIRES (0B35): Parent.only and Child.owner point at each other and neither says which one
+        // owns the other, so a cascade walks the graph twice and the destructor order is an accident.
+        public class Child {
+            public mutable Parent* owner;
+            public constructor Child() {}
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Parent* p = new Parent() on heap;
+                Coupon* s = new Coupon(4) on heap;
+                System.IO.Console.println($"{p.bump()} {s.value()}");
+                delete p;
+                delete s;
+                return;
+            }
+        }
+    }
+}

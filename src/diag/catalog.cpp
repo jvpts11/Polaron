@@ -1363,6 +1363,79 @@ constexpr Row kCatalog[] = {
         "Await at the point the value is USED, not at the point the call is made. Written that way, "
         "independent work overlaps by default." }},
 
+    {Code::DisciplineNeverExercised, {
+        "Polaron-0B30", "nothing in this program ever moves one of these",
+        "`movable` and `partitionable` are not labels: they change what every assignment, argument "
+        "and return of the type has to look like, and they make a reader ask at each one where the "
+        "transfer happens. When nothing transfers, all of that is paid for a promise nobody "
+        "collects -- and the word says something about the type that is not true of how it is used.",
+        "Remove the discipline. Where it is there to stop copies of something expensive, the honest "
+        "way to say that is to make the copy impossible for a reason -- a `unique` handle, a region "
+        "that owns the objects -- rather than a transfer that never happens.",
+        "Add the discipline at the first `move`, not before. A type declared movable in advance is a "
+        "guess about how it will be used, and the guess is checked by nothing." }},
+
+    {Code::PublicWithNoOutsideUse, {
+        "Polaron-0B31", "this is public and nothing outside its bundle mentions it",
+        "`public` is a promise to everyone: it makes the type part of the bundle's surface, it stops "
+        "the compiler from proving anything about who can reach it, and it is the widest thing that "
+        "can be said about a declaration. When only its own bundle uses it, the promise is being "
+        "made to nobody and paid for by everybody -- most concretely by the escape analysis, which "
+        "must assume that anything reachable from outside can change.",
+        "Make it `internal`. It stays available everywhere it is actually used, and the surface "
+        "everyone else has to read gets smaller by one.",
+        "Start `internal` and widen when a second bundle needs it. Widening is a word; narrowing is "
+        "an audit of everything that might have reached in." }},
+
+    {Code::InterfaceNeverPolymorphic, {
+        "Polaron-0B32", "nothing in this program ever holds one of these",
+        "An interface earns a vtable and an indirect call by letting a caller work with something "
+        "whose real type it does not know. If no variable, field, parameter or collection is ever "
+        "declared as this interface, nothing ever works with it that way: what is left is a naming "
+        "convention that costs a dispatch nobody can see through.",
+        "Apply a `transformer` instead. It gives every type that applies it the same procedures, "
+        "expanded at compile time, so the calls are direct and inlinable -- and the relation is "
+        "declared rather than implied. Where the interface exists for something outside this program "
+        "to hold, that is a real reason and belongs in an `[Allow]`.",
+        "An interface is worth its cost when there are two implementations AND a caller that does "
+        "not care which. Both halves, not one." }},
+
+    {Code::FieldNeverRead, {
+        "Polaron-0B33", "nothing reads this field",
+        "It is written, carried in every instance, copied by every copy of the object and destroyed "
+        "with it, and no code ever asks what it holds. Usually it is the remains of something that "
+        "moved elsewhere; occasionally it is a read that was meant to exist and does not, which is "
+        "the more interesting case and the one worth checking first.",
+        "Delete it -- and the writes that fed it, which are usually the more expensive half. If the "
+        "read is what is missing, this warning has found a bug rather than a leftover.",
+        "Notice it when the last reader is deleted. That is when the field stopped being data and "
+        "became a place data goes." }},
+
+    {Code::PublicWrittenOnlyInside, {
+        "Polaron-0B34", "this field is public and only its own class ever writes it",
+        "Visibility is not only style here. What can be reached from outside is what the analysis "
+        "has to ASSUME can change, so a public field is a fact withheld from the compiler as well as "
+        "an invitation to the next author. Only one class writes it today, which means the "
+        "invitation has not been taken and the fact is being withheld for nothing.",
+        "Make it `private` and add a reader if the outside needs the value. The write stays where it "
+        "already is, and both the reader and the optimiser gain something the wider declaration was "
+        "taking away.",
+        "Declare fields private and widen when something outside needs them. This is the one rule "
+        "where the tidier declaration and the faster program are the same declaration." }},
+
+    {Code::OwnershipCycle, {
+        "Polaron-0B35", "these two point at each other, and neither says which one owns the other",
+        "A cycle of owning pointers has no order to be destroyed in: whichever goes first leaves the "
+        "other holding an address that is gone, and a `cascade` walking the graph arrives back where "
+        "it started. Nothing in either declaration says which direction is ownership and which is "
+        "acquaintance -- so the answer lives in whichever destructor somebody wrote first.",
+        "Mark the back-pointer `weak`. It is then an acquaintance rather than a claim: it does not "
+        "keep the object alive, it does not extend the cascade, and it is emptied when the pointee "
+        "dies instead of being left pointing at freed memory.",
+        "When two types refer to each other, decide which one is the parent before writing the "
+        "second field. A cycle with no owner is a decision that was never made rather than one that "
+        "was made badly." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "

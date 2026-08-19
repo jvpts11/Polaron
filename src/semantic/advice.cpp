@@ -95,6 +95,192 @@ std::string commonPrefix(const std::vector<std::string>& names) {
 
 }  // namespace
 
+// WHAT THE WHOLE PROGRAM DOES, gathered once.
+//
+// Several rules are about the difference between what a declaration promises and what anything
+// actually does with it -- a field nobody reads, a public one only its own class writes, a
+// `movable` never moved. Each would otherwise walk every body itself, so they share one pass.
+//
+// Approximate BY NAME, and deliberately in the safe direction: two classes with a field of the same
+// name are treated as one, which makes a rule report LESS than it could and never more. Silence
+// where a rule could have spoken is a missed opportunity; noise where it should not have is how a
+// whole catalogue gets turned off.
+struct ProgramUse {
+    std::unordered_set<std::string> membersRead;      // any `x.name` that is not an assignment target
+    std::unordered_set<std::string> membersWritten;   // any `x.name =`
+    std::unordered_map<std::string, std::unordered_set<std::string>> writersOf;  // field -> classes
+    std::unordered_set<std::string> methodsCalled;
+    std::unordered_map<std::string, std::unordered_set<std::string>> typeSeenIn;  // type -> bundles
+    std::unordered_set<std::string> movedTypes;       // declared types of things a `move` names
+};
+
+namespace {
+
+void indexExpr(const ast::Expr* e, const std::string& bundle, ProgramUse& use,
+               const std::unordered_map<std::string, std::string>& localTypes);
+
+void indexMemberTarget(const ast::Expr* target, const std::string& cls, ProgramUse& use) {
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(target)) {
+        use.membersWritten.insert(mem->member);
+        use.writersOf[mem->member].insert(cls);
+    }
+}
+
+void indexExpr(const ast::Expr* e, const std::string& bundle, ProgramUse& use,
+               const std::unordered_map<std::string, std::string>& localTypes) {
+    if (e == nullptr) {
+        return;
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+        use.membersRead.insert(mem->member);
+        indexExpr(mem->object.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+            use.methodsCalled.insert(mem->member);
+        }
+        indexExpr(call->callee.get(), bundle, use, localTypes);
+        for (const ast::ExprPtr& a : call->args) {
+            indexExpr(a.get(), bundle, use, localTypes);
+        }
+        return;
+    }
+    if (const auto* mv = dynamic_cast<const ast::MoveExpr*>(e)) {
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mv->operand.get())) {
+            if (auto it = localTypes.find(id->name); it != localTypes.end()) {
+                use.movedTypes.insert(baseType(it->second));
+            }
+        }
+        indexExpr(mv->operand.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* ne = dynamic_cast<const ast::NewExpr*>(e)) {
+        use.typeSeenIn[ne->className].insert(bundle);
+        for (const ast::ExprPtr& a : ne->args) {
+            indexExpr(a.get(), bundle, use, localTypes);
+        }
+        return;
+    }
+    if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+        indexExpr(bin->lhs.get(), bundle, use, localTypes);
+        indexExpr(bin->rhs.get(), bundle, use, localTypes);
+    } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+        indexExpr(un->operand.get(), bundle, use, localTypes);
+    } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+        indexExpr(cast->operand.get(), bundle, use, localTypes);
+    } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+        indexExpr(ix->array.get(), bundle, use, localTypes);
+        indexExpr(ix->index.get(), bundle, use, localTypes);
+    } else if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(e)) {
+        indexExpr(aw->operand.get(), bundle, use, localTypes);
+    }
+}
+
+void indexBlock(const ast::Block& blk, const std::string& bundle, const std::string& cls,
+                ProgramUse& use, std::unordered_map<std::string, std::string>& localTypes);
+
+void indexStmt(const ast::Stmt& st, const std::string& bundle, const std::string& cls,
+               ProgramUse& use, std::unordered_map<std::string, std::string>& localTypes) {
+    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+        if (!vd->isVar) {
+            const std::string t = typeRefStr(vd->type);
+            localTypes[vd->name] = t;
+            use.typeSeenIn[baseType(t)].insert(bundle);
+        }
+        indexExpr(vd->init.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+        indexMemberTarget(as->target.get(), cls, use);
+        // The OBJECT of an assignment target is still read (`a.b.c = 1` reads `a.b`), but the field
+        // being written is not: that is the whole distinction these two sets exist for.
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(as->target.get())) {
+            indexExpr(mem->object.get(), bundle, use, localTypes);
+        } else {
+            indexExpr(as->target.get(), bundle, use, localTypes);
+        }
+        indexExpr(as->value.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+        indexExpr(es->expr.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&st)) {
+        indexExpr(rs->value.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
+        indexExpr(iff->cond.get(), bundle, use, localTypes);
+        indexBlock(iff->thenBlock, bundle, cls, use, localTypes);
+        if (iff->elseBlock) {
+            indexBlock(*iff->elseBlock, bundle, cls, use, localTypes);
+        }
+        return;
+    }
+    if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+        indexExpr(ws->cond.get(), bundle, use, localTypes);
+        indexBlock(ws->body, bundle, cls, use, localTypes);
+        return;
+    }
+    if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&st)) {
+        indexBlock(dw->body, bundle, cls, use, localTypes);
+        indexExpr(dw->cond.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+        if (fs->init) {
+            indexStmt(*fs->init, bundle, cls, use, localTypes);
+        }
+        indexExpr(fs->cond.get(), bundle, use, localTypes);
+        if (fs->update) {
+            indexStmt(*fs->update, bundle, cls, use, localTypes);
+        }
+        indexBlock(fs->body, bundle, cls, use, localTypes);
+        return;
+    }
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+        indexExpr(fe->iterable.get(), bundle, use, localTypes);
+        indexBlock(fe->body, bundle, cls, use, localTypes);
+        return;
+    }
+    if (const auto* ts = dynamic_cast<const ast::TryStmt*>(&st)) {
+        indexBlock(ts->body, bundle, cls, use, localTypes);
+        for (const ast::CatchClause& cc : ts->catches) {
+            indexBlock(cc.body, bundle, cls, use, localTypes);
+        }
+        if (ts->finallyBlock) {
+            indexBlock(*ts->finallyBlock, bundle, cls, use, localTypes);
+        }
+        return;
+    }
+    if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(&st)) {
+        indexExpr(sy->mutex.get(), bundle, use, localTypes);
+        indexBlock(sy->body, bundle, cls, use, localTypes);
+        return;
+    }
+    if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&st)) {
+        indexExpr(del->target.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* inc = dynamic_cast<const ast::IncDecStmt*>(&st)) {
+        indexMemberTarget(inc->target.get(), cls, use);
+        indexExpr(inc->target.get(), bundle, use, localTypes);
+    }
+}
+
+void indexBlock(const ast::Block& blk, const std::string& bundle, const std::string& cls,
+                ProgramUse& use, std::unordered_map<std::string, std::string>& localTypes) {
+    for (const ast::StmtPtr& st : blk.statements) {
+        if (st) {
+            indexStmt(*st, bundle, cls, use, localTypes);
+        }
+    }
+}
+
+}  // namespace
+
 void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
     // A class-shaped rule reads only the declaration, so all of them share one walk over the members
     // rather than each opening the list again.
@@ -385,6 +571,173 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
             }
         }
     }
+    // What anything actually DOES with these declarations, gathered in one pass.
+    ProgramUse use;
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& c : ns.classes) {
+                std::unordered_map<std::string, std::string> locals;
+                for (const ast::MemberPtr& mp : c.members) {
+                    if (const auto* fd = dynamic_cast<const ast::FieldDecl*>(mp.get())) {
+                        use.typeSeenIn[baseType(typeRefStr(fd->type))].insert(bundle.name);
+                    } else if (const auto* md = dynamic_cast<const ast::MethodDecl*>(mp.get())) {
+                        use.typeSeenIn[baseType(typeRefStr(md->returnType))].insert(bundle.name);
+                        for (const ast::Param& p : md->params) {
+                            const std::string t = typeRefStr(p.type);
+                            use.typeSeenIn[baseType(t)].insert(bundle.name);
+                            locals[p.name] = t;
+                        }
+                        indexBlock(md->body, bundle.name, c.name, use, locals);
+                    } else if (const auto* cd = dynamic_cast<const ast::ConstructorDecl*>(mp.get())) {
+                        for (const ast::Param& p : cd->params) {
+                            locals[p.name] = typeRefStr(p.type);
+                        }
+                        indexBlock(cd->body, bundle.name, c.name, use, locals);
+                    } else if (const auto* dd = dynamic_cast<const ast::DestructorDecl*>(mp.get())) {
+                        indexBlock(dd->body, bundle.name, c.name, use, locals);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- what nothing does with a declaration ----
+    // DISTINCT NAMES, not entries: a program of two hundred files declaring `public bundle Agents`
+    // has two hundred `Bundle` nodes and one bundle. Counting entries made a single-bundle program
+    // look like two hundred, which fired the public-with-no-outside-use rule on every public type
+    // in the game -- ninety-nine of them.
+    std::unordered_set<std::string> authored;
+    for (const ast::Bundle& b : program.bundles) {
+        if (b.name != "System") {
+            authored.insert(b.name);
+        }
+    }
+    const std::size_t authoredBundles = authored.size();
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& c : ns.classes) {
+                pushAllows(c.annotations, {});
+
+                // A `movable` or `partitionable` that nothing ever moves or partitions (cat. 36/37).
+                // The discipline costs every assignment an explicit `move` and every reader the
+                // question of where the transfer happens; when there is no transfer, that is paid
+                // for nothing and the word says something untrue about the type.
+                if ((c.isMovable || c.isPartitionable) && use.movedTypes.count(c.name) == 0) {
+                    warn(diag::Code::DisciplineNeverExercised,
+                         "'" + c.name + "' is declared " +
+                             std::string(c.isMovable ? "movable" : "partitionable") +
+                             " and nothing in this program ever moves one",
+                         c.loc);
+                }
+
+                // A public type nobody outside its bundle mentions (catalogue 32).
+                //
+                // Only where there IS an outside. In a program of one bundle every public type
+                // trivially qualifies, and a rule that fires on everything says nothing -- which is
+                // how a whole catalogue gets switched off. Monomorphized instances are skipped for
+                // the same reason: `Chain$AgentId` is the compiler's name, not anybody's decision.
+                //
+                // `System` does not count towards "more than one bundle": the prelude arrives with
+                // every program, so counting it made every single-bundle program look like two and
+                // fired this on all ninety-nine of the game's public types.
+                if (c.visibility == "public" && !c.isInterface && authoredBundles > 1 &&
+                    c.name.find('$') == std::string::npos) {
+                    auto seen = use.typeSeenIn.find(c.name);
+                    const bool onlyHere = seen == use.typeSeenIn.end() ||
+                                          (seen->second.size() == 1 &&
+                                           seen->second.count(bundle.name) > 0);
+                    if (onlyHere && bundle.name != "System") {
+                        warn(diag::Code::PublicWithNoOutsideUse,
+                             "'" + c.name + "' is public and nothing outside bundle '" +
+                                 bundle.name + "' mentions it",
+                             c.loc);
+                    }
+                }
+
+                // An interface used as a label rather than as a type (catalogue 18). Nothing holds
+                // one, so no call through it is ever polymorphic: it costs a vtable and an indirect
+                // call to express a naming convention.
+                if (c.isInterface && use.typeSeenIn.count(c.name) == 0) {
+                    warn(diag::Code::InterfaceNeverPolymorphic,
+                         "nothing in this program holds a '" + c.name +
+                             "', so no call through it is ever polymorphic",
+                         c.loc);
+                }
+
+                for (const ast::MemberPtr& mp : c.members) {
+                    const auto* f = dynamic_cast<const ast::FieldDecl*>(mp.get());
+                    if (f == nullptr || f->isStatic) {
+                        continue;
+                    }
+                    // A field nothing reads (catalogue 64). It is written, carried in every
+                    // instance, copied by every copy, and never asked about.
+                    if (use.membersRead.count(f->name) == 0) {
+                        warn(diag::Code::FieldNeverRead,
+                             "nothing reads '" + c.name + "." + f->name + "'", f->loc);
+                        continue;
+                    }
+                    // A public field only its own class writes (catalogue 31). Visibility is not
+                    // only style here: what is reachable from outside is what the escape analysis
+                    // has to assume can change, so the narrower declaration is the stronger fact.
+                    if (f->visibility == "public") {
+                        auto writers = use.writersOf.find(f->name);
+                        if (writers != use.writersOf.end() && writers->second.size() == 1 &&
+                            writers->second.count(c.name) > 0) {
+                            warn(diag::Code::PublicWrittenOnlyInside,
+                                 "'" + c.name + "." + f->name +
+                                     "' is public and only '" + c.name + "' ever writes it",
+                                 f->loc);
+                        }
+                    }
+                }
+                popAllows();
+            }
+        }
+    }
+
+    // ---- a pointer back to the owner is a cycle (catalogue 9) ----
+    //
+    // A owns a B and the B points back at the A. Neither side says which is the owner, so a cascade
+    // walks it twice, a reference count never reaches zero, and the destructor order is whichever
+    // one happens to be destroyed first.
+    for (const ast::ClassDecl* a : all) {
+        for (const ast::MemberPtr& mp : a->members) {
+            const auto* fa = dynamic_cast<const ast::FieldDecl*>(mp.get());
+            if (fa == nullptr || fa->isWeak) {
+                continue;
+            }
+            const std::string bName = baseType(typeRefStr(fa->type));
+            if (typeRefStr(fa->type).find('*') == std::string::npos || bName == a->name) {
+                continue;
+            }
+            const auto* b = std::find_if(all.begin(), all.end(), [&](const ast::ClassDecl* x) {
+                                return x->name == bName;
+                            }) != all.end()
+                                ? *std::find_if(all.begin(), all.end(),
+                                                [&](const ast::ClassDecl* x) { return x->name == bName; })
+                                : nullptr;
+            if (b == nullptr) {
+                continue;
+            }
+            for (const ast::MemberPtr& mq : b->members) {
+                const auto* fb = dynamic_cast<const ast::FieldDecl*>(mq.get());
+                if (fb == nullptr || fb->isWeak) {
+                    continue;
+                }
+                if (baseType(typeRefStr(fb->type)) == a->name &&
+                    typeRefStr(fb->type).find('*') != std::string::npos) {
+                    pushAllows(a->annotations, {});
+                    warn(diag::Code::OwnershipCycle,
+                         "'" + a->name + "." + fa->name + "' and '" + b->name + "." + fb->name +
+                             "' point at each other, and neither says which one owns the other",
+                         fa->loc);
+                    popAllows();
+                    break;
+                }
+            }
+        }
+    }
+
     for (const ast::ClassDecl* c : all) {
         auto kids = children.find(c->name);
         if (kids == children.end() || kids->second.empty()) {

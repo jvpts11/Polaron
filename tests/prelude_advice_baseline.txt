@@ -33,3 +33,6 @@ Polaron-0B27   5
 Polaron-0B28  58
 Polaron-0B29   2
 Polaron-0B2D   5
+Polaron-0B32  14
+Polaron-0B33   6
+Polaron-0B34  27

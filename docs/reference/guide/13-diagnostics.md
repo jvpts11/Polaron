@@ -192,6 +192,12 @@ two copies come to disagree.
 | `Polaron-0B2D` | this walks the whole collection, inside a loop |
 | `Polaron-0B2E` | this holds a lock across work that has nothing to do with what it protects |
 | `Polaron-0B2F` | these two waits are added together and did not have to be |
+| `Polaron-0B30` | nothing in this program ever moves one of these |
+| `Polaron-0B31` | this is public and nothing outside its bundle mentions it |
+| `Polaron-0B32` | nothing in this program ever holds one of these |
+| `Polaron-0B33` | nothing reads this field |
+| `Polaron-0B34` | this field is public and only its own class ever writes it |
+| `Polaron-0B35` | these two point at each other, and neither says which one owns the other |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

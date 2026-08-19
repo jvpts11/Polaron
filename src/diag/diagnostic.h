@@ -174,6 +174,12 @@ enum class Code {
     LinearSearchInLoop,   // `contains`/`indexOf` inside a loop: the other loop nobody wrote
     LockAroundSlowWork,   // a lock held across console, file or socket work
     SequentialIndependentAwaits,  // two waits added together that could have overlapped
+    DisciplineNeverExercised, // `movable`/`partitionable` that nothing ever moves
+    PublicWithNoOutsideUse,   // a public type nothing outside its bundle mentions
+    InterfaceNeverPolymorphic,  // an interface nothing ever holds: a label with a vtable
+    FieldNeverRead,       // a field carried in every instance and never asked about
+    PublicWrittenOnlyInside,  // a public field only its own class writes
+    OwnershipCycle,       // two pointers at each other, neither saying which owns which
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First
