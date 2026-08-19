@@ -3569,6 +3569,8 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnHeapWithLexicalLifetime(m->body);
                         warnRepeatedCleanup(*m);
                         warnThrowInLoop(m->body);
+                        warnBooleanOutParameter(*m);
+                        warnValidationThatIsAContract(*m);
                         popAllows();
                         for (const auto& [fname, floc] : boundFields) {
                             const FlowFacts::Init st = initStateOf(m->boundTarget + "." + fname);

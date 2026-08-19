@@ -1156,6 +1156,69 @@ constexpr Row kCatalog[] = {
         "Introduce the abstraction at the second implementation, not the first. One implementation "
         "behind an interface is a guess about the future written in a place that charges rent." }},
 
+    {Code::OwnershipByDiscipline, {
+        "Polaron-0B1F", "the destructor frees this field, and the declaration does not say it owns it",
+        "`delete this.f` in a destructor is a claim: this object owns what `f` points at, and nobody "
+        "else will free it. The claim is true or the program double-frees, and nothing but care is "
+        "keeping it true -- a second field pointed at the same object, a copy handed out, a pointer "
+        "stored in a collection, and the destructor runs twice over one allocation.",
+        "Declare the field `unique`. The compiler then proves at every assignment, argument and "
+        "return that only one reference exists, which is exactly the claim the `delete` is already "
+        "making. Where the field is deliberately not owned, `weak` says that instead -- and then the "
+        "`delete` is the thing to remove.",
+        "Say which fields are owned when the class is written. Ownership decided later is ownership "
+        "decided by whoever wrote the destructor, and they were only thinking about one of the "
+        "paths." }},
+
+    {Code::GuardThatIsAnInvariant, {
+        "Polaron-0B20", "several methods here open by checking the same thing about this object",
+        "A condition re-established at the top of method after method is a property of the object, "
+        "not of any one call. Written out each time it is a rule with no single home: the method "
+        "added next week will not have it, nothing will notice, and the check that was there to stop "
+        "a bad state simply stops covering the place the bad state arrives.",
+        "Write it once as an `invariant` on the class. It is then checked at every entry and every "
+        "exit -- including the entries nobody remembered -- and handed to the optimiser as a fact, "
+        "so the places that were testing it stop paying for the test.",
+        "When the same question is asked at the start of a second method, it has stopped being a "
+        "question about the call and become one about the object." }},
+
+    {Code::BooleanOutParameter, {
+        "Polaron-0B21", "this returns a boolean and writes its real answer through a parameter",
+        "Two things come back from one call and only one of them is in the type. The caller has to "
+        "know that the parameter is meaningful only when the boolean is true -- and nothing enforces "
+        "it: reading the out parameter on the false path compiles perfectly and gives back whatever "
+        "was in that storage, which is usually a plausible value and never the right one.",
+        "Return a `Result<T, E>` or an `Option<T>`. The failure is then in the type, the value "
+        "cannot be read without dealing with the failure first, and the parameter goes away with the "
+        "aliasing question it brought.",
+        "This shape is what a language does before it has sum types. Polaron has them, so the only "
+        "reason to write it now is habit -- or a foreign signature being mirrored, which is a real "
+        "reason and belongs in an `[Allow]`." }},
+
+    {Code::ValidationThatIsAContract, {
+        "Polaron-0B22", "this public method opens by rejecting its argument",
+        "A precondition stated inside the body is stated in the one place the caller does not read. "
+        "It cannot be seen at the call site, it cannot be checked at compile time where the value is "
+        "already known, and the next method that needs the same guard gets its own copy -- or "
+        "doesn't, which is the interesting half.",
+        "Hoist it into a `requires` clause on the signature. It is then part of what the method "
+        "promises, the compiler can elide the check wherever it has already proved the condition, "
+        "and a violation names the caller rather than the callee.",
+        "Write the `requires` while writing the signature. The check inside the body is what happens "
+        "when the precondition is remembered after the parameter list is finished." }},
+
+    {Code::NullCheckOnNonNullable, {
+        "Polaron-0B23", "this compares a non-nullable value against null",
+        "Every type in Polaron is non-null unless it says `nullable`, so the branch is dead: it "
+        "costs a test and a path that is never taken, and -- worse -- it tells every reader that a "
+        "null can arrive here. They will then be careful about a case that cannot happen, and less "
+        "careful about the one that can.",
+        "Delete the check. If a null really can arrive, the type is wrong rather than the check: "
+        "declare it `nullable T` and the compiler will insist the check is there, at every use, "
+        "instead of leaving it to be remembered.",
+        "Let the type carry the question. A null check on a non-nullable is usually a habit brought "
+        "from a language where every reference could be null, and where it therefore said nothing." }},
+
     {Code::AnnotationMisuse, {
         "Polaron-0613", "this does not match how the annotation was declared",
         "An annotation is a declared type with named fields: which fields exist, which of them are "

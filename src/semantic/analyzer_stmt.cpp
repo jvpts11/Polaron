@@ -587,6 +587,87 @@ void SemanticAnalyzer::warnThrowInLoop(const ast::Block& body) {
     }
 }
 
+void SemanticAnalyzer::warnBooleanOutParameter(const ast::MethodDecl& m) {
+    // `boolean tryGet(T* out)` IS A `Result` WRITTEN BEFORE THE LANGUAGE HAD ONE. Two things come
+    // back from one call and only one of them is in the type; the caller has to know that the second
+    // is meaningful only when the first is true, and nothing enforces that -- reading the out
+    // parameter on the false path compiles perfectly and returns whatever was in it.
+    if (baseType(typeRefStr(m.returnType)) != "boolean" || m.params.empty()) {
+        return;
+    }
+    const ast::Param& last = m.params.back();
+    const std::string t = typeRefStr(last.type);
+    if (t.find('*') == std::string::npos && !isRefType(t)) {
+        return;
+    }
+    warn(diag::Code::BooleanOutParameter,
+         "'" + m.name + "' returns a boolean and writes its real answer through '" + last.name + "'",
+         m.loc);
+}
+
+void SemanticAnalyzer::warnValidationThatIsAContract(const ast::MethodDecl& m) {
+    // A PUBLIC METHOD THAT OPENS BY REJECTING ITS ARGUMENT is stating a precondition in the one
+    // place nobody reads: inside the body. Written as `requires`, the same sentence is on the
+    // signature, where the caller is; the compiler can drop the check where it has already proved
+    // the condition; and it cannot be forgotten by the next method that needs the same guard.
+    if (m.visibility != "public" || m.body.statements.empty() || !m.requiresClauses.empty()) {
+        return;
+    }
+    const auto* iff = dynamic_cast<const ast::IfStmt*>(m.body.statements[0].get());
+    if (iff == nullptr || iff->elseBlock != nullptr || iff->thenBlock.statements.size() != 1) {
+        return;
+    }
+    if (dynamic_cast<const ast::ThrowStmt*>(iff->thenBlock.statements[0].get()) == nullptr) {
+        return;
+    }
+    // It must be about a PARAMETER: a check on `this` is an invariant, and one on a global is
+    // neither. Named parameters are what a `requires` clause can talk about.
+    std::string text;
+    iff->cond->dump(text, 0);
+    const bool mentionsParam = std::any_of(
+        m.params.begin(), m.params.end(),
+        [&text](const ast::Param& p) { return text.find(p.name) != std::string::npos; });
+    if (!mentionsParam) {
+        return;
+    }
+    warn(diag::Code::ValidationThatIsAContract,
+         "'" + m.name + "' opens by rejecting its argument, which is a precondition written inside "
+         "the body",
+         iff->loc);
+}
+
+void SemanticAnalyzer::warnNullCheckOnNonNullable(const ast::Expr& cond) {
+    // COMPARING A NON-NULLABLE AGAINST `null` asks a question its type has already answered. Every
+    // type in Polaron is non-null unless it says `nullable`, so the branch is dead: it costs a test
+    // and a never-taken path, and it tells the reader that a null can arrive here, which is exactly
+    // the thing that cannot happen.
+    const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&cond);
+    if (bin == nullptr || (bin->op != "==" && bin->op != "!=")) {
+        return;
+    }
+    const ast::Expr* other = nullptr;
+    if (dynamic_cast<const ast::NullLiteralExpr*>(bin->rhs.get()) != nullptr) {
+        other = bin->lhs.get();
+    } else if (dynamic_cast<const ast::NullLiteralExpr*>(bin->lhs.get()) != nullptr) {
+        other = bin->rhs.get();
+    }
+    if (other == nullptr) {
+        return;
+    }
+    const std::string t = typeOf(*other);
+    if (t.empty() || t == "null" || isNullableType(t)) {
+        return;
+    }
+    // Only a type that could otherwise HOLD a null is worth saying this about: a class, a pointer,
+    // an array. An `int` compared to null is a type error and is somebody else's diagnostic.
+    if (t.find('*') == std::string::npos && !isArrayType(t) && lookupClass(baseType(t)) == nullptr) {
+        return;
+    }
+    warn(diag::Code::NullCheckOnNonNullable,
+         "'" + t + "' is non-nullable, so this comparison against null is already answered",
+         cond.loc);
+}
+
 void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // A `String` REBUILT ON EVERY TURN OF A LOOP, which is the shape the language's own benchmarks
     // measured at 18.5x. It is worth a warning rather than a note because nothing at the site looks
@@ -1479,6 +1560,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (!ct.empty() && ct != "boolean") {
             error("'if' condition must be boolean, got '" + ct + "'", ifs->loc);
         }
+        warnNullCheckOnNonNullable(*ifs->cond);   // while the names are still in scope
         if (ifs->isComptime) {
             long long v;
             if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_, &enums_)) {

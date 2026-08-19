@@ -280,6 +280,9 @@ private:
     void warnHeapWithLexicalLifetime(const ast::Block& body);
     void warnRepeatedCleanup(const ast::MethodDecl& m);
     void warnThrowInLoop(const ast::Block& body);
+    void warnBooleanOutParameter(const ast::MethodDecl& m);
+    void warnValidationThatIsAContract(const ast::MethodDecl& m);
+    void warnNullCheckOnNonNullable(const ast::Expr& cond);   // called while names are in scope
     // Advice, per declaration (advice.cpp): shapes a class's own text gives away.
     void adviseOnDeclarations(const ast::Program& program);
     void adviseOnClass(const ast::ClassDecl& c);

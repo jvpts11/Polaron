@@ -175,6 +175,11 @@ two copies come to disagree.
 | `Polaron-0B1C` | this throw is inside a loop |
 | `Polaron-0B1D` | every subtype of this is in this program, and the declaration does not say so |
 | `Polaron-0B1E` | this abstract class has exactly one subtype |
+| `Polaron-0B1F` | the destructor frees this field, and the declaration does not say it owns it |
+| `Polaron-0B20` | several methods here open by checking the same thing about this object |
+| `Polaron-0B21` | this returns a boolean and writes its real answer through a parameter |
+| `Polaron-0B22` | this public method opens by rejecting its argument |
+| `Polaron-0B23` | this compares a non-nullable value against null |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

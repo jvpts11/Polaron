@@ -157,6 +157,11 @@ enum class Code {
     ThrowInLoop,          // a `throw` inside a loop, where unwinding is paid per iteration
     HierarchyNotSealed,   // every subtype is in this program and the base does not say so
     AbstractWithOneSubtype,  // an abstract class with exactly one subtype: two names for one thing
+    OwnershipByDiscipline,   // a pointer field the destructor frees, with no `unique` to prove it
+    GuardThatIsAnInvariant,  // the same check opening several methods: a property of the object
+    BooleanOutParameter,  // `boolean m(T* out)` -- a Result written before the language had one
+    ValidationThatIsAContract,  // a public method opening by rejecting its argument
+    NullCheckOnNonNullable,  // a comparison against null that the type has already answered
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

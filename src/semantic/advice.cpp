@@ -101,6 +101,7 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
     std::vector<const ast::MethodDecl*> methods;
     std::vector<const ast::FieldDecl*> fields;
     std::vector<const ast::ConstDecl*> constants;
+    const ast::DestructorDecl* dtor = nullptr;
     for (const ast::MemberPtr& m : c.members) {
         if (const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get())) {
             methods.push_back(md);
@@ -108,9 +109,86 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
             fields.push_back(fd);
         } else if (const auto* cd = dynamic_cast<const ast::ConstDecl*>(m.get())) {
             constants.push_back(cd);
+        } else if (const auto* dd = dynamic_cast<const ast::DestructorDecl*>(m.get())) {
+            dtor = dd;
         }
     }
     pushAllows(c.annotations, {});
+
+    // ---- a pointer field the destructor frees by hand is `unique` (catalogue 8) ----
+    //
+    // Writing `delete this.f` in a destructor is a claim: this object owns what `f` points at, and
+    // nothing else will free it. The claim is true or the program double-frees, and today nothing
+    // but discipline keeps it true -- a second field pointed at the same object, a copy handed out,
+    // and the destructor runs twice on one allocation.
+    if (dtor != nullptr) {
+        std::unordered_set<std::string> freed;
+        for (const ast::StmtPtr& st : dtor->body.statements) {
+            const auto* del = dynamic_cast<const ast::DeleteStmt*>(st.get());
+            if (del == nullptr) {
+                continue;
+            }
+            // `this` is an ordinary identifier in this AST, not a node of its own.
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(del->target.get());
+                mem != nullptr) {
+                const auto* obj = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                if (obj != nullptr && obj->name == "this") {
+                    freed.insert(mem->member);
+                }
+            }
+        }
+        for (const ast::FieldDecl* f : fields) {
+            const std::string t = typeRefStr(f->type);
+            if (freed.count(f->name) == 0 || f->isUnique || f->isWeak || isArrayType(t)) {
+                continue;
+            }
+            if (t.find('*') == std::string::npos) {
+                continue;   // only a pointer field carries an ownership question
+            }
+            warn(diag::Code::OwnershipByDiscipline,
+                 "'" + c.name + "." + f->name + "' is freed by the destructor, which is a claim "
+                 "about ownership the declaration does not make",
+                 f->loc);
+        }
+    }
+
+    // ---- the same condition guarding the start of several methods is an invariant (cat. 52) ----
+    //
+    // A condition checked at the top of method after method is a property of the OBJECT that each
+    // method is re-establishing on its own. Written as an `invariant` it is checked at every entry
+    // and every exit -- including the ones nobody remembered to guard -- and it is handed to the
+    // optimiser as a fact rather than tested again.
+    {
+        std::unordered_map<std::string, int> guards;
+        std::unordered_map<std::string, SourceLocation> firstGuard;
+        for (const ast::MethodDecl* m : methods) {
+            if (m->isStatic || m->body.statements.empty()) {
+                continue;
+            }
+            const auto* iff = dynamic_cast<const ast::IfStmt*>(m->body.statements[0].get());
+            if (iff == nullptr || iff->cond == nullptr) {
+                continue;
+            }
+            // The condition has to MENTION `this`, or it is about the arguments rather than the
+            // object, and an invariant is the wrong word for it.
+            std::string text;
+            iff->cond->dump(text, 0);
+            if (text.find("this") == std::string::npos) {
+                continue;
+            }
+            if (++guards[text] == 1) {
+                firstGuard[text] = iff->loc;
+            }
+        }
+        for (const auto& [text, count] : guards) {
+            if (count >= 3) {
+                warn(diag::Code::GuardThatIsAnInvariant,
+                     std::to_string(count) +
+                         " methods here open by checking the same thing about this object",
+                     firstGuard[text]);
+            }
+        }
+    }
 
     // ---- a bag of static methods is a transformer that has not been written (catalogue 19) ----
     //

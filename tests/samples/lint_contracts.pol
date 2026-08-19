@@ -1,0 +1,108 @@
+import System.IO.Console;
+import System.Runtime.Exception;
+import System.Runtime.OverflowException;
+
+program LintContracts;
+
+// THE ADVICE ABOUT OWNERSHIP AND CONTRACT: five claims a declaration is making without saying so.
+public bundle Main {
+    public namespace App {
+
+        public class Held {
+            public mutable int n;
+            public constructor Held(int n) { this.n = n; }
+        }
+
+        // FIRES (0B1F): `delete this.owned` claims this object owns it, and nothing proves the claim.
+        // QUIET on `seen`, which the destructor leaves alone.
+        public class Keeper {
+            private mutable Held* owned;
+            private mutable Held* seen;
+            public constructor Keeper(Held* owned, Held* seen) {
+                this.owned = owned;
+                this.seen = seen;
+            }
+            public method total() returns int { return this.owned.n + this.seen.n; }
+            public destructor ~Keeper() returns void {
+                delete this.owned;
+                return;
+            }
+        }
+
+        // FIRES (0B20): three methods opening with the same question about the object is a property
+        // of the object, not of any one call.
+        public class Gate {
+            private mutable int level;
+            public constructor Gate(int level) { this.level = level; }
+            public method a() returns int {
+                if (this.level < 0) { return 0; }
+                return 1;
+            }
+            public method b() returns int {
+                if (this.level < 0) { return 0; }
+                return 2;
+            }
+            public method c() returns int {
+                if (this.level < 0) { return 0; }
+                return 3;
+            }
+        }
+
+        public class Api {
+            // FIRES (0B21): two things come back and only one of them is in the type.
+            public static method tryRead(int at, Held* into) returns boolean {
+                if (at < 0) {
+                    return false;
+                }
+                into.n = at;
+                return true;
+            }
+
+            // FIRES (0B22): a precondition stated in the one place the caller does not read.
+            public static method scaled(int by) returns int {
+                if (by < 0) {
+                    throw new OverflowException() on heap;
+                }
+                return by * 2;
+            }
+
+            // QUIET: the precondition is on the signature, which is the thing being recommended.
+            public static method halved(int by) returns int requires by >= 0 {
+                return by / 2;
+            }
+
+            // FIRES (0B23): every type is non-null unless it says otherwise, so this branch is dead
+            // and it tells the reader that a null can arrive here.
+            public static method count(Held* h) returns int {
+                if (h == null) {
+                    return 0;
+                }
+                return h.n;
+            }
+
+            // QUIET: `nullable` is exactly the declaration that makes the question real.
+            public static method countMaybe(nullable Held* h) returns int {
+                if (h == null) {
+                    return 0;
+                }
+                return h.n;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Held* one = new Held(3) on heap;
+                Held* two = new Held(4) on heap;
+                Keeper* k = new Keeper(one, two) on heap;
+                Held* into = new Held(0) on heap;
+                mutable int ok = 0;
+                if (Api.tryRead(5, into)) { ok = into.n; }
+                System.IO.Console.println($"{k.total()} {ok} {Api.scaled(3)} {Api.halved(8)} {Api.count(two)} {Api.countMaybe(two)}");
+                delete k;
+                delete two;
+                delete into;
+                return;
+            }
+        }
+    }
+}

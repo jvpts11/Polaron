@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.143")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.144")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.143")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.144")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1102,6 +1102,47 @@ add_test(NAME lint_allow_demands_a_reason
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_allow_no_reason.pol")
 set_tests_properties(lint_allow_demands_a_reason PROPERTIES
     PASS_REGULAR_EXPRESSION "annotation 'Allow' requires a value for field 'why'")
+
+# THE ADVICE ABOUT OWNERSHIP AND CONTRACT: five claims a declaration is making without saying so.
+add_test(NAME lint_ownership_by_discipline
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_contracts.pol")
+set_tests_properties(lint_ownership_by_discipline PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B1F.*'Keeper.owned' is freed by the destructor")
+
+add_test(NAME lint_guard_that_is_an_invariant
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_contracts.pol")
+set_tests_properties(lint_guard_that_is_an_invariant PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B20.*3 methods here open by checking the same thing")
+
+add_test(NAME lint_boolean_out_parameter
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_contracts.pol")
+set_tests_properties(lint_boolean_out_parameter PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B21.*'tryRead' returns a boolean and writes its real answer")
+
+add_test(NAME lint_validation_that_is_a_contract
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_contracts.pol")
+set_tests_properties(lint_validation_that_is_a_contract PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B22.*'scaled' opens by rejecting its argument")
+
+add_test(NAME lint_null_check_on_non_nullable
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_contracts.pol")
+set_tests_properties(lint_null_check_on_non_nullable PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B23.*'Held\\*' is non-nullable")
+
+# ...and the near-misses: the field the destructor leaves alone, the method whose precondition is
+# already on its signature, and the `nullable` that makes the null question a real one.
+add_test(NAME lint_contract_shapes_are_narrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_contracts.pol")
+set_tests_properties(lint_contract_shapes_are_narrow PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'Keeper.seen'|'halved' opens|0B23.*countMaybe")
+
+add_test(NAME lint_contracts_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_contracts.pol"
+    "-DCONTAINS=7 5 6 4 4 4"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # THE ADVICE ABOUT LIFETIME, CLEANUP AND HIERARCHY. All five are about something the declaration
 # already knows and has not said. The throw-in-a-loop rule is here rather than with the flow ones
