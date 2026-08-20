@@ -1364,6 +1364,95 @@ void SemanticAnalyzer::killProofsFor(const std::string& name) {
     }
 }
 
+// BEFORE A LOOP BODY IS READ, not after it. `invalidateAcrossBackEdge` drops what the body proved,
+// which keeps the code AFTER the loop honest -- but the body is read once and stands for every
+// iteration, and while it is being read a proof made before the loop is still believed at the top.
+// The second time round it is not true:
+//
+//     mutable nullable Node* cur = n;   // n is non-null, so cur is proven non-null
+//     while (i < 2) {
+//         Use.read(cur);                // takes `Node*`. Accepted -- on the proof above.
+//         cur = cur.next();             // ...which this makes false for the next iteration.
+//     }
+//
+// That compiled, and the narrowing is not only advice: `typeOf` reports the non-nullable type to
+// argument passing, to `return` and to field assignment, so the whole checker believed it. What
+// caught the null was the runtime trap, which is the guarantee of last resort and not a type system.
+// Anything the body assigns loses its proof before the body is read at all.
+void SemanticAnalyzer::killProofsAssignedIn(const ast::Block& body) {
+    std::function<void(const ast::Block&)> walk = [&](const ast::Block& blk) {
+        for (const ast::StmtPtr& sp : blk.statements) {
+            const ast::Stmt* st = sp.get();
+            if (st == nullptr) {
+                continue;
+            }
+            auto rootOf = [](const ast::Expr* e) -> std::string {
+                while (e != nullptr) {
+                    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+                        e = mem->object.get();
+                    } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+                        e = ix->array.get();
+                    } else if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+                        return id->name;
+                    } else {
+                        break;
+                    }
+                }
+                return {};
+            };
+            if (const auto* as = dynamic_cast<const ast::AssignStmt*>(st)) {
+                // Both the root and the written path: `this.cur = x` must drop `this.cur`, and a
+                // write through `cur` must drop what was proven about `cur` itself.
+                std::string full;
+                if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(as->target.get())) {
+                    const std::string root = rootOf(mem->object.get());
+                    if (!root.empty()) {
+                        full = root + "." + mem->member;
+                    }
+                }
+                if (!full.empty()) {
+                    killProofsFor(full);
+                }
+                const std::string root = rootOf(as->target.get());
+                if (!root.empty()) {
+                    killProofsFor(root);
+                }
+            } else if (const auto* inc = dynamic_cast<const ast::IncDecStmt*>(st)) {
+                const std::string root = rootOf(inc->target.get());
+                if (!root.empty()) {
+                    killProofsFor(root);
+                }
+            } else if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st)) {
+                walk(iff->thenBlock);
+                if (iff->elseBlock) {
+                    walk(*iff->elseBlock);
+                }
+            } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(st)) {
+                walk(ws->body);
+            } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(st)) {
+                walk(dw->body);
+            } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(st)) {
+                // The update is an assignment too, and it runs on the same edge the body does.
+                if (const auto* upd = dynamic_cast<const ast::IncDecStmt*>(fs->update.get())) {
+                    const std::string root = rootOf(upd->target.get());
+                    if (!root.empty()) {
+                        killProofsFor(root);
+                    }
+                } else if (const auto* upa = dynamic_cast<const ast::AssignStmt*>(fs->update.get())) {
+                    const std::string root = rootOf(upa->target.get());
+                    if (!root.empty()) {
+                        killProofsFor(root);
+                    }
+                }
+                walk(fs->body);
+            } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) {
+                walk(fe->body);
+            }
+        }
+    };
+    walk(body);
+}
+
 const LocalVar* SemanticAnalyzer::lookupLocal(const std::string& name) const {
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
         auto found = it->find(name);

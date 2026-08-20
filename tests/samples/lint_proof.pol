@@ -90,13 +90,24 @@ public bundle Main {
                 Base* later = new Copy() on heap;
                 Store* s = new Store(first) on heap;
                 mutable int total = 0;
-                // FIRES (0B48): the same check before every call is a precondition living
-                // everywhere except where it could be enforced.
+                // FIRES (0B48): the same check on the same argument before every call is a
+                // precondition living everywhere except where it could be enforced.
                 if (total >= 0) {
-                    Proof.guarded(1, 2);
+                    Proof.guarded(total, 2);
                 }
                 if (total >= 0) {
-                    Proof.guarded(3, 4);
+                    Proof.guarded(total, 4);
+                }
+                // QUIET: the guard is about neither the receiver nor any argument, so it is not a
+                // precondition of `blend` at all -- it is a branch that happens to contain a call,
+                // and a `requires` there would be moving somebody else's question into the callee.
+                // This is the shape `Json.writeInto` has, where a dispatch over a tag was being
+                // read as a rule about `StringBuilder.append`.
+                if (total > 1) {
+                    Proof.blend(a, b, 4);
+                }
+                if (total > 1) {
+                    Proof.blend(b, a, 4);
                 }
                 // FIRES (0B4B): `take` keeps it -- the escape summary says so -- and nothing here
                 // reads `later` again, so two names hold one object and one of them for no reason.

@@ -1,0 +1,50 @@
+// ONE READING OF A LOOP BODY STANDS FOR EVERY ITERATION, so a proof made before the loop cannot be
+// believed inside it once the body has taken it away.
+//
+// `cur` is `nullable Node*` and starts out holding `n`, which is not null -- so the flow analysis
+// proves it non-null, and the narrowing that follows from that is not advice: `typeOf` reports the
+// non-nullable type to argument passing, to `return` and to field assignment, so the whole checker
+// believes it. The body then assigns `cur` from something that may be null, and the second time
+// round `Use.read(cur)` is handed exactly the null its parameter type says cannot arrive.
+//
+// This compiled until 2026-08-20. What caught the null was the runtime trap -- which is the
+// guarantee of last resort, not a type system -- and what it printed was nothing at all, because
+// stdout had not been flushed when the process died.
+//
+// Found by chasing a false positive: `Polaron-0B23` was reporting the library's `if (cur == null)`
+// inside a `while` as a comparison the type had already answered, on a `cur` declared `nullable`.
+// The rule was reading a proof that should not have been there.
+import System.IO.Console;
+
+program NullProofBackEdge;
+
+public bundle Main {
+    public namespace App {
+
+        public class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+            public method next() returns nullable Node { return null; }
+        }
+
+        public class Use {
+            // Nothing here tests for null, because the parameter type said it could not be one.
+            public static method read(Node* n) returns int { return n.v; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* n = new Node(7) on heap;
+                mutable nullable Node* cur = n;
+                mutable int i = 0;
+                while (i < 2) {
+                    System.IO.Console.println($"{Use.read(cur)}");
+                    cur = cur.next();
+                    i = i + 1;
+                }
+                delete n;
+                return;
+            }
+        }
+    }
+}

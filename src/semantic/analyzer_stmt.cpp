@@ -949,6 +949,13 @@ void SemanticAnalyzer::warnLinearSearchInLoop(const ast::Block& body) {
     // collection, so a loop around them is quadratic in something that usually grows -- and it is
     // invisible, because the inner loop is a method call one word long.
     auto scanLoop = [&](const ast::Block& blk) {
+        // WHAT THE LOOP ITSELF MAKES is not the same collection scanned again. The rule is about one
+        // collection walked once per iteration -- n scans of n elements of the SAME thing. A receiver
+        // declared inside the body is a different object every time round, so the work is linear in
+        // the total and there is no second loop hiding: `String p = parts.get(i); int eq =
+        // p.indexOf("=");` searches each part once, which is what searching every part costs.
+        std::unordered_set<std::string> madeHere;
+        collectDeclaredNames(blk, madeHere);
         eachStmt(blk, [&](const ast::Stmt& st) {
             auto look = [&](const ast::Expr* e) {
                 const auto* call = dynamic_cast<const ast::CallExpr*>(e);
@@ -957,6 +964,11 @@ void SemanticAnalyzer::warnLinearSearchInLoop(const ast::Block& body) {
                 }
                 const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
                 if (mem == nullptr) {
+                    return;
+                }
+                if (const auto* recv =
+                        dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                    recv != nullptr && madeHere.count(recv->name) > 0) {
                     return;
                 }
                 if (mem->member == "contains" || mem->member == "indexOf" ||
@@ -1967,6 +1979,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 declareLocal(fe->indexName, LocalVar{"int", false});
             }
             declareLocal(fe->varName, LocalVar{et, false});
+            killProofsAssignedIn(fe->body);
             analyzeBlock(fe->body);
             warnStringBuildingInLoop(fe->body);
             warnCopyHoistableOutOfLoop(fe->body);
@@ -2017,6 +2030,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             declareLocal(fe->indexName, LocalVar{"int", false});
         }
         declareLocal(fe->varName, LocalVar{et, false});
+        killProofsAssignedIn(fe->body);
         analyzeBlock(fe->body);
         warnStringBuildingInLoop(fe->body);
         warnCopyHoistableOutOfLoop(fe->body);
@@ -2844,6 +2858,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // neither. What it INITIALIZES is different: a second pass cannot un-assign a variable, but a
         // zero-pass loop means we cannot claim it was assigned either, so the entry state stands.
         const FlowFacts entry = snapshotFlow();
+        killProofsAssignedIn(ws->body);   // one reading of the body stands for every iteration
         std::string provenBody, unused;
         proofFromCondition(*ws->cond, provenBody, unused);
         if (!provenBody.empty()) {
@@ -2865,6 +2880,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
     if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&stmt)) {
         // A do-while body always runs once, so what it initializes really is initialized afterwards.
         const FlowFacts entry = snapshotFlow();
+        killProofsAssignedIn(dw->body);
         analyzeBlock(dw->body);
         warnStringBuildingInLoop(dw->body);
         warnCopyHoistableOutOfLoop(dw->body);
@@ -2889,6 +2905,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         // Same as `while`: zero iterations is possible, so nothing the body establishes escapes it.
         const FlowFacts entry = snapshotFlow();
+        killProofsAssignedIn(fs->body);
         analyzeBlock(fs->body);
         warnStringBuildingInLoop(fs->body);
         warnCopyHoistableOutOfLoop(fs->body);

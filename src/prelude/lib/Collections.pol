@@ -883,7 +883,14 @@
                 }
                 return i;
             }
-            private method grow() returns void {
+            // THE LOAD FACTOR LIVES HERE, not at each insert. Every one of them asked the same
+            // question in the same words, and a rule of the table that is written at its call sites
+            // is one the next insert can be written without -- silently, because nothing anywhere
+            // notices a table that stopped growing until it is full.
+            private method reserveOneMore() returns void {
+                if ((this.count + 1) * 4 < this.cap * 3) {
+                    return;
+                }
                 int oldCap = this.cap;
                 mutable K[] oldK = this.keys;
                 mutable V[] oldV = this.values;
@@ -919,7 +926,7 @@
                 delete oldU;
             }
             public method put(K key, V value) returns void {
-                if ((this.count + 1) * 4 >= this.cap * 3) { this.grow(); }
+                this.reserveOneMore();
                 int i = this.slotFor(key);
                 if (this.used[i] == 0) { this.used[i] = cast<byte>(1); this.count = this.count + 1; }
                 this.keys[i] = key;
@@ -940,7 +947,7 @@
                 return defaultValue;
             }
             public method merge(K key, V value, function<V, V, V> combine) returns void {
-                if ((this.count + 1) * 4 >= this.cap * 3) { this.grow(); }
+                this.reserveOneMore();
                 int i = this.slotFor(key);
                 if (this.used[i] == 0) {
                     this.used[i] = cast<byte>(1);

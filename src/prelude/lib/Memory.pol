@@ -12,6 +12,7 @@
         // the place, and the two numbers, so an overrun reads as a mistake with an address rather than
         // as corruption discovered three frames later.
         public class Buffer {
+            [Allow(code: "Polaron-0B3C", why: "this address is not foreign: the constructor allocates it and the destructor frees it, and holding it is what makes the length travel with the pointer -- which is the whole of what this class is")]
             private mutable address at;
             private mutable int size;
 
@@ -128,7 +129,7 @@
 
             // Copies `bytes` from another buffer's start into this one at `offset`. Both ends are
             // checked, because a copy is the one operation that can run off either of them.
-            public method copyFrom(Buffer* source, int offset, int bytes) returns void
+            public method copyFrom(Buffer& source, int offset, int bytes) returns void
                 requires bytes >= 0
                 requires offset >= 0
                 requires offset + bytes <= this.size

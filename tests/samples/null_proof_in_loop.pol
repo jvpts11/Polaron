@@ -1,0 +1,60 @@
+// ...AND THE PROOFS THE LOOP DOES NOT TAKE AWAY STILL HOLD. The fix beside this one drops the
+// non-null proof for everything a loop body assigns, before the body is read. It has to drop those
+// and no more, or every narrowing inside a loop stops working and the language gets a cast where it
+// used to have a proof.
+//
+// Three shapes that must still compile: a name proven before the loop and never assigned in it, a
+// name proven by the loop's own condition, and a name proven by a guard clause inside the body.
+import System.IO.Console;
+
+program NullProofInLoop;
+
+public bundle Main {
+    public namespace App {
+
+        public class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+            public method next() returns nullable Node { return null; }
+        }
+
+        public class Use {
+            public static method read(Node* n) returns int { return n.v; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* n = new Node(7) on heap;
+
+                // Proven before the loop, and the body never touches it.
+                nullable Node* held = n;
+                mutable int i = 0;
+                while (i < 3) {
+                    System.IO.Console.println($"{Use.read(held)}");
+                    i = i + 1;
+                }
+
+                // Proven by the loop's own condition.
+                mutable nullable Node* walk = n;
+                while (walk != null) {
+                    System.IO.Console.println($"{Use.read(walk)}");
+                    walk = walk.next();
+                }
+
+                // Proven by a guard clause inside the body, which is where the proof is made and
+                // where it is used -- the back edge has nothing to say about it.
+                mutable nullable Node* cursor = n;
+                mutable int k = 0;
+                while (k < 3) {
+                    if (cursor == null) { return; }
+                    System.IO.Console.println($"{Use.read(cursor)}");
+                    cursor = cursor.next();
+                    k = k + 1;
+                }
+
+                delete n;
+                return;
+            }
+        }
+    }
+}

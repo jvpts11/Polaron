@@ -495,6 +495,9 @@ private:
     // Called on every write to `name`: a stored proof of non-nullness is only about the value that WAS
     // there. This is the invalidation João asked for -- the reason a narrowing cannot derail a program.
     void killProofsFor(const std::string& name);
+    // Drops the non-null proofs for everything a loop body assigns, BEFORE the body is analysed --
+    // one reading of the body has to be true of every iteration. See the note at the definition.
+    void killProofsAssignedIn(const ast::Block& body);
     // Every path out of this block leaves it (return/throw/break/continue), so it contributes nothing to
     // the state after the branch -- which is what makes a guard clause narrow the code below it.
     static bool blockAlwaysExits(const ast::Block& b);

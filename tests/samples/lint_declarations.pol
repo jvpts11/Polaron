@@ -8,12 +8,21 @@ program LintDeclarations;
 public bundle Main {
     public namespace App {
 
-        // FIRES (0B10): three static methods and no state is a namespace with a class round it.
-        // A transformer says the same thing and reaches `itself` instead of taking the subject.
+        // The subject these three describe from outside. Every method of `Helpers` takes one first,
+        // which is what makes the behaviour movable onto it.
+        public class Reading {
+            private mutable int value;
+            public constructor Reading(int v) { this.value = v; }
+            public method value() returns int { return this.value; }
+        }
+
+        // FIRES (0B10): three static methods, no state, and every one of them takes a `Reading`
+        // first. The subject already exists and the class is describing it from outside; a
+        // transformer says the same thing and reaches `itself` instead of taking it as a parameter.
         public class Helpers {
-            public static method twice(int n) returns int { return n * 2; }
-            public static method half(int n) returns int { return n / 2; }
-            public static method negate(int n) returns int { return 0 - n; }
+            public static method twice(Reading r) returns int { return r.value() * 2; }
+            public static method half(Reading r) returns int { return r.value() / 2; }
+            public static method negate(Reading r) returns int { return 0 - r.value(); }
         }
 
         // QUIET: it has state, so the methods are guarding something.
@@ -23,6 +32,25 @@ public bundle Main {
             public static method zero() returns int { return 0; }
             public static method one() returns int { return 1; }
             public static method two() returns int { return 2; }
+        }
+
+        // QUIET: three statics and no state, but there is no subject to move them onto -- the first
+        // parameter is a primitive, and nobody wants three procedures applied to the integers. This
+        // is the shape the standard library's whole utility surface has, and the fix the rule names
+        // cannot be written for it: a transformer is applied BY a type, and there are no free
+        // functions in this language, so a class of statics is the only home these have.
+        public class Arithmetic {
+            public static method twice(int n) returns int { return n * 2; }
+            public static method half(int n) returns int { return n / 2; }
+            public static method negate(int n) returns int { return 0 - n; }
+        }
+
+        // QUIET for the same reason from the other end: no parameters at all, so there is nothing
+        // being carried in that could have been a receiver.
+        public class Extremes {
+            public static method smallest() returns int { return 0 - 2147483647; }
+            public static method largest() returns int { return 2147483647; }
+            public static method zero() returns int { return 0; }
         }
 
         // FIRES (0B11): public fields, no methods, no invariant -- a row, and a row is a record.
@@ -74,7 +102,7 @@ public bundle Main {
                 p.y = 3;
                 Bag b = new Bag(5) on heap;
                 Stretch s = new Stretch(1, 4);
-                System.IO.Console.println($"{Helpers.twice(4)} {Counter.two()} {p.x + p.y} {s.width()} {Speeds.fastest()} {Limits.widest()} {Bag.combine(b, 2)}");
+                System.IO.Console.println($"{Helpers.twice(new Reading(4) on stack)} {Arithmetic.twice(4)} {Extremes.zero()} {Counter.two()} {p.x + p.y} {s.width()} {Speeds.fastest()} {Limits.widest()} {Bag.combine(b, 2)}");
                 delete b;
                 return;
             }

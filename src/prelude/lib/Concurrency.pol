@@ -55,9 +55,9 @@
                     for (mutable int i = from; i < to; i++) { body(i); }
                     return;                              // no thread at all: a pool of one is a loop
                 }
-                mutable Thread[] pool = new Thread[workers]();
+                Thread[] pool = new Thread[workers]();
                 int chunk = (n + workers - 1) / workers;  // round UP, so the tail never falls off
-                for (mutable int w = 0; w < workers; w++) {
+                for (mutable int w = 0; w < pool.length(); w++) {
                     int lo = from + w * chunk;
                     mutable int hi = lo + chunk;
                     if (hi > to) { hi = to; }             // the last chunk is the short one
@@ -68,7 +68,7 @@
                     pool[w] = new Thread(slice) on heap;
                     pool[w].start();
                 }
-                for (mutable int w = 0; w < workers; w++) { pool[w].join(); }
+                for (mutable int w = 0; w < pool.length(); w++) { pool[w].join(); }
                 delete pool;
                 return;
             }
@@ -83,9 +83,9 @@
                 if (workers < 1) { workers = 1; }
                 if (workers > n) { workers = n; }
                 if (workers == 1) { body(from, to); return; }
-                mutable Thread[] pool = new Thread[workers]();
+                Thread[] pool = new Thread[workers]();
                 int chunk = (n + workers - 1) / workers;
-                for (mutable int w = 0; w < workers; w++) {
+                for (mutable int w = 0; w < pool.length(); w++) {
                     int lo = from + w * chunk;
                     mutable int hi = lo + chunk;
                     if (hi > to) { hi = to; }
@@ -96,7 +96,7 @@
                     pool[w] = new Thread(slice) on heap;
                     pool[w].start();
                 }
-                for (mutable int w = 0; w < workers; w++) { pool[w].join(); }
+                for (mutable int w = 0; w < pool.length(); w++) { pool[w].join(); }
                 delete pool;
                 return;
             }
@@ -105,6 +105,7 @@
             // because the workers write disjoint slots of a destination that already exists -- which
             // is what makes this safe without a lock, and what a version returning a fresh collection
             // would have to synchronize to do.
+            [Allow(code: "Polaron-0B40", why: "a worker writes the chunk [lo, hi), which is a share of the array and never its length; the relation that would prove the index is between the chunking and the array, and there is no declaration between them to write it on")]
             public static method mapInts(int[] src, int[] dst, function<int, int> f) returns void {
                 int n = src.length() < dst.length() ? src.length() : dst.length();
                 Parallel.forChunks(0, n,
@@ -117,8 +118,9 @@
             // A sum over a range, in parallel. The accumulation is atomic per CHUNK and not per item:
             // one atomic add per worker instead of one per element, which is the difference between a
             // parallel reduction and a very expensive way to serialise.
+            [Allow(code: "Polaron-0B1A", why: "the accumulator has to be one object at one address for every worker: captured by value, a stack one would be copied into each closure and every thread would add into its own")]
             public static method sumInts(int[] data) returns long {
-                mutable atomic<long> total = new atomic<long>(cast<long>(0)) on heap;
+                atomic<long> total = new atomic<long>(cast<long>(0)) on heap;
                 Parallel.forChunks(0, data.length(),
                     lambda[captures: byvalue data, byvalue total](int lo, int hi) returns void {
                         mutable long part = cast<long>(0);

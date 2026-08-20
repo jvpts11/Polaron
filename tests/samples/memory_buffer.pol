@@ -31,7 +31,7 @@ public bundle Main {
 
                 Buffer src = new Buffer(8) on stack;
                 src.writeInt(0, 42);
-                b.copyFrom(&src, 20, 4);
+                b.copyFrom(src, 20, 4);
                 System.IO.Console.println($"copied = {b.readInt(20)}");
 
                 // The generic pair, for code that is itself generic over what it stores. It is named

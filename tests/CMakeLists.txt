@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.153")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.154")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.153")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.154")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1129,6 +1129,14 @@ add_test(NAME lint_same_guard_does_not_merge_across_classes
 set_tests_properties(lint_same_guard_does_not_merge_across_classes PROPERTIES
     FAIL_REGULAR_EXPRESSION "0B48")
 
+# ...and the guard has to be ABOUT the call. A condition naming neither the receiver nor any argument
+# is a branch that happens to contain a call, and a `requires` there moves somebody else's question
+# into the callee: `if (this.kind == 0) { sb.append("null"); }` was being read as a rule about append.
+add_test(NAME lint_same_guard_must_be_about_the_call
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
+set_tests_properties(lint_same_guard_must_be_about_the_call PROPERTIES
+    FAIL_REGULAR_EXPRESSION "0B48.*'Proof.blend'")
+
 # Polaron-0B40 SAYS A PRICE IS PAID, so it has to agree with the pass that stops paying it. A loop
 # the bounds-check hoister versions runs its fast copy with no per-element check at all, and advising
 # against that loop charges for nothing. The rule asks `boundsChecksHoistable` -- the pass's own
@@ -1598,7 +1606,17 @@ add_test(NAME lint_flow_runs COMMAND "${CMAKE_COMMAND}"
 add_test(NAME lint_declaration_shapes
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
 set_tests_properties(lint_declaration_shapes PROPERTIES
-    PASS_REGULAR_EXPRESSION "0B10.*'Helpers' is 3 static methods")
+    PASS_REGULAR_EXPRESSION "0B10.*'Helpers' is 3 static methods.*takes a 'Reading' first")
+
+# ...and it stays quiet where there is no subject to move the behaviour onto. `Arithmetic` takes an
+# `int` first and `Extremes` takes nothing at all: a transformer is applied BY a type, and neither of
+# those has one, so the fix the rule names cannot be written. Untested, the rule reported the entire
+# utility surface of the standard library -- 73 classes, `Strings` and `Files` and `Machine` among
+# them -- with advice none of them can take.
+add_test(NAME lint_statics_without_state_needs_a_subject
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
+set_tests_properties(lint_statics_without_state_needs_a_subject PROPERTIES
+    FAIL_REGULAR_EXPRESSION "0B10.*'(Arithmetic|Extremes)'")
 
 add_test(NAME lint_data_without_behaviour
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
@@ -1632,7 +1650,7 @@ add_test(NAME lint_declarations_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"
     "-DCLANG=${POLARON_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol"
-    "-DCONTAINS=8 2 5 3 3 80 10"
+    "-DCONTAINS=8 8 0 2 5 3 3 80 10"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -2232,6 +2250,24 @@ set_tests_properties(sema_rejects_wrong_type_in_region_field PROPERTIES
 # A gap: `D` applies the transformer and nothing leads from `A` to it, so the set is not one
 # relation. The message names the pair and the cheap fix -- any conversion that reaches it, because
 # the rest is composed.
+# A NON-NULL PROOF DOES NOT SURVIVE A BACK EDGE. The body of a loop is read once and stands for
+# every iteration, so a proof made before the loop cannot be believed inside it once the body has
+# assigned the name away. This compiled until 2026-08-20, and the narrowing it fed is not advice:
+# `typeOf` reports the non-nullable type to argument passing, to `return` and to field assignment.
+# What caught the null was the runtime trap, which is the guarantee of last resort.
+add_test(NAME sema_rejects_null_proof_across_back_edge
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/null_proof_back_edge_bad.pol")
+set_tests_properties(sema_rejects_null_proof_across_back_edge PROPERTIES
+    PASS_REGULAR_EXPRESSION "Polaron-0300.*'nullable Node\\*', which is nullable")
+
+# ...and the proofs a loop does NOT take away still hold, or the fix above would cost every
+# narrowing inside every loop: one proven before the loop and untouched by it, one made by the
+# loop's own condition, and one made by a guard clause in the body.
+add_test(NAME sema_keeps_null_proofs_a_loop_does_not_kill
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/null_proof_in_loop.pol")
+set_tests_properties(sema_keeps_null_proofs_a_loop_does_not_kill PROPERTIES
+    FAIL_REGULAR_EXPRESSION "error")
+
 add_test(NAME sema_rejects_collective_gap
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_collective_gap_bad.pol")
 set_tests_properties(sema_rejects_collective_gap PROPERTIES

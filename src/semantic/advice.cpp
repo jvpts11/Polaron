@@ -434,10 +434,12 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
             if (t.find('*') == std::string::npos) {
                 continue;   // only a pointer field carries an ownership question
             }
+            pushAllows({}, f->annotations);
             warn(diag::Code::OwnershipByDiscipline,
                  "'" + c.name + "." + f->name + "' is freed by the destructor, which is a claim "
                  "about ownership the declaration does not make",
                  f->loc);
+            popAllows();
         }
     }
 
@@ -485,12 +487,44 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
     // namespace with a class around it. A transformer says the same thing and says it better --
     // its procedures are expanded into the type that applies them, so they reach `itself` instead
     // of taking the subject as an argument, and they cost no call.
-    if (!c.isInterface && !c.isAbstract && fields.empty() && methods.size() >= 3 &&
+    //
+    // AND ONLY WHERE THERE IS A SUBJECT TO MOVE THE BEHAVIOUR ONTO, which is the rule's own test:
+    // if every one of them takes the same first argument, the subject already exists and the class
+    // is describing it from outside. Without that test the rule fired on the whole utility surface
+    // of the standard library -- `Machine.cpuCount()`, `Environment.get(name)`, `Exit.now(code)`,
+    // `IntMath.gcd(a, b)` -- where there is no subject at all, and the fix it names cannot be
+    // written: a transformer is applied BY a type, and this language has no free functions, so a
+    // class of statics is the only shape those can take. A rule whose fix does not exist for
+    // three-quarters of what it reports is one nobody finishes reading.
+    //
+    // The first parameter must also be a CLASS. `IntMath.gcd(int a, int b)` shares `int` across
+    // twelve methods and nobody wants twelve procedures applied to the integers.
+    std::string subject;
+    bool oneSubject = methods.size() >= 3;
+    for (const ast::MethodDecl* m : methods) {
+        if (!m->isStatic || m->params.empty()) {
+            oneSubject = false;
+            break;
+        }
+        const std::string first = baseType(typeRefStr(m->params.front().type));
+        if (subject.empty()) {
+            subject = first;
+        }
+        if (first != subject) {
+            oneSubject = false;
+            break;
+        }
+    }
+    if (oneSubject && lookupClass(subject) == nullptr) {
+        oneSubject = false;   // a primitive is not a type that applies transformers
+    }
+    if (!c.isInterface && !c.isAbstract && fields.empty() && oneSubject &&
         std::all_of(methods.begin(), methods.end(),
                     [](const ast::MethodDecl* m) { return m->isStatic; })) {
         warn(diag::Code::StaticsWithoutState,
              "'" + c.name + "' is " + std::to_string(methods.size()) +
-                 " static methods and no state, which is a namespace rather than a class",
+                 " static methods and no state, and every one of them takes a '" + subject +
+                 "' first, which is a transformer written from outside",
              c.loc);
     }
 
@@ -574,10 +608,12 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
             }
         }
         if (tag != nullptr && others >= 4 && !c.isUnion) {
+            pushAllows({}, tag->annotations);
             warn(diag::Code::TagWithExclusiveFields,
                  "'" + c.name + "." + tag->name + "' is an enum beside " + std::to_string(others) +
                      " other fields, and nothing says which of them it chooses between",
                  tag->loc);
+            popAllows();
         }
     }
 
@@ -588,10 +624,15 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
     // address in a field is a lifetime with no proof behind it.
     for (const ast::FieldDecl* f : fields) {
         if (isAddressName(baseType(typeRefStr(f->type)))) {
+            // THE FIELD'S OWN `[Allow]`, and not only the class's. These rules report AT a field, so
+            // the annotation a reader writes to answer one goes on that field -- and the scope open
+            // here is the class's, which meant it silenced nothing. Every field rule below opens one.
+            pushAllows({}, f->annotations);
             warn(diag::Code::ForeignAddressStored,
                  "'" + c.name + "." + f->name +
                      "' keeps a raw address, which outlives the call that produced it",
                  f->loc);
+            popAllows();
         }
     }
 
@@ -604,8 +645,10 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
         const std::size_t lt = t.find('$');
         const std::string inner = lt == std::string::npos ? std::string() : t.substr(lt + 1);
         if (isIntName(inner) || inner == "boolean") {
+            pushAllows({}, f->annotations);
             warn(diag::Code::MutexOverOnePrimitive,
                  "'" + c.name + "." + f->name + "' locks a single '" + inner + "'", f->loc);
+            popAllows();
         }
     }
 
@@ -627,10 +670,12 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
         indexBlock(ctor->body, currentBundle_, c.name, inCtor, ctorLocals);
         for (const ast::FieldDecl* f : fields) {
             if (f->isLazy && inCtor.membersRead.count(f->name) > 0) {
+                pushAllows({}, f->annotations);
                 warn(diag::Code::LazyAlwaysNeeded,
                      "'" + c.name + "." + f->name +
                          "' is lazy and the constructor reads it, so it is never deferred",
                      f->loc);
+                popAllows();
             }
         }
     }
@@ -863,6 +908,12 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     if (f == nullptr || f->isStatic) {
                         continue;
                     }
+                    // The field's own `[Allow]` for the three rules below, which all report at it.
+                    pushAllows({}, f->annotations);
+                    struct PopOnExit {
+                        SemanticAnalyzer* a;
+                        ~PopOnExit() { a->popAllows(); }
+                    } popper{this};
                     // A channel nothing ever takes from (catalogue 57). Every send either blocks
                     // forever once the buffer fills or is thrown away, and the work that produced
                     // the value was done for nobody.
@@ -1055,6 +1106,33 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                 }
                 std::string shape;
                 guard->cond->dump(shape, 0);
+                // AND THE GUARD HAS TO BE ABOUT THIS CALL. A condition that mentions neither the
+                // receiver nor any argument is not a precondition of the callee -- it is a branch
+                // that happens to contain a call, and moving it into the callee as a `requires`
+                // would be moving somebody else's question. `if (this.kind == 0) { sb.append("null"); }`
+                // is a dispatch over a tagged union, and the rule was reading it as a rule about
+                // `append`. Asked of the dumped text, where a name appears as `'name'`.
+                bool aboutTheCall = false;
+                auto mentions = [&shape](const std::string& name) {
+                    return !name.empty() && shape.find("'" + name + "'") != std::string::npos;
+                };
+                if (const auto* recv = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                    aboutTheCall = mentions(recv->name);
+                } else if (const auto* held =
+                               dynamic_cast<const ast::MemberExpr*>(mem->object.get())) {
+                    aboutTheCall = mentions(held->member);   // a receiver written `this.field`
+                }
+                for (const ast::ExprPtr& a : call->args) {
+                    if (aboutTheCall) {
+                        break;
+                    }
+                    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(a.get())) {
+                        aboutTheCall = mentions(id->name);
+                    }
+                }
+                if (!aboutTheCall) {
+                    return;
+                }
                 // The receiver as a NAME, not as a dump: `dump` writes a node description across
                 // lines ("Identifier 'Ints'"), and putting that in the key put it in the message
                 // too. Anything that is not a plain name keys as the empty string, which groups all
@@ -1074,8 +1152,20 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                 if (guard->thenBlock.statements.size() == 1) {
                     note(guard, guard->thenBlock.statements[0].get());
                 }
-                if (i + 1 < blk.statements.size()) {
-                    note(guard, blk.statements[i + 1].get());
+                // THE FOLLOWING STATEMENT IS ONLY GUARDED IF THE BRANCH LEAVES. `if (bad) { return; }
+                // foo(x);` protects the call; `if (hh < 10) { sb.append("0"); } sb.appendInt(hh);`
+                // does not -- both paths reach it, and the `if` is about zero padding rather than
+                // about anything `appendInt` requires. Without this the rule read every statement
+                // that happened to follow an `if` as a call somebody had guarded.
+                if (i + 1 < blk.statements.size() && !guard->thenBlock.statements.empty()) {
+                    const ast::Stmt* last = guard->thenBlock.statements.back().get();
+                    const bool leaves = dynamic_cast<const ast::ReturnStmt*>(last) != nullptr ||
+                                        dynamic_cast<const ast::ThrowStmt*>(last) != nullptr ||
+                                        dynamic_cast<const ast::BreakStmt*>(last) != nullptr ||
+                                        dynamic_cast<const ast::ContinueStmt*>(last) != nullptr;
+                    if (leaves) {
+                        note(guard, blk.statements[i + 1].get());
+                    }
                 }
             }
             for (const ast::StmtPtr& st : blk.statements) {
@@ -1123,17 +1213,44 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
     // variable again, the copy it is still holding is a lifetime extended for nobody.
     {
         std::unordered_map<std::string, std::unordered_set<int>> keeps;
+        // AND THE ONES THAT DO NOT, because the summary is found by the method's BARE NAME and a
+        // bare name is not one method. Two classes with a `put` of their own share this table, so a
+        // position kept by one and not by the other is an answer the call site cannot be given --
+        // and the fix, a `move`, would invalidate the caller's name against a callee that never
+        // took it. Where the two disagree the rule says nothing.
+        //
+        // A PRIMITIVE IS NEVER KEPT IN THE SENSE THIS MEANS. The whole rationale is that two names
+        // now refer to one object; an `int` argument is copied, there is no second owner, and
+        // `move` on it transfers nothing. `Memo.remember(int key, ...)` handing `key` to a map was
+        // being told to move an integer.
+        std::unordered_map<std::string, std::unordered_set<int>> disputed;
         for (const ast::ClassDecl* c : all) {
             for (const ast::MemberPtr& mp : c->members) {
                 const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get());
                 if (m == nullptr) {
                     continue;
                 }
+                std::unordered_set<int> mine;
                 for (const auto& [param, slot] : m->escapeSummary) {
                     if (slot == -1 && param >= 0) {
-                        keeps[m->name].insert(param);
+                        mine.insert(param);
                     }
                 }
+                for (std::size_t i = 0; i < m->params.size(); ++i) {
+                    const int idx = static_cast<int>(i);
+                    const std::string t = typeRefStr(m->params[i].type);
+                    const bool holdable = lookupClass(baseType(t)) != nullptr || isArrayType(t);
+                    if (mine.count(idx) > 0 && holdable) {
+                        keeps[m->name].insert(idx);
+                    } else {
+                        disputed[m->name].insert(idx);
+                    }
+                }
+            }
+        }
+        for (auto& [name, kept] : keeps) {
+            for (int idx : disputed[name]) {
+                kept.erase(idx);
             }
         }
         if (!keeps.empty()) {
@@ -1220,7 +1337,7 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                 }
                 if (baseType(typeRefStr(fb->type)) == a->name &&
                     typeRefStr(fb->type).find('*') != std::string::npos) {
-                    pushAllows(a->annotations, {});
+                    pushAllows(a->annotations, fa->annotations);
                     warn(diag::Code::OwnershipCycle,
                          "'" + a->name + "." + fa->name + "' and '" + b->name + "." + fb->name +
                              "' point at each other, and neither says which one owns the other",
