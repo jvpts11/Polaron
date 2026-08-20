@@ -202,7 +202,10 @@ struct ProgramUse {
     std::unordered_set<std::string> membersRead;      // any `x.name` that is not an assignment target
     std::unordered_set<std::string> membersWritten;   // any `x.name =`
     std::unordered_map<std::string, std::unordered_set<std::string>> writersOf;  // field -> classes
-    std::unordered_set<std::string> methodsCalled;
+    // Method name -> the bundles that call it. Not a flat set: "does anybody call `receive`" has a
+    // different answer depending on who is asking, and the one asker that matters is the bundle the
+    // field lives in.
+    std::unordered_map<std::string, std::unordered_set<std::string>> methodsCalled;
     std::unordered_map<std::string, std::unordered_set<std::string>> typeSeenIn;  // type -> bundles
     std::unordered_set<std::string> movedTypes;       // declared types of things a `move` names
 };
@@ -230,12 +233,15 @@ void indexExpr(const ast::Expr* e, const std::string& bundle, ProgramUse& use,
         return;
     }
     if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
-        // Calls made BY THE PRELUDE do not count: it arrives with every program, so counting them
-        // meant `receive` was always called somewhere and the channel-with-no-reader rule could
-        // never fire on anybody's code. What a rule asks about is what the author wrote.
+        // WHO CALLED IT, recorded rather than decided here. Calls made by the prelude used to be
+        // dropped on the floor, because it arrives with every program and `receive` was therefore
+        // always called somewhere -- which left the channel-with-no-reader rule unable to fire on
+        // anybody. Dropping them also made the rule unanswerable about the library itself: with the
+        // stdlib's own calls invisible, `Semaphore.tokens` looked like a channel nothing takes from
+        // while `acquire()` two lines below does exactly that. The bundle is the missing half.
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
-            mem != nullptr && bundle != "System") {
-            use.methodsCalled.insert(mem->member);
+            mem != nullptr) {
+            use.methodsCalled[mem->member].insert(bundle);
         }
         indexExpr(call->callee.get(), bundle, use, localTypes);
         for (const ast::ExprPtr& a : call->args) {
@@ -835,7 +841,17 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                 // An interface used as a label rather than as a type (catalogue 18). Nothing holds
                 // one, so no call through it is ever polymorphic: it costs a vtable and an indirect
                 // call to express a naming convention.
-                if (c.isInterface && use.typeSeenIn.count(c.name) == 0) {
+                //
+                // NOT ABOUT A PUBLIC TYPE IN A LIBRARY, where "this program" is not the world the
+                // question is about. The standard library is compiled once into every program, and
+                // `Shared` -- an interface a caller marks its own types with -- is held by nobody
+                // here for the same reason it is exported: the holders are in code that has not
+                // been written yet. Absence of use in one compilation is not evidence about a
+                // declaration that leaves the compilation.
+                const bool exported = (bundle.isPrelude || bundle.isImported) &&
+                                      c.visibility == "public";
+                if (c.isInterface && !exported && c.name.find('$') == std::string::npos &&
+                    use.typeSeenIn.count(c.name) == 0) {
                     warn(diag::Code::InterfaceNeverPolymorphic,
                          "nothing in this program holds a '" + c.name +
                              "', so no call through it is ever polymorphic",
@@ -850,12 +866,21 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     // A channel nothing ever takes from (catalogue 57). Every send either blocks
                     // forever once the buffer fills or is thrown away, and the work that produced
                     // the value was done for nobody.
-                    if (baseType(typeRefStr(f->type)).rfind("Channel", 0) == 0 &&
-                        use.methodsCalled.count("receive") == 0) {
-                        warn(diag::Code::ChannelNeverConsumed,
-                             "'" + c.name + "." + f->name +
-                                 "' is a channel and nothing in this program ever receives from one",
-                             f->loc);
+                    // Asked of the bundle that can SEE the field. A private channel is reachable
+                    // only from its own class, so the code that would take from it is in this
+                    // bundle and nowhere else; a wider one may be drained by anybody.
+                    if (baseType(typeRefStr(f->type)).rfind("Channel", 0) == 0) {
+                        auto takers = use.methodsCalled.find("receive");
+                        const bool anybody = takers != use.methodsCalled.end() &&
+                                             (f->visibility != "private" ||
+                                              takers->second.count(bundle.name) > 0);
+                        if (!anybody) {
+                            warn(diag::Code::ChannelNeverConsumed,
+                                 "'" + c.name + "." + f->name +
+                                     "' is a channel and nothing in this program ever receives "
+                                     "from one",
+                                 f->loc);
+                        }
                     }
                     // A field nothing reads (catalogue 64). It is written, carried in every
                     // instance, copied by every copy, and never asked about.
@@ -867,7 +892,16 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     // A public field only its own class writes (catalogue 31). Visibility is not
                     // only style here: what is reachable from outside is what the escape analysis
                     // has to assume can change, so the narrower declaration is the stronger fact.
-                    if (f->visibility == "public") {
+                    //
+                    // ONLY WHERE `public` IS ACTUALLY AN INVITATION TO WRITE. Fields are immutable
+                    // unless declared `mutable`, so `public long ns` is already unwritable from
+                    // anywhere -- `b.ns = 5` outside the class is error Polaron-0401, and so is the
+                    // same line inside it. There is no fact withheld from the analysis and no
+                    // invitation for the next author, which leaves the advice asking for `private`
+                    // and a reader in exchange for nothing. It fired on every unit type in the
+                    // library -- `Span.ns`, `Length.um`, `Mass.mg`, `ByteSize.bytes` -- which are
+                    // exactly the declarations the rule should be happiest with.
+                    if (f->visibility == "public" && f->isMutable) {
                         auto writers = use.writersOf.find(f->name);
                         if (writers != use.writersOf.end() && writers->second.size() == 1 &&
                             writers->second.count(c.name) > 0) {
@@ -998,6 +1032,13 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
             SourceLocation loc;
         };
         std::vector<GuardSite> sites;
+        // WHOSE METHOD IT IS, not just what it is called. The key was the bare member name, so
+        // `Signal.grow`, `IntEvent.grow` and `StringEvent.grow` -- three unrelated methods, one call
+        // site each -- were counted as three call sites of one `grow`, and the library was told to
+        // put a `requires` on a method that does not exist. A receiver written `this` is qualified
+        // by the class the body is in; any other receiver is qualified by the text of the receiver,
+        // which is what the call site itself has to go on.
+        std::string inClass;
         std::function<void(const ast::Block&)> scan = [&](const ast::Block& blk) {
             // BOTH SHAPES A GUARDED CALL TAKES: `if (bad) { return; } foo(x);` where the call
             // follows the guard, and `if (ok) { foo(x); }` where it is inside it. The second is the
@@ -1014,7 +1055,16 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                 }
                 std::string shape;
                 guard->cond->dump(shape, 0);
-                sites.push_back(GuardSite{mem->member, shape, guard->loc});
+                // The receiver as a NAME, not as a dump: `dump` writes a node description across
+                // lines ("Identifier 'Ints'"), and putting that in the key put it in the message
+                // too. Anything that is not a plain name keys as the empty string, which groups all
+                // such call sites together -- the behaviour this rule had for every receiver until
+                // now, kept for the shapes a name cannot be read out of.
+                std::string receiver;
+                if (const auto* self = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                    receiver = self->name == "this" ? inClass : self->name;
+                }
+                sites.push_back(GuardSite{receiver + "." + mem->member, shape, guard->loc});
             };
             for (std::size_t i = 0; i < blk.statements.size(); ++i) {
                 const auto* guard = dynamic_cast<const ast::IfStmt*>(blk.statements[i].get());
@@ -1038,6 +1088,7 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
             }
         };
         for (const ast::ClassDecl* c : all) {
+            inClass = c->name;
             for (const ast::MemberPtr& mp : c->members) {
                 if (const auto* m = dynamic_cast<const ast::MethodDecl*>(mp.get())) {
                     scan(m->body);
@@ -1194,9 +1245,20 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
         // through the base be resolved rather than dispatched -- and it turns the arrival of a
         // subtype nobody planned for into a compile error rather than a surprise at run time.
         if (!c->isSealed && !c->isFinal && !c->isInterface) {
+            // The list is the `permits` clause, written out for copying -- so it is worth printing,
+            // and worth stopping. `Object` has two hundred subtypes in a program of any size, and
+            // naming all of them produced a diagnostic four screens wide whose one useful word was
+            // at the very end. Past a handful the count is the information.
+            const std::size_t kShown = 6;
             std::string names;
+            std::size_t shown = 0;
             for (const ast::ClassDecl* k : kids->second) {
+                if (shown == kShown) {
+                    names += " and " + std::to_string(kids->second.size() - kShown) + " more";
+                    break;
+                }
                 names += (names.empty() ? "" : ", ") + k->name;
+                ++shown;
             }
             warn(diag::Code::HierarchyNotSealed,
                  "'" + c->name + "' is extended only by " + names +

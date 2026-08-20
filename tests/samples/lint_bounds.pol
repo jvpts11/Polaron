@@ -1,0 +1,118 @@
+// Polaron-0B40 -- A LOOP BOUND THAT IS NOT THE ARRAY'S LENGTH, and the half of that shape which
+// costs nothing.
+//
+// The rule's sentence is about a price: an index the range analysis cannot relate to the array's own
+// length keeps its bounds check, one compare and one branch per element. That is true only where
+// `hoistBoundsChecks` cannot version the loop. Where it can, the guard is evaluated once before the
+// loop and the fast copy runs with no check in it at all -- so the same source shape is free, and
+// advising against it is charging for something nobody pays.
+//
+// Both loops below are counted to a field rather than to a length. `Copy.grow` is clean: no calls,
+// no allocation, an invariant bound -- the pass versions it, and this file asserts SILENCE for it.
+// `Copy.scaled` is the same shape with a call in the body, which is exactly what stops the pass
+// (the callee could free or reallocate the array), so the check does stay and the advice is earned.
+//
+// Also fixes 0B48 in place: `Copy.grow` and `Other.grow` are two different methods that share a
+// short name, with one guarded call site each. Counting them as two call sites of one `grow` is the
+// shared-name defect this language has been bitten by more than once.
+import System.IO.Console;
+
+program LintBounds;
+
+public bundle Main {
+    public namespace App {
+
+        public class Copy {
+            private mutable int[] data;
+            private mutable int count;
+            private mutable int cap;
+
+            public constructor Copy() {
+                this.cap = 8;
+                this.data = new int[8]();
+                this.count = 0;
+            }
+
+            // SILENT: nothing in the body stops the versioner, so the check is hoisted to a guard.
+            [Allow(code: "Polaron-0B28", why: "the growth by hand is the setting for this sample, not its subject: what it fixes is which of the two loops below earns Polaron-0B40")]
+            private method grow() returns void {
+                int nc = this.cap * 2;
+                int[] bigger = new int[nc]();
+                for (mutable int i = 0; i < this.count; i++) {
+                    bigger[i] = this.data[i];
+                }
+                delete this.data;
+                this.data = bigger;
+                this.cap = nc;
+                return;
+            }
+
+            public method add(int v) returns void {
+                if (this.count == this.cap) { this.grow(); }
+                this.data[this.count] = v;
+                this.count = this.count + 1;
+                return;
+            }
+
+            // REPORTED: the call in the body is what the versioner refuses -- a callee may free or
+            // reallocate the array between iterations -- so every element really does pay a check.
+            public method scaled(int[] into, int[] from) returns void {
+                for (mutable int i = 0; i < this.count; i++) {
+                    into[i] = this.twice(from[i]);
+                }
+                return;
+            }
+
+            private method twice(int v) returns int { return v + v; }
+        }
+
+        // A second `grow`, so that the guard rule has to tell two same-named methods apart.
+        public class Other {
+            private mutable int[] room;
+            private mutable int used;
+            private mutable int size;
+
+            public constructor Other() {
+                this.size = 4;
+                this.room = new int[4]();
+                this.used = 0;
+            }
+
+            [Allow(code: "Polaron-0B28", why: "the growth by hand is the setting for this sample, not its subject: what it fixes is which of the two loops below earns Polaron-0B40")]
+            private method grow() returns void {
+                int nc = this.size * 2;
+                int[] bigger = new int[nc]();
+                for (mutable int i = 0; i < this.used; i++) {
+                    bigger[i] = this.room[i];
+                }
+                delete this.room;
+                this.room = bigger;
+                this.size = nc;
+                return;
+            }
+
+            public method add(int v) returns void {
+                if (this.used == this.size) { this.grow(); }
+                this.room[this.used] = v;
+                this.used = this.used + 1;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Copy c = new Copy() on stack;
+                c.add(1);
+                int[] from = new int[4]();
+                int[] into = new int[4]();
+                c.scaled(into, from);
+                System.IO.Console.println($"{into[0]}");
+                delete into;
+                delete from;
+                Other o = new Other() on stack;
+                o.add(2);
+                return;
+            }
+        }
+    }
+}

@@ -61,7 +61,7 @@
             // which is the cost this class exists to avoid -- and because the caller is the one that
             // knows whether computing it was expensive.
             public method remember(int key, long value) returns long {
-                mutable HashMap<int, long> table = this.table();
+                HashMap<int, long> table = this.table();
                 if (table.containsKey(key)) {
                     this.hitCount = this.hitCount + 1;
                     return table.get(key);
@@ -156,7 +156,7 @@
             // time is correct and costs one comparison after the first run.
             public method migrate(int toVersion, function<int, int, int> kindRewrite) returns int {
                 if (this.schema >= toVersion) { return 0; }
-                mutable ArrayList<int> ks = this.kindList();
+                ArrayList<int> ks = this.kindList();
                 mutable int changed = 0;
                 for (mutable int i = 0; i < ks.size(); i++) {
                     int before = ks.get(i);

@@ -18,8 +18,8 @@
             }
             private method grow() returns void {
                 int nc = this.cap * 2;
-                mutable boolean[] na = new boolean[nc]();
-                mutable int[] nf = new int[nc]();
+                boolean[] na = new boolean[nc]();
+                int[] nf = new int[nc]();
                 for (mutable int i = 0; i < this.cap; i++) { na[i] = this.alive[i]; }
                 for (mutable int i = 0; i < this.freeCount; i++) { nf[i] = this.freeList[i]; }
                 this.alive = na;

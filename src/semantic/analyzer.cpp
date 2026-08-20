@@ -110,22 +110,44 @@ void SemanticAnalyzer::pushAllows(const std::vector<ast::AnnotationUse>& outer,
     allowStack_.push_back(std::move(frame));
 }
 
+std::string SemanticAnalyzer::allowKey(const SourceLocation& loc, const std::string& code) {
+    return std::string(loc.file) + ":" + std::to_string(loc.line) + ":" +
+           std::to_string(loc.col) + ":" + code;
+}
+
 void SemanticAnalyzer::popAllows() {
     if (allowStack_.empty()) {
         return;
     }
+    for (const AllowEntry& e : allowStack_.back()) {
+        const std::string key = allowKey(e.loc, e.code);
+        allowsSeen_.emplace(key, std::make_pair(e.loc, e.code));
+        if (e.used) {
+            allowsUsed_.insert(key);
+        }
+    }
+    allowStack_.pop_back();
+}
+
+void SemanticAnalyzer::reportUnusedAllows() {
     // AN `[Allow]` THAT NEVER SUPPRESSED ANYTHING IS A CLAIM THAT HAS STOPPED BEING TRUE. The code
     // it excused was rewritten, or the rule was narrowed, and what is left is a note saying this
     // shape is here deliberately, about a shape that is not here at all. That is worse than no note:
     // the next reader trusts it. Reported at the annotation, which is the line to delete.
-    for (const AllowEntry& e : allowStack_.back()) {
-        if (!e.used) {
+    //
+    // ONCE, AT THE END, AND ABOUT THE WHOLE RUN. Asked per scope it was asked of the wrong thing:
+    // the rules run in groups, each group pushes the class's annotations again, and an allow that
+    // silenced the sealed-hierarchy rule was reported as stale by every group that does not report
+    // that rule. `Object` earned eighteen of these for three annotations that were all working.
+    for (const auto& [key, entry] : allowsSeen_) {
+        if (allowsUsed_.count(key) == 0) {
             warnings_.push_back(SemaError{"this [Allow] never suppressed anything: nothing here "
-                                          "reports " + e.code,
-                                          e.loc, diag::Code::AllowNeverUsed});
+                                          "reports " + entry.second,
+                                          entry.first, diag::Code::AllowNeverUsed});
         }
     }
-    allowStack_.pop_back();
+    allowsSeen_.clear();
+    allowsUsed_.clear();
 }
 
 bool SemanticAnalyzer::allowed(diag::Code code) {
@@ -4039,6 +4061,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     checkInterruptReach();      // after all bodies, so the call graph is whole
     checkByValueMutations();    // ...and for the same reason: which methods change their object
     checkProcedureTotality(program);
+    reportUnusedAllows();  // last: every rule that could have needed one has now run
     return errors_.empty();
 }
 

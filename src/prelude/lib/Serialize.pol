@@ -32,8 +32,8 @@
             // one, and stopping at a fixed depth is a truthful failure rather than a hang.
             public static method of<T>(T value) returns Json {
                 Type t = reflect.typeOf<T>();
-                mutable Json out = Json.object();
-                mutable ArrayList<Field> fs = t.fields();
+                Json out = Json.object();
+                ArrayList<Field> fs = t.fields();
                 for (mutable int i = 0; i < fs.size(); i++) {
                     Field f = fs.get(i);
                     out.put(f.name(), Serializer.encodeField(f, value));
@@ -63,7 +63,7 @@
                     return Json.ofBool(cast<int>(f.get(owner)) != 0);
                 }
                 if (kind.equals("char")) {
-                    mutable StringBuilder sb = new StringBuilder() on heap;
+                    StringBuilder sb = new StringBuilder() on heap;
                     sb.appendChar(cast<char>(cast<int>(f.get(owner))));
                     return Json.ofStr(sb.toString());
                 }
@@ -89,10 +89,10 @@
         public class Schema {
             public static method of<T>() returns String {
                 Type t = reflect.typeOf<T>();
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.append(t.name());
                 sb.append("{");
-                mutable ArrayList<Field> fs = t.fields();
+                ArrayList<Field> fs = t.fields();
                 for (mutable int i = 0; i < fs.size(); i++) {
                     if (i > 0) { sb.append(","); }
                     sb.append(fs.get(i).name());

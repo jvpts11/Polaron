@@ -2,6 +2,7 @@
         // The root of the class hierarchy (spec 3.4): every class implicitly extends Object. equals
         // defaults to identity and hashCode to the object's address; both are virtual so subclasses
         // (e.g. records) override them. toString() returns String and is added with the String type.
+        [Allow(code: "Polaron-0B1D", why: "the root of the hierarchy: every class in every program that ever imports the library extends it, so the subtypes visible in any one compilation are never the whole set")]
         public class Object {
             public method equals(Object other) returns boolean { return this == other; }
             public method hashCode() returns int { return 0; }
@@ -11,6 +12,7 @@
         }
         // Base for runtime exceptions (polymorphic, so it can be caught). UnimportedType
         // Exception is thrown when an unimported type is used (spec 30).
+        [Allow(code: "Polaron-0B1D", why: "programs declare their own exceptions; sealing the base would mean a library release is the only place a new kind of failure may be named")]
         public abstract class Exception {
             public abstract method message() returns String;
         }
@@ -50,6 +52,7 @@
         // exception machinery (spec 36.3), so the same faults terminate through `__polaron_panic`. The
         // failure is identical either way -- only the reporting differs, exactly as for a bad downcast.
         // Catch `ArithmeticException` for both, or the specific one.
+        [Allow(code: "Polaron-0B1D", why: "extended by the two faults the compiler raises itself, and open for the arithmetic a program defines: a fixed-point or modular type raises its own")]
         public class ArithmeticException extends Exception {
             public constructor ArithmeticException() {}
             public override method message() returns String { return "arithmetic error"; }

@@ -30,4 +30,15 @@ namespace polaron {
 // generated guard and both loop copies).
 void hoistBoundsChecks(ast::Program& program);
 
+// Would this loop's per-element checks be hoisted out of it? The same conditions the pass above
+// applies, asked without rewriting anything.
+//
+// The advice needs it. `Polaron-0B40` tells an author that a loop counted to something other than the
+// array's length pays one compare and one branch per element -- which is true only where this pass
+// cannot version the loop. Where it can, the fast copy runs with no checks at all, and the advice was
+// charging for a cost nobody pays. Asking the pass itself is the only version of this that stays
+// true: a second, hand-written idea of what is hoistable would be wrong the first time either
+// changed.
+bool boundsChecksHoistable(const ast::Stmt& loop);
+
 }  // namespace polaron

@@ -21,7 +21,7 @@
             }
             private method grow() returns void {
                 int nc = this.cap * 2;
-                mutable VoidHandler[] nh = new VoidHandler[nc]();
+                VoidHandler[] nh = new VoidHandler[nc]();
                 for (mutable int i = 0; i < this.count; i++) { nh[i] = this.hs[i]; }
                 this.hs = nh;
                 this.cap = nc;
@@ -56,7 +56,7 @@
             }
             private method grow() returns void {
                 int nc = this.cap * 2;
-                mutable IntHandler[] nh = new IntHandler[nc]();
+                IntHandler[] nh = new IntHandler[nc]();
                 for (mutable int i = 0; i < this.count; i++) { nh[i] = this.hs[i]; }
                 this.hs = nh;
                 this.cap = nc;
@@ -91,7 +91,7 @@
             }
             private method grow() returns void {
                 int nc = this.cap * 2;
-                mutable StringHandler[] nh = new StringHandler[nc]();
+                StringHandler[] nh = new StringHandler[nc]();
                 for (mutable int i = 0; i < this.count; i++) { nh[i] = this.hs[i]; }
                 this.hs = nh;
                 this.cap = nc;

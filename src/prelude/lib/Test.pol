@@ -453,7 +453,7 @@
             // they agree on the RULE (".pol-capture-<pid>"), not on a constant, so two test binaries
             // running in the same directory never clobber each other.
             private static method capturePath() returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.append(".pol-capture-");
                 sb.appendInt(Test.__polaron_capture_id());
                 String path = sb.toString();

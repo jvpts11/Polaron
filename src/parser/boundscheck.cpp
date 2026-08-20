@@ -718,14 +718,14 @@ void versionLoop(StmtPtr& slot, ExprPtr guard, StmtPtr fast, Block& fastBody, co
 //
 // `bodyWasSafe` is the no-calls/no-allocations verdict taken on the USER's body, BEFORE this pass
 // rewrote anything inside it -- see walkStmt for why it cannot be recomputed here.
-void tryVersion(StmtPtr& slot, bool bodyWasSafe) {
-    auto* f = dynamic_cast<ForStmt*>(slot.get());
-    if (f == nullptr) {
-        return;
-    }
-    ForInfo info;
-    if (!analyzeFor(*f, info)) {
-        return bcTrace("loop header is not a clean counted for", f->loc.line);
+// The conditions, separated from the rewrite, so that the ADVICE can ask the same question the pass
+// answers -- see `boundsChecksHoistable`. A rule that tells an author their loop pays a bounds check
+// has to agree with the pass that removes it, and two hand-written copies of these conditions would
+// agree only on the day the second one was written.
+ExprPtr planFor(ForStmt& f, ForInfo& info, bool bodyWasSafe) {
+    if (!analyzeFor(f, info)) {
+        bcTrace("loop header is not a clean counted for", f.loc.line);
+        return nullptr;
     }
     // Versioning duplicates the body into both copies, so an outer loop used to be refused outright
     // whenever it held a nested one: with each level the duplication multiplies. But "contains a loop"
@@ -741,29 +741,46 @@ void tryVersion(StmtPtr& slot, bool bodyWasSafe) {
     // outer loop of a matmul nest splits the nest that `interchangeReductionLoops` had just made
     // vectorizable, and the backend loses it. The transform that matters on a loop nest is the
     // interchange; wrapping it in a guard destroys it. Leave the outer loops alone.
-    if (containsLoop(f->body)) {
-        return bcTrace("only innermost loops are versioned", f->loc.line);
+    if (containsLoop(f.body)) {
+        bcTrace("only innermost loops are versioned", f.loc.line);
+        return nullptr;
     }
     // The induction variable must not be reassigned inside the body (only the header update moves it).
-    if (identWrittenInBlock(f->body, info.var)) {
-        return bcTrace("the induction variable is written inside the body", f->loc.line);
+    if (identWrittenInBlock(f.body, info.var)) {
+        bcTrace("the induction variable is written inside the body", f.loc.line);
+        return nullptr;
     }
     // No calls / allocations / frees in the body -- otherwise the array could be reallocated or freed.
     // Taken on the body as the USER wrote it, not as it stands now (see walkStmt).
     if (!bodyWasSafe) {
-        return bcTrace("body calls, allocates or frees", f->loc.line);
+        bcTrace("body calls, allocates or frees", f.loc.line);
+        return nullptr;
     }
     // The bound / variable step must be loop-invariant (re-read every iteration, but guarded once).
-    if (!exprInvariant(info.hi, f->body)) {
-        return bcTrace("the loop bound is not invariant", f->loc.line);
+    if (!exprInvariant(info.hi, f.body)) {
+        bcTrace("the loop bound is not invariant", f.loc.line);
+        return nullptr;
     }
-    if (info.step != nullptr && !exprInvariant(info.step, f->body)) {
-        return bcTrace("the step is not invariant", f->loc.line);
+    if (info.step != nullptr && !exprInvariant(info.step, f.body)) {
+        bcTrace("the step is not invariant", f.loc.line);
+        return nullptr;
     }
-
-    ExprPtr guard = buildHoistGuard(f->body, info);
+    ExprPtr guard = buildHoistGuard(f.body, info);
     if (guard == nullptr) {
-        return bcTrace("no access proved hoistable", f->loc.line);
+        bcTrace("no access proved hoistable", f.loc.line);
+    }
+    return guard;
+}
+
+void tryVersion(StmtPtr& slot, bool bodyWasSafe) {
+    auto* f = dynamic_cast<ForStmt*>(slot.get());
+    if (f == nullptr) {
+        return;
+    }
+    ForInfo info;
+    ExprPtr guard = planFor(*f, info, bodyWasSafe);
+    if (guard == nullptr) {
+        return;
     }
     StmtPtr fast = cloneStmtDeep(f);
     Block& fastBody = static_cast<ForStmt*>(fast.get())->body;  // before the move (unspecified arg order)
@@ -774,6 +791,25 @@ void tryVersion(StmtPtr& slot, bool bodyWasSafe) {
 // Try to version the while-loop held in `slot`: `while (var </<= HI) { ...; var = var + step }` where the
 // increment is the LAST statement (so every access uses the same var, as in a for header) and var is
 // written nowhere else. The lower bound is var's value at loop entry.
+ExprPtr planWhile(WhileStmt& w, ForInfo& info, ExprPtr& loStore, bool bodyWasSafe) {
+    if (!analyzeWhile(w, info, loStore)) {
+        return nullptr;
+    }
+    if (containsLoop(w.body)) {
+        return nullptr;
+    }
+    if (!bodyWasSafe) {
+        return nullptr;
+    }
+    if (!exprInvariant(info.hi, w.body)) {
+        return nullptr;  // hi must not depend on var (which is written) or be reassigned
+    }
+    if (info.step != nullptr && !exprInvariant(info.step, w.body)) {
+        return nullptr;
+    }
+    return buildHoistGuard(w.body, info);
+}
+
 void tryVersionWhile(StmtPtr& slot, bool bodyWasSafe) {
     auto* w = dynamic_cast<WhileStmt*>(slot.get());
     if (w == nullptr) {
@@ -781,23 +817,7 @@ void tryVersionWhile(StmtPtr& slot, bool bodyWasSafe) {
     }
     ForInfo info;
     ExprPtr loStore;  // owns the synthesized `var` read used as the lower bound
-    if (!analyzeWhile(*w, info, loStore)) {
-        return;
-    }
-    if (containsLoop(w->body)) {
-        return;
-    }
-    if (!bodyWasSafe) {
-        return;
-    }
-    if (!exprInvariant(info.hi, w->body)) {
-        return;  // hi must not depend on var (which is written) or be reassigned
-    }
-    if (info.step != nullptr && !exprInvariant(info.step, w->body)) {
-        return;
-    }
-
-    ExprPtr guard = buildHoistGuard(w->body, info);
+    ExprPtr guard = planWhile(*w, info, loStore, bodyWasSafe);
     if (guard == nullptr) {
         return;
     }
@@ -877,6 +897,23 @@ void walkBlock(Block& b) {
 // shape should know it has been written, measured and rejected on evidence.
 
 }  // namespace
+
+bool boundsChecksHoistable(const ast::Stmt& loop) {
+    // Asked on a COPY, because the analysis wants the nodes writable and the caller is holding the
+    // real loop. A clone costs nothing at the scale this is asked at -- once per loop that indexes
+    // an array with a bound that is not its length -- and it removes the question of whether the
+    // predicate leaves anything behind in an AST that has not been optimized yet.
+    ast::StmtPtr copy = cloneStmtDeep(&loop);
+    ForInfo info;
+    if (auto* f = dynamic_cast<ForStmt*>(copy.get())) {
+        return planFor(*f, info, !blockUnsafe(f->body)) != nullptr;
+    }
+    if (auto* w = dynamic_cast<WhileStmt*>(copy.get())) {
+        ExprPtr loStore;
+        return planWhile(*w, info, loStore, !blockUnsafe(w->body)) != nullptr;
+    }
+    return false;
+}
 
 void hoistBoundsChecks(ast::Program& program) {
     for (auto& b : program.bundles) {

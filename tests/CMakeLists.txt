@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.152")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.153")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.152")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.153")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1119,7 +1119,32 @@ set_tests_properties(lint_constant_computed_at_runtime PROPERTIES
 add_test(NAME lint_same_guard_at_every_call_site
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
 set_tests_properties(lint_same_guard_at_every_call_site PROPERTIES
-    PASS_REGULAR_EXPRESSION "0B48\\]: 2 call sites of 'guarded'")
+    PASS_REGULAR_EXPRESSION "0B48\\]: 2 call sites of 'Proof.guarded'")
+
+# ...and the callee is named by its OWNER, because a bare method name is not one method. Three
+# classes with a `grow()` of their own, one call site each, were counted as three call sites of a
+# single `grow` -- the same shape as the shared-name defects the compiler has been bitten by before.
+add_test(NAME lint_same_guard_does_not_merge_across_classes
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bounds.pol")
+set_tests_properties(lint_same_guard_does_not_merge_across_classes PROPERTIES
+    FAIL_REGULAR_EXPRESSION "0B48")
+
+# Polaron-0B40 SAYS A PRICE IS PAID, so it has to agree with the pass that stops paying it. A loop
+# the bounds-check hoister versions runs its fast copy with no per-element check at all, and advising
+# against that loop charges for nothing. The rule asks `boundsChecksHoistable` -- the pass's own
+# conditions, not a second copy of them -- and this pair fixes both answers: the loop with a call in
+# it (which the pass refuses, because a callee could free the array) is reported...
+add_test(NAME lint_index_bound_not_the_array
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bounds.pol")
+set_tests_properties(lint_index_bound_not_the_array PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B40\\]: this loop indexes 'into'")
+
+# ...and the two clean copy loops beside it, of exactly the same shape, are not. Without this the
+# narrowing could go all the way to silence and only the ratchet number would notice.
+add_test(NAME lint_index_bound_silent_when_hoistable
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bounds.pol")
+set_tests_properties(lint_index_bound_silent_when_hoistable PROPERTIES
+    FAIL_REGULAR_EXPRESSION "indexes 'bigger'")
 
 add_test(NAME lint_unproven_no_alias_in_loop
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")

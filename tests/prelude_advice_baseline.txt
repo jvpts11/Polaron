@@ -9,10 +9,23 @@
 # The rule when a count falls: lower it here, in the same change. A ratchet that is not tightened
 # lets the same debt come back.
 #
+# A count may also fall because the RULE was wrong, and four of them were: advice about a `*` that
+# came from a type argument rather than from the author's text, about a boolean-and-a-pointer that
+# nothing writes through, about a channel whose own class drains it two lines below, and about a
+# per-element bounds check the compiler already versions the loop to avoid. A rule that reports a
+# cost nobody pays teaches its reader to skip the whole catalogue, so those are defects in the same
+# sense as the debt is -- and the samples in `lint_bounds.pol` and beside it fix both answers, so a
+# narrowing cannot quietly become a silence with only this number to notice.
+#
 # `polc --check tests/samples/hello_world.pol --lint-prelude` prints them.
+#
+# NOT THE WHOLE LIBRARY. A generic is analysed where it is INSTANTIATED, so what this counts is what
+# `hello_world.pol` happens to instantiate. Across all 678 samples the union is 1653 against the 1541
+# this counted the day it was written, and two files -- `Arena.pol` and `Compare.pol`, which are
+# generic end to end -- were not covered by a single line of it.
 
 Polaron-0B0B   4
-Polaron-0B0D 657
+Polaron-0B0D 643
 Polaron-0B10  73
 Polaron-0B11   5
 Polaron-0B13   3
@@ -20,10 +33,9 @@ Polaron-0B17 126
 Polaron-0B1A  44
 Polaron-0B1B   7
 Polaron-0B1C  10
-Polaron-0B1D   3
 Polaron-0B1F   5
 Polaron-0B20   3
-Polaron-0B21  16
+Polaron-0B21   2
 Polaron-0B22   2
 Polaron-0B23   1
 Polaron-0B24  31
@@ -32,17 +44,15 @@ Polaron-0B27   5
 Polaron-0B28  25
 Polaron-0B29   2
 Polaron-0B2D   5
-Polaron-0B32   3
 Polaron-0B33   6
-Polaron-0B34  27
-Polaron-0B39   3
+Polaron-0B34  14
 Polaron-0B3A   1
 Polaron-0B3B  22
 Polaron-0B3C   2
-Polaron-0B3E  35
-Polaron-0B40 344
+Polaron-0B3E  32
+Polaron-0B40 183
 Polaron-0B47   3
-Polaron-0B48   8
+Polaron-0B48   6
 Polaron-0B49   5
 Polaron-0B4A  20
 Polaron-0B4B  28

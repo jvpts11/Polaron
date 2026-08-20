@@ -92,7 +92,7 @@
             // provides is left null and RECORDED -- see `complete()`.
             private method wire(Type t, Object obj, int depth) returns void {
                 if (depth > 16) { return; }   // a graph this deep is a mistake, not a design
-                mutable ArrayList<Field> fs = t.fields();
+                ArrayList<Field> fs = t.fields();
                 for (mutable int i = 0; i < fs.size(); i++) {
                     Field f = fs.get(i);
                     if (!Services.wants(f)) { continue; }
@@ -110,7 +110,7 @@
             // requiring it is deliberate: a container that fills every field it recognises decides
             // things the author did not ask it to decide.
             private static method wants(Field f) returns boolean {
-                mutable ArrayList<Annotation> anns = f.annotations();
+                ArrayList<Annotation> anns = f.annotations();
                 for (mutable int i = 0; i < anns.size(); i++) {
                     if (anns.get(i).name().equals("Inject")) { return true; }
                 }

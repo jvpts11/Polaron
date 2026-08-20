@@ -259,6 +259,13 @@ private:
         bool used = false;
     };
     std::vector<std::vector<AllowEntry>> allowStack_;
+    // EVERY `[Allow]` THE RUN MET, and the ones that suppressed something, both keyed by the
+    // annotation's own place and code. An allow written on a class is pushed once per rule group --
+    // a dozen times over -- and asking each pop whether THAT group reported the code accused the
+    // annotation of being stale eleven times out of twelve. Used-anywhere is the question; it can
+    // only be answered when there is no more analysis left to run.
+    std::map<std::string, std::pair<SourceLocation, std::string>> allowsSeen_;
+    std::set<std::string> allowsUsed_;
     // Places already advised about, so a generic walked once per instantiation reports once.
     std::unordered_set<std::string> warnedAt_;
     // The dumped invariants of the class being analysed, for the rules that must not repeat advice
@@ -267,6 +274,9 @@ private:
     void pushAllows(const std::vector<ast::AnnotationUse>& outer,
                     const std::vector<ast::AnnotationUse>& inner);
     void popAllows();
+    // The `[Allow]`s nothing ever needed, reported once the run has no more rules left to disagree.
+    void reportUnusedAllows();
+    static std::string allowKey(const SourceLocation& loc, const std::string& code);
     bool allowed(diag::Code code);
     // Advice, per loop body: a `String` accumulated by copying itself (Polaron-0B0B).
     void warnStringBuildingInLoop(const ast::Block& body);
@@ -294,7 +304,8 @@ private:
     void warnRegionsWithOneLifetime(const ast::Block& body);
     void warnEternalThatIsReleased(const ast::Block& body);
     // These two ask `typeOf`, so they run from the loop handlers, with the names still in scope.
-    void warnIndexBoundNotTheArray(const ast::Block& loopBody, const ast::Expr* bound);
+    void warnIndexBoundNotTheArray(const ast::Stmt& loop, const ast::Block& loopBody,
+                                   const ast::Expr* bound);
     void warnVirtualCallInLoop(const ast::Block& loopBody);
     void warnMoveInsteadOfCopy(const ast::MethodDecl& m);
     void warnListWithoutCapacity(const ast::Block& body);

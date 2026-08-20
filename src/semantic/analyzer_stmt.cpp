@@ -4,6 +4,7 @@
 
 #include "semantic/asmcheck.h"
 #include "semantic/comptime.h"
+#include "parser/boundscheck.h"  // so the index-bound advice can ask what the hoister will do
 
 #include <algorithm>
 #include <functional>
@@ -597,7 +598,61 @@ void SemanticAnalyzer::warnBooleanOutParameter(const ast::MethodDecl& m) {
     }
     const ast::Param& last = m.params.back();
     const std::string t = typeRefStr(last.type);
-    if (t.find('*') == std::string::npos && !isRefType(t)) {
+    // THE MARK HAS TO BE THE PARAMETER'S OWN. Searching the rendered type for a `*` anywhere in it
+    // found the one inside a type argument: `present(function<boolean, T> test)` on an
+    // `Option<Certificate*>` renders as `function<boolean, Certificate*>`, and a predicate a body
+    // CALLS was reported as an answer it writes. Only a trailing `*` or `&` is the parameter's.
+    if (!isRefType(t) || isArrayType(t)) {
+        return;
+    }
+    // AND THE BODY HAS TO WRITE THROUGH IT, which is the whole of what the rule claims. Without
+    // this it was reporting a shape -- boolean return, pointer last -- rather than the thing that
+    // makes the shape wrong, and every callback, every borrowed receiver and every unused parameter
+    // in that position answered the description. `Certificate.isIssuedBy(Certificate* issuer)`
+    // compares two names and writes nothing anywhere.
+    //
+    // TWO WAYS A BODY WRITES THROUGH A POINTER: it assigns through it, or it calls something on it
+    // and throws the result away. The second is the commoner one -- `into.setParam(name, value);`
+    // as a statement of its own -- and a call whose answer nobody wants is a call made for its
+    // effect. What it distinguishes it from is `issuer.subjectLength()` inside a comparison, which
+    // is the same syntax used to read.
+    bool writesThrough = false;
+    auto rootName = [](const ast::Expr* e) -> std::string {
+        while (e != nullptr) {
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+                e = mem->object.get();
+            } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+                e = ix->array.get();
+            } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+                e = un->operand.get();
+            } else if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+                return id->name;
+            } else {
+                break;
+            }
+        }
+        return {};
+    };
+    eachStmt(m.body, [&](const ast::Stmt& st) {
+        if (writesThrough) {
+            return;
+        }
+        if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+            if (rootName(as->target.get()) == last.name) {
+                writesThrough = true;
+            }
+            return;
+        }
+        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+            const auto* call = dynamic_cast<const ast::CallExpr*>(es->expr.get());
+            const auto* mem =
+                call != nullptr ? dynamic_cast<const ast::MemberExpr*>(call->callee.get()) : nullptr;
+            if (mem != nullptr && rootName(mem->object.get()) == last.name) {
+                writesThrough = true;
+            }
+        }
+    });
+    if (!writesThrough) {
         return;
     }
     warn(diag::Code::BooleanOutParameter,
@@ -1192,6 +1247,17 @@ void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
     // it cannot be rebound, so a reader knows the name means one object for the whole method; it
     // cannot be null, so there is no branch to wonder about; and it cannot be stored, so its
     // lifetime question is answered by the signature instead of by reading the body.
+    //
+    // NOT ON A MONOMORPHIZED INSTANCE, where the star came from the type ARGUMENT rather than from
+    // anything the author wrote. `Option<Certificate*>` gives `Some<T>.valueOr(T fallback)` a
+    // parameter that renders as `Certificate*`, and the advice then asked the standard library to
+    // write `Certificate&` on a line whose text is `T`. Whether the pointer is there at all is the
+    // caller's choice at the instantiation, so the declaration under the caret is not a place it
+    // can be answered -- and every other instantiation would ask for something different.
+    if (owningClassForRefs_.find('$') != std::string::npos ||
+        m.name.find('$') != std::string::npos) {
+        return;
+    }
     for (const ast::Param& p : m.params) {
         const std::string t = typeRefStr(p.type);
         if (t.find('*') == std::string::npos || isNullableType(t) || isArrayType(t)) {
@@ -1201,6 +1267,11 @@ void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
             continue;   // `int*` and friends are machine-level, and are somebody else's rule
         }
         bool escapes = false;
+        // AND SOMETHING HAS TO READ THROUGH IT, or "only ever reads through it" is not a description
+        // of this body. A parameter nothing mentions at all is an unused parameter -- a different
+        // observation, made by a different rule -- and telling its author to change `T*` to `T&` is
+        // advice about the one property of it that does not matter.
+        bool touched = false;
         eachStmt(m.body, [&](const ast::Stmt& st) {
             if (escapes) {
                 return;
@@ -1243,6 +1314,10 @@ void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
                 if (e == nullptr || escapes) {
                     return;
                 }
+                if (const auto* named = dynamic_cast<const ast::IdentifierExpr*>(e);
+                    named != nullptr && named->name == p.name) {
+                    touched = true;
+                }
                 if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
                     for (const ast::ExprPtr& a : call->args) {
                         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(a.get());
@@ -1277,9 +1352,13 @@ void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
                 args(as2->value.get());
             } else if (const auto* rs2 = dynamic_cast<const ast::ReturnStmt*>(&st)) {
                 args(rs2->value.get());
+            } else if (const auto* is2 = dynamic_cast<const ast::IfStmt*>(&st)) {
+                args(is2->cond.get());
+            } else if (const auto* ws2 = dynamic_cast<const ast::WhileStmt*>(&st)) {
+                args(ws2->cond.get());
             }
         });
-        if (!escapes) {
+        if (!escapes && touched) {
             warn(diag::Code::PointerThatIsABorrow,
                  "'" + m.name + "' takes '" + p.name +
                      "' as a pointer and only ever reads through it",
@@ -1332,12 +1411,22 @@ void SemanticAnalyzer::warnCheckRepeatsItsContract(const ast::MethodDecl& m) {
     }
 }
 
-void SemanticAnalyzer::warnIndexBoundNotTheArray(const ast::Block& loopBody, const ast::Expr* bound) {
+void SemanticAnalyzer::warnIndexBoundNotTheArray(const ast::Stmt& loop, const ast::Block& loopBody,
+                                                 const ast::Expr* bound) {
     // AN INDEX WHOSE LOOP BOUND IS NOT THE ARRAY'S OWN LENGTH gives the range analysis nothing to
     // work with, so the bounds check stays in the loop -- one compare and one branch per element,
     // on a path that is usually the hot one. Looping to `a.length()` is the same loop with the
     // relation written down, and `foreach` says it without any arithmetic at all.
     if (bound == nullptr) {
+        return;
+    }
+    // UNLESS THE COMPILER ALREADY TAKES THE CHECK OUT. `hoistBoundsChecks` versions a loop like this
+    // one into a guarded fast copy with no per-element check and a checked slow copy, which is the
+    // whole of what this advice asks for -- so where it applies, the sentence above is not true of
+    // the emitted code and the reader is being charged for nothing. Measured on the shape the rule
+    // is named for: a copy loop counted to `this.count` emits a `for.body` with no compare and no
+    // branch to the trap, exactly like the loop counted to `a.length()` beside it.
+    if (boundsChecksHoistable(loop)) {
         return;
     }
     const std::string boundShape = shapeOf(bound);
@@ -2767,7 +2856,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // The bound of a `while (i < N)` is its right-hand side: that is what the range analysis
         // would have to relate to the array's length, and usually cannot.
         if (const auto* wb = dynamic_cast<const ast::BinaryExpr*>(ws->cond.get())) {
-            warnIndexBoundNotTheArray(ws->body, wb->rhs.get());
+            warnIndexBoundNotTheArray(*ws, ws->body, wb->rhs.get());
         }
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
@@ -2805,7 +2894,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         warnCopyHoistableOutOfLoop(fs->body);
         warnVirtualCallInLoop(fs->body);
         if (const auto* fb = dynamic_cast<const ast::BinaryExpr*>(fs->cond.get())) {
-            warnIndexBoundNotTheArray(fs->body, fb->rhs.get());
+            warnIndexBoundNotTheArray(*fs, fs->body, fb->rhs.get());
         }
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
