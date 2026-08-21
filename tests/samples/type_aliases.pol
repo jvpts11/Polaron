@@ -13,9 +13,20 @@ public bundle main {
 
         public newtype OrderId = long;                // distinct: needs a cast to/from long
         public newtype UserId = long;                 // distinct from OrderId as well
+        public newtype Batch = uint;                // unsigned, to prove the printer reads through
 
         public class Main {
             public static method apply(IntFn f, int v) returns int { return f(v); }
+
+            // A `fixed` MAY HAVE A NEWTYPE TYPE. It asks what the value is made of, and a newtype is
+            // its underlying type in every way that question means. Refused, a program that gave its
+            // ids a type of their own still had to write the id meaning "none" as a bare number --
+            // the very assignment `newtype` is there to stop.
+            public static fixed OrderId NO_ORDER = cast<OrderId>(cast<long>(0 - 1));
+            // The two the printer used to get wrong: a 64-bit one read the wrong half of itself,
+            // an unsigned one printed negative. Neither shows in a newtype over a plain int.
+            public static fixed OrderId BIG = cast<OrderId>(cast<long>(5000000000));
+            public static fixed Batch BATCH = cast<Batch>(cast<uint>(4000000000));
 
             public static method main(string[] args) returns void {
                 // typealias: Celsius and int are the same type, so arithmetic just works.
@@ -30,6 +41,12 @@ public bundle main {
                 OrderId o2 = cast<OrderId>(raw);
 
                 System.IO.Console.printf("t=%d r=%d order=%d\n", t, r, cast<int>(cast<long>(o2)));
+
+                // AND A NEWTYPE PRINTS AS WHAT IT IS MADE OF, with the right specifier for it --
+                // no cast out to the underlying type first, which is the ceremony that made the
+                // feature not worth having at the one place an id is most wanted: the line that
+                // says which one it is.
+                System.IO.Console.println($"big={Main.BIG} batch={Main.BATCH} none={Main.NO_ORDER}");
                 return;
             }
         }

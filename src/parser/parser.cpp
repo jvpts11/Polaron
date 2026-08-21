@@ -4650,8 +4650,19 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
             SourceLocation exprLoc = loc;
             exprLoc.col = loc.col + 2 + static_cast<int>(i + 1);  // i+1 == just past the '{'
 
+            // REBASED AT THE TOKENS, not afterwards at the errors. Every node the sub-parser builds
+            // takes its location from a token, so moving the tokens moves the whole subtree at once
+            // -- which is what the analyser reports from, and what used to send it to line 1. Doing
+            // it here instead of over the parse errors also means later passes get a true location,
+            // not just the parser: a type error about `{id}` now names the line `{id}` is on.
             Lexer sublex(exprSrc, file_);
-            Parser sub(sublex.tokenize(), file_);
+            std::vector<Token> subTokens = sublex.tokenize();
+            for (Token& t : subTokens) {
+                t.loc.col = exprLoc.col + t.loc.col - 1;
+                t.loc.line = exprLoc.line;
+                t.loc.file = exprLoc.file;
+            }
+            Parser sub(std::move(subTokens), file_);
             ast::ExprPtr parsed;
             try {
                 parsed = sub.parseExpression();
@@ -4660,12 +4671,7 @@ ast::ExprPtr Parser::parseInterpolation(const std::string& raw, SourceLocation l
             }
             bool subReported = false;
             for (ParseError se : sub.errors()) {
-                // The sub-parser counted from its own line 1, column 1. Its column is an offset into
-                // the embedded expression, so it lands exactly where the fault is once rebased.
-                se.loc.col = exprLoc.col + se.loc.col - 1;
-                se.loc.line = exprLoc.line;
-                se.loc.file = exprLoc.file;
-                errors_.push_back(std::move(se));
+                errors_.push_back(std::move(se));  // already on the file's own line and column
                 subReported = true;
             }
             if (parsed == nullptr) {

@@ -1780,6 +1780,20 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
     }
 }
 
+std::string SemanticAnalyzer::groundOf(const std::string& t) const {
+    std::string ground = t;
+    // Bounded rather than trusting: a newtype cannot legally cycle, but a bad program should get a
+    // wrong answer here and a proper error elsewhere, never a hang in the analyser.
+    for (int hops = 0; hops < 16; hops++) {
+        auto it = newtypes_.find(ground);
+        if (it == newtypes_.end()) {
+            return ground;
+        }
+        ground = it->second;
+    }
+    return ground;
+}
+
 void SemanticAnalyzer::registerNewtypes(const ast::Program& program) {
     for (const ast::Bundle& bundle : program.bundles) {
         for (const ast::Namespace& ns : bundle.namespaces) {
@@ -4601,7 +4615,14 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
 void SemanticAnalyzer::registerConsts(const ast::Program& program) {
     auto reg = [&](const ast::ConstDecl& c, const std::string& owner) {
         const std::string type = typeRefStr(c.type);
-        if (!isNumeric(type) && type != "boolean" && type != "char") {
+        // A NEWTYPE OVER A NUMBER IS A NUMBER HERE. `fixed` asks what the value is made of, and a
+        // newtype is its underlying type in every way that question means -- same representation,
+        // same literals, folded the same at compile time. Refusing it split the feature against
+        // itself: a program that gives its ids a type of their own then has to write the one id
+        // that means "nobody" as a bare int, which is the assignment `newtype` exists to stop.
+        // Chased through a chain, so a newtype over a newtype answers too.
+        const std::string ground = groundOf(type);
+        if (!isNumeric(ground) && ground != "boolean" && ground != "char") {
             error("a 'fixed' must have a numeric, boolean, or char type, got '" + type + "'", c.loc);
             return;
         }

@@ -538,6 +538,12 @@ private:
     // underlying type. Distinct for type-checking (no implicit conversion either way), but shares
     // the underlying's representation (codegen) and casts freely to/from it.
     std::unordered_map<std::string, std::string> newtypes_;
+    // What a type is MADE OF: a newtype resolved to its underlying type, through a chain of them;
+    // everything else unchanged. The one place that answers it, because the question came up in
+    // three (is this `fixed` a number, is this printable, does this cast line up) and each had its
+    // own half-answer -- one of which stopped at a single hop, so a newtype over a newtype was a
+    // different type from itself.
+    std::string groundOf(const std::string& t) const;
     // Custom annotation types (spec 14.3): name -> its fields/required set.
     std::unordered_map<std::string, AnnotationInfo> annotations_;
     // Symbols brought in by `final import` (spec 37.6): they cannot be unimported.

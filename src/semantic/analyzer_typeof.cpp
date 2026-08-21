@@ -670,8 +670,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // A `newtype` casts to/from its underlying type (spec 24): classify both by the underlying
         // so cast<OrderId>(long) and cast<long>(orderId) are accepted while staying distinct types.
         auto under = [&](const std::string& t) {
-            auto it = newtypes_.find(baseType(t));
-            return it != newtypes_.end() ? it->second : t;
+            const std::string ground = groundOf(baseType(t));
+            return ground == baseType(t) ? t : ground;
         };
         const std::string src = under(srcRaw);
         // THE REFERENCE TYPES THAT ARE NOT IN `classes_`. String, string and the reflection tokens
@@ -1266,13 +1266,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                   is->loc);
         }
         for (const auto& e : is->exprs) {
-            const std::string t = typeOf(*e);
+            // A NEWTYPE PRINTS AS WHAT IT IS MADE OF. Asked through its underlying type, because the
+            // question here is what the value is -- and a newtype over an int is an int in every way
+            // printing cares about. Refused, it made the feature unusable at the one place a
+            // distinct id is most wanted: the line that reports which one it is.
+            // Judged by the ground, REPORTED by what was written: a reader who wrote `Corner` is
+            // not helped by being told about `Point*`, a name that is nowhere on their line.
+            const std::string written = typeOf(*e);
+            const std::string t = groundOf(written);
             const bool printable = t.empty() || isIntName(t) || isFloatType(t) || t == "char" ||
                                    t == "boolean" || t == "String" || t == "string" ||
                                    t == "Decimal" || enums_.count(t) > 0 || catalogs_.count(t) > 0;
             if (!printable) {
                 error("string interpolation can only print numeric, char, boolean, String, Decimal or "
-                      "enum values, got '" + t + "'",
+                      "enum values, got '" + written + "'",
                       e->loc);
             }
         }

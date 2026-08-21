@@ -1,0 +1,31 @@
+import System.IO.Console;
+program InterpNewtypeBad;
+
+// Interpolation prints a newtype by what it is MADE OF -- and that widening must not become "prints
+// anything". A newtype over a CLASS has no representation printf can take, so it is still refused,
+// and this file is what stops the check from quietly turning into no check at all.
+
+public bundle Prog {
+    public namespace App {
+
+        public class Point {
+            public mutable int x;
+            public constructor Point(int x) { this.x = x; }
+        }
+
+        public newtype Corner = Point*;
+
+        public class Main {
+            // Never called: the type is what is being judged, not the value, and taking it as a
+            // parameter is the one way to name a `Corner` without also testing the cast.
+            public static method show(Corner c) returns void {
+                System.IO.Console.println($"corner {c}");
+                return;
+            }
+
+            public static method main(string[] args) returns void {
+                return;
+            }
+        }
+    }
+}

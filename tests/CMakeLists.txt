@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.159")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.160")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.159")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.160")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -593,6 +593,15 @@ add_test(NAME sema_subregion_parent_first_errors
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/subregion_bad.pol")
 set_tests_properties(sema_subregion_parent_first_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "was carved out of 'world', so its memory is part of this one")
+
+# Interpolation now prints a newtype by its underlying type -- and this is what stops that widening
+# from becoming "prints anything". A newtype over a class has no representation printf can take, and
+# the message must name what the AUTHOR wrote (`Corner`), not what it resolved to. Without this file
+# the check could quietly become no check at all and every sample would still pass.
+add_test(NAME sema_interp_newtype_over_class_errors
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interp_newtype_bad.pol")
+set_tests_properties(sema_interp_newtype_over_class_errors PROPERTIES
+    PASS_REGULAR_EXPRESSION "interp_newtype_bad.pol:22:53.*got 'Corner'")
 
 # `.rejects({T})` has been in the analyzer since regions arrived and no sample used it. A rule with
 # no test is a rule that works until someone refactors near it.
@@ -9706,12 +9715,14 @@ if(POLARON_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # Type aliases and newtype (spec 24): transparent `typealias` (primitive, function, generic)
-        # and distinct `newtype` (cast across the boundary).
+        # and distinct `newtype` (cast across the boundary). Also the two places a newtype is asked
+        # what it is MADE OF rather than what it is called: `fixed` of a newtype type, and printing
+        # one -- with a 64-bit and an unsigned one, the two the printer used to get wrong.
         add_test(NAME codegen_type_aliases_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/type_aliases.pol"
-            "-DEXPECTED=t=20 r=26 order=1007"
+            "-DEXPECTED=t=20 r=26 order=1007 big=5000000000 batch=4000000000 none=-1"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

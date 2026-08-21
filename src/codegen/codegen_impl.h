@@ -3418,7 +3418,11 @@ struct CodeGenerator::Impl {
         std::vector<llvm::Value*> values;
         for (std::size_t i = 0; i < is.exprs.size(); ++i) {
             fmt += escapePercents(resolveEscapes(is.literals[i]));
-            const std::string et = typeName(*is.exprs[i]);
+            // Through the newtype, because every test below is about the REPRESENTATION -- width,
+            // signedness, float or not -- and none of those predicates can see a newtype name. Left
+            // raw, an id fell to the final `else` and printed with %d whatever it was made of, so a
+            // 64-bit one read the wrong half of itself and an unsigned one printed negative.
+            const std::string et = repType(typeName(*is.exprs[i]));
             llvm::Value* v = emitExpr(*is.exprs[i]);
             if (v == nullptr) {
                 return nullptr;
