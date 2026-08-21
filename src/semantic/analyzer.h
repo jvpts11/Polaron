@@ -856,6 +856,11 @@ private:
     bool suppressNarrowing_ = false;
     std::unordered_set<std::string> activationOwned_;  // locals bound to a no-region `new` (own the object,
                                                        // die at method return) -- region-binder escape check
+    // ...except the ones that do NOT die at method return: a `region class` places its instances in
+    // the type's own region, released at program exit. They are still ordered against the frame like
+    // everything else (see `region_class_copy.pol`), so they stay in the set above; this records
+    // where they came from, and the escape-by-return check is the one place that has to know.
+    std::unordered_set<std::string> classArenaOwned_;
 
     // ---- THE REGION A VALUE LIVES IN (safety model §1.2) --------------------------------------
     //

@@ -1,0 +1,72 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program RegionClassReturned;
+
+// A REGION CLASS INSTANCE OUTLIVES THE METHOD THAT MADE IT, and the region binder used to say it did
+// not: "returning 'one', which names an object living in this method's own frame".
+//
+// It never lived in a frame. `new Node(...)` in a region class takes no placement precisely because
+// there is one place -- the type's own region -- and that region is released at program exit, so it
+// outlives every frame in the program. The binder was reading "no `on heap`" as "on the stack",
+// which is the right reading for an ordinary class and the wrong one here.
+//
+// It made the feature unusable for the ordinary case: a factory. `City.raise` in agents-exe makes a
+// building and hands it back, which is what a class with identity and a lifecycle is for -- and the
+// only way past the error was `on heap`, which a region class forbids for the reason the feature
+// exists. Refusing both leaves nowhere to put it.
+//
+// Prints: raised 3, sum = 60
+public bundle Prog {
+    public namespace App {
+
+        public region class Node {
+            public mutable int value;
+            public constructor Node(int v) { this.value = v; }
+            public method get() returns int { return this.value; }
+        }
+
+        public class Yard {
+            // Owned: the yard takes its nodes with it, which is what the destructor below says.
+            private mutable unique ArrayList<Node*>* standing;
+
+            public constructor Yard() {
+                this.standing = new ArrayList<Node*>() on heap;
+            }
+
+            // THE FACTORY, in the shape the game actually uses: the yard KEEPS what it made and
+            // hands the caller a look at it. Naming it in a local first is what the binder tripped
+            // on -- `return new Node(v)` alone was already accepted.
+            public method make(int v) returns Node* {
+                Node* one = new Node(v);
+                standing.add(one);
+                return one;
+            }
+
+            public method count() returns int {
+                return standing.size();
+            }
+
+            public destructor ~Yard() returns void {
+                for (int i in 0..standing.size()) {
+                    delete standing.get(i);
+                }
+                delete standing;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // On the stack: it is used here and nowhere else, and its destructor takes the
+                // nodes with it at the closing brace.
+                Yard y = new Yard() on stack;
+                Node* a = y.make(10);
+                Node* b = y.make(20);
+                Node* c = y.make(30);
+                System.IO.Console.printf("raised %d, sum = %d\n", y.count(),
+                                         a.get() + b.get() + c.get());
+                return;
+            }
+        }
+    }
+}

@@ -5206,6 +5206,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     nonNull_.clear();
     suppressNarrowing_ = false;
     activationOwned_.clear();
+    classArenaOwned_.clear();
     lambdaLocals_.clear();
     extracted_.clear();
     checkpointRegion_.clear();

@@ -2544,6 +2544,26 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             // object, and starting the accumulator above that bound would throw the bound away.
             acquired_[vd->name] = lifetimeOf(*vd->init);
         }
+        // A REGION CLASS PLACES ITS OWN INSTANCES, and not in this frame. `new Node(v)` carries no
+        // `on heap` because there is nowhere else it could go -- that is the whole declaration --
+        // so the missing placement is not the "on stack" it looks like.
+        //
+        // The mark below stays, because the binder ORDERS lifetimes with it and a region class's
+        // instances are ordered against the frame's like anything else's (see
+        // `region_class_copy.pol`, where a value copy of one is stored into another's field). What
+        // is recorded separately is WHERE it came from, and the one place that matters is the
+        // return: `Node* one = new Node(v); ...; return one;` was refused as returning a frame
+        // object, while `return new Node(v);` on one line was fine -- and the refusal's own advice,
+        // "allocate it with 'on heap'", is a thing a region class forbids for the reason the
+        // feature exists. Refusing both leaves nowhere to put it.
+        // WHAT DECIDES IS THE TYPE, not the shape of the initializer. `Node copy = root;` is a
+        // value copy of a region-class instance and the copy is in the arena too -- there is
+        // nowhere else it could be, which is the declaration -- so a rule about `new` alone would
+        // have covered the factory and missed the copy.
+        if (const ClassInfo* rc = lookupClass(baseType(declType));
+            rc != nullptr && rc->isRegionClass) {
+            classArenaOwned_.insert(vd->name);
+        }
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
             nw != nullptr && nw->region.empty() && nw->location != "heap") {
             activationOwned_.insert(vd->name);
@@ -3168,7 +3188,8 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             }
             if (regionBinder_ && isRefType(currentReturnType_)) {
                 if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get());
-                    rid != nullptr && activationOwned_.count(rid->name) > 0) {
+                    rid != nullptr && activationOwned_.count(rid->name) > 0 &&
+                    classArenaOwned_.count(rid->name) == 0) {
                     error("region-binder: returning '" + rid->name +
                               "', which names an object living in this method's own frame; the frame "
                               "is gone by the time the caller reads it. Allocate it with 'on heap' so "

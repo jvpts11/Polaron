@@ -1194,7 +1194,15 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
         // the missing `on heap` as "stack" refused a binary tree linking its own children -- the
         // shape the feature was added for.
         if (const ClassInfo* ci = lookupClass(nw->className); ci != nullptr && ci->isRegionClass) {
-            return boundByArguments(Lifetime{RegionKind::Object, "this"});
+            // ROOT, and the same answer a NAME for one gets. The type's region is released at
+            // program exit, so an instance outlives every frame and every object.
+            //
+            // It said `Object{"this"}` before, which was enough to let a tree link its own children
+            // and not enough for anything else: `head.next = new Descriptor(...)` where `head` is
+            // also one refused, because a name for an instance says Root and the expression said
+            // Object -- two answers about the same region, and the store between them unorderable.
+            // `boundByArguments` still lowers it when a constructor keeps a borrow.
+            return boundByArguments(Lifetime{RegionKind::Root, ""});
         }
         return Lifetime{RegionKind::Activation, ""};   // `on stack`, the default for an object
     }
@@ -1202,6 +1210,21 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
         if (id->name == "this") {
             return Lifetime{RegionKind::Object, "this"};
+        }
+        // A REGION-CLASS INSTANCE, whatever made it. Its region belongs to the type and is released
+        // at program exit, so it outlives every frame and every object -- which is `Root`, and Root
+        // is the honest answer rather than a convenient one.
+        //
+        // BEFORE the two below, because how it was made must not change the answer: `new Node(v)`,
+        // a value copy `Node c = other;`, and `cast<Node>(t.instantiate())` all name something in
+        // the same one region, and only the first would have been caught by asking the initializer.
+        //
+        // AND ROOT RATHER THAN `Object{name}`: every instance of a region class is in the SAME
+        // region, so two of them are ordered against each other by construction. Naming them after
+        // themselves made `root.left = copy` unorderable -- "nothing orders what 'root' belongs to
+        // against what 'copy' belongs to" -- when the answer is that they belong to one place.
+        if (classArenaOwned_.count(id->name) > 0) {
+            return Lifetime{RegionKind::Root, ""};
         }
         if (auto it = regionOf_.find(id->name); it != regionOf_.end()) {
             return regionLifetime(it->second);

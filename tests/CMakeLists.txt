@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.162")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.163")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.162")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.163")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -9722,6 +9722,22 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/eternal_local.pol"
             "-DEXPECTED=using=1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A REGION CLASS INSTANCE OUTLIVES THE METHOD THAT MADE IT -- the factory, which is the
+        # ordinary shape for a class with identity and a lifecycle. `Node* one = new Node(v); ...
+        # return one;` was refused twice over: the region binder called it "an object living in this
+        # method's own frame", and the emitter's escape promotion wrote `on heap` onto the `new` and
+        # then reported "`Node` is a region class, so `on heap` has nowhere to put this" -- pointing
+        # at a line with no placement on it. The compiler wrote the placement and blamed the author.
+        # `return new Node(v)` on one line was accepted the whole time, which is what made it look
+        # like a rule rather than a hole.
+        add_test(NAME codegen_region_class_returned_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_class_returned.pol"
+            "-DEXPECTED=raised 3, sum = 60"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

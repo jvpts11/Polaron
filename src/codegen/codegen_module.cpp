@@ -2141,7 +2141,16 @@ void CodeGenerator::Impl::promoteEscapingNews(const ast::Stmt* st, const std::se
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) {
         if (returned.count(vd->name) > 0) {
             if (const auto* cnw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
-                if (cnw->location == "stack" && cnw->region.empty()) {
+                // NOT A REGION CLASS, whose instances already outlive the frame -- they come from
+                // the type's own region, released at program exit. Promoting one to the heap made
+                // the emitter refuse the very line the author wrote: `Node* one = new Node(v); ...
+                // return one;` reported "`Node` is a region class, so `on heap` has nowhere to put
+                // this", pointing at a `new` with no placement on it. The compiler had written the
+                // placement and then blamed the author for it.
+                //
+                // A region class has no promoting to do: escape is what its region is FOR.
+                if (cnw->location == "stack" && cnw->region.empty() &&
+                    !livesInClassArena(clsKey(cnw->className))) {
                     const_cast<ast::NewExpr*>(cnw)->location = "heap";
                 }
             }
