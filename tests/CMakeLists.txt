@@ -2041,6 +2041,36 @@ add_test(NAME iterator_is_a_view COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# ANTI-PROCEDURAL TEST AP-16 AND AP-20 (docs/design/anti-procedural-tests.md): a declaration
+# produces exactly the bytes the hardware defines, and an object is exactly its fields.
+#
+# The claim is that an object-oriented language cannot describe an MMIO register or a descriptor
+# table -- it reorders, it pads, and it prepends a header. This declares the x86-64 IDT entry, writes
+# it through its fields and reads it back as bytes: sixteen bytes, in Intel's order, with nothing in
+# front of them. `demand` settles the size while the program is BUILT, so a descriptor of the wrong
+# size is a build that does not happen rather than a triple fault an hour later in QEMU.
+#
+# A `struct` and NOT a `layout`, which the sample also pins: implementing a layout AUTHORISES the
+# compiler to order fields widest-first (spec 11.1). That is what a layout is for, and it is exactly
+# wrong for hardware.
+add_test(NAME ap16_hardware_layout COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ap16_hardware_layout.pol"
+    "-DCONTAINS=idt=16 wrong=0"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# ...and the bytes themselves, in order, little-endian as x86-64 is. The size passing while the
+# ORDER moved would be a layout that is the right length and the wrong shape.
+add_test(NAME ap16_hardware_layout_bytes COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ap16_hardware_layout.pol"
+    "-DCONTAINS=bytes 34 17 68 51 85 102 136 119 204 187 170 153"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # THE TARGET DECIDES WHETHER AN ASSIGNMENT COPIES. `T* f = x` shares; `T f = x` copies. The PIR
 # lowering asked the VALUE's pointer depth instead, so `this.direct = this` on a `Owner*` field
 # deep-copied the object -- and inside a constructor that recursion reads fields not yet written and
