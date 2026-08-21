@@ -255,9 +255,8 @@
                 // lines and the parser holding them both outlive the call and are reachable from
                 // nothing.
                 ArrayList<String> lines = Strings.split(Strings.withoutBom(src), "\n");
-                Yaml* p = new Yaml(lines) on heap;
+                Yaml p = new Yaml(lines) on stack;
                 Json doc = p.block(0);
-                delete p;
                 delete lines;
                 return doc;
             }
@@ -569,10 +568,8 @@
                 // job is to be called once per file. The scanner is scaffolding -- it holds a
                 // position in a string and nothing the caller wants -- so it dies here, and the
                 // document it built is a value the caller takes away.
-                XmlReader* r = new XmlReader(Strings.withoutBom(src)) on heap;
-                Xml doc = r.document();
-                delete r;
-                return doc;
+                XmlReader r = new XmlReader(Strings.withoutBom(src)) on stack;
+                return r.document();
             }
         }
 

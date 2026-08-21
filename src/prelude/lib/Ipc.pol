@@ -22,20 +22,16 @@
             public static method kReplyError() returns int { return 11; }
             // An error reply carrying `text`.
             public static method errorFrame(String text) returns String {
-                IpcWriter w = new IpcWriter() on heap;
+                IpcWriter w = new IpcWriter() on stack;
                 w.putByte(IpcProto.kReplyError());
                 w.putString(text);
-                String f = w.toFrame();
-                delete w;
-                return f;
+                return w.toFrame();
             }
             // An empty OK reply (a void return).
             public static method okFrame() returns String {
-                IpcWriter w = new IpcWriter() on heap;
+                IpcWriter w = new IpcWriter() on stack;
                 w.putByte(IpcProto.kReplyOk());
-                String f = w.toFrame();
-                delete w;
-                return f;
+                return w.toFrame();
             }
         }
         // Builds a frame: scalars little-endian, strings length-prefixed. Both sides were compiled
@@ -226,7 +222,7 @@
             }
             // Ask the program for a capability. Its serve() policy decides; null means refused.
             public method requestAccess(String capability) returns BundleAccessToken* {
-                IpcWriter w = new IpcWriter() on heap;
+                IpcWriter w = new IpcWriter() on stack;
                 w.putByte(IpcProto.kCapability());
                 w.putString(capability);
                 IpcChannel ch = new IpcChannel(this.conn) on heap;
@@ -329,17 +325,14 @@
                 if (!auth(cap)) {
                     return IpcProto.errorFrame("capability refused: " + cap);
                 }
-                SecureRandom rng = new SecureRandom() on heap;   // a token nonce must not be guessable
+                SecureRandom rng = new SecureRandom() on stack;   // a token nonce must not be guessable
                 long nonce = rng.nextLong();
-                delete rng;
                 IpcServer.nonces.add(nonce);
                 IpcServer.caps.add(cap);
-                IpcWriter w = new IpcWriter() on heap;
+                IpcWriter w = new IpcWriter() on stack;
                 w.putByte(IpcProto.kReplyOk());
                 w.putLong(nonce);
-                String f = w.toFrame();
-                delete w;
-                return f;
+                return w.toFrame();
             }
             // Called by the synthesized dispatcher before running any method that demands a token.
             public static method validate(long nonce, String cap) returns boolean {

@@ -466,6 +466,7 @@
             public static method glob(String root, String pattern) returns ArrayList<String> {
                 ArrayList<String> all = Files.walk(root);
                 ArrayList<String> hits = new ArrayList<String>() on heap;
+                hits.ensureCapacity(all.size());   // the filter can only take away
                 for (mutable int i = 0; i < all.size(); i++) {
                     if (Files.matches(pattern, Paths.relative(root, all.get(i)))) {
                         hits.add(all.get(i));
@@ -697,7 +698,8 @@
             // names nothing, and keeping it would let a joined path escape its base.
             public static method normalize(String path) returns String {
                 ArrayList<String> parts = Paths.split(path);
-                ArrayList<String> kept = new ArrayList<String>() on heap;
+                ArrayList<String> kept = new ArrayList<String>() on stack;
+                kept.ensureCapacity(parts.size());   // `..` can only take segments away
                 for (mutable int i = 0; i < parts.size(); i++) {
                     String p = parts.get(i);
                     if (p.equals(".")) { continue; }
@@ -719,7 +721,6 @@
                     if (i > 0 || Paths.isAbsolute(path)) { out.append(Paths.separator()); }
                     out.append(kept.get(i));
                 }
-                delete kept;
                 delete parts;
                 String result = out.toString();
                 return result.length() == 0 ? "." : result;

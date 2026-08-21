@@ -92,6 +92,7 @@
                 }
                 return true;
             }
+            [Allow(code: "Polaron-0B28", why: "the byte sink every codec in this file writes through: it IS the growable buffer, and it has to be one an inner decode loop can index without a call")]
             private method grow() returns void {
                 int[] bigger = new int[this.buf.length() * 2]();
                 for (mutable int i = 0; i < this.n; i++) { bigger[i] = this.buf[i]; }
@@ -221,22 +222,18 @@
         // byte any other program wrote.
         public class Inflate {
             public static method bytes(int[] data, int len) returns int[] {
-                ByteSink* out = new ByteSink() on heap;
+                ByteSink out = new ByteSink() on stack;
                 Inflate.into(data, len, out);
-                int[] r = out.toBytes();
-                delete out;
-                return r;
+                return out.toBytes();
             }
             public static method text(int[] data, int len) returns String {
-                ByteSink* out = new ByteSink() on heap;
+                ByteSink out = new ByteSink() on stack;
                 Inflate.into(data, len, out);
-                String s = out.toText();
-                delete out;
-                return s;
+                return out.toText();
             }
 
-            internal static method into(int[] data, int len, ByteSink* out) returns boolean {
-                BitStream* bits = new BitStream(data, len) on heap;
+            internal static method into(int[] data, int len, ByteSink& out) returns boolean {
+                BitStream bits = new BitStream(data, len) on stack;
                 mutable boolean ok = true;
                 mutable boolean last = false;
                 while (!last && ok && !bits.atEnd()) {
@@ -251,7 +248,6 @@
                         }
                     }
                 }
-                delete bits;
                 return ok;
             }
 
@@ -279,7 +275,7 @@
             // time rather than cached in a static: a static would be program-lifetime state for two
             // arrays that cost a few hundred writes, and the language's own rule is not to own state
             // that is cheaper to recompute.
-            private static method fixed(BitStream* bits, ByteSink* out) returns boolean {
+            private static method fixed(BitStream& bits, ByteSink& out) returns boolean {
                 int[] litLen = new int[288]();
                 for (mutable int i = 0; i < 144; i++) { litLen[i] = 8; }
                 for (mutable int i = 144; i < 256; i++) { litLen[i] = 9; }
@@ -287,11 +283,9 @@
                 for (mutable int i = 280; i < 288; i++) { litLen[i] = 8; }
                 int[] distLen = new int[30]();
                 for (mutable int i = 0; i < 30; i++) { distLen[i] = 5; }
-                HuffTable* lit = new HuffTable(litLen, 288) on heap;
-                HuffTable* dist = new HuffTable(distLen, 30) on heap;
+                HuffTable lit = new HuffTable(litLen, 288) on stack;
+                HuffTable dist = new HuffTable(distLen, 30) on stack;
                 boolean ok = Inflate.block(bits, out, lit, dist);
-                delete lit;
-                delete dist;
                 delete litLen;
                 delete distLen;
                 return ok;
@@ -301,7 +295,7 @@
             // a third, tiny table whose lengths arrive in a fixed, deliberately odd order (16, 17, 18,
             // 0, 8, 7, 9, ...). The order is not arbitrary: it puts the lengths most likely to be zero
             // last, so the count can stop early.
-            private static method dynamic(BitStream* bits, ByteSink* out) returns boolean {
+            private static method dynamic(BitStream& bits, ByteSink& out) returns boolean {
                 int hlit = bits.readBits(5) + 257;
                 int hdist = bits.readBits(5) + 1;
                 int hclen = bits.readBits(4) + 4;
@@ -312,7 +306,7 @@
                 order[15] = 2; order[16] = 14; order[17] = 1; order[18] = 15;
                 int[] clen = new int[19]();
                 for (mutable int i = 0; i < hclen; i++) { clen[order[i]] = bits.readBits(3); }
-                HuffTable* code = new HuffTable(clen, 19) on heap;
+                HuffTable code = new HuffTable(clen, 19) on stack;
 
                 // The two tables are decoded as ONE run and split afterwards, because a repeat may
                 // straddle the boundary between them -- which is legal, and is the detail a decoder
@@ -348,7 +342,6 @@
                         }
                     }
                 }
-                delete code;
                 delete clen;
                 delete order;
                 if (!ok) { delete lengths; return false; }
@@ -357,11 +350,9 @@
                 for (mutable int k = 0; k < hlit; k++) { litLen[k] = lengths[k]; }
                 int[] distLen = new int[hdist]();
                 for (mutable int k = 0; k < hdist; k++) { distLen[k] = lengths[hlit + k]; }
-                HuffTable* lit = new HuffTable(litLen, hlit) on heap;
-                HuffTable* dist = new HuffTable(distLen, hdist) on heap;
+                HuffTable lit = new HuffTable(litLen, hlit) on stack;
+                HuffTable dist = new HuffTable(distLen, hdist) on stack;
                 boolean r = Inflate.block(bits, out, lit, dist);
-                delete lit;
-                delete dist;
                 delete litLen;
                 delete distLen;
                 delete lengths;
@@ -485,12 +476,10 @@
         public class Deflate {
 
             public static method bytes(int[] data, int len) returns int[] {
-                BitPacker* w = new BitPacker() on heap;
+                BitPacker w = new BitPacker() on stack;
                 Deflate.encode(data, len, w, true);
                 w.flush();
-                int[] r = w.toBytes();
-                delete w;
-                return r;
+                return w.toBytes();
             }
             public static method text(String s) returns int[] {
                 int[] b = ByteArray.of(s);
@@ -499,7 +488,7 @@
                 return r;
             }
 
-            internal static method encode(int[] data, int len, BitPacker* w, boolean last) returns void {
+            internal static method encode(int[] data, int len, BitPacker& w, boolean last) returns void {
                 w.writeBit(last ? 1 : 0);
                 w.writeBits(1, 2);                       // 01 = fixed Huffman
 
@@ -573,7 +562,7 @@
                 return;
             }
 
-            private static method emitMatch(BitPacker* w, int length, int distance) returns void {
+            private static method emitMatch(BitPacker& w, int length, int distance) returns void {
                 // The length symbol is the largest whose base does not exceed `length`; the remainder
                 // rides in that symbol's extra bits.
                 mutable int li = 28;
@@ -593,7 +582,7 @@
         // the reason the whole slice exists -- deflate alone reads nothing off a disk or a wire.
         public class Gzip {
             public static method compress(int[] data, int len) returns int[] {
-                ByteSink* out = new ByteSink() on heap;
+                ByteSink out = new ByteSink() on stack;
                 out.add(31); out.add(139);        // magic 1f 8b
                 out.add(8);                       // CM = deflate
                 out.add(0);                       // FLG: no name, no extra, no comment
@@ -607,7 +596,6 @@
                 Gzip.putLE32(out, crc);
                 Gzip.putLE32(out, cast<long>(len));
                 int[] r = out.toBytes();
-                delete out;
                 return r;
             }
             public static method compressText(String s) returns int[] {
@@ -620,18 +608,14 @@
             // Decompression checks the trailer, and that is not ceremony: a CRC that does not match is
             // the difference between "here is your data" and "here is something shaped like it".
             public static method decompress(int[] data, int len) returns int[] {
-                ByteSink* out = new ByteSink() on heap;
-                if (!Gzip.into(data, len, out)) { delete out; return new int[0](); }
-                int[] r = out.toBytes();
-                delete out;
-                return r;
+                ByteSink out = new ByteSink() on stack;
+                if (!Gzip.into(data, len, out)) { return new int[0](); }
+                return out.toBytes();
             }
             public static method decompressText(int[] data, int len) returns String {
-                ByteSink* out = new ByteSink() on heap;
-                if (!Gzip.into(data, len, out)) { delete out; return ""; }
-                String s = out.toText();
-                delete out;
-                return s;
+                ByteSink out = new ByteSink() on stack;
+                if (!Gzip.into(data, len, out)) { return ""; }
+                return out.toText();
             }
             // Whether the bytes even claim to be gzip. Asked separately because a caller handed an
             // arbitrary download wants to know before it starts.
@@ -639,7 +623,7 @@
                 return len >= 18 && data[0] == 31 && data[1] == 139 && data[2] == 8;
             }
 
-            private static method into(int[] data, int len, ByteSink* out) returns boolean {
+            private static method into(int[] data, int len, ByteSink& out) returns boolean {
                 if (!Gzip.looksLikeGzip(data, len)) { return false; }
                 int flg = data[3];
                 mutable int at = 10;
@@ -691,7 +675,7 @@
         // worth the twenty lines even though gzip is the one a file carries.
         public class Zlib {
             public static method compress(int[] data, int len) returns int[] {
-                ByteSink* out = new ByteSink() on heap;
+                ByteSink out = new ByteSink() on stack;
                 out.add(120);                     // CMF: deflate, 32 KiB window
                 out.add(1);                       // FLG chosen so (CMF*256+FLG) % 31 == 0
                 int[] body = Deflate.bytes(data, len);
@@ -702,22 +686,18 @@
                 out.add(cast<int>((a >> 16) & cast<long>(255)));
                 out.add(cast<int>((a >> 8) & cast<long>(255)));
                 out.add(cast<int>(a & cast<long>(255)));
-                int[] r = out.toBytes();
-                delete out;
-                return r;
+                return out.toBytes();
             }
             public static method decompress(int[] data, int len) returns int[] {
                 if (len < 6) { return new int[0](); }
                 int bodyLen = len - 6;
                 int[] body = new int[bodyLen]();
                 for (mutable int i = 0; i < bodyLen; i++) { body[i] = data[2 + i]; }
-                ByteSink* out = new ByteSink() on heap;
+                ByteSink out = new ByteSink() on stack;
                 boolean ok = Inflate.into(body, bodyLen, out);
                 delete body;
-                if (!ok) { delete out; return new int[0](); }
-                int[] r = out.toBytes();
-                delete out;
-                return r;
+                if (!ok) { return new int[0](); }
+                return out.toBytes();
             }
             // Adler-32 over bytes. `Adler32` next door takes a String; this takes the byte array the
             // rest of the namespace speaks, and they agree by construction because a String is bytes.

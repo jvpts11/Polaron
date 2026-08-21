@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.157")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.158")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.157")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.158")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1272,6 +1272,15 @@ add_test(NAME lint_list_without_capacity
 set_tests_properties(lint_list_without_capacity PROPERTIES
     PASS_REGULAR_EXPRESSION "0B3B\\]: 'got' starts empty and is filled in a loop")
 
+# ...and not on a SCANNER, where the bound is the input and the count is a fraction of it nobody
+# knows until the loop ends. Every parser in the library has that shape -- `Paths.split` walks
+# characters and adds a segment per separator -- and all of them were being told to reserve the
+# length of their input, which is forty elements to hold three.
+add_test(NAME lint_list_capacity_is_not_advised_for_a_scanner
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
+set_tests_properties(lint_list_capacity_is_not_advised_for_a_scanner PROPERTIES
+    FAIL_REGULAR_EXPRESSION "0B3B\\]: 'marks'")
+
 add_test(NAME lint_foreign_address_stored
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol")
 set_tests_properties(lint_foreign_address_stored PROPERTIES
@@ -1286,7 +1295,7 @@ add_test(NAME lint_final_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"
     "-DCLANG=${POLARON_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_final.pol"
-    "-DCONTAINS=1 0 4 3 8"
+    "-DCONTAINS=1 0 4 3 2 8"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -1452,7 +1461,16 @@ set_tests_properties(lint_alloc_free_in_loop PROPERTIES
 add_test(NAME lint_array_grown_by_hand
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol")
 set_tests_properties(lint_array_grown_by_hand PROPERTIES
-    PASS_REGULAR_EXPRESSION "0B28.*'grow' allocates a new array, copies into it")
+    PASS_REGULAR_EXPRESSION "0B28.*'add' allocates a new array, copies into it")
+
+# ...and only where it is GROWTH. Allocating an array, copying element by element and freeing a
+# scratch is what half the numeric library does, and none of it is a list anybody rewrote: the shape
+# that is one is growth IN PLACE, where what was freed is then assigned the new array. Untested, the
+# rule told `Decompose.determinant` and `Curve.publicPoint` to reach for a collection.
+add_test(NAME lint_array_grown_by_hand_is_not_a_working_copy
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_tables.pol")
+set_tests_properties(lint_array_grown_by_hand_is_not_a_working_copy PROPERTIES
+    FAIL_REGULAR_EXPRESSION "0B28.*'churn'")
 
 # ...and the near-misses: one array is a list rather than a table, and a pair of coordinates is the
 # concept rather than the problem.

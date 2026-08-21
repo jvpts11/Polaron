@@ -390,7 +390,7 @@
                 }
                 TlsSession* live = cast<TlsSession*>(session);
                 live.send(request.toWire());
-                StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on stack;
                 mutable boolean more = true;
                 while (more) {
                     String chunk = live.receive();
@@ -398,7 +398,6 @@
                 }
                 live.close();
                 String text = sb.toString();
-                delete sb;
                 delete live;
                 return new HttpResponse(text) on heap;
             }

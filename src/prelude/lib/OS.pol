@@ -181,6 +181,7 @@
                 ArrayList<String> parts =
                     Strings.split(Environment.get("PATH", ""), Environment.pathSeparator());
                 ArrayList<String> kept = new ArrayList<String>() on heap;
+                kept.ensureCapacity(parts.size());   // dropping the empties can only take away
                 for (mutable int i = 0; i < parts.size(); i++) {
                     if (parts.get(i).length() > 0) { kept.add(parts.get(i)); }
                 }

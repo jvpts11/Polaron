@@ -104,6 +104,24 @@ public bundle Main {
                 return size;
             }
 
+            // QUIET: a SCANNER. The loop counts characters and the list gets one element per
+            // separator, so the bound is not the count and reserving it would ask for one element
+            // per character to hold a handful. "The count is right there in the loop's bound" is
+            // what this rule rests on, and here it is not: `Paths.split` and `Strings.split` and
+            // every parser in the library have this shape, and all of them were being told to
+            // reserve the length of their input.
+            public static method scans(String text) returns int {
+                ArrayList<int>* marks = new ArrayList<int>() on heap;
+                for (mutable int i = 0; i < text.length(); i++) {
+                    if (text.charAt(i) == ',') {
+                        marks.add(i);
+                    }
+                }
+                int size = marks.size();
+                delete marks;
+                return size;
+            }
+
             // FIRES (0B3D): the first store is a whole object thrown away, and the line reads as if
             // it establishes something.
             public static method twice() returns int {
@@ -120,7 +138,7 @@ public bundle Main {
                 Counters* c = new Counters() on heap;
                 Borrowed* b = new Borrowed() on heap;
                 c.send(1);
-                System.IO.Console.println($"{p.size()} {c.count()} {Work.copies()} {Work.fills(3)} {Work.twice()}");
+                System.IO.Console.println($"{p.size()} {c.count()} {Work.copies()} {Work.fills(3)} {Work.scans("a,b,c")} {Work.twice()}");
                 delete p;
                 delete c;
                 delete b;

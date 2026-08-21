@@ -64,16 +64,35 @@ public bundle Main {
                 return total;
             }
 
-            // FIRES (0B28): ArrayList written again, growth policy and all.
-            public static method grow(int[] old, int had) returns int {
-                int[] bigger = new int[had * 2]();
-                for (int i in 0..had) {
-                    bigger[i] = old[i];
-                }
-                int got = bigger[0];
-                delete bigger;
-                return got;
+        }
+
+        // FIRES (0B28) on `grow`: ArrayList written again, growth policy and all. The shape is
+        // growth IN PLACE -- what was freed is then assigned the new array, so the same name goes
+        // on meaning the same storage one size bigger. A working copy is not this: allocating,
+        // copying element by element and freeing a scratch is what half the numeric library does,
+        // and none of it is a list anybody rewrote.
+        public class ByHand {
+            private mutable int[] items;
+            private mutable int used;
+            public constructor ByHand() {
+                this.items = new int[2]();
+                this.used = 0;
             }
+            public method add(int v) returns void {
+                if (this.used == this.items.length()) {
+                    int[] bigger = new int[this.items.length() * 2]();
+                    for (mutable int i = 0; i < this.used; i++) {
+                        bigger[i] = this.items[i];
+                    }
+                    delete this.items;
+                    this.items = bigger;
+                }
+                this.items[this.used] = v;
+                this.used = this.used + 1;
+                return;
+            }
+            public method first() returns int { return this.items[0]; }
+            public destructor ~ByHand() returns void { delete this.items; }
         }
 
         public class Main {
@@ -83,7 +102,11 @@ public bundle Main {
                 Metres m = new Metres(9) on stack;
                 int[] some = new int[2]();
                 some[0] = 6;
-                System.IO.Console.println($"{Kinds.cost(0)} {Single.first()} {m.toFeet()} {Metres.fromFeet(9)} {Work.place(1, 2, 3)} {Work.at(4, 5)} {Work.churn(3)} {Work.grow(some, 2)}");
+                ByHand byHand = new ByHand() on stack;
+                byHand.add(6);
+                byHand.add(7);
+                byHand.add(8);
+                System.IO.Console.println($"{Kinds.cost(0)} {Single.first()} {m.toFeet()} {Metres.fromFeet(9)} {Work.place(1, 2, 3)} {Work.at(4, 5)} {Work.churn(3)} {byHand.first()}");
                 delete some;
                 return;
             }

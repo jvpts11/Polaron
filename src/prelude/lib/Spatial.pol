@@ -655,12 +655,12 @@
             public method blend(Color& to, double t) returns Color {
                 Color* here = this.toLinear();
                 Color* there = to.toLinear();
-                Color* mixed = new Color(here.r + (there.r - here.r) * t,
-                                                 here.g + (there.g - here.g) * t,
-                                                 here.b + (there.b - here.b) * t,
-                                                 this.a + (to.a - this.a) * t) on heap;
+                Color mixed = new Color(here.r + (there.r - here.r) * t,
+                                                here.g + (there.g - here.g) * t,
+                                                here.b + (there.b - here.b) * t,
+                                                this.a + (to.a - this.a) * t) on stack;
                 Color out = mixed.toSrgb();
-                delete here; delete there; delete mixed;
+                delete here; delete there;
                 return out;
             }
             private static method largest(double a, double b, double c) returns double {

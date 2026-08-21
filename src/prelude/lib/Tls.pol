@@ -155,7 +155,7 @@
             public static method dotted(int[] der, int off, int length) returns String {
                 if (length <= 0) { return ""; }
                 int first = der[off] & 255;
-                StringBuilder out = new StringBuilder() on heap;
+                StringBuilder out = new StringBuilder() on stack;
                 out.appendInt(first / 40);
                 out.appendChar('.');
                 out.appendInt(first % 40);
@@ -172,7 +172,6 @@
                     i = i + 1;
                 }
                 String text = out.toString();
-                delete out;
                 return text;
             }
 
@@ -944,11 +943,10 @@
                 int limbs = U256.limbsForBytes(modLength);
                 long[] n = Rsa.toLimbs(modulus, modLength, limbs);
                 long[] s = Rsa.toLimbs(sig, sigLength, limbs);
-                Mont* f = new Mont(n) on heap;
+                Mont f = new Mont(n) on stack;
                 long[] m = f.powSmall(s, e);
                 int[] out = Rsa.fromLimbs(m, modLength);
                 delete m;
-                delete f;
                 delete s;
                 delete n;
                 return out;
@@ -1687,7 +1685,7 @@
             public static method over(Socket link, String host, TrustStore* trusted)
                                       throws(TlsException, CertificateException)
                                       returns TlsSession* {
-                SecureRandom rng = new SecureRandom() on heap;
+                SecureRandom rng = new SecureRandom() on stack;
                 int[] privateKey = rng.nextBytes(32);
                 int[] publicKey = X25519.publicKey(privateKey);
                 // A second ephemeral key, on the curve the standard calls mandatory. Generated
@@ -1809,7 +1807,7 @@
 
                 int[] messages = flight.toArray();
                 int total = flight.length();
-                ArrayList<Certificate*> chain = new ArrayList<Certificate*>() on heap;
+                ArrayList<Certificate*> chain = new ArrayList<Certificate*>() on stack;
                 mutable boolean finishedOk = false;
                 mutable boolean verifiedIdentity = false;
                 mutable int at = 0;
@@ -1890,8 +1888,6 @@
                     KeySchedule.trafficKey(clientApp, 32), KeySchedule.trafficIv(clientApp, 32),
                     KeySchedule.trafficKey(serverApp, 32), KeySchedule.trafficIv(serverApp, 32))
                     on heap;
-                delete chain;
-                delete rng;
                 return session;
             }
 
@@ -1908,7 +1904,7 @@
                 int sigLength = ((messages[at + 2] & 255) << 8) | (messages[at + 3] & 255);
                 int[] signature = Der.copy(messages, at + 4, sigLength);
 
-                ByteWriter signed = new ByteWriter() on heap;
+                ByteWriter signed = new ByteWriter() on stack;
                 for (mutable int i = 0; i < 64; i++) { signed.u8(32); }        // 64 spaces
                 String context = "TLS 1.3, server CertificateVerify";
                 for (mutable int i = 0; i < context.length(); i++) {
@@ -1956,7 +1952,6 @@
                 delete hash;
                 delete digest;
                 delete content;
-                delete signed;
                 delete signature;
                 return ok;
             }
@@ -2056,7 +2051,7 @@
             }
             private static method sendPlain(Socket link, int type, int version, int[] body, int n)
                                             returns void {
-                StringBuilder out = new StringBuilder() on heap;
+                StringBuilder out = new StringBuilder() on stack;
                 out.appendChar(cast<char>(type));
                 out.appendChar(cast<char>((version >> 8) & 255));
                 out.appendChar(cast<char>(version & 255));
@@ -2064,14 +2059,12 @@
                 out.appendChar(cast<char>(n & 255));
                 for (mutable int i = 0; i < n; i++) { out.appendChar(cast<char>(body[i] & 255)); }
                 link.send(out.toString());
-                delete out;
                 return;
             }
             private static method sendRaw(Socket link, int[] data, int n) returns void {
-                StringBuilder out = new StringBuilder() on heap;
+                StringBuilder out = new StringBuilder() on stack;
                 for (mutable int i = 0; i < n; i++) { out.appendChar(cast<char>(data[i] & 255)); }
                 link.send(out.toString());
-                delete out;
                 return;
             }
         }
@@ -2130,12 +2123,11 @@
                 int[] framed = Record.seal(this.sendKey, this.sendIv, this.sendSequence, 23,
                                                    data, text.length());
                 this.sendSequence = this.sendSequence + cast<long>(1);
-                StringBuilder out = new StringBuilder() on heap;
+                StringBuilder out = new StringBuilder() on stack;
                 for (mutable int i = 0; i < framed.length(); i++) {
                     out.appendChar(cast<char>(framed[i] & 255));
                 }
                 this.link.send(out.toString());
-                delete out;
                 delete framed;
                 delete data;
                 return;
@@ -2278,6 +2270,7 @@
                 for (mutable int i = 0; i < this.used; i++) { out[i] = this.buffer[i]; }
                 return out;
             }
+            [Allow(code: "Polaron-0B28", why: "the wire buffer a handshake is assembled in: it IS the growable byte store, and a record is measured in bytes rather than in elements of a list")]
             private method ensure(int extra) returns void {
                 if (this.used + extra <= this.buffer.length()) { return; }
                 mutable int capacity = this.buffer.length();
@@ -2307,7 +2300,7 @@
         public class ClientHello {
             public static method build(String host, int[] random, int[] sessionId, int sessionLength,
                                        int[] montgomeryKey, int[] nistKey) returns int[] {
-                ByteWriter w = new ByteWriter() on heap;
+                ByteWriter w = new ByteWriter() on stack;
                 w.u8(1);                                      // handshake type: client_hello
                 int lengthAt = w.position();
                 w.u24(0);                                     // patched once the body is written
@@ -2378,7 +2371,6 @@
                 w.patchU16(extensionsAt, end - extensionsStart);
                 w.patchU24(lengthAt, end - bodyStart);
                 int[] out = w.toArray();
-                delete w;
                 return out;
             }
         }
@@ -2490,7 +2482,7 @@
             // Ciphertext followed by the 16-byte tag.
             public static method seal(int[] key, int[] iv, int[] aad, int aadLength,
                                       int[] plain, int plainLength) returns int[] {
-                Aes* aes = new Aes(key) on heap;
+                Aes aes = new Aes(key) on stack;
                 int[] zero = new int[16]();
                 int[] h = aes.encryptBlock(zero);         // the hash subkey, E(0)
                 delete zero;
@@ -2522,7 +2514,6 @@
                 delete s;
                 delete h;
                 delete j0;
-                delete aes;
                 return out;
             }
 
@@ -2532,7 +2523,7 @@
                                       int[] protectedBytes, int totalLength) returns int[] {
                 int cipherLength = totalLength - 16;
                 if (cipherLength < 0) { return new int[1](); }
-                Aes* aes = new Aes(key) on heap;
+                Aes aes = new Aes(key) on stack;
                 int[] zero = new int[16]();
                 int[] h = aes.encryptBlock(zero);
                 delete zero;
@@ -2552,8 +2543,7 @@
                 if (!authentic) {
                     delete h;
                     delete j0;
-                    delete aes;
-                    return new int[1]();        // refused: the caller must not read past this
+                        return new int[1]();        // refused: the caller must not read past this
                 }
                 int[] plain = new int[cipherLength > 0 ? cipherLength : 1]();
                 int[] counter = Gcm.copyBlock(j0);
@@ -2573,7 +2563,6 @@
                 delete counter;
                 delete h;
                 delete j0;
-                delete aes;
                 return plain;
             }
 
@@ -2682,7 +2671,7 @@
             // The shared u-coordinate from a 32-byte scalar and a 32-byte peer u-coordinate.
             public static method scalarMult(int[] scalar, int[] peer) returns int[] {
                 long[] p = X25519.fieldPrime();
-                Mont* f = new Mont(p) on heap;
+                Mont f = new Mont(p) on stack;
 
                 // Clamping (RFC 7748): the low three bits cleared so the scalar is a multiple of the
                 // cofactor, the top bit cleared and the next set so every scalar has the same length.
@@ -2742,7 +2731,6 @@
                 long[] zinv = f.invMont(z2);
                 long[] result = f.fromMont(f.mul(x2, zinv));
                 int[] out = U256.toBytesLe(result);
-                delete f;
                 return out;
             }
 
@@ -3093,14 +3081,13 @@
                 long[] pym = this.fp.toMont(py);
                 if (!this.isOnCurve(pxm, pym)) { return new int[1](); }
                 long[] one = this.oneRaw();
-                EcPoint* point = new EcPoint(pxm, pym, this.fp.toMont(one), false) on heap;
+                EcPoint point = new EcPoint(pxm, pym, this.fp.toMont(one), false) on stack;
                 delete one;
                 EcPoint* shared = this.multiply(point, scalar);
                 long[] x = this.affineX(shared);       // zeros when the product is infinity
                 int[] out = shared.infinite ? new int[1]() : U256.toBytesOf(x, this.size);
                 delete x;
                 delete shared;
-                delete point;
                 return out;
             }
 
@@ -3152,7 +3139,7 @@
 
                 EcPoint* g = this.fromAffine(this.gx, this.gy);
                 long[] one = this.oneRaw();
-                EcPoint* q = new EcPoint(qxm, qym, this.fp.toMont(one), false) on heap;
+                EcPoint q = new EcPoint(qxm, qym, this.fp.toMont(one), false) on stack;
                 delete one;
                 EcPoint* sum = this.multiplyTwo(g, u1, q, u2);
                 mutable boolean ok = false;
@@ -3163,7 +3150,6 @@
                 }
 
                 delete sum;
-                delete q;
                 delete g;
                 return ok;
             }
@@ -3243,7 +3229,7 @@
                 TrustStore* store = new TrustStore() on heap;
                 String all = System.Net.__systemRoots();
                 ArrayList<String> lines = Strings.split(all, "\n");
-                StringBuilder current = new StringBuilder() on heap;
+                StringBuilder current = new StringBuilder() on stack;
                 mutable boolean inside = false;
                 mutable int i = 0;
                 while (i < lines.size()) {
@@ -3271,7 +3257,6 @@
                     }
                     i = i + 1;
                 }
-                delete current;
                 delete lines;
                 return store;
             }
@@ -3511,7 +3496,7 @@
                     delete names;
                     return "no host names at all";
                 }
-                StringBuilder out = new StringBuilder() on heap;
+                StringBuilder out = new StringBuilder() on stack;
                 mutable int i = 0;
                 while (i < names.size() && i < 4) {
                     if (i > 0) { out.append(", "); }

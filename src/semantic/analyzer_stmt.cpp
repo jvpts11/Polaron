@@ -821,27 +821,57 @@ void SemanticAnalyzer::warnArrayGrownByHand(const ast::MethodDecl& m) {
     // that needed a list. The standard library's version has the growth policy already argued about
     // and measured, and -- more to the point -- it is one implementation rather than one per author,
     // so a bug in it is fixed once.
-    bool allocatesArray = false;
+    //
+    // AND IT HAS TO BE GROWTH, not a copy. "Allocates an array, copies element by element, frees
+    // something" is also every working copy in the library: `Decompose.determinant` copies the
+    // matrix so it can destroy it, `Curve.publicPoint` builds a result and frees a scratch, and
+    // neither is a list anybody rewrote. Growth in place has a shape those do not: what was freed is
+    // then ASSIGNED the new array, so the same name goes on meaning the same storage, one size
+    // bigger. Asking for that leaves the ten places that really are a list, and takes out the
+    // fifteen that were being told to reach for a collection they are not building.
+    std::string newArray;
     bool copies = false;
-    bool frees = false;
+    std::unordered_set<std::string> freed;
+    std::unordered_set<std::string> rebound;   // what was assigned the new array
     SourceLocation at{};
+    auto placeOf = [](const ast::Expr* e) -> std::string {
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+            return id->name;
+        }
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+            const auto* obj = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+            return obj != nullptr ? obj->name + "." + mem->member : std::string();
+        }
+        return {};
+    };
     eachStmt(m.body, [&](const ast::Stmt& st) {
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
             if (dynamic_cast<const ast::NewArrayExpr*>(vd->init.get()) != nullptr) {
-                allocatesArray = true;
+                newArray = vd->name;
                 at = vd->loc;
             }
-        } else if (dynamic_cast<const ast::DeleteStmt*>(&st) != nullptr) {
-            frees = true;
+        } else if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&st)) {
+            if (const std::string what = placeOf(del->target.get()); !what.empty()) {
+                freed.insert(what);
+            }
         } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
             // `a[i] = b[j]` -- an element moved from one array into another.
             if (dynamic_cast<const ast::IndexExpr*>(as->target.get()) != nullptr &&
                 dynamic_cast<const ast::IndexExpr*>(as->value.get()) != nullptr) {
                 copies = true;
             }
+            const auto* from = dynamic_cast<const ast::IdentifierExpr*>(as->value.get());
+            if (from != nullptr && !newArray.empty() && from->name == newArray) {
+                if (const std::string into = placeOf(as->target.get()); !into.empty()) {
+                    rebound.insert(into);
+                }
+            }
         }
     });
-    if (allocatesArray && copies && frees) {
+    const bool growsInPlace =
+        std::any_of(rebound.begin(), rebound.end(),
+                    [&freed](const std::string& place) { return freed.count(place) > 0; });
+    if (!newArray.empty() && copies && growsInPlace) {
         warn(diag::Code::ArrayGrownByHand,
              "'" + m.name + "' allocates a new array, copies into it and frees the old one", at);
     }
@@ -1232,32 +1262,65 @@ void SemanticAnalyzer::warnListWithoutCapacity(const ast::Block& body) {
     if (emptyLists.empty()) {
         return;
     }
+    // ...UNLESS IT WAS ALREADY SIZED. `ensureCapacity` is the fix this rule names, and four of the
+    // library's own lists called it on the line straight after the declaration and were reported
+    // anyway -- advice to apply a fix that is already applied, which is the fastest way to teach a
+    // reader that the catalogue does not read the code.
+    eachStmt(body, [&](const ast::Stmt& st) {
+        const auto* es = dynamic_cast<const ast::ExprStmt*>(&st);
+        const auto* call =
+            es != nullptr ? dynamic_cast<const ast::CallExpr*>(es->expr.get()) : nullptr;
+        const auto* mem =
+            call != nullptr ? dynamic_cast<const ast::MemberExpr*>(call->callee.get()) : nullptr;
+        if (mem == nullptr || mem->member != "ensureCapacity") {
+            return;
+        }
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+            emptyLists.erase(id->name);
+        }
+    });
+    if (emptyLists.empty()) {
+        return;
+    }
+    // ONE ELEMENT PER ITERATION, which is the other half of "the count is in the bound". An `add`
+    // nested inside an `if` runs on some turns and not others, so the trip count is an upper bound
+    // and usually a wild one: `Paths.split` walks every character of a path and adds a segment per
+    // separator, so reserving `path.length()` asks for forty elements to hold three. Only an `add`
+    // written straight in the loop's body says the two numbers are the same. The statements are
+    // read directly rather than through `eachStmt`, which descends into the nested blocks that are
+    // precisely what disqualifies them.
     auto scanLoop = [&](const ast::Block& blk) {
-        eachStmt(blk, [&](const ast::Stmt& st) {
+        for (const ast::StmtPtr& sp : blk.statements) {
+            const ast::Stmt& st = *sp;
             const auto* es = dynamic_cast<const ast::ExprStmt*>(&st);
             const auto* call = es != nullptr ? dynamic_cast<const ast::CallExpr*>(es->expr.get())
                                              : nullptr;
             if (call == nullptr) {
-                return;
+                continue;
             }
             const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
             if (mem == nullptr || mem->member != "add") {
-                return;
+                continue;
             }
             const auto* id = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
             if (id == nullptr || emptyLists.count(id->name) == 0) {
-                return;
+                continue;
             }
             warn(diag::Code::ListWithoutCapacity,
                  "'" + id->name + "' starts empty and is filled in a loop, reallocating as it grows",
                  where[id->name]);
             emptyLists.erase(id->name);   // one report per list, not one per add
-        });
+        }
     };
+    // COUNTED LOOPS ONLY, because "the count is right there in the loop's bound" is what the rule
+    // rests on and a `while` scanner has no such number. Every one of them in this library is a
+    // parser: `Strings.split` walks a string and adds a part per separator, `Utf8.codepoints` adds
+    // one per codepoint of a variable-width scan, the CSV reader adds a field per quote state. The
+    // bound of those loops is the INPUT length, and reserving it would ask for one element per
+    // character to hold five parts. A counted `for` or a `foreach` has a trip count, and a capacity
+    // taken from it is never wrong -- over-reserving on a filtered loop still only takes away.
     eachStmt(body, [&](const ast::Stmt& st) {
-        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
-            scanLoop(ws->body);
-        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+        if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
             scanLoop(fs->body);
         } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
             scanLoop(fe->body);
@@ -1810,6 +1873,13 @@ void SemanticAnalyzer::warnCallBlocksVectorization(const ast::Block& body) {
     // unit exists for -- one operation applied down an array -- and the call in the middle is what
     // stops it: the compiler cannot see through it, so it cannot prove the body is free of side
     // effects, so it processes one element at a time.
+    //
+    // ELEMENT-WISE MEANS THE ELEMENTS COME FROM AN ARRAY. Writing `out[i]` from arithmetic is half
+    // the shape; the other half is that the values being combined are read from arrays, which is
+    // what a vector unit loads. Without that test the rule fired on every string-to-bytes loop in
+    // the library -- `out[i] = cast<int>(s.charAt(i)) & 255` -- where the call IS the element read,
+    // because a String has no `[i]`. There is nothing to inline and nothing to hoist: the fix the
+    // catalogue names does not exist for it, and the loop it is describing has one operand.
     auto scanLoop = [&](const ast::Block& blk, SourceLocation loc) {
         bool elementwise = false;
         const ast::CallExpr* blocker = nullptr;
@@ -1821,7 +1891,26 @@ void SemanticAnalyzer::warnCallBlocksVectorization(const ast::Block& body) {
             if (dynamic_cast<const ast::IndexExpr*>(as->target.get()) == nullptr) {
                 return;
             }
-            if (dynamic_cast<const ast::BinaryExpr*>(as->value.get()) != nullptr) {
+            std::function<bool(const ast::Expr*)> readsAnArray = [&](const ast::Expr* e) -> bool {
+                if (e == nullptr) {
+                    return false;
+                }
+                if (dynamic_cast<const ast::IndexExpr*>(e) != nullptr) {
+                    return true;
+                }
+                if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+                    return readsAnArray(bin->lhs.get()) || readsAnArray(bin->rhs.get());
+                }
+                if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+                    return readsAnArray(un->operand.get());
+                }
+                if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+                    return readsAnArray(cast->operand.get());
+                }
+                return false;
+            };
+            if (dynamic_cast<const ast::BinaryExpr*>(as->value.get()) != nullptr &&
+                readsAnArray(as->value.get())) {
                 elementwise = true;
             }
             std::function<void(const ast::Expr*)> findCall = [&](const ast::Expr* e) {

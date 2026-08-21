@@ -125,6 +125,7 @@
                     }
                 }
             }
+            [Allow(code: "Polaron-0B28", why: "the digit store of a bignum: an ArrayList<int> here would put a bounds check and a call between every limb and the arithmetic that reads it")]
             private method ensure(int n) returns void {
                 if (n <= this.dig.length()) { return; }
                 mutable int cap = this.dig.length() * 2;

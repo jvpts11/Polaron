@@ -5,7 +5,7 @@
 #   ./build-msi.ps1                       # -> installer/dist/Polaron-1.0.138.msi
 param(
     [string]$Config = "Release",
-    [string]$Version = "1.0.157"
+    [string]$Version = "1.0.158"
 )
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot

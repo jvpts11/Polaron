@@ -131,7 +131,8 @@
             // prints, because a caller may want it in a file, in a string, or coloured further -- and
             // a renderer that prints is a renderer that can only ever do one of those.
             public method render() returns String {
-                ArrayList<int> widths = new ArrayList<int>() on heap;
+                ArrayList<int> widths = new ArrayList<int>() on stack;
+                widths.ensureCapacity(this.headers.size());
                 for (mutable int c = 0; c < this.headers.size(); c++) {
                     widths.add(Style.width(this.headers.get(c)));
                 }
@@ -148,7 +149,8 @@
                 // rather than loudly.
                 StringBuilder* sb = new StringBuilder() on heap;
                 this.line(sb, this.headers, widths);
-                ArrayList<String> rule = new ArrayList<String>() on heap;
+                ArrayList<String> rule = new ArrayList<String>() on stack;
+                rule.ensureCapacity(widths.size());
                 for (mutable int c = 0; c < widths.size(); c++) {
                     StringBuilder dashes = new StringBuilder() on heap;
                     for (mutable int i = 0; i < widths.get(c); i++) { dashes.append("-"); }
@@ -158,8 +160,6 @@
                 for (mutable int r = 0; r < this.rows.size(); r++) {
                     this.line(sb, this.rows.get(r), widths);
                 }
-                delete rule;
-                delete widths;
                 return sb.toString();
             }
 

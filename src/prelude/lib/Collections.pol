@@ -34,6 +34,7 @@
             public destructor ~ArrayList() returns void {
                 delete this.data;
             }
+            [Allow(code: "Polaron-0B28", why: "this IS the collection the rule points to: growth by hand is what a list is, and ArrayList cannot reach for an ArrayList")]
             public method add(T item) returns void
                 // The one thing a caller is entitled to assume, now stated: adding grows the list by
                 // exactly one. `old(...)` is the value at entry, so this also rules out the mistake
@@ -54,6 +55,7 @@
             // Grow the backing store to hold at least n elements up front, so a known-size fill (a copy,
             // a filter/map/sort output) does not pay repeated doubling reallocations. A no-op when the
             // capacity already suffices; never shrinks.
+            [Allow(code: "Polaron-0B28", why: "this IS the collection the rule points to: sizing the backing store once is the service every caller is told to use instead of growing by hand")]
             public method ensureCapacity(int n) returns void {
                 if (n > this.data.length()) {
                     T[] bigger = new T[n]();
@@ -100,6 +102,7 @@
                 }
                 this.count = this.count - 1;
             }
+            [Allow(code: "Polaron-0B28", why: "this IS the collection the rule points to: growth by hand is what a list is, and ArrayList cannot reach for an ArrayList")]
             public method insertAt(int i, T item) returns void {  // shift the tail right, insert at i
                 if (i < 0 || i > this.count) {   // count itself is valid here -- that is an append
                     this.data[this.data.length()] = item;   // out of bounds -> clean panic, no silent gap
@@ -570,6 +573,7 @@
             private mutable int count;
             public constructor Queue() { this.data = new T[4](); this.head = 0; this.count = 0; }
             public destructor ~Queue() returns void { delete this.data; }
+            [Allow(code: "Polaron-0B28", why: "this IS the collection the rule points to: a ring buffer grows its own storage, and a Queue cannot reach for a Queue")]
             public method enqueue(T item) returns void {
                 if (this.count >= this.data.length()) {
                     T[] bigger = new T[this.data.length() * 2]();
@@ -1625,17 +1629,20 @@
             }
             public static method upTo(int n) returns ArrayList<int> {
                 ArrayList<int> out = new ArrayList<int>() on heap;
+                out.ensureCapacity(n);
                 for (mutable int i = 0; i < n; i++) { out.add(i); }
                 return out;
             }
             public static method between(int start, int end) returns ArrayList<int> {
                 ArrayList<int> out = new ArrayList<int>() on heap;
+                out.ensureCapacity(end - start);
                 for (mutable int i = start; i < end; i++) { out.add(i); }
                 return out;
             }
             public static method stepBy(int start, int end, int by) returns ArrayList<int> {
                 ArrayList<int> out = new ArrayList<int>() on heap;
                 if (by <= 0) { return out; }
+                out.ensureCapacity((end - start + by - 1) / by);
                 for (mutable int i = start; i < end; i = i + by) { out.add(i); }
                 return out;
             }
