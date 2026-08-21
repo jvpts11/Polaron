@@ -22,7 +22,7 @@
 
             private static method wrap(String code, String text) returns String {
                 if (!Style.styling) { return text; }
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.appendChar(cast<char>(27));
                 sb.append("[");
                 sb.append(code);
@@ -45,7 +45,7 @@
             public static method underline(String s) returns String { return Style.wrap("4", s); }
             // 24-bit colour, for a program that already has one packed (see System.Text.Colors).
             public static method rgb(int r, int g, int b, String s) returns String {
-                mutable StringBuilder code = new StringBuilder() on heap;
+                StringBuilder code = new StringBuilder() on heap;
                 code.append("38;2;");
                 code.appendInt(r & 255);
                 code.append(";");
@@ -79,7 +79,7 @@
             // The same text with every escape sequence removed -- for a log file, or for comparing
             // output in a test.
             public static method strip(String s) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable boolean inEscape = false;
                 for (mutable int i = 0; i < s.length(); i++) {
                     char c = s.charAt(i);
@@ -121,7 +121,7 @@
                 this.aligns.add(rightAligned ? 1 : 0);
             }
             public method row(ArrayList<String> cells) returns void {
-                mutable ArrayList<String> copy = new ArrayList<String>() on heap;
+                ArrayList<String> copy = new ArrayList<String>() on heap;
                 copy.addAll(cells);
                 this.rows.add(copy);
             }
@@ -131,12 +131,12 @@
             // prints, because a caller may want it in a file, in a string, or coloured further -- and
             // a renderer that prints is a renderer that can only ever do one of those.
             public method render() returns String {
-                mutable ArrayList<int> widths = new ArrayList<int>() on heap;
+                ArrayList<int> widths = new ArrayList<int>() on heap;
                 for (mutable int c = 0; c < this.headers.size(); c++) {
                     widths.add(Style.width(this.headers.get(c)));
                 }
                 for (mutable int r = 0; r < this.rows.size(); r++) {
-                    mutable ArrayList<String> cells = this.rows.get(r);
+                    ArrayList<String> cells = this.rows.get(r);
                     for (mutable int c = 0; c < cells.size() && c < widths.size(); c++) {
                         int w = Style.width(cells.get(c));
                         if (w > widths.get(c)) { widths.set(c, w); }
@@ -146,11 +146,11 @@
                 // helper taking a `StringBuilder` would append to a duplicate and the caller would
                 // get back an empty string -- which is exactly what happened, and it fails quietly
                 // rather than loudly.
-                mutable StringBuilder* sb = new StringBuilder() on heap;
+                StringBuilder* sb = new StringBuilder() on heap;
                 this.line(sb, this.headers, widths);
-                mutable ArrayList<String> rule = new ArrayList<String>() on heap;
+                ArrayList<String> rule = new ArrayList<String>() on heap;
                 for (mutable int c = 0; c < widths.size(); c++) {
-                    mutable StringBuilder dashes = new StringBuilder() on heap;
+                    StringBuilder dashes = new StringBuilder() on heap;
                     for (mutable int i = 0; i < widths.get(c); i++) { dashes.append("-"); }
                     rule.add(dashes.toString());
                 }

@@ -28,12 +28,11 @@
 # generic end to end -- were not covered by a single line of it.
 
 Polaron-0B0B   4
-Polaron-0B0D 640
 Polaron-0B10   1
 Polaron-0B11   5
 Polaron-0B13   3
 Polaron-0B17 126
-Polaron-0B1A  42
+Polaron-0B1A  40
 Polaron-0B1B   7
 Polaron-0B1C  10
 Polaron-0B1F   5

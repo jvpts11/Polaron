@@ -129,7 +129,7 @@
                 if (n <= this.dig.length()) { return; }
                 mutable int cap = this.dig.length() * 2;
                 while (cap < n) { cap = cap * 2; }
-                mutable int[] nd = new int[cap]();
+                int[] nd = new int[cap]();
                 for (mutable int i = 0; i < this.len; i++) { nd[i] = this.dig[i]; }
                 delete this.dig;
                 this.dig = nd;
@@ -483,7 +483,7 @@
             public static method median(int[] xs) returns int {
                 int n = xs.length();
                 if (n == 0) { return 0; }
-                mutable int[] c = new int[n]();
+                int[] c = new int[n]();
                 for (mutable int i = 0; i < n; i++) { c[i] = xs[i]; }
                 for (mutable int i = 1; i < n; i++) {
                     int key = c[i];
@@ -524,7 +524,7 @@
             public static method percentile(int[] xs, int p) returns int {
                 int n = xs.length();
                 if (n == 0) { return 0; }
-                mutable int[] c = new int[n]();
+                int[] c = new int[n]();
                 for (mutable int i = 0; i < n; i++) { c[i] = xs[i]; }
                 for (mutable int i = 1; i < n; i++) {
                     int key = c[i];
@@ -581,7 +581,7 @@
             }
             public method get(int r, int c) returns int { return this.cells[r * this.ncols + c]; }
             public method multiply(Matrix o) returns Matrix {
-                mutable Matrix m = new Matrix(this.nrows, o.cols()) on heap;
+                Matrix m = new Matrix(this.nrows, o.cols()) on heap;
                 for (mutable int i = 0; i < this.nrows; i++) {
                     for (mutable int j = 0; j < o.cols(); j++) {
                         mutable int s = 0;
@@ -592,14 +592,14 @@
                 return m;
             }
             public method transpose() returns Matrix {
-                mutable Matrix m = new Matrix(this.ncols, this.nrows) on heap;
+                Matrix m = new Matrix(this.ncols, this.nrows) on heap;
                 for (mutable int i = 0; i < this.nrows; i++) {
                     for (mutable int j = 0; j < this.ncols; j++) { m.set(j, i, this.get(i, j)); }
                 }
                 return m;
             }
             public method add(Matrix o) returns Matrix {
-                mutable Matrix m = new Matrix(this.nrows, this.ncols) on heap;
+                Matrix m = new Matrix(this.nrows, this.ncols) on heap;
                 for (mutable int i = 0; i < this.nrows; i++) {
                     for (mutable int j = 0; j < this.ncols; j++) { m.set(i, j, this.get(i, j) + o.get(i, j)); }
                 }
@@ -609,7 +609,7 @@
             // is exact, so it stays in integers. Returns 0 for a singular matrix; assumes a square matrix.
             public method determinant() returns int {
                 int n = this.nrows;
-                mutable int[] m = new int[n * n]();
+                int[] m = new int[n * n]();
                 for (mutable int i = 0; i < n * n; i++) { m[i] = this.cells[i]; }
                 mutable int prev = 1;
                 mutable int sign = 1;
@@ -654,10 +654,10 @@
             }
             public method derivative() returns Polynomial {
                 if (this.c.length() <= 1) {
-                    mutable int[] z = new int[1]();
+                    int[] z = new int[1]();
                     return new Polynomial(z) on heap;
                 }
-                mutable int[] d = new int[this.c.length() - 1]();
+                int[] d = new int[this.c.length() - 1]();
                 for (mutable int i = 1; i < this.c.length(); i++) { d[i - 1] = this.c[i] * i; }
                 return new Polynomial(d) on heap;
             }
@@ -757,7 +757,7 @@
                         }
                     }
                 }
-                mutable double[] x = new double[n]();
+                double[] x = new double[n]();
                 for (mutable int i = n - 1; i >= 0; i = i - 1) {
                     mutable double s = aug[i*w + n];
                     for (mutable int j = i + 1; j < n; j++) { s = s - aug[i*w + j] * x[j]; }
@@ -977,7 +977,7 @@
             }
             public static method size(int[] xs, int[] ys, int n) returns int {
                 if (n < 3) { return n; }
-                mutable int[] idx = new int[n]();
+                int[] idx = new int[n]();
                 for (mutable int i = 0; i < n; i++) { idx[i] = i; }
                 for (mutable int i = 1; i < n; i++) {
                     int key = idx[i];
@@ -988,7 +988,7 @@
                     }
                     idx[j + 1] = key;
                 }
-                mutable int[] hull = new int[2 * n]();
+                int[] hull = new int[2 * n]();
                 mutable int k = 0;
                 for (mutable int t = 0; t < n; t++) {
                     int p = idx[t];
@@ -1154,7 +1154,7 @@
                 mutable double sum = 1.0;
                 for (mutable int i = 1; i <= 18; i++) { term = term * r / cast<double>(i); sum = sum + term; }
                 mutable double p = 1.0;
-                mutable int kk = k;
+                int kk = k;
                 if (kk >= 0) { for (mutable int i = 0; i < kk; i++) { p = p * 2.0; } }
                 else { for (mutable int i = 0; i < 0 - kk; i++) { p = p / 2.0; } }
                 return sum * p;
@@ -1405,14 +1405,14 @@
             private mutable double[] m;
             public constructor Mat4() { this.m = new double[16](); }
             public static method identity() returns Mat4 {
-                mutable Mat4 r = new Mat4() on heap;
+                Mat4 r = new Mat4() on heap;
                 for (mutable int i = 0; i < 4; i++) { r.set(i, i, 1.0); }
                 return r;
             }
             public method get(int r, int c) returns double { return this.m[r * 4 + c]; }
             public method set(int r, int c, double v) returns void { this.m[r * 4 + c] = v; return; }
             public method multiply(Mat4 o) returns Mat4 {
-                mutable Mat4 r = new Mat4() on heap;
+                Mat4 r = new Mat4() on heap;
                 for (mutable int i = 0; i < 4; i++) {
                     for (mutable int j = 0; j < 4; j++) {
                         mutable double s = 0.0;
@@ -1423,7 +1423,7 @@
                 return r;
             }
             public method transpose() returns Mat4 {
-                mutable Mat4 r = new Mat4() on heap;
+                Mat4 r = new Mat4() on heap;
                 for (mutable int i = 0; i < 4; i++) {
                     for (mutable int j = 0; j < 4; j++) { r.set(j, i, this.get(i, j)); }
                 }
@@ -1576,7 +1576,7 @@
             public method rowCount() returns int { return this.rows; }
             public method colCount() returns int { return this.cols; }
             public method mul(MatrixD o) returns MatrixD {
-                mutable MatrixD res = new MatrixD(this.rows, o.colCount()) on heap;
+                MatrixD res = new MatrixD(this.rows, o.colCount()) on heap;
                 for (mutable int i = 0; i < this.rows; i++) {
                     for (mutable int j = 0; j < o.colCount(); j++) {
                         mutable double s = 0.0;
@@ -1587,7 +1587,7 @@
                 return res;
             }
             public method transpose() returns MatrixD {
-                mutable MatrixD res = new MatrixD(this.cols, this.rows) on heap;
+                MatrixD res = new MatrixD(this.cols, this.rows) on heap;
                 for (mutable int i = 0; i < this.rows; i++) {
                     for (mutable int j = 0; j < this.cols; j++) { res.set(j, i, this.get(i, j)); }
                 }
@@ -1595,7 +1595,7 @@
             }
             public method determinant() returns double {
                 int n = this.rows;
-                mutable double[] a = new double[n * n]();
+                double[] a = new double[n * n]();
                 for (mutable int i = 0; i < n * n; i++) { a[i] = this.data[i]; }
                 mutable double det = 1.0;
                 for (mutable int col = 0; col < n; col++) {

@@ -22,7 +22,7 @@
                 return crc ^ 4294967295;
             }
             public static method ofString(String s) returns long {
-                mutable int[] b = ByteArray.of(s);
+                int[] b = ByteArray.of(s);
                 long c = Crc32.ofBytes(b, s.length());
                 delete b;
                 return c;
@@ -40,7 +40,7 @@
         // about a name.
         public class ByteArray {
             public static method of(String s) returns int[] {
-                mutable int[] out = new int[s.length()]();
+                int[] out = new int[s.length()]();
                 for (mutable int i = 0; i < s.length(); i++) {
                     out[i] = cast<int>(s.charAt(i)) & 255;
                 }
@@ -52,7 +52,7 @@
             // says the CLASS is an undeclared variable, which sends the reader looking in the wrong
             // place entirely. Worth knowing before naming a static after any of Object's methods.
             public static method text(int[] data, int count) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = 0; i < count; i++) {
                     sb.appendChar(cast<char>(data[i] & 255));
                 }
@@ -86,21 +86,21 @@
             // wrote a moment ago.
             public method repeatFrom(int distance, int count) returns boolean {
                 if (distance <= 0 || distance > this.n) { return false; }
-                mutable int src = this.n - distance;
+                int src = this.n - distance;
                 for (mutable int i = 0; i < count; i++) {
                     this.add(this.buf[src + i]);
                 }
                 return true;
             }
             private method grow() returns void {
-                mutable int[] bigger = new int[this.buf.length() * 2]();
+                int[] bigger = new int[this.buf.length() * 2]();
                 for (mutable int i = 0; i < this.n; i++) { bigger[i] = this.buf[i]; }
                 delete this.buf;
                 this.buf = bigger;
                 return;
             }
             public method toBytes() returns int[] {
-                mutable int[] out = new int[this.n]();
+                int[] out = new int[this.n]();
                 for (mutable int i = 0; i < this.n; i++) { out[i] = this.buf[i]; }
                 return out;
             }
@@ -172,7 +172,7 @@
                     this.counts[lengths[i]] = this.counts[lengths[i]] + 1;
                 }
                 this.counts[0] = 0;                       // a zero length means "not used"
-                mutable int[] offsets = new int[16]();
+                int[] offsets = new int[16]();
                 mutable int acc = 0;
                 for (mutable int l = 1; l < 16; l++) {
                     offsets[l] = acc;
@@ -223,14 +223,14 @@
         // byte any other program wrote.
         public class Inflate {
             public static method bytes(int[] data, int len) returns int[] {
-                mutable ByteSink* out = new ByteSink() on heap;
+                ByteSink* out = new ByteSink() on heap;
                 Inflate.into(data, len, out);
                 int[] r = out.toBytes();
                 delete out;
                 return r;
             }
             public static method text(int[] data, int len) returns String {
-                mutable ByteSink* out = new ByteSink() on heap;
+                ByteSink* out = new ByteSink() on heap;
                 Inflate.into(data, len, out);
                 String s = out.toText();
                 delete out;
@@ -238,7 +238,7 @@
             }
 
             internal static method into(int[] data, int len, ByteSink* out) returns boolean {
-                mutable BitStream* bits = new BitStream(data, len) on heap;
+                BitStream* bits = new BitStream(data, len) on heap;
                 mutable boolean ok = true;
                 mutable boolean last = false;
                 while (!last && ok && !bits.atEnd()) {
@@ -282,15 +282,15 @@
             // arrays that cost a few hundred writes, and the language's own rule is not to own state
             // that is cheaper to recompute.
             private static method fixed(BitStream* bits, ByteSink* out) returns boolean {
-                mutable int[] litLen = new int[288]();
+                int[] litLen = new int[288]();
                 for (mutable int i = 0; i < 144; i++) { litLen[i] = 8; }
                 for (mutable int i = 144; i < 256; i++) { litLen[i] = 9; }
                 for (mutable int i = 256; i < 280; i++) { litLen[i] = 7; }
                 for (mutable int i = 280; i < 288; i++) { litLen[i] = 8; }
-                mutable int[] distLen = new int[30]();
+                int[] distLen = new int[30]();
                 for (mutable int i = 0; i < 30; i++) { distLen[i] = 5; }
-                mutable HuffTable* lit = new HuffTable(litLen, 288) on heap;
-                mutable HuffTable* dist = new HuffTable(distLen, 30) on heap;
+                HuffTable* lit = new HuffTable(litLen, 288) on heap;
+                HuffTable* dist = new HuffTable(distLen, 30) on heap;
                 boolean ok = Inflate.block(bits, out, lit, dist);
                 delete lit;
                 delete dist;
@@ -307,20 +307,20 @@
                 int hlit = bits.readBits(5) + 257;
                 int hdist = bits.readBits(5) + 1;
                 int hclen = bits.readBits(4) + 4;
-                mutable int[] order = new int[19]();
+                int[] order = new int[19]();
                 order[0] = 16; order[1] = 17; order[2] = 18; order[3] = 0; order[4] = 8;
                 order[5] = 7;  order[6] = 9;  order[7] = 6;  order[8] = 10; order[9] = 5;
                 order[10] = 11; order[11] = 4; order[12] = 12; order[13] = 3; order[14] = 13;
                 order[15] = 2; order[16] = 14; order[17] = 1; order[18] = 15;
-                mutable int[] clen = new int[19]();
+                int[] clen = new int[19]();
                 for (mutable int i = 0; i < hclen; i++) { clen[order[i]] = bits.readBits(3); }
-                mutable HuffTable* code = new HuffTable(clen, 19) on heap;
+                HuffTable* code = new HuffTable(clen, 19) on heap;
 
                 // The two tables are decoded as ONE run and split afterwards, because a repeat may
                 // straddle the boundary between them -- which is legal, and is the detail a decoder
                 // written table-at-a-time gets wrong on real files only.
                 int total = hlit + hdist;
-                mutable int[] lengths = new int[total]();
+                int[] lengths = new int[total]();
                 mutable int i = 0;
                 mutable boolean ok = true;
                 while (i < total && ok) {
@@ -355,12 +355,12 @@
                 delete order;
                 if (!ok) { delete lengths; return false; }
 
-                mutable int[] litLen = new int[hlit]();
+                int[] litLen = new int[hlit]();
                 for (mutable int k = 0; k < hlit; k++) { litLen[k] = lengths[k]; }
-                mutable int[] distLen = new int[hdist]();
+                int[] distLen = new int[hdist]();
                 for (mutable int k = 0; k < hdist; k++) { distLen[k] = lengths[hlit + k]; }
-                mutable HuffTable* lit = new HuffTable(litLen, hlit) on heap;
-                mutable HuffTable* dist = new HuffTable(distLen, hdist) on heap;
+                HuffTable* lit = new HuffTable(litLen, hlit) on heap;
+                HuffTable* dist = new HuffTable(distLen, hdist) on heap;
                 boolean r = Inflate.block(bits, out, lit, dist);
                 delete lit;
                 delete dist;
@@ -395,7 +395,7 @@
             // they are a table, and pretending otherwise is how an off-by-one gets in -- so they are
             // written out, and only the extra-bit COUNT is computed, where it genuinely is a formula.
             internal static method lengthBase(int i) returns int {
-                mutable int[] t = new int[29]();
+                int[] t = new int[29]();
                 t[0]=3; t[1]=4; t[2]=5; t[3]=6; t[4]=7; t[5]=8; t[6]=9; t[7]=10;
                 t[8]=11; t[9]=13; t[10]=15; t[11]=17; t[12]=19; t[13]=23; t[14]=27; t[15]=31;
                 t[16]=35; t[17]=43; t[18]=51; t[19]=59; t[20]=67; t[21]=83; t[22]=99; t[23]=115;
@@ -410,7 +410,7 @@
                 return (i - 4) / 4;
             }
             internal static method distBase(int i) returns int {
-                mutable int[] t = new int[30]();
+                int[] t = new int[30]();
                 t[0]=1; t[1]=2; t[2]=3; t[3]=4; t[4]=5; t[5]=7; t[6]=9; t[7]=13;
                 t[8]=17; t[9]=25; t[10]=33; t[11]=49; t[12]=65; t[13]=97; t[14]=129; t[15]=193;
                 t[16]=257; t[17]=385; t[18]=513; t[19]=769; t[20]=1025; t[21]=1537; t[22]=2049;
@@ -487,7 +487,7 @@
         public class Deflate {
 
             public static method bytes(int[] data, int len) returns int[] {
-                mutable BitPacker* w = new BitPacker() on heap;
+                BitPacker* w = new BitPacker() on heap;
                 Deflate.encode(data, len, w, true);
                 w.flush();
                 int[] r = w.toBytes();
@@ -495,7 +495,7 @@
                 return r;
             }
             public static method text(String s) returns int[] {
-                mutable int[] b = ByteArray.of(s);
+                int[] b = ByteArray.of(s);
                 int[] r = Deflate.bytes(b, s.length());
                 delete b;
                 return r;
@@ -505,11 +505,11 @@
                 w.writeBit(last ? 1 : 0);
                 w.writeBits(1, 2);                       // 01 = fixed Huffman
 
-                mutable int[] head = new int[16384]();
+                int[] head = new int[16384]();
                 for (mutable int i = 0; i < 16384; i++) { head[i] = -1; }
                 mutable int room = len;
                 if (room < 1) { room = 1; }
-                mutable int[] prev = new int[room]();
+                int[] prev = new int[room]();
                 for (mutable int i = 0; i < len; i++) { prev[i] = -1; }
 
                 mutable int at = 0;
@@ -595,14 +595,14 @@
         // the reason the whole slice exists -- deflate alone reads nothing off a disk or a wire.
         public class Gzip {
             public static method compress(int[] data, int len) returns int[] {
-                mutable ByteSink* out = new ByteSink() on heap;
+                ByteSink* out = new ByteSink() on heap;
                 out.add(31); out.add(139);        // magic 1f 8b
                 out.add(8);                       // CM = deflate
                 out.add(0);                       // FLG: no name, no extra, no comment
                 out.add(0); out.add(0); out.add(0); out.add(0);   // MTIME 0 = not stated
                 out.add(0);                       // XFL
                 out.add(255);                     // OS = unknown, which is true and portable
-                mutable int[] body = Deflate.bytes(data, len);
+                int[] body = Deflate.bytes(data, len);
                 for (mutable int i = 0; i < body.length(); i++) { out.add(body[i]); }
                 delete body;
                 long crc = Crc32.ofBytes(data, len);
@@ -613,7 +613,7 @@
                 return r;
             }
             public static method compressText(String s) returns int[] {
-                mutable int[] b = ByteArray.of(s);
+                int[] b = ByteArray.of(s);
                 int[] r = Gzip.compress(b, s.length());
                 delete b;
                 return r;
@@ -622,14 +622,14 @@
             // Decompression checks the trailer, and that is not ceremony: a CRC that does not match is
             // the difference between "here is your data" and "here is something shaped like it".
             public static method decompress(int[] data, int len) returns int[] {
-                mutable ByteSink* out = new ByteSink() on heap;
+                ByteSink* out = new ByteSink() on heap;
                 if (!Gzip.into(data, len, out)) { delete out; return new int[0](); }
                 int[] r = out.toBytes();
                 delete out;
                 return r;
             }
             public static method decompressText(int[] data, int len) returns String {
-                mutable ByteSink* out = new ByteSink() on heap;
+                ByteSink* out = new ByteSink() on heap;
                 if (!Gzip.into(data, len, out)) { delete out; return ""; }
                 String s = out.toText();
                 delete out;
@@ -661,7 +661,7 @@
                 // The deflate stream runs to the eight-byte trailer.
                 int bodyLen = len - 8 - at;
                 if (bodyLen <= 0) { return false; }
-                mutable int[] body = new int[bodyLen]();
+                int[] body = new int[bodyLen]();
                 for (mutable int i = 0; i < bodyLen; i++) { body[i] = data[at + i]; }
                 boolean ok = Inflate.into(body, bodyLen, out);
                 delete body;
@@ -669,7 +669,7 @@
                 long want = Gzip.getLE32(data, len - 8);
                 long size = Gzip.getLE32(data, len - 4);
                 if (cast<long>(out.size()) != size) { return false; }
-                mutable int[] got = out.toBytes();
+                int[] got = out.toBytes();
                 long have = Crc32.ofBytes(got, out.size());
                 delete got;
                 return have == want;
@@ -693,10 +693,10 @@
         // worth the twenty lines even though gzip is the one a file carries.
         public class Zlib {
             public static method compress(int[] data, int len) returns int[] {
-                mutable ByteSink* out = new ByteSink() on heap;
+                ByteSink* out = new ByteSink() on heap;
                 out.add(120);                     // CMF: deflate, 32 KiB window
                 out.add(1);                       // FLG chosen so (CMF*256+FLG) % 31 == 0
-                mutable int[] body = Deflate.bytes(data, len);
+                int[] body = Deflate.bytes(data, len);
                 for (mutable int i = 0; i < body.length(); i++) { out.add(body[i]); }
                 delete body;
                 long a = Zlib.adler(data, len);
@@ -711,9 +711,9 @@
             public static method decompress(int[] data, int len) returns int[] {
                 if (len < 6) { return new int[0](); }
                 int bodyLen = len - 6;
-                mutable int[] body = new int[bodyLen]();
+                int[] body = new int[bodyLen]();
                 for (mutable int i = 0; i < bodyLen; i++) { body[i] = data[2 + i]; }
-                mutable ByteSink* out = new ByteSink() on heap;
+                ByteSink* out = new ByteSink() on heap;
                 boolean ok = Inflate.into(body, bodyLen, out);
                 delete body;
                 if (!ok) { delete out; return new int[0](); }

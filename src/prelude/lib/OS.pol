@@ -157,8 +157,8 @@
             // Everything, as a map. What a program prints when it wants to show what it was actually
             // given rather than what it believes it was given.
             public static method all() returns HashMap<String, String> {
-                mutable HashMap<String, String> map = new HashMap<String, String>() on heap;
-                mutable ArrayList<String> lines = Strings.split(System.OS.__envAll(), "\n");
+                HashMap<String, String> map = new HashMap<String, String>() on heap;
+                ArrayList<String> lines = Strings.split(System.OS.__envAll(), "\n");
                 for (mutable int i = 0; i < lines.size(); i++) {
                     String line = lines.get(i);
                     int eq = line.indexOf("=");
@@ -178,9 +178,9 @@
             // empty entry means "the current directory" on Windows, which is a security hazard
             // nobody asked for.
             public static method searchPath() returns ArrayList<String> {
-                mutable ArrayList<String> parts =
+                ArrayList<String> parts =
                     Strings.split(Environment.get("PATH", ""), Environment.pathSeparator());
-                mutable ArrayList<String> kept = new ArrayList<String>() on heap;
+                ArrayList<String> kept = new ArrayList<String>() on heap;
                 for (mutable int i = 0; i < parts.size(); i++) {
                     if (parts.get(i).length() > 0) { kept.add(parts.get(i)); }
                 }
@@ -497,8 +497,8 @@
             // which is what makes an environment usable at all.
             public method env(String name, String value) returns Command* {
                 if (!this.ownEnvironment) {
-                    mutable HashMap<String, String> inherited = Environment.all();
-                    mutable ArrayList<String> names = inherited.keys();
+                    HashMap<String, String> inherited = Environment.all();
+                    ArrayList<String> names = inherited.keys();
                     for (mutable int i = 0; i < names.size(); i++) {
                         String key = names.get(i);
                         this.variables.add(key.concat("=").concat(inherited.get(key)));
@@ -547,7 +547,7 @@
             // own length, so a NUL inside it is a separator rather than an end -- which is what lets
             // an argument hold anything at all, including the characters a shell would act on.
             private method argvBlob() returns String {
-                mutable StringBuilder blob = new StringBuilder() on heap;
+                StringBuilder blob = new StringBuilder() on heap;
                 blob.append(this.exe);
                 blob.appendChar(cast<char>(0));
                 for (mutable int i = 0; i < this.arguments.size(); i++) {
@@ -557,7 +557,7 @@
                 return blob.toString();
             }
             private method envBlob() returns String {
-                mutable StringBuilder blob = new StringBuilder() on heap;
+                StringBuilder blob = new StringBuilder() on heap;
                 for (mutable int i = 0; i < this.variables.size(); i++) {
                     blob.append(this.variables.get(i));
                     blob.appendChar(cast<char>(0));
@@ -586,7 +586,7 @@
             // parent that is itself waiting for output. That deadlock is the classic way a one-shot
             // subprocess hangs, and it hangs the parent with it.
             public method run() returns ProcessResult {
-                mutable Subprocess child = this.start();
+                Subprocess child = this.start();
                 if (!child.isValid()) {
                     return new ProcessResult("", 0 - 1) on heap;
                 }
@@ -594,7 +594,7 @@
                     child.write(this.toWrite);
                 }
                 child.closeInput();
-                mutable StringBuilder output = new StringBuilder() on heap;
+                StringBuilder output = new StringBuilder() on heap;
                 if (this.deadlineMillis <= 0) {
                     mutable String chunk = child.read();
                     while (chunk.length() > 0) {

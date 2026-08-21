@@ -142,7 +142,7 @@
                 return this.hostPart.concat(":").concat(this.portPart.toString());
             }
             public method toText() returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 if (this.schemePart.length() > 0) { sb.append(this.schemePart); sb.append("://"); }
                 sb.append(this.authority());
                 sb.append(this.pathPart);
@@ -226,7 +226,7 @@
             }
             // Each chunk is a hex length on its own line, then that many bytes, until a zero length.
             private static method dechunk(String b) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int at = 0;
                 mutable boolean more = true;
                 while (more && at < b.length()) {
@@ -335,7 +335,7 @@
             // The bytes that go on the wire. Pure: no socket, no clock, nothing that can fail -- which
             // is what lets a test assert on a request without a server to send it to.
             public method toWire() returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.append(this.verbPart);
                 sb.append(" ");
                 sb.append(this.target.requestTarget());
@@ -361,12 +361,12 @@
             public static method send(HttpRequest* request) returns HttpResponse {
                 Url u = request.url();
                 if (u.isSecure()) { return HttpClient.sendSecure(request, u); }
-                mutable Socket s = new Socket(Net.connect(u.host(), u.port())) on heap;
+                Socket s = new Socket(Net.connect(u.host(), u.port())) on heap;
                 if (!s.isOpen()) {
                     return new HttpResponse("HTTP/1.1 000 Connection failed\r\n\r\n") on heap;
                 }
                 s.send(request.toWire());
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable boolean more = true;
                 while (more) {
                     String chunk = s.receive(4096);
@@ -399,7 +399,7 @@
                 }
                 TlsSession* live = cast<TlsSession*>(session);
                 live.send(request.toWire());
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable boolean more = true;
                 while (more) {
                     String chunk = live.receive();
@@ -419,7 +419,7 @@
                 mutable HttpRequest* current = request;
                 mutable int hops = 0;
                 while (hops <= limit) {
-                    mutable HttpResponse r = HttpClient.send(current);
+                    HttpResponse r = HttpClient.send(current);
                     int code = r.status();
                     boolean redirect = code == 301 || code == 302 || code == 303 || code == 307 ||
                                        code == 308;
@@ -440,7 +440,7 @@
         // above are for everything it cannot express.
         public class Http {
             public static method buildRequest(String verb, String host, String path) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.append(verb);
                 sb.append(" ");
                 sb.append(path);
@@ -450,9 +450,9 @@
                 return sb.toString();
             }
             public static method get(String host, int port, String path) returns HttpResponse {
-                mutable Socket s = new Socket(Net.connect(host, port)) on heap;
+                Socket s = new Socket(Net.connect(host, port)) on heap;
                 s.send(Http.buildRequest("GET", host, path));
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable boolean more = true;
                 while (more) {
                     String chunk = s.receive(4096);
@@ -463,7 +463,7 @@
             }
             // The whole URL in one call, which is how a caller thinks of it.
             public static method fetch(String url) returns HttpResponse {
-                mutable HttpRequest* r = HttpRequest.get(url);
+                HttpRequest* r = HttpRequest.get(url);
                 return HttpClient.sendFollowing(r, 5);
             }
         }
@@ -516,7 +516,7 @@
                 this.headerMap.put(name.toLower(), value);
             }
             public method query(String name) returns String {
-                mutable HashMap<String, String> q = QueryString.parse(this.queryPart);
+                HashMap<String, String> q = QueryString.parse(this.queryPart);
                 String v = q.getOrDefault(name, "");
                 delete q;
                 return v;
@@ -534,7 +534,7 @@
             // the body. Tolerates `\n` as well as `\r\n`, because a hand-written client sends either
             // and refusing one of them makes the server look broken to a person testing it by hand.
             public static method parse(String raw) returns ServerRequest {
-                mutable String text = Strings.replace(raw, "\r\n", "\n");
+                String text = Strings.replace(raw, "\r\n", "\n");
                 int split = text.indexOf("\n\n");
                 mutable String head = text;
                 mutable String body = "";
@@ -542,11 +542,11 @@
                     head = text.substring(0, split);
                     body = text.substring(split + 2, text.length());
                 }
-                mutable ArrayList<String> lines = Strings.split(head, "\n");
+                ArrayList<String> lines = Strings.split(head, "\n");
                 mutable String verb = "GET";
                 mutable String target = "/";
                 if (lines.size() > 0) {
-                    mutable ArrayList<String> parts = Strings.split(lines.get(0), " ");
+                    ArrayList<String> parts = Strings.split(lines.get(0), " ");
                     if (parts.size() > 0) { verb = parts.get(0); }
                     if (parts.size() > 1) { target = parts.get(1); }
                     delete parts;
@@ -558,7 +558,7 @@
                     path = target.substring(0, q);
                     query = target.substring(q + 1, target.length());
                 }
-                mutable ServerRequest r = new ServerRequest(verb, path, query, body) on heap;
+                ServerRequest r = new ServerRequest(verb, path, query, body) on heap;
                 for (mutable int i = 1; i < lines.size(); i++) {
                     String line = lines.get(i);
                     int colon = line.indexOf(":");
@@ -591,7 +591,7 @@
                 return new ServerResponse(200, body) on heap;
             }
             public static method json(String body) returns ServerResponse {
-                mutable ServerResponse r = new ServerResponse(200, body) on heap;
+                ServerResponse r = new ServerResponse(200, body) on heap;
                 r.setHeader("Content-Type", "application/json");
                 return r;
             }
@@ -611,13 +611,13 @@
             // trusted from a header: a wrong length is a hang at the other end, which is the worst
             // way for this to be wrong.
             public method toRaw() returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.append("HTTP/1.1 ");
                 sb.appendInt(this.statusCode);
                 sb.append(" ");
                 sb.append(ServerResponse.reason(this.statusCode));
                 sb.append("\r\n");
-                mutable ArrayList<String> names = this.headerMap.keys();
+                ArrayList<String> names = this.headerMap.keys();
                 for (mutable int i = 0; i < names.size(); i++) {
                     sb.append(names.get(i));
                     sb.append(": ");
@@ -702,8 +702,8 @@
             // Segment by segment. A `{name}` segment captures whatever is in that position; anything
             // else must be equal. Different lengths never match, so `/a` does not answer `/a/b`.
             public static method matches(String pattern, String path, ServerRequest* into) returns boolean {
-                mutable ArrayList<String> want = Strings.split(pattern, "/");
-                mutable ArrayList<String> got = Strings.split(path, "/");
+                ArrayList<String> want = Strings.split(pattern, "/");
+                ArrayList<String> got = Strings.split(path, "/");
                 mutable boolean ok = want.size() == got.size();
                 if (ok) {
                     for (mutable int i = 0; i < want.size(); i++) {

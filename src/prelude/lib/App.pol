@@ -125,9 +125,9 @@
         // 6 JZ t, 7 JMP t, 8 ADD (jump targets are instruction indices). run returns the top of the stack.
         public class StackVm {
             public static method run(int[] prog, int plen, int memSize) returns int {
-                mutable int[] stack = new int[256]();
+                int[] stack = new int[256]();
                 mutable int sp = 0;
-                mutable int[] mem = new int[memSize]();
+                int[] mem = new int[memSize]();
                 mutable int ip = 0;
                 mutable boolean running = true;
                 while (running && ip * 2 < plen) {
@@ -193,7 +193,7 @@
             public method times(int factor) returns Money { return new Money(this.cents * cast<long>(factor)) on heap; }
             public method format() returns String {
                 mutable long c = this.cents;
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 if (c < 0) { sb.appendChar('-'); c = 0 - c; }
                 sb.appendChar('$');
                 long dollars = c / 100;

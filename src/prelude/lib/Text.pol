@@ -134,7 +134,7 @@
             public static method split(String text, String separator) returns ArrayList<String> {
                 // Cursor scan over the original text (the old rest = rest.substring(...) resliced the
                 // whole remainder every step -> O(n^2)). Only the emitted pieces allocate -> O(n).
-                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                ArrayList<String> out = new ArrayList<String>() on heap;
                 int n = text.length();
                 int m = separator.length();
                 if (m == 0) { out.add(text); return out; }  // empty separator: no split (avoids a stall)
@@ -412,7 +412,7 @@
             }
             // The Unicode codepoint of the character at byte offset i.
             public static method codepointAt(String s, int i) returns int {
-                mutable int lead = cast<int>(s.charAt(i));
+                int lead = cast<int>(s.charAt(i));
                 int n = Utf8.seqLen(lead);
                 if (n == 1) { return lead; }
                 mutable int cp = 0;
@@ -436,7 +436,7 @@
             }
             // Every codepoint in order.
             public static method codepoints(String s) returns ArrayList<int> {
-                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                ArrayList<int> out = new ArrayList<int>() on heap;
                 mutable int i = 0;
                 while (i < s.length()) {
                     out.add(Utf8.codepointAt(s, i));
@@ -470,7 +470,7 @@
             }
             public method nextWord() returns String {
                 this.skipSpaces();
-                mutable int start = this.pos;
+                int start = this.pos;
                 while (this.pos < this.src.length() && !Scanner.isSpace(this.src.charAt(this.pos))) {
                     this.pos = this.pos + 1;
                 }
@@ -483,11 +483,11 @@
                 return this.pos < this.src.length();
             }
             public method nextLine() returns String {
-                mutable int start = this.pos;
+                int start = this.pos;
                 while (this.pos < this.src.length() && this.src.charAt(this.pos) != '\n') {
                     this.pos = this.pos + 1;
                 }
-                mutable String line = this.src.substring(start, this.pos);
+                String line = this.src.substring(start, this.pos);
                 if (this.pos < this.src.length()) { this.pos = this.pos + 1; }
                 return line;
             }
@@ -515,7 +515,7 @@
             }
             public static method encode(String name) returns String {
                 if (name.length() == 0) { return ""; }
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.appendChar(Soundex.upper(name.charAt(0)));
                 mutable int prev = Soundex.digit(Soundex.lower(name.charAt(0)));
                 mutable int count = 1;
@@ -541,7 +541,7 @@
         public class Kmp {
             private static method buildLps(String p) returns int[] {
                 int m = p.length();
-                mutable int[] lps = new int[m + 1]();
+                int[] lps = new int[m + 1]();
                 mutable int len = 0;
                 mutable int i = 1;
                 while (i < m) {
@@ -599,7 +599,7 @@
                 int n = s.length();
                 if (n == 0) { return 0; }
                 int t = 2 * n + 3;
-                mutable int[] c = new int[t]();
+                int[] c = new int[t]();
                 c[0] = 1;
                 c[t - 1] = 2;
                 for (mutable int i = 0; i < n; i++) {
@@ -607,7 +607,7 @@
                     c[1 + 2*i] = 3;
                 }
                 c[t - 2] = 3;
-                mutable int[] p = new int[t]();
+                int[] p = new int[t]();
                 mutable int center = 0;
                 mutable int right = 0;
                 mutable int best = 0;
@@ -705,7 +705,7 @@
             }
             public static method eval(String expr) returns int {
                 ArrayList<String> toks = Strings.split(expr, " ");
-                mutable int[] st = new int[toks.size() + 1]();
+                int[] st = new int[toks.size() + 1]();
                 mutable int sp = 0;
                 for (mutable int i = 0; i < toks.size(); i++) {
                     String t = toks.get(i);
@@ -736,8 +736,8 @@
             }
             public static method toRpn(String infix) returns String {
                 ArrayList<String> toks = Strings.split(infix, " ");
-                mutable StringBuilder out = new StringBuilder() on heap;
-                mutable char[] ops = new char[128]();
+                StringBuilder out = new StringBuilder() on heap;
+                char[] ops = new char[128]();
                 mutable int sp = 0;
                 for (mutable int i = 0; i < toks.size(); i++) {
                     String t = toks.get(i);
@@ -776,13 +776,13 @@
         // braces survive when there is no matching value.
         public class Template {
             public static method render(String tpl, HashMap<String, String> vars) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int i = 0;
                 while (i < tpl.length()) {
                     char c = tpl.charAt(i);
                     if (c == '{') {
                         mutable int j = i + 1;
-                        mutable StringBuilder key = new StringBuilder() on heap;
+                        StringBuilder key = new StringBuilder() on heap;
                         while (j < tpl.length() && tpl.charAt(j) != '}') {
                             key.appendChar(tpl.charAt(j));
                             j = j + 1;
@@ -808,7 +808,7 @@
         // comma inside quotes does not split. Quote characters are consumed, not kept.
         public class Csv {
             public static method parse(String line) returns ArrayList<String> {
-                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                ArrayList<String> out = new ArrayList<String>() on heap;
                 mutable StringBuilder cur = new StringBuilder() on heap;
                 mutable boolean inQuotes = false;
                 mutable int i = 0;
@@ -834,7 +834,7 @@
         // quote or newline and doubling embedded quotes. Complements the Csv parser.
         public class CsvWriter {
             public static method buildRow(String[] cells, int n) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = 0; i < n; i++) {
                     if (i > 0) { sb.appendChar(','); }
                     String c = cells[i];
@@ -858,7 +858,7 @@
         // and escaped quotes (a doubled "" becomes a single "). Returns the fields in order.
         public class CsvReader {
             public static method parseLine(String line) returns ArrayList<String> {
-                mutable ArrayList<String> out = new ArrayList<String>() on heap;
+                ArrayList<String> out = new ArrayList<String>() on heap;
                 mutable StringBuilder cur = new StringBuilder() on heap;
                 mutable boolean inQuotes = false;
                 mutable int i = 0;
@@ -895,7 +895,7 @@
                 return c;
             }
             private static method delimit(String s, char sep) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = 0; i < s.length(); i++) {
                     char c = s.charAt(i);
                     if (c >= 'A' && c <= 'Z') {
@@ -910,7 +910,7 @@
             public static method toSnake(String s) returns String { return CaseConvert.delimit(s, '_'); }
             public static method toKebab(String s) returns String { return CaseConvert.delimit(s, '-'); }
             public static method toCamel(String s) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable boolean up = false;
                 for (mutable int i = 0; i < s.length(); i++) {
                     char c = s.charAt(i);
@@ -942,7 +942,7 @@
                         if (prev[j - 1] + cost < best) { best = prev[j - 1] + cost; }
                         cur[j] = best;
                     }
-                    mutable int[] t = prev;
+                    int[] t = prev;
                     prev = cur;
                     cur = t;
                 }
@@ -953,7 +953,7 @@
         // given width, returning the lines. A single word longer than the width gets its own line.
         public class WordWrap {
             public static method wrap(String text, int width) returns ArrayList<String> {
-                mutable ArrayList<String> lines = new ArrayList<String>() on heap;
+                ArrayList<String> lines = new ArrayList<String>() on heap;
                 mutable StringBuilder line = new StringBuilder() on heap;
                 mutable StringBuilder word = new StringBuilder() on heap;
                 mutable int i = 0;
@@ -1015,13 +1015,13 @@
         // fromRoman reads one back, subtracting a symbol whose value is less than the one after it.
         public class Roman {
             public static method toRoman(int n) returns String {
-                mutable int[] vals = new int[13]();
+                int[] vals = new int[13]();
                 vals[0] = 1000; vals[1] = 900; vals[2] = 500; vals[3] = 400; vals[4] = 100; vals[5] = 90;
                 vals[6] = 50; vals[7] = 40; vals[8] = 10; vals[9] = 9; vals[10] = 5; vals[11] = 4; vals[12] = 1;
-                mutable String[] syms = new String[13]();
+                String[] syms = new String[13]();
                 syms[0] = "M"; syms[1] = "CM"; syms[2] = "D"; syms[3] = "CD"; syms[4] = "C"; syms[5] = "XC";
                 syms[6] = "L"; syms[7] = "XL"; syms[8] = "X"; syms[9] = "IX"; syms[10] = "V"; syms[11] = "IV"; syms[12] = "I";
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int x = n;
                 for (mutable int i = 0; i < 13; i++) {
                     while (x >= vals[i]) {
@@ -1104,7 +1104,7 @@
             }
             public constructor Properties(String text) {
                 this.map = new HashMap<String, String>() on heap;
-                mutable ArrayList<String> lines = Strings.split(text, "\n");
+                ArrayList<String> lines = Strings.split(text, "\n");
                 for (mutable int i = 0; i < lines.size(); i++) {
                     String raw = Properties.trim(lines.get(i));
                     if (raw.length() == 0) { continue; }
@@ -1152,7 +1152,7 @@
                 return d.charAt(v & 15);
             }
             public static method format(int[] bytes) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = 0; i < 16; i++) {
                     if (i == 4 || i == 6 || i == 8 || i == 10) { sb.appendChar('-'); }
                     int b = bytes[i] & 255;
@@ -1162,7 +1162,7 @@
                 return sb.toString();
             }
             public static method v4(int[] randomBytes) returns String {
-                mutable int[] b = new int[16]();
+                int[] b = new int[16]();
                 for (mutable int i = 0; i < 16; i++) { b[i] = randomBytes[i] & 255; }
                 b[6] = (b[6] & 15) | 64;
                 b[8] = (b[8] & 63) | 128;
@@ -1171,7 +1171,7 @@
             public static method v4Seeded(int seed) returns String {
                 mutable ulong x = cast<ulong>(seed);
                 if (x == cast<ulong>(0)) { x = cast<ulong>(1); }
-                mutable int[] b = new int[16]();
+                int[] b = new int[16]();
                 for (mutable int i = 0; i < 16; i++) {
                     x = x ^ (x << 13);
                     x = x ^ (x >> 7);
@@ -1204,7 +1204,7 @@
             public constructor Semver(String v) {
                 mutable int i = 0;
                 if (v.length() > 0 && v.charAt(0) == 'v') { i = 1; }
-                mutable int[] parts = new int[3]();
+                int[] parts = new int[3]();
                 mutable int pi = 0;
                 mutable int cur = 0;
                 int n = v.length();
@@ -1232,7 +1232,7 @@
                 return 0;
             }
             public method toString() returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.appendInt(this.major).append(".").appendInt(this.minor).append(".").appendInt(this.patch);
                 return sb.toString();
             }
@@ -1298,7 +1298,7 @@
                 return d.charAt(v & 15);
             }
             public static method toHex(int c) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.appendChar('#');
                 int r = Colors.red(c);
                 int g = Colors.green(c);
@@ -1339,7 +1339,7 @@
         // single dash, and trim leading/trailing dashes.
         public class Slugify {
             public static method make(String s) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable boolean pendingDash = false;
                 for (mutable int i = 0; i < s.length(); i++) {
                     char c = s.charAt(i);
@@ -1397,8 +1397,8 @@
                 int m = b.length();
                 if (n == 0) { return m; }
                 if (m == 0) { return n; }
-                mutable int[] prev = new int[m + 1]();
-                mutable int[] cur = new int[m + 1]();
+                int[] prev = new int[m + 1]();
+                int[] cur = new int[m + 1]();
                 for (mutable int j = 0; j <= m; j++) { prev[j] = j; }
                 for (mutable int i = 1; i <= n; i++) {
                     cur[0] = i;
@@ -1429,8 +1429,8 @@
                 if (n2 > window) { window = n2; }
                 window = window / 2 - 1;
                 if (window < 0) { window = 0; }
-                mutable boolean[] m1 = new boolean[n1]();
-                mutable boolean[] m2 = new boolean[n2]();
+                boolean[] m1 = new boolean[n1]();
+                boolean[] m2 = new boolean[n2]();
                 mutable int matches = 0;
                 for (mutable int i = 0; i < n1; i++) {
                     mutable int lo = i - window;
@@ -1508,8 +1508,8 @@
         // order; removed and added are the lines only in the first or second version. Uses two-row LCS DP.
         public class TextDiff {
             private static method lcsLen(String[] a, int na, String[] b, int nb) returns int {
-                mutable int[] prev = new int[nb + 1]();
-                mutable int[] cur = new int[nb + 1]();
+                int[] prev = new int[nb + 1]();
+                int[] cur = new int[nb + 1]();
                 for (mutable int i = 1; i <= na; i++) {
                     for (mutable int j = 1; j <= nb; j++) {
                         if (a[i - 1].equals(b[j - 1])) { cur[j] = prev[j - 1] + 1; }
@@ -1544,8 +1544,8 @@
                 return dot;
             }
             public static method isUrl(String s) returns boolean {
-                mutable boolean https = s.startsWith("https://");
-                mutable boolean http = s.startsWith("http://");
+                boolean https = s.startsWith("https://");
+                boolean http = s.startsWith("http://");
                 if (!http && !https) { return false; }
                 mutable int start = 7;
                 if (https) { start = 8; }
@@ -1553,7 +1553,7 @@
             }
             public static method isIban(String s) returns boolean {
                 mutable int len = 0;
-                mutable char[] buf = new char[64]();
+                char[] buf = new char[64]();
                 for (mutable int i = 0; i < s.length(); i++) {
                     char c = s.charAt(i);
                     if (c != ' ') { buf[len] = c; len = len + 1; }
@@ -1577,19 +1577,19 @@
         // (covers the full int range). Negative numbers are prefixed with "minus".
         public class NumberWords {
             private static method ones(int n) returns String {
-                mutable String[] w = new String[10]();
+                String[] w = new String[10]();
                 w[0]=""; w[1]="one"; w[2]="two"; w[3]="three"; w[4]="four";
                 w[5]="five"; w[6]="six"; w[7]="seven"; w[8]="eight"; w[9]="nine";
                 return w[n];
             }
             private static method teens(int n) returns String {
-                mutable String[] w = new String[10]();
+                String[] w = new String[10]();
                 w[0]="ten"; w[1]="eleven"; w[2]="twelve"; w[3]="thirteen"; w[4]="fourteen";
                 w[5]="fifteen"; w[6]="sixteen"; w[7]="seventeen"; w[8]="eighteen"; w[9]="nineteen";
                 return w[n - 10];
             }
             private static method tens(int n) returns String {
-                mutable String[] w = new String[10]();
+                String[] w = new String[10]();
                 w[2]="twenty"; w[3]="thirty"; w[4]="forty"; w[5]="fifty";
                 w[6]="sixty"; w[7]="seventy"; w[8]="eighty"; w[9]="ninety";
                 return w[n];
@@ -1615,13 +1615,13 @@
                 mutable int n = num;
                 mutable String sign = "";
                 if (n < 0) { sign = "minus "; n = 0 - n; }
-                mutable String[] scale = new String[4]();
+                String[] scale = new String[4]();
                 scale[0]=""; scale[1]=" thousand"; scale[2]=" million"; scale[3]=" billion";
-                mutable int[] grp = new int[4]();
+                int[] grp = new int[4]();
                 mutable int g = 0;
                 mutable int m = n;
                 while (m > 0) { grp[g] = m % 1000; m = m / 1000; g = g + 1; }
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = g - 1; i >= 0; i = i - 1) {
                     if (grp[i] > 0) {
                         if (sb.length() > 0) { sb.appendChar(' '); }
@@ -1636,12 +1636,12 @@
         // English ordinals (1st, 2nd, 3rd, 11th, 21st), handling the 11-13 "th" exception.
         public class Humanize {
             public static method bytes(long n) returns String {
-                mutable String[] units = new String[5]();
+                String[] units = new String[5]();
                 units[0]="B"; units[1]="KB"; units[2]="MB"; units[3]="GB"; units[4]="TB";
                 mutable double d = cast<double>(n);
                 mutable int u = 0;
                 while (d >= 1024.0 && u < 4) { d = d / 1024.0; u = u + 1; }
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 if (u == 0) {
                     sb.appendInt(cast<int>(n)); sb.appendChar(' '); sb.append(units[0]);
                 } else {
@@ -1652,7 +1652,7 @@
                 return sb.toString();
             }
             public static method ordinal(int n) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.appendInt(n);
                 int m100 = n % 100;
                 mutable String suf = "th";

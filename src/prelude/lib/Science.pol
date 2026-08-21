@@ -15,7 +15,7 @@
                     return Numerics.ln(pi / Numerics.abs(Numerics.sin(pi * x))) - Special.lgamma(1.0 - x);
                 }
                 mutable double a = 0.99999999999980993;
-                mutable double[] c = new double[8]();
+                double[] c = new double[8]();
                 c[0] = 676.5203681218851;    c[1] = 0.0 - 1259.1392167224028;
                 c[2] = 771.32342877765313;   c[3] = 0.0 - 176.61502916214059;
                 c[4] = 12.507343278686905;   c[5] = 0.0 - 0.13857109526572012;
@@ -467,9 +467,9 @@
             public static method descend(function<double, double[]> f, double[] start, double rate,
                                          int steps) returns double[] {
                 int n = start.length();
-                mutable double[] x = new double[n]();
+                double[] x = new double[n]();
                 for (mutable int i = 0; i < n; i++) { x[i] = start[i]; }
-                mutable double[] probe = new double[n]();
+                double[] probe = new double[n]();
                 for (mutable int s = 0; s < steps; s++) {
                     for (mutable int i = 0; i < n; i++) { probe[i] = x[i]; }
                     for (mutable int i = 0; i < n; i++) {
@@ -528,9 +528,9 @@
                 return sign;
             }
             public static method determinant(double[] matrix, int n) returns double {
-                mutable double[] a = new double[n * n]();
+                double[] a = new double[n * n]();
                 for (mutable int i = 0; i < n * n; i++) { a[i] = matrix[i]; }
-                mutable int[] perm = new int[n]();
+                int[] perm = new int[n]();
                 double sign = Decompose.lu(a, n, perm);
                 mutable double det = sign;
                 if (sign != 0.0) {
@@ -544,12 +544,12 @@
             // the decomposition can be REUSED: solving for a second right-hand side costs the two
             // substitutions and not the elimination again.
             public static method solve(double[] matrix, int n, double[] b) returns double[] {
-                mutable double[] a = new double[n * n]();
+                double[] a = new double[n * n]();
                 for (mutable int i = 0; i < n * n; i++) { a[i] = matrix[i]; }
-                mutable int[] perm = new int[n]();
-                mutable double[] x = new double[n]();
+                int[] perm = new int[n]();
+                double[] x = new double[n]();
                 if (Decompose.lu(a, n, perm) == 0.0) { delete a; delete perm; return x; }
-                mutable double[] y = new double[n]();
+                double[] y = new double[n]();
                 for (mutable int i = 0; i < n; i++) {
                     mutable double sum = b[perm[i]];
                     for (mutable int k = 0; k < i; k++) { sum = sum - a[i * n + k] * y[k]; }
@@ -589,7 +589,7 @@
             // than assumed -- run on a non-symmetric matrix it returns numbers that are not
             // eigenvalues of anything.
             public static method symmetricEigenvalues(double[] matrix, int n) returns double[] {
-                mutable double[] a = new double[n * n]();
+                double[] a = new double[n * n]();
                 for (mutable int i = 0; i < n * n; i++) { a[i] = matrix[i]; }
                 for (mutable int sweep = 0; sweep < 100; sweep++) {
                     mutable double off = 0.0;
@@ -622,7 +622,7 @@
                         }
                     }
                 }
-                mutable double[] eig = new double[n]();
+                double[] eig = new double[n]();
                 for (mutable int i = 0; i < n; i++) { eig[i] = a[i * n + i]; }
                 delete a;
                 return eig;

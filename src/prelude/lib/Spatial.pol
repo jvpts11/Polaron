@@ -126,9 +126,9 @@
             // found, because a caller that gets a bare count and has to ask again has paid for the
             // descent twice.
             public method queryRect(double minX, double minY, double maxX, double maxY) returns int[] {
-                mutable int[] found = new int[this.points > 0 ? this.points : 1]();
-                mutable int n = this.gather(0, minX, minY, maxX, maxY, found, 0);
-                mutable int[] out = new int[n]();
+                int[] found = new int[this.points > 0 ? this.points : 1]();
+                int n = this.gather(0, minX, minY, maxX, maxY, found, 0);
+                int[] out = new int[n]();
                 for (mutable int i = 0; i < n; i++) { out[i] = found[i]; }
                 delete found;
                 return out;
@@ -165,9 +165,9 @@
             // and not a square. The box is used to prune and the distance to decide, so the answer is
             // exact rather than the square's corners included.
             public method queryCircle(double x, double y, double radius) returns int[] {
-                mutable int[] box = this.queryRect(x - radius, y - radius, x + radius, y + radius);
+                int[] box = this.queryRect(x - radius, y - radius, x + radius, y + radius);
                 double r2 = radius * radius;
-                mutable int[] keep = new int[box.length() > 0 ? box.length() : 1]();
+                int[] keep = new int[box.length() > 0 ? box.length() : 1]();
                 mutable int n = 0;
                 for (mutable int i = 0; i < box.length(); i++) {
                     int id = box[i];
@@ -181,9 +181,9 @@
                 return this.circleScan(x, y, r2);
             }
             private method circleScan(double x, double y, double r2) returns int[] {
-                mutable int[] found = new int[this.points > 0 ? this.points : 1]();
-                mutable int n = this.gatherCircle(0, x, y, r2, found, 0);
-                mutable int[] out = new int[n]();
+                int[] found = new int[this.points > 0 ? this.points : 1]();
+                int n = this.gatherCircle(0, x, y, r2, found, 0);
+                int[] out = new int[n]();
                 for (mutable int i = 0; i < n; i++) { out[i] = found[i]; }
                 delete found;
                 return out;
@@ -223,7 +223,7 @@
                 mutable double r = this.half[0] / 16.0;
                 if (r <= 0.0) { r = 1.0; }
                 for (mutable int tries = 0; tries < 8; tries++) {
-                    mutable int[] near = this.circleScan(x, y, r * r);
+                    int[] near = this.circleScan(x, y, r * r);
                     if (near.length() > 0) {
                         mutable int best = near[0];
                         mutable double bestD = 0.0 - 1.0;
@@ -293,13 +293,13 @@
         // copies of the same six lines.
         public class Spatial {
             public static method growInts(int[] old, int used, int size) returns int[] {
-                mutable int[] bigger = new int[size]();
+                int[] bigger = new int[size]();
                 for (mutable int i = 0; i < used; i++) { bigger[i] = old[i]; }
                 delete old;
                 return bigger;
             }
             public static method growDoubles(double[] old, int used, int size) returns double[] {
-                mutable double[] bigger = new double[size]();
+                double[] bigger = new double[size]();
                 for (mutable int i = 0; i < used; i++) { bigger[i] = old[i]; }
                 delete old;
                 return bigger;
@@ -410,9 +410,9 @@
             }
             public method queryBox(double minX, double minY, double minZ,
                                    double maxX, double maxY, double maxZ) returns int[] {
-                mutable int[] found = new int[this.points > 0 ? this.points : 1]();
+                int[] found = new int[this.points > 0 ? this.points : 1]();
                 int n = this.gather(0, minX, minY, minZ, maxX, maxY, maxZ, found, 0);
-                mutable int[] out = new int[n]();
+                int[] out = new int[n]();
                 for (mutable int i = 0; i < n; i++) { out[i] = found[i]; }
                 delete found;
                 return out;
@@ -463,7 +463,7 @@
 
             public constructor Noise(int seed) {
                 this.perm = new int[512]();
-                mutable int[] p = new int[256]();
+                int[] p = new int[256]();
                 for (mutable int i = 0; i < 256; i++) { p[i] = i; }
                 // A shuffle driven by a small xorshift, which is enough for noise and needs no state
                 // beyond the seed.
@@ -653,9 +653,9 @@
             // Blending IN LINEAR LIGHT, which is the whole reason the conversions above are here: the
             // midpoint of black and white is not 50% grey in sRGB, it is about 73%.
             public static method blend(Color* from, Color* to, double t) returns Color {
-                mutable Color* a = from.toLinear();
-                mutable Color* b = to.toLinear();
-                mutable Color* mixed = new Color(a.r + (b.r - a.r) * t,
+                Color* a = from.toLinear();
+                Color* b = to.toLinear();
+                Color* mixed = new Color(a.r + (b.r - a.r) * t,
                                                  a.g + (b.g - a.g) * t,
                                                  a.b + (b.b - a.b) * t,
                                                  from.a + (to.a - from.a) * t) on heap;

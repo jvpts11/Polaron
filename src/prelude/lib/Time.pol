@@ -112,7 +112,7 @@
                 if (t < 0) { sign = "-"; t = 0 - t; }
                 int hh = t / 3600;
                 int mm = (t / 60) % 60;
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.append(sign);
                 if (hh < 10) { sb.append("0"); }
                 sb.appendInt(hh);
@@ -144,15 +144,15 @@
                      + cast<long>(this.zone.totalSeconds());
             }
             private method epochDay() returns long {
-                mutable long ls = this.localSecs();
+                long ls = this.localSecs();
                 mutable long day = ls / cast<long>(86400);
-                mutable long sod = ls - day * cast<long>(86400);
+                long sod = ls - day * cast<long>(86400);
                 if (sod < cast<long>(0)) { day = day - cast<long>(1); }
                 return day;
             }
             private method secondOfDay() returns int {
-                mutable long ls = this.localSecs();
-                mutable long day = ls / cast<long>(86400);
+                long ls = this.localSecs();
+                long day = ls / cast<long>(86400);
                 mutable long sod = ls - day * cast<long>(86400);
                 if (sod < cast<long>(0)) { sod = sod + cast<long>(86400); }
                 return cast<int>(sod);
@@ -164,7 +164,7 @@
             public method minute() returns int { return (this.secondOfDay() / 60) % 60; }
             public method second() returns int { return this.secondOfDay() % 60; }
             public method toString() returns String {   // ISO-8601, e.g. 2026-07-03T14:05:09-03:00
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.appendInt(this.year());
                 sb.append("-");
                 int mo = this.month();
@@ -243,7 +243,7 @@
                 this.running = false;
             }
             public static method startNew() returns Stopwatch {
-                mutable Stopwatch s = new Stopwatch() on heap;
+                Stopwatch s = new Stopwatch() on heap;
                 s.start();
                 return s;
             }
@@ -328,7 +328,7 @@
             }
             // ISO-8601, `2026-08-15`, so a date can be written down.
             public method toString() returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 sb.appendInt(this.y);
                 sb.append("-");
                 if (this.mo < 10) { sb.append("0"); }

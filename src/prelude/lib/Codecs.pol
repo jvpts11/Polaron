@@ -19,7 +19,7 @@
             }
             public static method encode(String data) returns String {
                 String digits = "0123456789abcdef";
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = 0; i < data.length(); i++) {
                     int b = cast<int>(data.charAt(i));
                     sb.appendChar(digits.charAt(b / 16));
@@ -28,7 +28,7 @@
                 return sb.toString();
             }
             public static method decode(String hex) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = 0; i + 1 < hex.length(); i = i + 2) {
                     int hi = Hex.hexVal(hex.charAt(i));
                     int lo = Hex.hexVal(hex.charAt(i + 1));
@@ -55,12 +55,12 @@
                 mutable long v = n;
                 mutable boolean neg = false;
                 if (v < 0) { neg = true; v = 0 - v; }
-                mutable StringBuilder rev = new StringBuilder() on heap;
+                StringBuilder rev = new StringBuilder() on heap;
                 while (v > 0) {
                     rev.appendChar(Radix.digitChar(cast<int>(v % cast<long>(base))));
                     v = v / cast<long>(base);
                 }
-                mutable StringBuilder out = new StringBuilder() on heap;
+                StringBuilder out = new StringBuilder() on heap;
                 if (neg) { out.appendChar('-'); }
                 String r = rev.toString();
                 for (mutable int i = r.length() - 1; i >= 0; i = i - 1) { out.appendChar(r.charAt(i)); }
@@ -92,7 +92,7 @@
             }
             public static method encode(String data) returns String {
                 String alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int i = 0;
                 int n = data.length();
                 while (i < n) {
@@ -113,7 +113,7 @@
                 return sb.toString();
             }
             public static method decode(String data) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int i = 0;
                 int n = data.length();
                 while (i + 3 < n) {
@@ -137,7 +137,7 @@
             }
             public static method encode(String data) returns String {
                 String AL = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 int n = data.length();
                 mutable int i = 0;
                 while (i < n) {
@@ -165,7 +165,7 @@
                 return sb.toString();
             }
             public static method decode(String s) returns String {
-                mutable StringBuilder out = new StringBuilder() on heap;
+                StringBuilder out = new StringBuilder() on heap;
                 mutable long buf = 0;
                 mutable int bits = 0;
                 int n = s.length();
@@ -195,9 +195,9 @@
                 String a = Base58.al();
                 mutable int zeros = 0;
                 while (zeros < n && bytes[zeros] == 0) { zeros = zeros + 1; }
-                mutable int[] buf = new int[n + 1]();
+                int[] buf = new int[n + 1]();
                 for (mutable int i = 0; i < n; i++) { buf[i] = bytes[i] & 255; }
-                mutable StringBuilder rev = new StringBuilder() on heap;
+                StringBuilder rev = new StringBuilder() on heap;
                 mutable int start = zeros;
                 while (start < n) {
                     mutable int rem = 0;
@@ -209,7 +209,7 @@
                     rev.appendChar(a.charAt(rem));
                     if (buf[start] == 0) { start = start + 1; }
                 }
-                mutable StringBuilder out = new StringBuilder() on heap;
+                StringBuilder out = new StringBuilder() on heap;
                 for (mutable int i = 0; i < zeros; i++) { out.appendChar('1'); }
                 String r = rev.toString();
                 for (mutable int i = r.length() - 1; i >= 0; i = i - 1) { out.appendChar(r.charAt(i)); }
@@ -218,7 +218,7 @@
             public static method decode(String s) returns int[] {
                 mutable int zeros = 0;
                 while (zeros < s.length() && s.charAt(zeros) == '1') { zeros = zeros + 1; }
-                mutable int[] tmp = new int[s.length() + 1]();
+                int[] tmp = new int[s.length() + 1]();
                 mutable int blen = 0;
                 for (mutable int i = 0; i < s.length(); i++) {
                     mutable int carry = Base58.val(s.charAt(i));
@@ -229,7 +229,7 @@
                     }
                     while (carry > 0) { tmp[blen] = carry & 255; blen = blen + 1; carry = carry >> 8; }
                 }
-                mutable int[] out = new int[zeros + blen]();
+                int[] out = new int[zeros + blen]();
                 for (mutable int i = 0; i < blen; i++) { out[zeros + i] = tmp[blen - 1 - i]; }
                 return out;
             }
@@ -239,7 +239,7 @@
         // takes the first n bytes; decode returns the bytes (padding a short final group with 'u').
         public class Ascii85 {
             public static method encode(int[] bytes, int n) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int i = 0;
                 while (i < n) {
                     mutable long val = 0;
@@ -248,7 +248,7 @@
                         val = val * 256;
                         if (i + k < n) { val = val + cast<long>(bytes[i + k] & 255); cnt = cnt + 1; }
                     }
-                    mutable int[] dig = new int[5]();
+                    int[] dig = new int[5]();
                     mutable long v = val;
                     for (mutable int k = 4; k >= 0; k = k - 1) { dig[k] = cast<int>(v % 85); v = v / 85; }
                     for (mutable int k = 0; k < cnt + 1; k++) { sb.appendChar(cast<char>(33 + dig[k])); }
@@ -261,7 +261,7 @@
                 mutable int total = 0;
                 mutable int gi = 0;
                 while (gi < n) { mutable int c = n - gi; if (c > 5) { c = 5; } total = total + (c - 1); gi = gi + 5; }
-                mutable int[] out = new int[total]();
+                int[] out = new int[total]();
                 mutable int pos = 0;
                 mutable int i = 0;
                 while (i < n) {
@@ -413,7 +413,7 @@
                             d = d + 1;
                             node = this.parent[node];
                         }
-                        mutable StringBuilder sb = new StringBuilder() on heap;
+                        StringBuilder sb = new StringBuilder() on heap;
                         if (d == 0) { sb.appendChar('0'); }
                         for (mutable int j = d - 1; j >= 0; j = j - 1) {
                             if (tmp[j] == 0) { sb.appendChar('0'); } else { sb.appendChar('1'); }
@@ -426,7 +426,7 @@
             // The '0'/'1' code assigned to a byte value (empty string for bytes not in the source).
             public method codeOf(int byteValue) returns String { return this.codes[byteValue & 255]; }
             public method encode(String data) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 int n = data.length();
                 for (mutable int i = 0; i < n; i++) {
                     sb.append(this.codes[cast<int>(data.charAt(i)) & 255]);
@@ -434,7 +434,7 @@
                 return sb.toString();
             }
             public method decode(String bits) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 int n = bits.length();
                 if (this.left[this.root] == -1) {
                     for (mutable int i = 0; i < n; i++) { sb.appendChar(cast<char>(this.sym[this.root])); }
@@ -458,7 +458,7 @@
             private mutable int window;
             public constructor Lz77(int windowSize) { this.window = windowSize; }
             public method encode(String data) returns ArrayList<int> {
-                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                ArrayList<int> out = new ArrayList<int>() on heap;
                 int n = data.length();
                 mutable int i = 0;
                 while (i < n) {
@@ -494,7 +494,7 @@
                     if (tokens.get(t + 2) >= 0) { total = total + 1; }
                     t = t + 3;
                 }
-                mutable int[] buf = new int[total + 1]();
+                int[] buf = new int[total + 1]();
                 mutable int pos = 0;
                 t = 0;
                 while (t < tokens.size()) {
@@ -506,7 +506,7 @@
                     if (ch >= 0) { buf[pos] = ch; pos = pos + 1; }
                     t = t + 3;
                 }
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = 0; i < pos; i++) { sb.appendChar(cast<char>(buf[i])); }
                 return sb.toString();
             }
@@ -516,7 +516,7 @@
         // character and the digits that follow as a repeat count.
         public class Rle {
             public static method encode(String s) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int i = 0;
                 while (i < s.length()) {
                     char c = s.charAt(i);
@@ -529,7 +529,7 @@
                 return sb.toString();
             }
             public static method decode(String s) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int i = 0;
                 while (i < s.length()) {
                     char c = s.charAt(i);
@@ -561,7 +561,7 @@
                 return cast<int>(c) - cast<int>('a') + 10;
             }
             public static method encode(String s) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 for (mutable int i = 0; i < s.length(); i++) {
                     char c = s.charAt(i);
                     if (UrlCodec.isUnreserved(c)) {
@@ -576,7 +576,7 @@
                 return sb.toString();
             }
             public static method decode(String s) returns String {
-                mutable StringBuilder sb = new StringBuilder() on heap;
+                StringBuilder sb = new StringBuilder() on heap;
                 mutable int i = 0;
                 while (i < s.length()) {
                     char c = s.charAt(i);
@@ -596,8 +596,8 @@
         // percent-decoded via UrlCodec. A key with no '=' maps to the empty string.
         public class QueryString {
             public static method parse(String qs) returns HashMap<String, String> {
-                mutable HashMap<String, String> m = new HashMap<String, String>() on heap;
-                mutable ArrayList<String> parts = Strings.split(qs, "&");
+                HashMap<String, String> m = new HashMap<String, String>() on heap;
+                ArrayList<String> parts = Strings.split(qs, "&");
                 for (mutable int i = 0; i < parts.size(); i++) {
                     String p = parts.get(i);
                     if (p.length() == 0) { continue; }
@@ -616,7 +616,7 @@
         // so small values take one byte. encode returns the bytes; decode reads them back.
         public class VarInt {
             public static method encode(long value) returns ArrayList<int> {
-                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                ArrayList<int> out = new ArrayList<int>() on heap;
                 mutable long v = value;
                 mutable boolean more = true;
                 while (more) {
@@ -653,7 +653,7 @@
             }
             private method ensure(int idx) returns void {
                 if (idx < this.buf.length()) { return; }
-                mutable int[] bigger = new int[this.buf.length() * 2]();
+                int[] bigger = new int[this.buf.length() * 2]();
                 for (mutable int i = 0; i < this.buf.length(); i++) { bigger[i] = this.buf[i]; }
                 this.buf = bigger;
                 return;
@@ -675,7 +675,7 @@
             public method bitCount() returns int { return this.nbits; }
             public method toBytes() returns int[] {
                 int n = (this.nbits + 7) / 8;
-                mutable int[] out = new int[n]();
+                int[] out = new int[n]();
                 for (mutable int i = 0; i < n; i++) { out[i] = this.buf[i]; }
                 return out;
             }

@@ -41,7 +41,7 @@
                 ensures this.count == old(this.count) + 1
             {
                 if (this.count >= this.data.length()) {
-                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    T[] bigger = new T[this.data.length() * 2]();
                     for (mutable int i = 0; i < this.count; i++) {
                         bigger[i] = this.data[i];
                     }
@@ -56,7 +56,7 @@
             // capacity already suffices; never shrinks.
             public method ensureCapacity(int n) returns void {
                 if (n > this.data.length()) {
-                    mutable T[] bigger = new T[n]();
+                    T[] bigger = new T[n]();
                     for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
                     delete this.data;
                     this.data = bigger;
@@ -92,7 +92,7 @@
                 if (i < 0 || i >= this.count) {
                     // Out of range would silently decrement count (or leave a gap) without removing
                     // anything. Force a clean "array index out of bounds" panic instead. No UB.
-                    mutable T oob = this.data[this.data.length()];
+                    T oob = this.data[this.data.length()];
                     return;
                 }
                 for (mutable int j = i; j < this.count - 1; j++) {
@@ -106,7 +106,7 @@
                     return;
                 }
                 if (this.count >= this.data.length()) {
-                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    T[] bigger = new T[this.data.length() * 2]();
                     for (mutable int k = 0; k < this.count; k++) { bigger[k] = this.data[k]; }
                     delete this.data;
                     this.data = bigger;
@@ -127,7 +127,7 @@
                 this.count = 0;
             }
             public method toArray() returns T[] {
-                mutable T[] out = new T[this.count]();
+                T[] out = new T[this.count]();
                 for (mutable int i = 0; i < this.count; i++) { out[i] = this.data[i]; }
                 return out;
             }
@@ -142,7 +142,7 @@
                 for (mutable int i = 0; i < this.count; i++) { action(this.data[i]); }
             }
             public method filter(function<boolean, T> keep) returns ArrayList<T> {
-                mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                ArrayList<T> out = new ArrayList<T>() on heap;
                 out.ensureCapacity(this.count);  // at most `count` kept; size once instead of growing
                 for (mutable int i = 0; i < this.count; i++) {
                     if (keep(this.data[i])) { out.add(this.data[i]); }
@@ -217,7 +217,7 @@
                 return -1;
             }
             public method sortedBy(function<int, T, T> compare) returns ArrayList<T> {
-                mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                ArrayList<T> out = new ArrayList<T>() on heap;
                 out.ensureCapacity(this.count);  // the copy is known-size; fill without reallocating
                 for (mutable int i = 0; i < this.count; i++) { out.add(this.data[i]); }
                 if (out.size() > 1) {
@@ -307,7 +307,7 @@
                 return this.pos < this.list.size();
             }
             public override method next() returns T {
-                mutable T value = this.list.get(this.pos);
+                T value = this.list.get(this.pos);
                 this.pos = this.pos + 1;
                 return value;
             }
@@ -343,7 +343,7 @@
             // already made, and that is the one shape every use of a stream has. A pipeline that
             // cannot be materialised is a pipeline nobody writes.
             public method toList() returns ArrayList<T> {
-                mutable ArrayList<T> out = new ArrayList<T>() on heap;
+                ArrayList<T> out = new ArrayList<T>() on heap;
                 while (this.hasNext()) { out.add(this.next()); }
                 return out;
             }
@@ -536,7 +536,7 @@
             public destructor ~Stack() returns void { delete this.data; }
             public method push(T item) returns void {
                 if (this.count >= this.data.length()) {
-                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    T[] bigger = new T[this.data.length() * 2]();
                     for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
                     delete this.data;
                     this.data = bigger;
@@ -550,7 +550,7 @@
             }
             public method peek() returns T { return this.data[this.count - 1]; }
             public method toArray() returns T[] {  // bottom-to-top (insertion order)
-                mutable T[] out = new T[this.count]();
+                T[] out = new T[this.count]();
                 for (mutable int i = 0; i < this.count; i++) { out[i] = this.data[i]; }
                 return out;
             }
@@ -572,7 +572,7 @@
             public destructor ~Queue() returns void { delete this.data; }
             public method enqueue(T item) returns void {
                 if (this.count >= this.data.length()) {
-                    mutable T[] bigger = new T[this.data.length() * 2]();
+                    T[] bigger = new T[this.data.length() * 2]();
                     for (mutable int i = 0; i < this.count; i++) {
                         bigger[i] = this.data[(this.head + i) % this.data.length()];
                     }
@@ -591,7 +591,7 @@
             }
             public method peek() returns T { return this.data[this.head]; }
             public method toArray() returns T[] {  // front-to-back
-                mutable T[] out = new T[this.count]();
+                T[] out = new T[this.count]();
                 for (mutable int i = 0; i < this.count; i++) {
                     out[i] = this.data[(this.head + i) % this.data.length()];
                 }
@@ -609,7 +609,7 @@
             public destructor ~Deque() returns void { delete this.data; }
             private method grow() returns void {
                 if (this.count < this.data.length()) { return; }
-                mutable T[] bigger = new T[this.data.length() * 2]();
+                T[] bigger = new T[this.data.length() * 2]();
                 for (mutable int i = 0; i < this.count; i++) {
                     bigger[i] = this.data[(this.head + i) % this.data.length()];
                 }
@@ -639,7 +639,7 @@
                 return this.data[(this.head + this.count) % this.data.length()];
             }
             public method toArray() returns T[] {  // front-to-back
-                mutable T[] out = new T[this.count]();
+                T[] out = new T[this.count]();
                 for (mutable int i = 0; i < this.count; i++) {
                     out[i] = this.data[(this.head + i) % this.data.length()];
                 }
@@ -729,7 +729,7 @@
                 return v;
             }
             public method toArray() returns T[] {  // head-to-tail
-                mutable T[] out = new T[this.count]();
+                T[] out = new T[this.count]();
                 mutable nullable LinkedNode<T>* cur = this.head;
                 for (mutable int i = 0; i < this.count; i++) { out[i] = cur.value; cur = cur.next; }
                 return out;
@@ -828,7 +828,7 @@
         // a probe chain gets long, mixed after -- is the shape that would win both, and is unwritten.
         public class Hashing {
             public static method mix(long h) returns long {
-                mutable long x = h * 0x9E3779B97F4A7C15;
+                long x = h * 0x9E3779B97F4A7C15;
                 return x ^ (x >> 32);
             }
         }
@@ -892,9 +892,9 @@
                     return;
                 }
                 int oldCap = this.cap;
-                mutable K[] oldK = this.keys;
-                mutable V[] oldV = this.values;
-                mutable byte[] oldU = this.used;
+                K[] oldK = this.keys;
+                V[] oldV = this.values;
+                byte[] oldU = this.used;
                 // Quadruple, not double. Growth is the expensive part of filling a map: every step
                 // allocates and ZEROES three fresh arrays and rehashes everything into them, so what
                 // matters is how many times that happens, not how much slack it leaves. Doubling from
@@ -966,8 +966,8 @@
                 this.count = this.count - 1;
                 mutable int j = (i + 1) & mask;
                 while (this.used[j] != 0) {
-                    mutable K rk = this.keys[j];
-                    mutable V rv = this.values[j];
+                    K rk = this.keys[j];
+                    V rv = this.values[j];
                     this.used[j] = cast<byte>(0);
                     this.count = this.count - 1;
                     this.put(rk, rv);
@@ -976,7 +976,7 @@
                 return true;
             }
             public method keyArray() returns K[] {  // keys (arbitrary order); field is named `keys`
-                mutable K[] out = new K[this.count]();
+                K[] out = new K[this.count]();
                 mutable int j = 0;
                 for (mutable int i = 0; i < this.cap; i++) {
                     if (this.used[i] != 0) { out[j] = this.keys[i]; j = j + 1; }
@@ -986,7 +986,7 @@
             // THE SAME KEYS AS A LIST, because that is what the caller then wants: an array has to be
             // deleted, and the loop that walks it into a list was being written at every call site.
             public method keys() returns ArrayList<K> {
-                mutable ArrayList<K> out = new ArrayList<K>() on heap;
+                ArrayList<K> out = new ArrayList<K>() on heap;
                 out.ensureCapacity(this.count);
                 for (mutable int i = 0; i < this.cap; i++) {
                     if (this.used[i] != 0) { out.add(this.keys[i]); }
@@ -994,7 +994,7 @@
                 return out;
             }
             public method values() returns ArrayList<V> {
-                mutable ArrayList<V> out = new ArrayList<V>() on heap;
+                ArrayList<V> out = new ArrayList<V>() on heap;
                 out.ensureCapacity(this.count);
                 for (mutable int i = 0; i < this.cap; i++) {
                     if (this.used[i] != 0) { out.add(this.values[i]); }
@@ -1008,7 +1008,7 @@
                 this.count = 0;
             }
             public method valueArray() returns V[] {  // values (arbitrary order)
-                mutable V[] out = new V[this.count]();
+                V[] out = new V[this.count]();
                 mutable int j = 0;
                 for (mutable int i = 0; i < this.cap; i++) {
                     if (this.used[i] != 0) { out[j] = this.values[i]; j = j + 1; }
@@ -1046,7 +1046,7 @@
             private method grow() returns void {
                 int oldCap = this.cap;
                 mutable T[] oldE = this.elems;
-                mutable byte[] oldU = this.used;
+                byte[] oldU = this.used;
                 this.cap = oldCap * 2;
                 this.elems = new T[this.cap]();
                 this.used = new byte[this.cap]();
@@ -1086,7 +1086,7 @@
                 return true;
             }
             public method toArray() returns T[] {  // elements (arbitrary order)
-                mutable T[] out = new T[this.count]();
+                T[] out = new T[this.count]();
                 mutable int j = 0;
                 for (mutable int i = 0; i < this.cap; i++) {
                     if (this.used[i] != 0) { out[j] = this.elems[i]; j = j + 1; }
@@ -1218,12 +1218,12 @@
                 return this.fillValues(node.right, out, i);
             }
             public method keyArray() returns K[] {  // sorted (in-order)
-                mutable K[] out = new K[this.count]();
+                K[] out = new K[this.count]();
                 this.fillKeys(this.root, out, 0);
                 return out;
             }
             public method valueArray() returns V[] {  // by key order
-                mutable V[] out = new V[this.count]();
+                V[] out = new V[this.count]();
                 this.fillValues(this.root, out, 0);
                 return out;
             }
@@ -1390,7 +1390,7 @@
                 return this.fill(node.right, out, i);
             }
             public method toArray() returns T[] {  // sorted (in-order)
-                mutable T[] out = new T[this.count]();
+                T[] out = new T[this.count]();
                 this.fill(this.root, out, 0);
                 return out;
             }
@@ -1479,7 +1479,7 @@
             public method count() returns int {
                 mutable int total = 0;
                 for (mutable int w = 0; w < this.words.length(); w++) {
-                    mutable int x = this.words[w];
+                    int x = this.words[w];
                     for (mutable int b = 0; b < 32; b++) {
                         if ((x & (1 << b)) != 0) { total = total + 1; }
                     }
@@ -1513,7 +1513,7 @@
                 return this.counts.size();
             }
             public method total() returns int {
-                mutable int[] tallies = this.counts.valueArray();
+                int[] tallies = this.counts.valueArray();
                 mutable int sum = 0;
                 for (mutable int i = 0; i < tallies.length(); i++) { sum = sum + tallies[i]; }
                 return sum;
@@ -1616,25 +1616,25 @@
                 return false;
             }
             public method toArray() returns int[] {
-                mutable int n = this.size();
-                mutable int[] a = new int[n]();
+                int n = this.size();
+                int[] a = new int[n]();
                 mutable int idx = 0;
                 mutable int i = this.start;
                 while (this.inRange(i)) { a[idx] = i; idx = idx + 1; i = i + this.stride; }
                 return a;
             }
             public static method upTo(int n) returns ArrayList<int> {
-                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                ArrayList<int> out = new ArrayList<int>() on heap;
                 for (mutable int i = 0; i < n; i++) { out.add(i); }
                 return out;
             }
             public static method between(int start, int end) returns ArrayList<int> {
-                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                ArrayList<int> out = new ArrayList<int>() on heap;
                 for (mutable int i = start; i < end; i++) { out.add(i); }
                 return out;
             }
             public static method stepBy(int start, int end, int by) returns ArrayList<int> {
-                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                ArrayList<int> out = new ArrayList<int>() on heap;
                 if (by <= 0) { return out; }
                 for (mutable int i = start; i < end; i = i + by) { out.add(i); }
                 return out;
@@ -1657,8 +1657,8 @@
             private method ensure() returns void {
                 if (this.nodes < this.cap) { return; }
                 int nc = this.cap * 2;
-                mutable int[] nn = new int[nc * 26]();
-                mutable boolean[] nw = new boolean[nc]();
+                int[] nn = new int[nc * 26]();
+                boolean[] nw = new boolean[nc]();
                 for (mutable int i = 0; i < this.cap * 26; i++) { nn[i] = this.next[i]; }
                 for (mutable int i = 0; i < this.cap; i++) { nw[i] = this.isWord[i]; }
                 this.next = nn;
@@ -1717,9 +1717,9 @@
                 return;
             }
             public method distance(int src, int dst) returns int {
-                mutable int[] dist = new int[this.n]();
+                int[] dist = new int[this.n]();
                 for (mutable int i = 0; i < this.n; i++) { dist[i] = 0 - 1; }
-                mutable Queue<int> q = new Queue<int>() on heap;
+                Queue<int> q = new Queue<int>() on heap;
                 dist[src] = 0;
                 q.enqueue(src);
                 while (!q.isEmpty()) {
@@ -1762,9 +1762,9 @@
             private method grow() returns void {
                 int nc = this.cap * 2;
                 mutable T[] nv = new T[nc]();
-                mutable int[] ng = new int[nc]();
-                mutable boolean[] no = new boolean[nc]();
-                mutable int[] nf = new int[nc]();
+                int[] ng = new int[nc]();
+                boolean[] no = new boolean[nc]();
+                int[] nf = new int[nc]();
                 for (mutable int i = 0; i < this.cap; i++) {
                     nv[i] = this.values[i];
                     ng[i] = this.gens[i];
@@ -1824,7 +1824,7 @@
             }
             private method grow() returns void {
                 int nc = this.cap * 2;
-                mutable int[] nh = new int[nc]();
+                int[] nh = new int[nc]();
                 for (mutable int i = 0; i < this.n; i++) { nh[i] = this.h[i]; }
                 this.h = nh;
                 this.cap = nc;
@@ -1937,7 +1937,7 @@
             }
             public method size() returns int { return this.count; }
             public method inOrder() returns ArrayList<int> {
-                mutable ArrayList<int> out = new ArrayList<int>() on heap;
+                ArrayList<int> out = new ArrayList<int>() on heap;
                 if (this.root != null) { this.root.collect(out); }
                 return out;
             }
@@ -1963,7 +1963,7 @@
             }
             private method ensure(int need) returns void {
                 if (need <= this.data.length()) { return; }
-                mutable int[] bigger = new int[this.data.length() * 2]();
+                int[] bigger = new int[this.data.length() * 2]();
                 for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }
                 this.data = bigger;
                 return;
@@ -2089,8 +2089,8 @@
             }
             public method dijkstra(int src) returns int[] {
                 int INF = 1000000000;
-                mutable int[] dist = new int[this.n]();
-                mutable boolean[] visited = new boolean[this.n]();
+                int[] dist = new int[this.n]();
+                boolean[] visited = new boolean[this.n]();
                 for (mutable int i = 0; i < this.n; i++) { dist[i] = INF; }
                 dist[src] = 0;
                 for (mutable int iter = 0; iter < this.n; iter++) {
@@ -2112,8 +2112,8 @@
             }
             public method mstWeight() returns int {
                 int INF = 1000000000;
-                mutable int[] key = new int[this.n]();
-                mutable boolean[] inMst = new boolean[this.n]();
+                int[] key = new int[this.n]();
+                boolean[] inMst = new boolean[this.n]();
                 for (mutable int i = 0; i < this.n; i++) { key[i] = INF; }
                 key[0] = 0;
                 mutable int total = 0;
@@ -2298,13 +2298,13 @@
             }
             public method addEdge(int u, int v) returns void { this.adj[u * this.n + v] = 1; return; }
             public method topoSort(int[] order) returns int {
-                mutable int[] indeg = new int[this.n]();
+                int[] indeg = new int[this.n]();
                 for (mutable int u = 0; u < this.n; u++) {
                     for (mutable int v = 0; v < this.n; v++) {
                         if (this.adj[u * this.n + v] == 1) { indeg[v] = indeg[v] + 1; }
                     }
                 }
-                mutable boolean[] done = new boolean[this.n]();
+                boolean[] done = new boolean[this.n]();
                 mutable int cnt = 0;
                 mutable boolean progress = true;
                 while (progress) {
@@ -2325,7 +2325,7 @@
                 return cnt;
             }
             public method hasCycle() returns boolean {
-                mutable int[] o = new int[this.n]();
+                int[] o = new int[this.n]();
                 return this.topoSort(o) < this.n;
             }
         }
@@ -2362,7 +2362,7 @@
                     for (mutable int cy = cy0; cy <= cy1; cy++) {
                         int ck = this.key(cx, cy);
                         if (this.buckets.containsKey(ck)) {
-                            mutable ArrayList<int> lst = this.buckets.get(ck);
+                            ArrayList<int> lst = this.buckets.get(ck);
                             for (mutable int i = 0; i < lst.size(); i++) {
                                 int idx = lst.get(i);
                                 if (this.px[idx] >= x0 && this.px[idx] <= x1

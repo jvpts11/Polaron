@@ -141,7 +141,7 @@
         // one-dimensional DP swept from high capacity to low so each item is used at most once.
         public class Knapsack {
             public static method maxValue(int[] weights, int[] values, int n, int capacity) returns int {
-                mutable int[] dp = new int[capacity + 1]();
+                int[] dp = new int[capacity + 1]();
                 for (mutable int i = 0; i < n; i++) {
                     for (mutable int c = capacity; c >= weights[i]; c = c - 1) {
                         int cand = dp[c - weights[i]] + values[i];
@@ -156,7 +156,7 @@
             public static method length(String a, String b) returns int {
                 int m = a.length();
                 int n = b.length();
-                mutable int[] dp = new int[(m + 1) * (n + 1)]();
+                int[] dp = new int[(m + 1) * (n + 1)]();
                 int w = n + 1;
                 for (mutable int i = 1; i <= m; i++) {
                     for (mutable int j = 1; j <= n; j++) {
@@ -202,8 +202,8 @@
         // monotonic deque of indices. Returns the n-k+1 maxima.
         public class SlidingWindowMax {
             public static method maxOfEach(int[] a, int n, int k) returns int[] {
-                mutable int[] out = new int[n - k + 1]();
-                mutable int[] dq = new int[n]();
+                int[] out = new int[n - k + 1]();
+                int[] dq = new int[n]();
                 mutable int head = 0;
                 mutable int tail = 0;
                 mutable int oi = 0;
@@ -263,8 +263,8 @@
         // describe interval i.
         public class IntervalScheduler {
             public static method maxNonOverlapping(int[] starts, int[] ends, int n) returns int {
-                mutable int[] s = new int[n]();
-                mutable int[] e = new int[n]();
+                int[] s = new int[n]();
+                int[] e = new int[n]();
                 for (mutable int i = 0; i < n; i++) { s[i] = starts[i]; e[i] = ends[i]; }
                 for (mutable int i = 1; i < n; i++) {
                     int ke = e[i]; int ks = s[i];
