@@ -271,6 +271,14 @@ private:
     // The dumped invariants of the class being analysed, for the rules that must not repeat advice
     // about something the class has already stated.
     std::vector<std::string> currentClassInvariants_;
+    // ...and the `requires` clauses of the method being analysed, for the same reason one level
+    // down. A class invariant can only speak about fields, so a STATIC method whose relation is
+    // between two of its own parameters -- `sortRange(int[] a, int lo, int hi)`, the shape every
+    // divide-and-conquer algorithm has -- has nowhere else to state it. A `requires` is emitted as
+    // a branch that panics, so the loop it guards is dominated by the block where the condition is
+    // known: the optimiser gets the relation, and advice saying it does not is advice about a fix
+    // that has been applied.
+    std::vector<std::string> currentMethodRequires_;
     void pushAllows(const std::vector<ast::AnnotationUse>& outer,
                     const std::vector<ast::AnnotationUse>& inner);
     void popAllows();

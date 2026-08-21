@@ -29,13 +29,27 @@
 
 # WHAT THE TWO BIG NUMBERS ARE, since they are the ones a reader will ask about.
 #
-# 0B40 is 180 loops whose index the range analysis cannot relate to the array's length, and every
+# 0B40 is 172 loops whose index the range analysis cannot relate to the array's length, and every
 # one of them is a loop `hoistBoundsChecks` refuses -- a call in the body, a nested loop, an index
 # the versioner cannot prove affine. The COST is real and measured: the check stays. What is not
 # available is the fix the catalogue names, because the bound is genuinely a third quantity: a flat
 # matrix indexed `row * n + col`, a stack pointer, a message schedule of eighty words. Paying it off
 # means slices or invariants through the numeric and crypto code, which is a piece of work and not
 # a pass.
+#
+# 180 -> 172 on 2026-08-21, and the eight are worth reading because they are the shape the rest is
+# not. A THIRD ROUTE opened: the rule now also accepts the method's own `requires`. An invariant can
+# only speak about fields, so `sortRange(int[] a, int lo, int hi)` -- every divide-and-conquer
+# algorithm in this library -- had no way to state its relation at all, and was being offered three
+# fixes of which one breaks the code, one cannot express a sub-range, and one cannot mention a
+# parameter. It is sound because a `requires` is emitted as a branch that panics: the body is
+# dominated by a block where the condition is known, which is what the range analysis reads.
+#
+# So the eight paid off are the ones whose relation is a genuine PRECONDITION that was never
+# written down -- `Arrays.Ints.sortRange` (the range is inside the array), `Knapsack.maxValue` and
+# `IntervalMerge.merge` and `SlidingWindowMax.maxOfEach` (an `n` that says how many without saying
+# of what). Each was also a real defect: a caller passing an `n` past the end got a panic from the
+# middle of the algorithm instead of a refusal at the door. The remaining 172 are not that shape.
 #
 # 0B24 is 31 signatures taking three or more of one primitive, where any order compiles. That is a
 # real hazard and the fix is a `newtype` or a slice per concept -- an API change across `Time`,
@@ -52,6 +66,6 @@ Polaron-0B26   7
 Polaron-0B27   5
 Polaron-0B29   1
 Polaron-0B3A   2
-Polaron-0B40 180
+Polaron-0B40 172
 Polaron-0B49   5
 Polaron-0B4A   3

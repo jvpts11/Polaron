@@ -138,10 +138,22 @@
         // 0/1 knapsack (spec 34.1): maximum total value of items fitting in a capacity, via the classic
         // one-dimensional DP swept from high capacity to low so each item is used at most once.
         public class Knapsack {
-            public static method maxValue(int[] weights, int[] values, int n, int capacity) returns int {
+            // `n` IS A THIRD QUANTITY UNTIL SOMEBODY SAYS OTHERWISE. It is how many items to
+            // consider, and nothing in the signature relates it to how long either array is -- so
+            // every `weights[i]` and `values[i]` in the sweep carried a check that could not be
+            // proved away, and a caller passing an `n` larger than its arrays got a panic instead of
+            // a refusal at the door.
+            public static method maxValue(int[] weights, int[] values, int n, int capacity) returns int
+                requires n <= weights.length()
+                requires n <= values.length()
+            {
                 int[] dp = new int[capacity + 1]();
                 for (mutable int i = 0; i < n; i++) {
-                    for (mutable int c = capacity; c >= weights[i]; c = c - 1) {
+                    // FROM `dp.length() - 1` AND NOT FROM `capacity`, which is the same number. The
+                    // two are equal by the line above and the compiler cannot know it: counting from
+                    // the array's own length is the relation written down, at no cost, in a loop
+                    // that is the inner one of a nested pair.
+                    for (mutable int c = dp.length() - 1; c >= weights[i]; c = c - 1) {
                         int cand = dp[c - weights[i]] + values[i];
                         if (cand > dp[c]) { dp[c] = cand; }
                     }
@@ -199,7 +211,13 @@
         // Sliding-window maximum (spec 34.1): the maximum of every length-k window, in linear time via a
         // monotonic deque of indices. Returns the n-k+1 maxima.
         public class SlidingWindowMax {
-            public static method maxOfEach(int[] a, int n, int k) returns int[] {
+            // How many of `a` to consider, and how wide the window is. Neither was related to the
+            // array, so the sweep could not prove a single one of its reads -- and an `n` past the
+            // end was a panic in the middle of the algorithm rather than a refusal at the door.
+            public static method maxOfEach(int[] a, int n, int k) returns int[]
+                requires k >= 1
+                requires n <= a.length()
+            {
                 int[] out = new int[n - k + 1]();
                 int[] dq = new int[n]();
                 mutable int head = 0;
@@ -232,7 +250,13 @@
         // merged starts/ends back into the first `count` slots and returning that count; coveredLength totals
         // the merged spans.
         public class IntervalMerge {
-            public static method merge(int[] starts, int[] ends, int n) returns int {
+            // TWO ARRAYS WALKED IN STEP, and `n` said how far without saying of what. Both promises
+            // are needed: one array being long enough says nothing about the other, and this method
+            // writes through both.
+            public static method merge(int[] starts, int[] ends, int n) returns int
+                requires n <= starts.length()
+                requires n <= ends.length()
+            {
                 for (mutable int i = 1; i < n; i++) {
                     int ks = starts[i]; int ke = ends[i];
                     mutable int j = i - 1;

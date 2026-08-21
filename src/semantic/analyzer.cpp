@@ -3627,8 +3627,16 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                             }
                         }
                         std::vector<const ast::Expr*> contracts;
+                        // ...and their text, for the one rule that must not advise a fix the author
+                        // has already written. See `currentMethodRequires_`.
+                        currentMethodRequires_.clear();
                         for (const auto& e : m->requiresClauses) {
                             contracts.push_back(e.get());
+                            if (e) {
+                                std::string text;
+                                e->dump(text, 0);
+                                currentMethodRequires_.push_back(std::move(text));
+                            }
                         }
                         // Postconditions go separately: they are checked with `result` in scope, and
                         // preconditions must not see it.

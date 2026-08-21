@@ -1,0 +1,101 @@
+import System.IO.Console;
+
+program LintBoundContract;
+
+// A SUB-RANGE ALGORITHM IS THE SHAPE THE RULE COULD NOT ANSWER.
+//
+// `Polaron-0B40` says a loop indexes an array with a bound that is not its length, so the bounds
+// check cannot be proved away -- true, and the cost is real. Its three fixes are: loop to
+// `a.length()`, use `foreach`, or state an `invariant`. For `sortRange(int[] a, int lo, int hi)` --
+// the shape every divide-and-conquer algorithm in the library has -- the first sorts the whole
+// array instead of the range asked for, the second cannot express a sub-range walked backwards, and
+// the third cannot mention a parameter: an invariant speaks about fields, and this method is static.
+//
+// So the rule now also reads the method's own `requires`. That is sound for a cheaper reason than
+// the invariant case, which needs an `llvm.assume`: a `requires` is emitted as
+// `br i1 %contract.ok, label %contract.cont, label %contract.fail`, so every path that reaches the
+// loop is dominated by a block where the condition is known true, and the range analysis reads it
+// straight off the branch.
+//
+// AN INSERTION SORT AND NOT A SUM, because a plain counted read loop is one `hoistBoundsChecks`
+// versions into a guarded fast copy with no per-element check -- so the rule is already silent
+// there and the sample would prove nothing. A nested loop is what the versioner refuses.
+//
+// MATCHED AGAINST THE ARRAY, NOT THE COUNTER, which is what the inner loop pins: its own bound is
+// `lo`, the LOWER one, which no length could ever be compared against. It is covered because the
+// promise `hi < a.length()` is about how far into `a` the method may be asked to go.
+public bundle Main {
+    public namespace App {
+
+        public class Sorter {
+            // NOTHING PROMISED: the rule fires on both loops, and it is right to. The arrays are
+            // named apart so the test can assert WHICH methods are named without pinning line
+            // numbers, which move whenever this comment does.
+            public static method loose(int[] unpromised, int lo, int hi) returns void {
+                for (mutable int i = lo + 1; i <= hi; i++) {
+                    int key = unpromised[i];
+                    mutable int j = i - 1;
+                    while (j >= lo && unpromised[j] > key) {
+                        unpromised[j + 1] = unpromised[j];
+                        j = j - 1;
+                    }
+                    unpromised[j + 1] = key;
+                }
+                return;
+            }
+
+            // THE SAME SORT WITH THE RELATION WRITTEN DOWN: silent, both loops -- the outer one
+            // because its bound is `hi`, the inner one because the promise is about `a`.
+            public static method promised(int[] bounded, int lo, int hi) returns void
+                requires lo >= 0
+                requires hi < bounded.length()
+            {
+                for (mutable int i = lo + 1; i <= hi; i++) {
+                    int key = bounded[i];
+                    mutable int j = i - 1;
+                    while (j >= lo && bounded[j] > key) {
+                        bounded[j + 1] = bounded[j];
+                        j = j - 1;
+                    }
+                    bounded[j + 1] = key;
+                }
+                return;
+            }
+
+            // AND A PROMISE ABOUT SOMETHING ELSE DOES NOT COUNT. `lo >= 0` is true and says nothing
+            // about how long anything is, so silencing on it would hide a real cost behind an
+            // unrelated contract: the rule must still fire here.
+            public static method unrelated(int[] offtopic, int lo, int hi) returns void
+                requires lo >= 0
+            {
+                for (mutable int i = lo + 1; i <= hi; i++) {
+                    int key = offtopic[i];
+                    mutable int j = i - 1;
+                    while (j >= lo && offtopic[j] > key) {
+                        offtopic[j + 1] = offtopic[j];
+                        j = j - 1;
+                    }
+                    offtopic[j + 1] = key;
+                }
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Opaque, so nothing here folds away and the three really do run.
+                int n = args.length() + 6;
+                int[] a = new int[n]();
+                for (mutable int i = 0; i < n; i++) {
+                    a[i] = n - i;
+                }
+                Sorter.loose(a, 0, n - 1);
+                Sorter.promised(a, 0, n - 1);
+                Sorter.unrelated(a, 0, n - 1);
+                System.IO.Console.println($"{a[0]} {a[1]} {a[n - 1]}");
+                delete a;
+                return;
+            }
+        }
+    }
+}

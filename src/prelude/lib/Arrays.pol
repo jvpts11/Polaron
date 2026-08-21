@@ -142,7 +142,23 @@
             public static method sort(int[] a) returns void {
                 Ints.sortRange(a, 0, a.length() - 1);
             }
-            private static method sortRange(int[] a, int lo, int hi) returns void {
+            // THE RANGE IS A PROMISE, AND WRITING IT DOWN IS WHAT REMOVES THE CHECKS. Every index in
+            // this body lies between `lo` and `hi`, and nothing in the signature said how those two
+            // relate to the array -- so the bounds check on every compare and every swap stayed, in
+            // the innermost loop of the commonest operation this library performs.
+            //
+            // A `requires` is checked once per call and emitted as a branch, so the whole body is
+            // dominated by a block where the relation is known and the range analysis can read it
+            // off. The insertion sort's inner loop counts DOWN, which no length could ever be
+            // compared against directly; it is covered because the promise is about the ARRAY.
+            //
+            // True at every call: `sort` passes `(a, 0, a.length() - 1)` -- and `-1 < 0` for an
+            // empty array, so the empty case is a promise kept rather than a special case -- and the
+            // two recursive calls only ever narrow the range they were given.
+            private static method sortRange(int[] a, int lo, int hi) returns void
+                requires lo >= 0
+                requires hi < a.length()
+            {
                 if (hi - lo < 16) {
                     for (mutable int i = lo + 1; i <= hi; i++) {
                         int key = a[i];

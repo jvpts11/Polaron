@@ -18,7 +18,7 @@
 #include "driver/toolchain.h"
 
 namespace {
-constexpr const char* kVersion = "polaron 1.0.165";
+constexpr const char* kVersion = "polaron 1.0.166";
 
 int printHelp() {
     std::printf(

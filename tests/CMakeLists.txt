@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.165")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.166")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.165")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.166")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1756,6 +1756,44 @@ add_test(NAME lint_blocks_seen_runs COMMAND "${CMAKE_COMMAND}"
     "-DCLANG=${POLARON_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_blocks_seen.pol"
     "-DCONTAINS=1 2 -1 4 5 6"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A `requires` IS A THIRD ROUTE OUT OF 0B40, and the one a sub-range algorithm has. `sortRange(int[]
+# a, int lo, int hi)` is static, so an invariant -- which speaks about fields -- cannot state the
+# relation between its parameters; looping to `a.length()` would sort the whole array; `foreach`
+# cannot walk a sub-range backwards. Every fix the rule named was unavailable, and the author who
+# wrote the contract anyway was told again on every build.
+#
+# Sound because a `requires` is emitted as `br i1 %contract.ok, ...`: the body is dominated by a
+# block where the condition is known, which is exactly what the range analysis reads.
+add_test(NAME lint_bound_contract_is_a_fix
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bound_contract.pol")
+set_tests_properties(lint_bound_contract_is_a_fix PROPERTIES
+    FAIL_REGULAR_EXPRESSION "indexes 'bounded'")
+
+# ...and the rule must still fire where nothing was promised, or the exemption above has simply
+# turned the rule off. Two separate tests because CTest's PASS pattern is a list matched with OR:
+# one regex naming both would pass on either half.
+add_test(NAME lint_bound_no_promise_still_fires
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bound_contract.pol")
+set_tests_properties(lint_bound_no_promise_still_fires PROPERTIES
+    PASS_REGULAR_EXPRESSION "indexes 'unpromised'")
+
+# ...and an unrelated promise is not a way out. `offtopic` declares `requires lo >= 0`, which is
+# true and says nothing about how long anything is; the cost is still there, so the name still is.
+# The promise has to be about the ARRAY -- which is also why the inner loop of `promised` is quiet
+# even though its own bound is the LOWER one, a number no length could be compared against.
+add_test(NAME lint_bound_unrelated_promise_still_fires
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bound_contract.pol")
+set_tests_properties(lint_bound_unrelated_promise_still_fires PROPERTIES
+    PASS_REGULAR_EXPRESSION "indexes 'offtopic'")
+
+add_test(NAME lint_bound_contract_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bound_contract.pol"
+    "-DCONTAINS=1 2 6"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

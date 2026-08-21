@@ -1628,6 +1628,35 @@ void SemanticAnalyzer::warnCheckRepeatsItsContract(const ast::MethodDecl& m) {
     }
 }
 
+// WHICH PART OF A LOOP CONDITION IS THE BOUND, and null when none of it is.
+//
+// `while (i < n)` is the easy case and it was the only one handled: take the right-hand side. But
+// `while (j >= lo && a[j] > key)` -- an insertion sort's inner loop, and the shape half this
+// library's algorithms are written in -- is a `&&`, whose right-hand side is `a[j] > key`. Taking
+// that as "the bound" and then reporting that it is not `a.length()` is a sentence about nothing:
+// it is not a bound, it does not count anything, and the warning it produced named an array whose
+// index the condition never constrained.
+//
+// So: walk into a conjunction and take the first RELATIONAL comparison, which is the only shape
+// that bounds a counter. A condition with none -- `while (going)`, `while (a[j] > key)` -- has no
+// bound this rule can name, and saying nothing is the honest answer.
+static const ast::Expr* boundExprOf(const ast::Expr* cond) {
+    const auto* b = dynamic_cast<const ast::BinaryExpr*>(cond);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    if (b->op == "&&" || b->op == "||") {
+        if (const ast::Expr* left = boundExprOf(b->lhs.get()); left != nullptr) {
+            return left;
+        }
+        return boundExprOf(b->rhs.get());
+    }
+    if (b->op == "<" || b->op == "<=" || b->op == ">" || b->op == ">=") {
+        return b->rhs.get();
+    }
+    return nullptr;
+}
+
 void SemanticAnalyzer::warnIndexBoundNotTheArray(const ast::Stmt& loop, const ast::Block& loopBody,
                                                  const ast::Expr* bound) {
     // AN INDEX WHOSE LOOP BOUND IS NOT THE ARRAY'S OWN LENGTH gives the range analysis nothing to
@@ -1666,6 +1695,41 @@ void SemanticAnalyzer::warnIndexBoundNotTheArray(const ast::Stmt& loop, const as
             return;
         }
     }
+    // AND THE SAME QUESTION ONE LEVEL DOWN, asked of the method's own `requires`.
+    //
+    // An invariant can only speak about FIELDS, so it has nothing to say about
+    // `sortRange(int[] a, int lo, int hi)` -- a static method whose relation is between two of its
+    // own parameters, which is the shape every divide-and-conquer algorithm in this library has.
+    // For those the rule offered three fixes and all three were unavailable: looping to `a.length()`
+    // sorts the whole array rather than the range asked for, `foreach` cannot express a sub-range
+    // walked backwards, and the invariant it names cannot mention a parameter. The author who wrote
+    // the contract anyway -- `requires hi < a.length()` -- was told again, every build.
+    //
+    // Sound for the same reason the invariant case is, and by a cheaper mechanism: a `requires` is
+    // emitted as `br i1 %contract.ok, label %contract.cont, label %contract.fail`, so every path
+    // that reaches the loop is dominated by a block where the condition is known true. LLVM's range
+    // analysis reads that off the branch; it does not even need the `llvm.assume` the invariants get.
+    //
+    // AND IT IS MATCHED AGAINST THE ARRAY, NOT AGAINST THE COUNTER, which is the part that took a
+    // second try. `requires hi < a.length()` is a statement about how far into `a` this method may
+    // be asked to go, and it covers every loop in the body that indexes `a` -- including the inner
+    // `while (j >= lo && a[j] > key)` of an insertion sort, whose own bound is the LOWER one and
+    // which no length could ever be compared against. Matching the clause against the loop's bound
+    // name exempted the outer loop and left the inner one being told to count up to a length while
+    // it counts down. The relation the range analysis needs is about the array; so is the clause.
+    //
+    // A clause has to name BOTH the array and a length. `requires lo >= 0` is true and says nothing
+    // about how long anything is, and silencing on it would hide a real cost behind an unrelated
+    // contract.
+    auto arrayIsContracted = [&](const std::string& name) {
+        for (const std::string& req : currentMethodRequires_) {
+            if (req.find("'.length'") != std::string::npos &&
+                req.find("'" + name + "'") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
     std::unordered_set<std::string> reported;
     eachStmt(loopBody, [&](const ast::Stmt& st) {
         auto look = [&](const ast::Expr* e) {
@@ -1680,6 +1744,10 @@ void SemanticAnalyzer::warnIndexBoundNotTheArray(const ast::Stmt& loop, const as
             // Is the bound this array's own length? `a.length()` dumps with `.length` and `a` in it.
             if (boundShape.find("'." + std::string("length") + "'") != std::string::npos &&
                 boundShape.find("'" + arr->name + "'") != std::string::npos) {
+                return;
+            }
+            // Or has the method already promised how long this one is?
+            if (arrayIsContracted(arr->name)) {
                 return;
             }
             reported.insert(arr->name);
@@ -3125,9 +3193,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         warnVirtualCallInLoop(ws->body);
         // The bound of a `while (i < N)` is its right-hand side: that is what the range analysis
         // would have to relate to the array's length, and usually cannot.
-        if (const auto* wb = dynamic_cast<const ast::BinaryExpr*>(ws->cond.get())) {
-            warnIndexBoundNotTheArray(*ws, ws->body, wb->rhs.get());
-        }
+        warnIndexBoundNotTheArray(*ws, ws->body, boundExprOf(ws->cond.get()));
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
         return;
@@ -3165,9 +3231,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         warnStringBuildingInLoop(fs->body);
         warnCopyHoistableOutOfLoop(fs->body);
         warnVirtualCallInLoop(fs->body);
-        if (const auto* fb = dynamic_cast<const ast::BinaryExpr*>(fs->cond.get())) {
-            warnIndexBoundNotTheArray(*fs, fs->body, fb->rhs.get());
-        }
+        warnIndexBoundNotTheArray(*fs, fs->body, boundExprOf(fs->cond.get()));
         invalidateAcrossBackEdge(entry);
         restoreFlow(entry);
         popScope();
