@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.167")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.168")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.167")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.168")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1053,16 +1053,21 @@ set_tests_properties(lint_string_building_is_narrow PROPERTIES
 # The first structural lint made the point at once: a real (and bounded) re-copying buffer in
 # `Tls.pol` printed four times on every hello-world, which is how a useful warning teaches people to
 # stop reading warnings.
+#
+# THE EXAMPLE MOVED FROM 0B0B TO 0B40, because 0B0B was the re-copying buffer and it is now zero --
+# the two record readers carry an `[Allow]` naming the bound the protocol puts on them. A pair of
+# tests that pin a specific code has to be pointed at a code that still fires, and 0B40 is the one
+# with a hundred and seventy of them and a note in the baseline saying why they stay.
 add_test(NAME lint_prelude_advice_is_hidden_by_default
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol")
 set_tests_properties(lint_prelude_advice_is_hidden_by_default PROPERTIES
-    FAIL_REGULAR_EXPRESSION "Polaron-0B0B")
+    FAIL_REGULAR_EXPRESSION "Polaron-0B40")
 
 # ...and the other half, or the standard library becomes the one code base the lints never see.
 add_test(NAME lint_prelude_advice_can_be_asked_for
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/hello_world.pol" --lint-prelude)
 set_tests_properties(lint_prelude_advice_can_be_asked_for PROPERTIES
-    PASS_REGULAR_EXPRESSION "Polaron-0B0B")
+    PASS_REGULAR_EXPRESSION "Polaron-0B40")
 
 # `mutable` NEVER MUTATED (Polaron-0B0D). A name is constant unless it says the word, so `mutable` is
 # a declaration that this will change and every reader plans for it. The rule is EXACT rather than
@@ -1788,6 +1793,19 @@ add_test(NAME lint_bound_unrelated_promise_still_fires
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bound_contract.pol")
 set_tests_properties(lint_bound_unrelated_promise_still_fires PROPERTIES
     PASS_REGULAR_EXPRESSION "indexes 'offtopic'")
+
+# A ROUTE THAT SAYS NO MUST LEAVE NOTHING BEHIND. `Router.matches` captured `{name}` segments as it
+# scanned, so a pattern that agreed on three segments and failed on the fourth had already written
+# three parameters into the request -- and `dispatch` hands the same request to every route in turn,
+# so a handler under a later pattern could read a binding from one that did not match. Found by
+# Polaron-0B21, whose own sentence about the shape describes it exactly.
+add_test(NAME router_leaves_nothing_after_a_no COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/router_partial_match.pol"
+    "-DCONTAINS=false 0 true 5"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 add_test(NAME lint_bound_contract_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"

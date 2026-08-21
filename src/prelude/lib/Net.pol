@@ -691,6 +691,20 @@
 
             // Segment by segment. A `{name}` segment captures whatever is in that position; anything
             // else must be equal. Different lengths never match, so `/a` does not answer `/a/b`.
+            // DECIDED FIRST, WRITTEN AFTER, and that order is the whole of this method's history.
+            //
+            // It used to capture as it scanned. A pattern that matched three segments and failed on
+            // the fourth had already written three parameters into the request -- and `dispatch`
+            // hands the SAME request to the next route, so a handler could read a `{name}` belonging
+            // to a route that did not match. `/a/{x}/z` failing on `/a/5/w` left `x = 5` behind for
+            // `/a/{y}/w` to be handled with.
+            //
+            // Which is what Polaron-0B21 says about this shape in general: two things come back from
+            // one call, only one is in the type, and reading the parameter on the false path gives
+            // back "whatever was in that storage, which is usually a plausible value and never the
+            // right one". Here it was literally that. The rule's own fix -- return an `Option` of the
+            // bindings -- is a change to a public signature and is still owed; this is the defect it
+            // was pointing at, taken out on its own.
             public static method matches(String pattern, String path, ServerRequest& into) returns boolean {
                 ArrayList<String> want = Strings.split(pattern, "/");
                 ArrayList<String> got = Strings.split(path, "/");
@@ -698,16 +712,27 @@
                 if (ok) {
                     for (mutable int i = 0; i < want.size(); i++) {
                         String w = want.get(i);
-                        if (w.length() > 2 && w.charAt(0) == '{' && w.charAt(w.length() - 1) == '}') {
-                            into.setParam(w.substring(1, w.length() - 1), got.get(i));
-                            continue;
-                        }
+                        if (Router.isCapture(w)) { continue; }
                         if (!w.equals(got.get(i))) { ok = false; }
+                    }
+                }
+                if (ok) {
+                    for (mutable int i = 0; i < want.size(); i++) {
+                        String w = want.get(i);
+                        if (Router.isCapture(w)) {
+                            into.setParam(w.substring(1, w.length() - 1), got.get(i));
+                        }
                     }
                 }
                 delete got;
                 delete want;
                 return ok;
+            }
+
+            // `{name}`: the braces and at least one character between them.
+            private static method isCapture(String segment) returns boolean {
+                return segment.length() > 2 && segment.charAt(0) == '{'
+                       && segment.charAt(segment.length() - 1) == '}';
             }
         }
     }

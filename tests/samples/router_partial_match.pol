@@ -1,0 +1,40 @@
+import System.IO.Console;
+import System.Net.Router;
+import System.Net.ServerRequest;
+
+program RouterPartialMatch;
+
+// A ROUTE THAT DOES NOT MATCH MUST LEAVE NOTHING BEHIND.
+//
+// `Router.matches` captures `{name}` segments into the request it is handed, and `Router.dispatch`
+// hands the SAME request to every route in turn. It used to capture as it scanned, so a pattern
+// that matched three segments and failed on the fourth had already written three parameters -- and
+// the next route was tried against a request carrying bindings from a route that had said no.
+//
+// `/a/{x}/z` against `/a/5/w` is the smallest case: it agrees on `a`, captures `x = 5`, then fails
+// on `z` vs `w`. The answer is false either way; what this checks is that `x` is not there
+// afterwards, because a handler under a LATER pattern would have been able to read it.
+//
+// This is Polaron-0B21's own sentence about the shape -- "reading the out parameter on the false
+// path compiles perfectly and gives back whatever was in that storage, which is usually a plausible
+// value and never the right one" -- and here it was literally that.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ServerRequest ask = new ServerRequest("GET", "/a/5/w", "", "") on stack;
+
+                boolean no = Router.matches("/a/{x}/z", "/a/5/w", ask);
+                String leftover = ask.param("x");
+
+                // And a pattern that really does match still captures, or the fix would have been
+                // to stop capturing at all.
+                boolean yes = Router.matches("/a/{y}/w", "/a/5/w", ask);
+                String captured = ask.param("y");
+
+                System.IO.Console.println($"{no} {leftover.length()} {yes} {captured}");
+                return;
+            }
+        }
+    }
+}

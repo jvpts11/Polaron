@@ -1526,6 +1526,15 @@
                 this.pending = "";
             }
             // One whole record, or an empty array at the end of the stream.
+            //
+            // THE RULE IS RIGHT AND THE PROTOCOL BOUNDS IT. `String` is immutable, so each `concat`
+            // copies what is already there, and a loop that concatenates is quadratic in general.
+            // Not here: a TLS record is at most 16389 bytes and each `receive` asks for 16384, so
+            // the first loop needs five bytes and the second runs two or three times at the outside.
+            // A builder would trade a bounded pair of copies for an allocation and a second
+            // representation of the same bytes, in the one place where the bytes have to come out
+            // as a flat array anyway.
+            [Allow(code: "Polaron-0B0B", why: "a TLS record is at most 16389 bytes and each receive asks for 16384, so this loop runs two or three times -- the quadratic the rule warns about needs an unbounded one")]
             public method next() returns int[] {
                 while (this.pending.length() < 5) {
                     String more = this.link.receive(16384);
@@ -2181,6 +2190,8 @@
             }
 
             // One whole record off the socket: the five-byte header says how much more to wait for.
+            // Same shape and same bound as `RecordReader.next` above, and the same reason.
+            [Allow(code: "Polaron-0B0B", why: "a TLS record is at most 16389 bytes and each receive asks for 16384, so this loop runs two or three times -- the quadratic the rule warns about needs an unbounded one")]
             private method nextRecord() returns int[] {
                 while (this.pending.length() < 5) {
                     String more = this.link.receive(16384);

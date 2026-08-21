@@ -55,6 +55,22 @@
 # real hazard and the fix is a `newtype` or a slice per concept -- an API change across `Time`,
 # `Tls` and `Math`, again a piece of work rather than a pass.
 #
+# 0B21 IS STILL 2 AND ONE OF THEM ALREADY PAID FOR ITSELF. `Router.matches` returns a boolean and
+# writes captured `{name}` segments through a `ServerRequest&` -- and it used to capture as it
+# scanned, so a pattern that agreed on three segments and failed on the fourth left three parameters
+# behind in a request that `dispatch` then handed to the next route. The rule's own sentence about
+# the shape is what this was: "reading the out parameter on the false path compiles perfectly and
+# gives back whatever was in that storage, which is usually a plausible value and never the right
+# one". The defect is fixed and pinned by `router_partial_match.pol`. The count stays because the
+# rule's actual fix -- return an `Option` of the bindings -- changes a public signature.
+#
+# 0B0B IS HELD AT ZERO by two `[Allow]`s and not by a rewrite, which is the other honest answer.
+# `String` is immutable, so a loop that concatenates is quadratic in general -- but a TLS record is
+# at most 16389 bytes and each `receive` asks for 16384, so the two record readers loop two or three
+# times. A builder there would trade a bounded pair of copies for an allocation and a second
+# representation of the same bytes, in the one place where the bytes come out as a flat array
+# anyway. The reason is written at each of them, which is what the valve is for.
+#
 # 0B3A IS HELD AT ZERO rather than deleted, so the two it caught cannot come back unnoticed. Both
 # were real and neither was the shape the rule described. `BigInteger.addMag` opened with
 # `BigInteger a = this` -- a deep copy of the number AND its digit array, on every addition, to get
@@ -67,7 +83,7 @@
 # to the caller. The catalogue now names the borrow for that case. A rule whose fix does not compile
 # is the same defect as a rule whose fix breaks the code.
 
-Polaron-0B0B   4
+Polaron-0B0B   0
 Polaron-0B10   1
 Polaron-0B17  81
 Polaron-0B1C  10
