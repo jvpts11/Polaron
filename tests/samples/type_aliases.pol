@@ -1,4 +1,5 @@
 import System.IO.Console;
+import System.Collections.ArrayList;
 program TypeAliases;
 
 // Type aliases and newtype (spec 24). `typealias` is transparent -- the alias and its target are
@@ -14,6 +15,13 @@ public bundle main {
         public newtype OrderId = long;                // distinct: needs a cast to/from long
         public newtype UserId = long;                 // distinct from OrderId as well
         public newtype Batch = uint;                // unsigned, to prove the printer reads through
+
+        // A RECORD MAY HAVE A NEWTYPE FIELD, and a collection may hold one. Both used to be refused
+        // and neither error named a line the author wrote: a record's synthesized `toString` asks
+        // each field for one, and a list asks its element type for `equalsKey`. `toString`, `hash`,
+        // `equalsKey` and `compareTo` are questions about the REPRESENTATION, and a newtype shares
+        // its underlying's -- the distinctness lives in assignment, and none of it is given up.
+        public record Line(OrderId order, Batch batch) { }
 
         public class Main {
             public static method apply(IntFn f, int v) returns int { return f(v); }
@@ -47,6 +55,13 @@ public bundle main {
                 // feature not worth having at the one place an id is most wanted: the line that
                 // says which one it is.
                 System.IO.Console.println($"big={Main.BIG} batch={Main.BATCH} none={Main.NO_ORDER}");
+
+                // The record, and a list of ids: both are declarations that did not compile before.
+                Line one = new Line(o2, Main.BATCH);
+                ArrayList<OrderId>* orders = new ArrayList<OrderId>() on heap;
+                orders.add(o2);
+                System.IO.Console.println($"line={one.order} held={orders.indexOf(o2)}");
+                delete orders;
                 return;
             }
         }

@@ -1829,7 +1829,11 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         // appears is the first program anybody writes over text. Both lower as an i32 like the rest,
         // so `equalsKey` and `compareTo` are the same comparison (for a boolean, false < true, the
         // only order there is).
-        if (const std::string ot = typeName(*mem->object);
+        // Through the newtype, because all four are questions about the REPRESENTATION and a
+        // newtype shares its underlying's -- the same reading the analyser takes. Left raw, a
+        // record with a newtype field type-checked and then found no lowering for its own
+        // synthesized `toString`.
+        if (const std::string ot = repType(typeName(*mem->object));
             (isIntName(ot) || ot == "boolean" || ot == "char") &&
             (mem->member == "hash" || mem->member == "toString" ||
              mem->member == "equalsKey" || mem->member == "compareTo" ||

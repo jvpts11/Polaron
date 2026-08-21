@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.160")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.161")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.160")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.161")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -9717,12 +9717,14 @@ if(POLARON_WITH_LLVM)
         # Type aliases and newtype (spec 24): transparent `typealias` (primitive, function, generic)
         # and distinct `newtype` (cast across the boundary). Also the two places a newtype is asked
         # what it is MADE OF rather than what it is called: `fixed` of a newtype type, and printing
-        # one -- with a 64-bit and an unsigned one, the two the printer used to get wrong.
+        # one -- with a 64-bit and an unsigned one, the two the printer used to get wrong. Plus a
+        # `record` with newtype fields and an `ArrayList` of one: neither could be DECLARED before,
+        # and neither error named a line the author had written.
         add_test(NAME codegen_type_aliases_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/type_aliases.pol"
-            "-DEXPECTED=t=20 r=26 order=1007 big=5000000000 batch=4000000000 none=-1"
+            "-DEXPECTED=t=20 r=26 order=1007 big=5000000000 batch=4000000000 none=-1 line=1007 held=0"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

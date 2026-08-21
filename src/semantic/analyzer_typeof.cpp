@@ -2421,6 +2421,27 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (isNullableType(objType)) {
                 objType = baseType(objType);
             }
+            // A NEWTYPE ANSWERS THE VALUE-SHAPED BUILTINS ITS UNDERLYING TYPE ANSWERS -- and only
+            // those. `toString`, `hash`, `equalsKey` and `compareTo` are questions about the
+            // REPRESENTATION, which a newtype shares by definition; the distinctness spec 24 is for
+            // lives in assignment and argument passing, and none of it is given away here.
+            //
+            // Without this a `record` could not have a newtype field at all: its synthesized
+            // `toString` calls `toString` on every one, so the error landed on the record
+            // declaration naming a call the author never wrote. A collection could not hold one
+            // either, for the same reason `ArrayList<boolean>` could not -- the list asks
+            // `equalsKey` of its element type, and the complaint surfaced inside the standard
+            // library on a line the author never saw.
+            if (!newtypes_.empty()) {
+                static const std::set<std::string> kValueShaped = {"toString", "hash", "equalsKey",
+                                                                   "compareTo"};
+                if (kValueShaped.count(mem->member) > 0) {
+                    const std::string ground = groundOf(objType);
+                    if (ground != objType) {
+                        objType = ground;
+                    }
+                }
+            }
             // Enum (catalog) instance method: m.pick() where m is an enum value.
             if (auto emit = enumMethods_.find(baseType(objType)); emit != enumMethods_.end()) {
                 auto mit = emit->second.find(mem->member);
