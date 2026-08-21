@@ -54,6 +54,18 @@
 # 0B24 is 31 signatures taking three or more of one primitive, where any order compiles. That is a
 # real hazard and the fix is a `newtype` or a slice per concept -- an API change across `Time`,
 # `Tls` and `Math`, again a piece of work rather than a pass.
+#
+# 0B3A IS HELD AT ZERO rather than deleted, so the two it caught cannot come back unnoticed. Both
+# were real and neither was the shape the rule described. `BigInteger.addMag` opened with
+# `BigInteger a = this` -- a deep copy of the number AND its digit array, on every addition, to get
+# a shorter name for a thing it only reads; it is a `BigInteger*` now. `Tls.toBigEndian` copied a
+# big integer that had already been copied at the door, because the parameter arrives by value; that
+# one really was a transfer written as a copy, and is a `move`.
+#
+# The first also found a bad `fix:`. The rule said "write `move` instead", and the source there is
+# `this` -- a receiver cannot be moved, and would be the wrong thing if it could, because it belongs
+# to the caller. The catalogue now names the borrow for that case. A rule whose fix does not compile
+# is the same defect as a rule whose fix breaks the code.
 
 Polaron-0B0B   4
 Polaron-0B10   1
@@ -65,7 +77,7 @@ Polaron-0B24  31
 Polaron-0B26   7
 Polaron-0B27   5
 Polaron-0B29   1
-Polaron-0B3A   2
+Polaron-0B3A   0
 Polaron-0B40 172
 Polaron-0B49   5
 Polaron-0B4A   3

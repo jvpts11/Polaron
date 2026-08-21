@@ -174,7 +174,11 @@
                 if (this.len == 1 && this.dig[0] == 0) { this.neg = false; }
             }
             private method addMag(BigInteger b) returns BigInteger {
-                BigInteger a = this;
+                // A POINTER, BECAUSE THIS LINE WAS A DEEP COPY. Assignment copies in Polaron, so
+                // `BigInteger a = this` duplicated the whole number -- the object AND its digit
+                // array -- on every addition, to get a shorter name for a thing it only ever reads.
+                // Nothing about the source said so: `a.len` and `a.dig[i]` read the same either way.
+                BigInteger* a = this;
                 BigInteger r = new BigInteger(cast<long>(0)) on heap;
                 int n = a.len > b.len ? a.len : b.len;
                 r.ensure(n + 2);

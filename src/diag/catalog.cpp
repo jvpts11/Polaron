@@ -1491,9 +1491,13 @@ constexpr Row kCatalog[] = {
         "copy is pure cost, and it grows with the object: a struct of five fields copies five, a "
         "class holding a collection copies the collection.",
         "Write `move` instead. Ownership transfers, nothing is duplicated, and the compiler "
-        "invalidates the source so a later read of it becomes an error rather than a surprise.",
+        "invalidates the source so a later read of it becomes an error rather than a surprise. "
+        "WHEN THE SOURCE IS `this`, move is not available and would be wrong if it were: the "
+        "receiver belongs to the caller, and the copy is usually a short name for it rather than a "
+        "value of its own. Write `T* name = this` and share, or drop the local and use `this`.",
         "Ask, at each assignment, whether the source is still wanted. Where the answer is no, the "
-        "assignment was a transfer that was written as a copy." }},
+        "assignment was a transfer that was written as a copy -- or, for a receiver, a borrow that "
+        "was written as one." }},
 
     {Code::ListWithoutCapacity, {
         "Polaron-0B3B", "this list starts empty and is filled in a loop",

@@ -996,7 +996,12 @@
 
             private static method toBigEndian(BigInteger a, int k) returns int[] {
                 BigInteger base = new BigInteger(cast<long>(256)) on heap;
-                mutable BigInteger v = a;
+                // `move`, BECAUSE THIS WAS THE SECOND COPY OF THE SAME NUMBER. `a` arrives by
+                // value, so the caller's big integer was already duplicated at the door; copying it
+                // again here to get a name that can be reassigned duplicated it twice for one use.
+                // Nothing reads `a` after this line, which is what makes the transfer the whole of
+                // what was ever wanted.
+                mutable BigInteger v = move a;
                 int[] out = new int[k]();
                 mutable int i = k - 1;
                 while (i >= 0) {
