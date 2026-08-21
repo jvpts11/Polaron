@@ -900,7 +900,32 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                 // `System` does not count towards "more than one bundle": the prelude arrives with
                 // every program, so counting it made every single-bundle program look like two and
                 // fired this on all ninety-nine of the game's public types.
+                // AND NOT THE ENTRY POINT, whose advice cannot be taken: the language finds `main`
+                // by looking for a PUBLIC class called `Main` in a public namespace, and narrowing
+                // it is answered with "this program has no entry point". A rule that tells the
+                // author to write something the compiler then refuses is worse than a rule that
+                // says nothing.
+                //
+                // AND NOT A BUNDLE NOTHING OUTSIDE USES AT ALL. The guard above asks whether the
+                // PROGRAM has more than one bundle, which is not the question: a game that links a
+                // library has two, nothing consumes the game, and every one of its public types
+                // qualifies -- 187 of them here. That is one fact about the bundle, worth saying
+                // once, and 187 sentences about types that are not what is wrong. The rule's own
+                // note already says it: "a rule that fires on everything says nothing".
+                const bool anythingOutside = [&]() {
+                    for (const ast::Namespace& n2 : bundle.namespaces) {
+                        for (const ast::ClassDecl& c2 : n2.classes) {
+                            auto s2 = use.typeSeenIn.find(c2.name);
+                            if (s2 != use.typeSeenIn.end() &&
+                                (s2->second.size() > 1 || s2->second.count(bundle.name) == 0)) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }();
                 if (c.visibility == "public" && !c.isInterface && authoredBundles > 1 &&
+                    anythingOutside && typeAsWritten(c.name) != "Main" &&
                     c.name.find('$') == std::string::npos) {
                     auto seen = use.typeSeenIn.find(c.name);
                     const bool onlyHere = seen == use.typeSeenIn.end() ||

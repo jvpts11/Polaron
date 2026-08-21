@@ -1,5 +1,6 @@
 import System.IO.Console;
 import Tools.Kit.Coupon;
+import Main.App.Parent;
 
 program LintProgram;
 
@@ -37,6 +38,21 @@ public bundle Tools {
     }
 }
 
+// A THIRD BUNDLE, so the entry point's own bundle has an outside that collects something. Without
+// it, 0B31 is silent across the whole of `Main` for a different reason and the two cases below
+// could not be told apart.
+public bundle Extras {
+    public namespace Bits {
+
+        // Reaches into the entry point's bundle, which is what gives that bundle an outside.
+        public class Tally {
+            public static method of(Parent* p) returns int {
+                return p.bump();
+            }
+        }
+    }
+}
+
 public bundle Main {
     public namespace App {
 
@@ -70,6 +86,10 @@ public bundle Main {
             public constructor Child() {}
         }
 
+        // QUIET (0B31), and this is the case that cannot be argued with: the language finds `main`
+        // by looking for a PUBLIC class called `Main`, so narrowing it is answered with "this
+        // program has no entry point". Its bundle HAS an outside -- `Extras` reaches in -- so the
+        // rule is live here and stays silent about this one on purpose.
         public class Main {
             public static method main(string[] args) returns void {
                 Parent* p = new Parent() on heap;

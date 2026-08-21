@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.163")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.164")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.163")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.164")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1364,7 +1364,22 @@ add_test(NAME lint_program_shapes_are_narrow
 set_tests_properties(lint_program_shapes_are_narrow PROPERTIES
     # Anchored to the message rather than spanning it with `.*`: ctest matches over the WHOLE
     # output, so a wildcard between a code and a name happily jumps from one diagnostic to another.
-    FAIL_REGULAR_EXPRESSION "0B31\\]: 'Coupon'|: error")
+    # `Main` is the third name that must not appear, and it is the one that cannot be argued with:
+    # the language finds `main` by looking for a PUBLIC class called `Main`, so this rule's advice,
+    # taken, is answered with "this program has no entry point". Its bundle HAS an outside here --
+    # `Extras` reaches into it -- so the rule is live and silent about this one on purpose.
+    FAIL_REGULAR_EXPRESSION "0B31\\]: 'Coupon'|0B31\\]: 'Main'|0B31\\]: 'Parent'|: error")
+
+# AND SILENT FOR A BUNDLE NOTHING OUTSIDE USES AT ALL. `Extras` is consumed by nobody, so every one
+# of its public types trivially qualifies -- which is one fact about the bundle, not a sentence per
+# type. The guard used to ask whether the PROGRAM had more than one bundle, which is not the same
+# question: a game that links a library has two, nothing consumes the game, and the rule fired on
+# all 187 of its public types. Its own note already said what that means: "a rule that fires on
+# everything says nothing".
+add_test(NAME lint_public_outside_use_needs_an_outside
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_program.pol")
+set_tests_properties(lint_public_outside_use_needs_an_outside PROPERTIES
+    FAIL_REGULAR_EXPRESSION "0B31\\]: 'Tally'")
 
 add_test(NAME lint_program_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"
