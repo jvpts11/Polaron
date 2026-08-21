@@ -1,0 +1,73 @@
+// A `cascade` OVER A GRAPH THAT IS NOT A FOREST, bare metal.
+//
+// `cascade` is a freestanding feature and it linked -- right up to the moment two classes owned the
+// same KIND of thing. Then the walk needs a visited set so a node reached twice is not deleted
+// twice, and that set was a hosted runtime call: `__polaron_ptrset_new`, `_add` and `_free`,
+// undefined at link on a target with no runtime library. Three symbols, on a keyword the reference
+// lists as available in freestanding.
+//
+// pico found it the ordinary way. Its desktop owns a `TextRenderer` for captions; the icon font it
+// grew owns one of its own. Two owning edges into one class, the forest test fails -- it is a
+// per-TYPE test, which it has to be, since two objects of the same class cannot be told apart at
+// compile time -- and a `cascade delete` that had worked for a year stopped linking because a second
+// object of an existing kind came into being. Nothing about the kernel was wrong.
+//
+// `Sheet` here is that shape: `Desk` owns one and `Badge` owns another, so `Sheet` has two owners.
+// The cascade from `Desk` must therefore allocate the set, and the set must now be GENERATED --
+// written in terms of the program's own `heap class`, exactly as the String helpers are.
+program CascadeSharedFreestanding freestanding;
+
+public bundle Kernel {
+    public namespace Boot {
+        // The program's own heap. The pointer set is built on it, which is the whole point: the
+        // three functions are ours, not libc's, so a program that says where memory comes from has
+        // said enough for them to exist.
+        public heap class Heap {
+            private static mutable address next;
+            private static mutable boolean armed;
+            public static method allocate(address size) returns address {
+                if (!Heap.armed) { Heap.next = 1048576; Heap.armed = true; }
+                address at = Heap.next;
+                Heap.next = Heap.next + size + 15;
+                return at;
+            }
+            public static method release(address p) returns void { return; }
+        }
+
+        public class Sheet {
+            private mutable int marks;
+            public constructor Sheet() { this.marks = 0; }
+            public method mark() returns void { this.marks = this.marks + 1; return; }
+            public method count() returns int { return this.marks; }
+        }
+
+        public class Badge {
+            private mutable Sheet* sheet;
+            public constructor Badge() { this.sheet = new Sheet() on heap; }
+            public destructor ~Badge() returns void { delete this.sheet; return; }
+            public method paper() returns Sheet* { return this.sheet; }
+        }
+
+        public class Desk {
+            private mutable Sheet* sheet;
+            private mutable Badge* badge;
+            public constructor Desk() {
+                this.sheet = new Sheet() on heap;
+                this.badge = new Badge() on heap;
+            }
+            public method paper() returns Sheet* { return this.sheet; }
+            public method tag() returns Badge* { return this.badge; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Desk* d = new Desk() on heap;
+                d.paper().mark();
+                d.tag().paper().mark();
+                int seen = d.paper().count() + d.tag().paper().count();
+                cascade delete d;
+                return seen;
+            }
+        }
+    }
+}

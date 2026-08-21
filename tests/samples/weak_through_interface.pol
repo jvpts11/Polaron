@@ -1,0 +1,75 @@
+// A `weak` POINTER MAY NAME AN INTERFACE, and the target must survive being pointed at.
+//
+// The weak list is intrusive: every pointee carries a head pointer, and linking a slot writes it at
+// `target + headOff`. That offset used to be taken from the field's STATIC type, and the head was
+// appended after each class's own fields -- so for a leaf class it was right and for an interface it
+// was the interface's own layout, eight bytes past a lone vtable pointer. The implementer's first two
+// fields live there. Storing into the field OVERWROTE THEM, with no fault and no diagnostic.
+//
+// Found in the pico kernel: a graphical console holding a `weak Canvas*` clobbered the surface's width
+// and height the moment it was constructed, and the terminal window came up reporting that it was
+// 526348 columns wide. The numbers below are the same shape -- a width and a height read back after
+// the weak field is set, plus a call THROUGH the weak pointer.
+//
+// EXPECT: 624 x 384 / through weak: 624 x 384 / after unlink: 624 x 384
+import System.IO.Console;
+program WeakThroughInterface;
+
+public bundle Main {
+    public namespace Weakness {
+        public interface Canvas {
+            method width() returns int;
+            method height() returns int;
+        }
+
+        public class Surface implements Canvas {
+            private mutable int w;
+            private mutable int h;
+            public constructor Surface(int width, int height) {
+                this.w = width;
+                this.h = height;
+            }
+            public override method width() returns int { return this.w; }
+            public override method height() returns int { return this.h; }
+        }
+
+        // A second implementer, laid out differently, so the head cannot be at "wherever Surface
+        // happens to put it" and accidentally work.
+        public class Tile implements Canvas {
+            private mutable int a;
+            private mutable int b;
+            private mutable int c;
+            public constructor Tile() { this.a = 1; this.b = 2; this.c = 3; }
+            public override method width() returns int { return this.a + this.b + this.c; }
+            public override method height() returns int { return this.c; }
+        }
+
+        public class Holder {
+            private mutable weak Canvas* screen;
+            public constructor Holder(Canvas* c) { this.screen = c; }
+            public method w() returns int { return this.screen.width(); }
+            public method h() returns int { return this.screen.height(); }
+            public method point(Canvas* c) returns void { this.screen = c; return; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Surface* s = new Surface(624, 384) on heap;
+                Holder* h = new Holder(s) on heap;
+                // The target's own fields, read AFTER the weak field was set: this is the assertion.
+                System.IO.Console.printf("%d x %d / ", s.width(), s.height());
+                System.IO.Console.printf("through weak: %d x %d / ", h.w(), h.h());
+                // Re-pointing unlinks the old slot from the old target's list -- which walks the head
+                // this test is about, in the other direction.
+                Tile* t = new Tile() on heap;
+                h.point(t);
+                h.point(s);
+                System.IO.Console.printf("after unlink: %d x %d\n", s.width(), s.height());
+                delete t;
+                delete h;
+                delete s;
+                return;
+            }
+        }
+    }
+}

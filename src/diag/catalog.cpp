@@ -945,6 +945,69 @@ constexpr Row kCatalog[] = {
         "Keep a fixture and the tests that depend on it in one class. A test should be runnable on "
         "its own, and that is only true when its setup is its own." }},
 
+    // THE TWO SIDES OF ONE RULE, and the rule is the reason the `address` family exists.
+    //
+    // A machine address written as an `int` is a number the compiler cannot tell from a count, a mask
+    // or a colour -- so nothing stops it being added to a length, printed as a quantity, or silently
+    // narrowed. `address`, `half address`, `short address` and `byte address` are separate types for
+    // exactly that reason, and they are freestanding-only because that is where raw addresses are:
+    // hosted code has no business making pointers out of numbers at all.
+    //
+    // Both are WARNINGS. Every one of them has a legitimate shape somewhere -- a page count widened
+    // for arithmetic, a byte pulled out of an address for a wire format -- so the compiler says what it
+    // sees and lets the author decide. What it will not do is stay quiet.
+    {Code::IntegerAsAddress, {
+        "Polaron-0B0B", "this number is being used as an address, and it is not typed as one",
+        "A constant that is cast to a pointer or to `address` IS an address -- it names a place in "
+        "memory, and everything it can meaningfully do is address arithmetic. Declared `int` it is "
+        "indistinguishable from a length or a flag word: it can be added to a count, compared against "
+        "one, or passed where a quantity is expected, and none of those is a mistake the compiler can "
+        "see. Declared `address` every one of them is refused at the line that made it.\n"
+        "The width matters too. A real-mode offset is sixteen bits, an option ROM window is thirty-two, "
+        "a SIPI vector is eight -- `short address`, `half address` and `byte address` say which, and a "
+        "value that does not fit the one you named is then a build error rather than a truncation.",
+        "Declare the constant as an address of the width the hardware actually uses: `public fixed "
+        "short address TrampolineAt = 0x8000;` rather than `fixed int`. The cast at the use site then "
+        "disappears, because an address is already what the pointer wants.",
+        "Decide what a constant IS when you declare it, not when you use it. If the answer is 'a place' "
+        "it is an address; if it is 'how many' or 'which bits' it is an integer -- and the two never "
+        "want the same operations." }},
+
+    {Code::AddressAsInteger, {
+        "Polaron-0B0C", "an address put into a number stops being an address",
+        "Casting an address to `int` throws away both halves of what it is: the fact that it points at "
+        "something, and -- on a 64-bit target where `int` is 32 bits -- the top half of the value. The "
+        "second one is silent and catastrophic; the first one is silent and merely turns every later "
+        "line into arithmetic nobody checks.\n"
+        "The usual reasons are a printer that only takes numbers, or a loop counter declared `address` "
+        "and used as an index. Both are worth fixing at the other end: give the printer an address "
+        "overload, and count in `int` while addressing in `address`.",
+        "Keep the value an address, and give whatever consumes it an address-shaped door -- "
+        "`Serial.hex(a, 16)` rather than `Serial.dec(cast<int>(a))`. Where a genuinely small number is "
+        "wanted out of an address, mask it first (`a & 255`), which says so and is not flagged.",
+        "Let addresses stay addresses all the way to the hardware. Every conversion to a number is a "
+        "place where the next reader has to work out whether it was a location or a quantity." }},
+
+    {Code::StackReturnEscapes, {
+        "Polaron-0B0D", "`on stack` cannot be honoured on a returned object",
+        "A stack object lives in the frame that made it, and a `return` ends that frame -- so the "
+        "placement you wrote cannot be carried out. The compiler does the only thing left: it puts the "
+        "object on the heap and hands back a pointer. Nothing owns what comes out. The callee has "
+        "returned; the caller believes it was given a value and will not free it.\n"
+        "For a VALUE the fix is not a different placement, it is a different kind of type. A `struct` "
+        "(or `record`, or `union`) is returned BY VALUE, into storage the caller already has -- so `on "
+        "stack` becomes true rather than impossible, and there is no allocation at all.\n"
+        "pico found this the expensive way: a sixteen-byte `Rect`, documented in its own file as a "
+        "value that must never allocate, was declared a `class`. Every clip test on the compositor's "
+        "path leaked sixteen bytes of kernel heap, a few thousand times a second, and the machine "
+        "started losing windows about a minute after boot.",
+        "If the type has no identity and is copied freely, declare it `struct` -- the methods and the "
+        "constructor stay exactly as they are. If it really is an object with a lifetime, write `on "
+        "heap` and say in the signature or the comment who deletes it.",
+        "Decide identity when you declare the type, not when you return one. `class` means 'this thing "
+        "is a thing'; `struct` means 'this thing is a value'. Returning is where the difference stops "
+        "being a matter of taste." }},
+
     {Code::ImportNameMismatch, {
         "Polaron-0106", "this name was brought in under a different path",
         "An import names one type by its full path, and inside the file that name means exactly what "
@@ -976,6 +1039,36 @@ constexpr Row kCatalog[] = {
         "fields to meet it, and `itself.refuse(\"...\")` fails the build with your own sentence when "
         "it cannot. Chosen widths then answer to a stated requirement rather than to arithmetic "
         "somebody did once." }},
+
+    {Code::BitFieldAddress, {
+        "Polaron-0705", "a packed bit field has no address of its own",
+        "A pointer names a BYTE, and a bit field does not occupy whole bytes -- it occupies a run of "
+        "bits inside a storage unit it shares with the fields declared beside it. The only address "
+        "that could be handed back is the unit's, and a write through it would overwrite every "
+        "neighbour in that unit: silently, and nowhere near the line that took the address.",
+        "Copy the field into a local and take the address of THAT, assigning the local back when the "
+        "callee is done with it. Where the address is wanted because something outside the program "
+        "reads the memory -- a device register, a packet header -- take the address of the whole "
+        "struct and let the layout say where the bits are.",
+        "Reach for bit fields when the LAYOUT is the requirement, and for ordinary fields otherwise. "
+        "A packed field is a promise about where bits sit in memory; an addressable variable is a "
+        "promise that something can point at it, and one type cannot make both." }},
+
+    {Code::AsmUnknownInstruction, {
+        "Polaron-0706", "this is not an instruction the assembly checker knows",
+        "An `asm(\"x86_64\") { }` body is checked before it reaches the assembler, and the check is by "
+        "MNEMONIC: an unknown one is reported here, at the line that wrote it, rather than by clang at a "
+        "line inside a file called `<inline asm>` that does not exist. The set is deliberately generous, "
+        "so a rejection is usually a typo -- and occasionally a real instruction nobody has needed yet, "
+        "which is a one-line addition to the checker and not a limit of the language. PREFIXES are not "
+        "mnemonics and are stripped before this check: `lock xchg` is one instruction, and the name "
+        "reported is the one after the prefix.",
+        "Check the spelling against the manual. If the mnemonic is real and simply absent from the "
+        "checker's set, add it there -- the message names it exactly, so there is nothing to guess.",
+        "Keep inline assembly to the few places that need an instruction the language cannot express, and "
+        "give each one a named method around it -- the way `Cpu.exchange` wraps `lock xchg`. One wrong "
+        "mnemonic then breaks one method with a name on it, rather than a block in the middle of "
+        "something else." }},
 
     {Code::ComptimeConstant, {
         "Polaron-0807", "this must be a compile-time constant",
@@ -1124,6 +1217,11 @@ constexpr Rule kRules[] = {
 
     {"is imported as", Code::ImportNameMismatch},
     {"does not fit '", Code::BitFieldRange},
+    {"packed into a storage unit", Code::BitFieldAddress},
+    {"is not a known x86_64 instruction", Code::AsmUnknownInstruction},
+    {"is being used as an address", Code::IntegerAsAddress},
+    {"stops being an address", Code::AddressAsInteger},
+    {"`on stack` cannot be honoured here", Code::StackReturnEscapes},
     {"unknown transformer", Code::TransformerMisuse},
     {"does not entrust", Code::TransformerMisuse},
     {"applies transformer", Code::TransformerMisuse},
@@ -1172,6 +1270,12 @@ constexpr Rule kRules[] = {
     {"cannot index", Code::BadIndex},
     {"index must be an integer", Code::BadIndex},
     {"vector index must be", Code::BadIndex},
+
+    // AN ARGUMENT'S TYPE, which had an entry (Polaron-0304) and no rule to reach it -- so the
+    // commonest type error at a call site printed with no code, and therefore with no why, no fix and
+    // no prevent. After the null-safety rules above, because "argument N ... is nullable" is also this
+    // shape and has a remedy of its own.
+    {"but the parameter type is", Code::ArgType},
 
     {"cannot assign a value of type", Code::TypeMismatch},
     {"cannot initialize variable", Code::TypeMismatch},

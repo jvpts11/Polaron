@@ -1,0 +1,59 @@
+// AN ADDRESS PUT INTO A NUMBER -- in the three places a program can put one.
+//
+// The declaration form was caught first. It is the easiest to see and the least common in real code:
+// a driver names its bases in a `fixed` block at the top of the file, and it assigns to fields far
+// away from where they were declared. Both of those are here, because a check that only reads
+// declarations reports a clean kernel while the addresses arrive somewhere else.
+//
+// Freestanding, because `address` is.
+program AddressShapedAssign freestanding;
+
+public bundle Main {
+    public namespace Drv {
+        public class Lapic {
+            // 1. A `fixed`, which is where most of a kernel's addresses actually live.
+            public fixed int Base = 0xFEE00300;          // warns
+
+            // ...and the shapes that must stay quiet, all of them from real kernel code:
+            public fixed int Ident   = 0x53425355;       // 'USBS', a four-character code
+            public fixed int Magic   = 0x1BADB002;       // says what it is in its name
+            public fixed int Mask    = 0xFFFFFFFF;       // all ones
+            public fixed int Port    = 0x3F8;            // below a page
+            public fixed int EnableBit = 0x4000000;      // one bit: a flag, not a place
+            public fixed int Argb    = 0xFF0078D4;       // a colour: aligned to nothing
+            public fixed int RegHead = 0x3810;           // a device's own numbering
+
+            private mutable int where;                   // reads like a count...
+            private mutable address kept;
+
+            public constructor Lapic() {
+                this.where = 0;
+                this.kept = 0;
+            }
+
+            public method arm() returns void {
+                // 2. AN ASSIGNMENT TO A FIELD, three hundred lines from where it was declared.
+                this.where = 0xFEE00320;                 // warns
+
+                // 3. AN ASSIGNMENT TO A LOCAL.
+                mutable int spot = 0;
+                spot = 0xB8000;                          // warns
+                this.kept = cast<address>(spot);
+
+                // ...and an address going where an address belongs says nothing at all.
+                address proper = 0xFEE00330;
+                this.kept = proper;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Lapic* l = new Lapic() on heap;
+                l.arm();
+                delete l;
+                return;
+            }
+        }
+    }
+}

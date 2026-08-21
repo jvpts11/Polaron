@@ -589,5 +589,316 @@ std::string baseType(const std::string& t) {
 // The Polaron type name of a declaration, including array / pointer / ref markers.
 // Generic arguments are mangled into the name (Box<int> -> "Box$int").
 std::string typeRefName(const ast::TypeRef& t) { return ast::canonicalType(t); }
+
+// ---- Escape analysis for a returned local (see cgutil.h) ----
+void collectReturnedNames(const ast::Stmt* st, std::set<std::string>& out) {
+    if (st == nullptr) {
+        return;
+    }
+    if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(st)) {
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get())) {
+            out.insert(id->name);
+        }
+        return;
+    }
+    auto blk = [&](const ast::Block& b) {
+        for (const auto& s : b.statements) {
+            collectReturnedNames(s.get(), out);
+        }
+    };
+    if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) {
+        blk(i->thenBlock);
+        if (i->elseBlock) {
+            blk(*i->elseBlock);
+        }
+        return;
+    }
+    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
+    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
+    if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
+    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) {
+        for (auto& c : sw->cases) {
+            blk(c.body);
+        }
+        if (sw->defaultBody) {
+            blk(*sw->defaultBody);
+        }
+        return;
+    }
+    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) {
+        for (auto& c : ms->cases) {
+            blk(c.body);
+        }
+        if (ms->defaultBody) {
+            blk(*ms->defaultBody);
+        }
+        return;
+    }
+    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) {
+        blk(tr->body);
+        for (auto& c : tr->catches) {
+            blk(c.body);
+        }
+        if (tr->finallyBlock) {
+            blk(*tr->finallyBlock);
+        }
+        return;
+    }
+    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
+    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
+    if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { collectReturnedNames(lb->stmt.get(), out); return; }
+}
+
+void collectOld(const ast::Expr* e, std::vector<const ast::OldExpr*>& out) {
+    if (e == nullptr) {
+        return;
+    }
+    if (const auto* o = dynamic_cast<const ast::OldExpr*>(e)) {
+        out.push_back(o);
+        collectOld(o->inner.get(), out);  // old(... old(x) ...) is odd but harmless
+    } else if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) {
+        collectOld(b->lhs.get(), out);
+        collectOld(b->rhs.get(), out);
+    } else if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) {
+        collectOld(u->operand.get(), out);
+    } else if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(e)) {
+        collectOld(t->cond.get(), out);
+        collectOld(t->thenExpr.get(), out);
+        collectOld(t->elseExpr.get(), out);
+    } else if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
+        collectOld(m->object.get(), out);
+    } else if (const auto* c = dynamic_cast<const ast::CallExpr*>(e)) {
+        collectOld(c->callee.get(), out);
+        for (const auto& a : c->args) {
+            collectOld(a.get(), out);
+        }
+    } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+        collectOld(ix->array.get(), out);
+        collectOld(ix->index.get(), out);
+    } else if (const auto* ca = dynamic_cast<const ast::CastExpr*>(e)) {
+        collectOld(ca->operand.get(), out);
+    }
+}
+
+void promoteEscapingNews(const ast::Stmt* st, const std::set<std::string>& returned) {
+    if (st == nullptr) {
+        return;
+    }
+    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) {
+        if (returned.count(vd->name) > 0) {
+            if (const auto* cnw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
+                if (cnw->location == "stack" && cnw->region.empty()) {
+                    const_cast<ast::NewExpr*>(cnw)->location = "heap";
+                }
+            }
+        }
+        return;
+    }
+    auto blk = [&](const ast::Block& b) {
+        for (const auto& s : b.statements) {
+            promoteEscapingNews(s.get(), returned);
+        }
+    };
+    if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) {
+        blk(i->thenBlock);
+        if (i->elseBlock) {
+            blk(*i->elseBlock);
+        }
+        return;
+    }
+    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
+    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
+    if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
+    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
+    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) {
+        for (auto& c : sw->cases) {
+            blk(c.body);
+        }
+        if (sw->defaultBody) {
+            blk(*sw->defaultBody);
+        }
+        return;
+    }
+    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) {
+        for (auto& c : ms->cases) {
+            blk(c.body);
+        }
+        if (ms->defaultBody) {
+            blk(*ms->defaultBody);
+        }
+        return;
+    }
+    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) {
+        blk(tr->body);
+        for (auto& c : tr->catches) {
+            blk(c.body);
+        }
+        if (tr->finallyBlock) {
+            blk(*tr->finallyBlock);
+        }
+        return;
+    }
+    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
+    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
+    if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { promoteEscapingNews(lb->stmt.get(), returned); return; }
+}
+
+// ---- Which invariants a method's exits have to re-check (see cgutil.h) ----
+
+bool mentionsCall(const ast::Expr* e) {
+    if (e == nullptr) {
+        return false;
+    }
+    if (dynamic_cast<const ast::CallExpr*>(e) != nullptr) {
+        return true;
+    }
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) {
+        return mentionsCall(b->lhs.get()) || mentionsCall(b->rhs.get());
+    }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) {
+        return mentionsCall(u->operand.get());
+    }
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+        return mentionsCall(ix->array.get()) || mentionsCall(ix->index.get());
+    }
+    if (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) {
+        return mentionsCall(c->operand.get());
+    }
+    if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(e)) {
+        return mentionsCall(t->cond.get()) || mentionsCall(t->thenExpr.get()) ||
+               mentionsCall(t->elseExpr.get());
+    }
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
+        return mentionsCall(m->object.get());
+    }
+    return false;
+}
+
+// Whether an expression names `old(...)` -- the state at a method's ENTRY. Where the CALLER stands
+// that means before the call, and nothing there snapshotted it, so such a clause cannot be handed
+// to the optimiser at a call site however cheap the rest of it is.
+bool mentionsOld(const ast::Expr* e) {
+    if (e == nullptr) {
+        return false;
+    }
+    if (dynamic_cast<const ast::OldExpr*>(e) != nullptr) {
+        return true;
+    }
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) {
+        return mentionsOld(b->lhs.get()) || mentionsOld(b->rhs.get());
+    }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) {
+        return mentionsOld(u->operand.get());
+    }
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+        return mentionsOld(ix->array.get()) || mentionsOld(ix->index.get());
+    }
+    if (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) {
+        return mentionsOld(c->operand.get());
+    }
+    if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(e)) {
+        return mentionsOld(t->cond.get()) || mentionsOld(t->thenExpr.get()) ||
+               mentionsOld(t->elseExpr.get());
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+        return mentionsOld(mem->object.get());
+    }
+    if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+        if (mentionsOld(call->callee.get())) {
+            return true;
+        }
+        for (const auto& a : call->args) {
+            if (mentionsOld(a.get())) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool hasAnnotation(const ast::MethodDecl& m, const std::string& name) {
+    for (const ast::AnnotationUse& a : m.annotations) {
+        if (a.name == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void collectThisFields(const ast::Expr* e, std::set<std::string>& out) {
+    if (e == nullptr) {
+        return;
+    }
+    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
+        if (const auto* o = dynamic_cast<const ast::IdentifierExpr*>(m->object.get())) {
+            if (o->name == "this") {
+                out.insert(m->member);
+            }
+        }
+        collectThisFields(m->object.get(), out);
+        return;
+    }
+    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) { collectThisFields(b->lhs.get(), out); collectThisFields(b->rhs.get(), out); return; }
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) { collectThisFields(u->operand.get(), out); return; }
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) { collectThisFields(ix->array.get(), out); collectThisFields(ix->index.get(), out); return; }
+    if (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) { collectThisFields(c->operand.get(), out); return; }
+    if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(e)) { collectThisFields(t->cond.get(), out); collectThisFields(t->thenExpr.get(), out); collectThisFields(t->elseExpr.get(), out); return; }
+    if (const auto* ca = dynamic_cast<const ast::CallExpr*>(e)) {
+        collectThisFields(ca->callee.get(), out);
+        for (const auto& a : ca->args) {
+            collectThisFields(a.get(), out);
+        }
+        return;
+    }
+}
+
+static bool stmtAssignsThisField(const ast::Stmt* s, const std::set<std::string>& fields) {
+    if (s == nullptr) {
+        return false;
+    }
+    auto targets = [&](const ast::Expr* t) {
+        std::set<std::string> hit;
+        collectThisFields(t, hit);
+        for (const std::string& f : hit) {
+            if (fields.count(f) > 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) { return targets(as->target.get()); }
+    if (const auto* idd = dynamic_cast<const ast::IncDecStmt*>(s)) { return targets(idd->target.get()); }
+    if (const auto* blk = dynamic_cast<const ast::Block*>(s)) { return blockAssignsThisField(*blk, fields); }
+    if (const auto* i = dynamic_cast<const ast::IfStmt*>(s)) {
+        return blockAssignsThisField(i->thenBlock, fields) ||
+               (i->elseBlock && blockAssignsThisField(*i->elseBlock, fields));
+    }
+    if (const auto* f = dynamic_cast<const ast::ForStmt*>(s)) { return stmtAssignsThisField(f->init.get(), fields) || stmtAssignsThisField(f->update.get(), fields) || blockAssignsThisField(f->body, fields); }
+    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s)) { return blockAssignsThisField(w->body, fields); }
+    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(s)) { return blockAssignsThisField(d->body, fields); }
+    // Anything unrecognised is assumed to write, so the check stays.
+    return !dynamic_cast<const ast::ExprStmt*>(s) && !dynamic_cast<const ast::VarDeclStmt*>(s) &&
+           !dynamic_cast<const ast::ReturnStmt*>(s) && !dynamic_cast<const ast::BreakStmt*>(s) &&
+           !dynamic_cast<const ast::ContinueStmt*>(s);
+}
+
+bool blockAssignsThisField(const ast::Block& b, const std::set<std::string>& fields) {
+    for (const auto& s : b.statements) {
+        if (stmtAssignsThisField(s.get(), fields)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool invariantCanBreakIn(const ast::Expr* invariant, const ast::Block& body) {
+    std::set<std::string> fields;
+    collectThisFields(invariant, fields);
+    // AN INVARIANT THAT MENTIONS NO FIELD is about something this analysis cannot see, so it is
+    // kept: the conservative answer is the one that leaves the check in.
+    return fields.empty() || blockAssignsThisField(body, fields);
+}
+
 }  // namespace cgutil
 }  // namespace polaron

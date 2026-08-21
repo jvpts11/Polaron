@@ -250,6 +250,12 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         auto n = std::make_unique<ast::StringLiteralExpr>();
         n->loc = x->loc;
         n->value = x->value;
+        // `b"..."` AND `"..."` ARE DIFFERENT TYPES, and this dropped the difference: a byte literal
+        // came out of the clone as a `String`, which in a freestanding kernel is a type that cannot
+        // exist. It showed up as `argument 1 to 'puts' has type 'String' but the parameter type is
+        // 'byte*'`, on lines nobody had edited, the moment the program acquired a `typealias` --
+        // because the alias pass re-clones every class in the program.
+        n->isBytes = x->isBytes;
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::CharLiteralExpr*>(e)) {
@@ -707,6 +713,92 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->name = x->name;
         return n;
     }
+    // THE EIGHT KINDS THIS FUNCTION DID NOT HANDLE, and what they cost.
+    //
+    // A statement it does not know about is DROPPED from the copy, with a warning nobody reads
+    // because the copy is made by passes that run on every program. pico met all of these at once by
+    // declaring a single `typealias`: the alias pass re-clones every class in the program, so a
+    // kernel that had been building for a year lost its inline assembly, its `cascade delete`s and
+    // its chaos tetrad in one build. The visible symptom was polc crashing in `emitFunctions` -- a
+    // `naked` method whose `asm` body had been deleted is a function with no body at all.
+    //
+    // `asm` is the one that matters most: it is how every `naked` entry point in a freestanding
+    // program is written, so dropping it turns a syscall stub, an interrupt entry or a `_start` into
+    // an empty function, silently, on any program that also happens to use a generic or an alias.
+    if (const auto* x = dynamic_cast<const ast::AsmStmt*>(st)) {
+        auto n = std::make_unique<ast::AsmStmt>();
+        n->loc = x->loc;
+        n->arch = x->arch;
+        n->dialect = x->dialect;
+        n->body = x->body;
+        for (const auto& o : x->outputs) { n->outputs.push_back(cloneExpr(o.get(), s)); }
+        for (const auto& i : x->inputs) { n->inputs.push_back(cloneExpr(i.get(), s)); }
+        n->clobbers = x->clobbers;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::GotoStmt*>(st)) {
+        auto n = std::make_unique<ast::GotoStmt>();
+        n->loc = x->loc;
+        n->name = x->name;
+        n->address = cloneExpr(x->address.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::AbstainfromStmt*>(st)) {
+        auto n = std::make_unique<ast::AbstainfromStmt>();
+        n->loc = x->loc;
+        n->name = x->name;
+        n->isReinstate = x->isReinstate;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::CascadeStmt*>(st)) {
+        auto n = std::make_unique<ast::CascadeStmt>();
+        n->loc = x->loc;
+        n->op = x->op;
+        n->target = cloneExpr(x->target.get(), s);
+        n->dest = cloneExpr(x->dest.get(), s);
+        if (auto it = s.find(x->typeName); it != s.end()) { n->typeName = it->second; }
+        else { n->typeName = x->typeName; }
+        n->params = x->params;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::CascadeMoveStmt*>(st)) {
+        auto n = std::make_unique<ast::CascadeMoveStmt>();
+        n->loc = x->loc;
+        n->target = cloneExpr(x->target.get(), s);
+        n->fromRegion = x->fromRegion;
+        n->toRegion = x->toRegion;
+        n->leavingPersistents = x->leavingPersistents;
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::SnapshotIntoStmt*>(st)) {
+        auto n = std::make_unique<ast::SnapshotIntoStmt>();
+        n->loc = x->loc;
+        n->region = x->region;
+        n->into = cloneExpr(x->into.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::RestoreStmt*>(st)) {
+        auto n = std::make_unique<ast::RestoreStmt>();
+        n->loc = x->loc;
+        n->region = x->region;
+        n->snapshot = cloneExpr(x->snapshot.get(), s);
+        return n;
+    }
+    if (const auto* x = dynamic_cast<const ast::ReimportValidateStmt*>(st)) {
+        auto n = std::make_unique<ast::ReimportValidateStmt>();
+        n->loc = x->loc;
+        if (auto it = s.find(x->target); it != s.end()) { n->target = it->second; }
+        else { n->target = x->target; }
+        n->expected = cloneExpr(x->expected.get(), s);
+        n->usingVars = x->usingVars;
+        if (x->expecting) {
+            n->expecting = std::make_unique<ast::Block>(cloneBlock(*x->expecting, s));
+        }
+        if (x->onFailure) {
+            n->onFailure = std::make_unique<ast::Block>(cloneBlock(*x->onFailure, s));
+        }
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::ThrowStmt*>(st)) {
         auto n = std::make_unique<ast::ThrowStmt>();
         n->loc = x->loc;
@@ -845,6 +937,22 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         n->isVar = x->isVar;
         n->isPersistent = x->isPersistent;
         n->isEternal = x->isEternal;
+        // `volatile`, AND IT IS THE ONE THAT COSTS A KERNEL.
+        //
+        // A local `volatile int* p = cast<int*>(...)` is how every MMIO register, every device ring
+        // and every wait loop in a freestanding program is read. Dropping the word turns those reads
+        // into ordinary ones, and at -O2 the optimizer hoists them out of the loop that was waiting
+        // for them to change -- so a bring-up spins on a value that was true once and the device
+        // never comes ready. pico lost its timer, its APIC routing, its NVMe queue, its USB disk and
+        // its second processor in one build, and the only thing that had changed was that the
+        // program now declared a `typealias` (which makes the alias pass re-clone every body).
+        //
+        // `lazy` and `comptime` are the same omission with quieter consequences: an initializer that
+        // was meant to run on first access runs here instead, and one that was meant to be folded at
+        // compile time survives into the executable.
+        n->isVolatile = x->isVolatile;
+        n->isLazy = x->isLazy;
+        n->isComptime = x->isComptime;
         n->regionFlavor = x->regionFlavor;   // spec 17 flavors: carry the flavor/growth into the clone
         n->regionGrowable = x->regionGrowable;
         n->type = substType(x->type, s);
@@ -1267,16 +1375,51 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     c.loc = d.loc;
     c.visibility = d.visibility;
     c.name = newName;  // concrete: no type params
+    // WHAT KIND OF DECLARATION THIS IS. All of it, and the list is exhaustive on purpose: this
+    // function had eight of the flags and the tree has fourteen, so a clone quietly changed what a
+    // type WAS. Two of the six missing ones are silent corruption rather than a missing feature:
+    //
+    //   * `isUnion` -- a union whose fields overlap one storage became a struct whose fields sit in
+    //     sequence. Same members, same names, different memory, no diagnostic anywhere.
+    //   * `isLayout` -- a `layout` stopped being one, so `resolveLayouts` left it in the interface
+    //     list and every implementer was told "'WmRequest' implements 'WireRecord', which is not an
+    //     interface". pico met this by declaring ONE `typealias`, three files away: the alias pass
+    //     re-clones every class in the program, so a feature that was working became three errors
+    //     about a file nobody had touched.
+    //
+    // ...and the same for `isRegionClass` (instances silently leave the family's arena), `isHeap`
+    // (the program's allocator stops being declared), `isFinal` and `foreignLibrary`. The rule this
+    // function needs is the one `cloneMember` learned the hard way: a clone that copies most of a
+    // declaration is a rewrite that changes it.
     c.isInterface = d.isInterface;
     c.isStruct = d.isStruct;
     c.isRecord = d.isRecord;
+    c.isUnion = d.isUnion;
+    c.isLayout = d.isLayout;
     c.isAbstract = d.isAbstract;
+    c.isFinal = d.isFinal;
     c.isSealed = d.isSealed;          // keep sealed + permits so generic-sealed match stays exhaustive
     c.permits = d.permits;
     c.typeParamBounds = d.typeParamBounds;
     c.isMovable = d.isMovable;
     c.isUnique = d.isUnique;
     c.isPartitionable = d.isPartitionable;
+    c.isRegionClass = d.isRegionClass;
+    c.isHeap = d.isHeap;
+    c.foreignLibrary = d.foreignLibrary;
+    // The layouts a type implements, once `resolveLayouts` has split them out of `interfaces`. A
+    // clone that ran after that pass -- monomorphization does -- would otherwise drop the
+    // arrangement, and a generic value type would lose the size it promised.
+    c.layouts = d.layouts;
+    // The transformer clauses. `applies` is what the author wrote and is printed back by the
+    // documentation generator; `appliedClosure` is what a `<T applies TComparer>` constraint is
+    // checked against long after the transformers themselves are gone.
+    c.applies = d.applies;
+    c.appliesLocs = d.appliesLocs;
+    c.appliedClosure = d.appliedClosure;
+    c.entrusts = d.entrusts;
+    c.satisfies = d.satisfies;
+    c.satisfiesLocs = d.satisfiesLocs;
     c.superclass = d.superclass;
     for (const auto& a : d.superclassTypeArgs) {  // substitute T in `extends Base<T>`
         auto it = s.find(a);
@@ -2393,6 +2536,36 @@ void resolveTypeAliases(ast::Program& program) {
                 ast::ClassDecl rewritten = cloneClass(c, empty, c.name);
                 rewritten.typeParams = c.typeParams;  // cloneClass drops these; keep generics generic
                 rewritten.typeParamVariance = c.typeParamVariance;
+                // ...AND `isProcedure`, for the same reason and with the same shape.
+                //
+                // `cloneMember` drops that flag ON PURPOSE: the same copier is what injects a
+                // transformer's `procedure` into the type that applies it, and in THAT copy the
+                // procedure stops being a socket and becomes an ordinary method (the note there
+                // explains what carrying it over broke). But this pass is a REWRITE, not an
+                // injection -- what comes out must be what went in with the aliases expanded -- so
+                // it has to put the flag back.
+                //
+                // It went unnoticed because a second bug hid it: `cloneClass` was also dropping
+                // `applies`, so a program with a `typealias` in it lost its transformers entirely
+                // and nothing was left to complain that the procedures had turned into methods.
+                // Fixing that one made this one produce four errors in a file the author had not
+                // touched. Matched by name rather than by index: a member kind `cloneMember` does
+                // not handle is skipped (with a warning), and an index walk would then silently
+                // hand the flag to the wrong method.
+                for (std::size_t i = 0, j = 0; i < rewritten.members.size(); ++i) {
+                    auto* to = dynamic_cast<ast::MethodDecl*>(rewritten.members[i].get());
+                    if (to == nullptr) {
+                        continue;
+                    }
+                    while (j < c.members.size()) {
+                        const auto* from = dynamic_cast<const ast::MethodDecl*>(c.members[j].get());
+                        ++j;
+                        if (from != nullptr && from->name == to->name) {
+                            to->isProcedure = from->isProcedure;
+                            break;
+                        }
+                    }
+                }
                 rewritten.superclass = resolveAliasName(c.superclass);
                 for (auto& iface : rewritten.interfaces) {
                     iface = resolveAliasName(iface);
@@ -2862,21 +3035,51 @@ void qualifyNamespaces(ast::Program& program) {
 // of any part apply to the whole (so the parts need not repeat `extends`/`implements`). Merging happens
 // before generics/semantics, so nothing downstream ever sees the split.
 void mergePartialClasses(ast::Program& program) {
-    for (auto& b : program.bundles) {
-        for (auto& ns : b.namespaces) {
-            std::map<std::string, std::size_t> firstOf;   // class name -> index of its first part
-            std::vector<bool> drop(ns.classes.size(), false);
+    // ACROSS FILES, which is the case the keyword exists for and the one this did not handle.
+    //
+    // Every file contributes its OWN `Namespace` object to the bundle, so `Pico.Kernel` written in two
+    // files is two entries here with the same name. Merging per namespace OBJECT therefore only ever
+    // merged parts already in one file -- the case a reader is least likely to write, since a class
+    // split across two declarations in one file could simply be one declaration. Cross-file parts
+    // never met, reached semantics as two classes with one name, and were rejected as a redeclaration:
+    // the feature was documented as "across files" and worked only within one.
+    //
+    // The first part is found by (bundle NAME, namespace NAME, class name) over the whole PROGRAM.
+    //
+    // Keying by the NAMES and not by the objects is the whole fix. A bundle written in twenty files
+    // -- which is what a kernel looks like -- is twenty `Bundle` objects here that all call themselves
+    // `Pico`, each holding its own `Namespace` object called `Kernel`. Anything that matched parts by
+    // walking one object could only ever see one file. Bundles are still distinct BY NAME: two
+    // bundles genuinely called different things each keep their own `Config`, which is the type
+    // identity rule this must not break.
+    //
+    // The head is held as a POINTER, and the compaction that removes absorbed parts is deferred to
+    // the end, because moving elements out of a `classes` vector while later files still have parts
+    // to merge into it would dangle exactly that pointer.
+    std::map<std::string, ast::ClassDecl*> firstPart;
+    std::vector<std::vector<std::vector<bool>>> dropped(program.bundles.size());
+    for (std::size_t bi = 0; bi < program.bundles.size(); ++bi) {
+        dropped[bi].resize(program.bundles[bi].namespaces.size());
+        for (std::size_t ni = 0; ni < program.bundles[bi].namespaces.size(); ++ni) {
+            dropped[bi][ni].assign(program.bundles[bi].namespaces[ni].classes.size(), false);
+        }
+    }
+    for (std::size_t bi = 0; bi < program.bundles.size(); ++bi) {
+        auto& b = program.bundles[bi];
+        for (std::size_t ni = 0; ni < b.namespaces.size(); ++ni) {
+            auto& ns = b.namespaces[ni];
             for (std::size_t i = 0; i < ns.classes.size(); ++i) {
                 ast::ClassDecl& c = ns.classes[i];
-                auto it = firstOf.find(c.name);
-                if (it == firstOf.end()) {
-                    firstOf[c.name] = i;
+                const std::string key = b.name + "|" + ns.name + "|" + c.name;
+                auto it = firstPart.find(key);
+                if (it == firstPart.end()) {
+                    firstPart[key] = &c;
                     continue;
                 }
                 if (!c.isPartial) {
                     continue;  // a genuine duplicate: sema reports it
                 }
-                ast::ClassDecl& head = ns.classes[it->second];
+                ast::ClassDecl& head = *it->second;
                 if (!head.isPartial) {
                     continue;
                 }
@@ -2892,12 +3095,19 @@ void mergePartialClasses(ast::Program& program) {
                 head.isAbstract = head.isAbstract || c.isAbstract;
                 head.isSealed = head.isSealed || c.isSealed;
                 head.isFinal = head.isFinal || c.isFinal;
-                drop[i] = true;
+                dropped[bi][ni][i] = true;
             }
+        }
+    }
+    // ...and only now, with every part in every file merged, are the absorbed declarations removed.
+    for (std::size_t bi = 0; bi < program.bundles.size(); ++bi) {
+        auto& b = program.bundles[bi];
+        for (std::size_t ni = 0; ni < b.namespaces.size(); ++ni) {
+            auto& ns = b.namespaces[ni];
             std::vector<ast::ClassDecl> kept;
             kept.reserve(ns.classes.size());
             for (std::size_t i = 0; i < ns.classes.size(); ++i) {
-                if (!drop[i]) {
+                if (!dropped[bi][ni][i]) {
                     kept.push_back(std::move(ns.classes[i]));
                 }
             }

@@ -17,6 +17,15 @@ namespace polaron {
 // type-parameter constraint (spec 15.2); true otherwise.
 bool monomorphize(ast::Program& program);
 
+// `partial` classes (spec 8.3): fold every part of a split class into its first part.
+//
+// MUST RUN FIRST, before anything that walks the class list. Every later pass -- namespace
+// qualification, transformer expansion, delegate expansion, the analyzer's own registry -- sees a
+// two-part class as two classes with one name, and at least one of them reports it as a
+// redeclaration. Merging is not an optimisation those passes can be taught about; it is the step that
+// makes the program mean what it says.
+void mergePartialClasses(ast::Program& program);
+
 // Rewrites type names that collide across namespaces (app.Foo vs lib.Foo) to
 // unique internal names, so namespaces actually scope type names. A no-op when no
 // simple type name is declared in more than one namespace. Run before monomorphize.

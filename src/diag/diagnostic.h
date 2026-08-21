@@ -107,7 +107,12 @@ enum class Code {
     WeakNeedsPointer,     // `weak` on something that is not a pointer
     ImportNameMismatch,   // a name used differently from how the import brought it in
     BitFieldRange,        // a literal that does not fit the declared width of a bit field
+    BitFieldAddress,      // `&f.bits` -- a packed field has no address of its own
     AtomicTooWide,        // an `atomic<T>` wider than the machine can do without a lock
+    AsmUnknownInstruction, // a mnemonic inside asm("x86_64") { } the checker does not recognise
+    IntegerAsAddress,     // a number turned into an address: the constant should have been one
+    AddressAsInteger,     // an address put into a number, losing what it is
+    StackReturnEscapes,   // `return new X() on stack` on a class: the placement cannot be honoured
 
     // 08xx -- features used incorrectly (continued below the older entries)
     InterruptMisuse,      // an interrupt handler that is called, duplicated, or reaches what it must not

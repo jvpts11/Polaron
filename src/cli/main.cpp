@@ -47,6 +47,10 @@
 #include "parser/monomorphize.h"
 #include "parser/parser.h"
 #include "parser/transformers.h"
+#include "pir/lower.h"
+#include "pir/passes.h"
+#include "pir/text.h"
+#include "pir/verify.h"
 #include "semantic/analyzer.h"
 #include "semantic/semutil.h"  // typeRefStr, for the C header's type mapping
 #include "semantic/implicitthis.h"
@@ -61,6 +65,12 @@
 #ifdef POLARON_WITH_LLVM
 #include "bundle/polb.h"
 #include "codegen/codegen.h"
+#include "codegen/optimize.h"   // the one pipeline, for the module the second backend builds
+#include "codegen/testrunner.h"   // `--test`: the runner both backends share
+#include "pir/tollvm.h"     // Stage 2: the second backend
+#include "pir/shapediff.h"  // ...and the comparison of the two, body by body
+
+#include <llvm/Bitcode/BitcodeReader.h>
 // Renumbering a dependency's vtables (`--extract-code --remap-slots`) rewrites its module, so this
 // file reads and edits IR directly -- the only place outside codegen/ that does.
 #include <llvm/IR/Constants.h>
@@ -389,24 +399,49 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                 // ... and say so. A field silently left out of a type's identity is how two things that
                 // look equal compare unequal, and it is invisible in code that only ever reads the
                 // declaration. Warn once per field, at the class, naming the way out.
-                if (!hasEq || !hasHash || !hasCmp) {
+                //
+                // ONLY ABOUT THE HOOKS ACTUALLY BEING GENERATED. This fired whenever ANY of the three
+                // was missing and then said the field was "left out of equalsKey, hash and compareTo
+                // alike" -- which stops being true the moment somebody takes the advice. pico's
+                // `AppEntry` wrote both an `equalsKey` and a `hash` over its path bytes and was still
+                // told, on every build, to write an `equalsKey`. A warning that survives its own fix
+                // is a warning people turn off.
+                std::vector<std::string> generated;
+                if (!hasEq)   { generated.push_back("equalsKey"); }
+                if (!hasHash) { generated.push_back("hash"); }
+                if (!hasCmp)  { generated.push_back("compareTo"); }
+                if (!generated.empty()) {
+                    std::string hooks;
+                    for (std::size_t i = 0; i < generated.size(); ++i) {
+                        if (i > 0) {
+                            hooks += (i + 1 == generated.size()) ? " and " : ", ";
+                        }
+                        hooks += generated[i];
+                    }
+                    // The "will compare EQUAL" half is only true while `equalsKey` is the generated
+                    // one: a type with its own equality and a generated ordering has a real problem,
+                    // but it is a different sentence.
+                    const std::string effect =
+                        hasEq ? "Two " + cls.name + " values that differ only in this field will "
+                                "order as equal."
+                              : "Two " + cls.name + " values that differ only in this field will "
+                                "compare EQUAL.";
                     for (const FieldDecl* f : fields) {
                         if (keyPart(f) != 0) {
                             continue;
                         }
                         std::fprintf(stderr,
                                      "warning: field '%s' of '%s' is not part of the generated key: %s "
-                                     "has no structural value to compare, so it is left out of equalsKey, "
-                                     "hash and compareTo alike. Two %s values that differ only in this "
-                                     "field will compare EQUAL. Write your own equalsKey/hash if it should "
-                                     "count, or make the field a value type (a struct, record or String).\n",
+                                     "has no structural value to compare, so it is left out of %s. "
+                                     "%s Write your own %s if it should count, or make the field a "
+                                     "value type (a struct, record or String).\n",
                                      f->name.c_str(), cls.name.c_str(),
                                      f->type.isArray      ? "an array"
                                      : f->type.isPointer  ? "a pointer"
                                      : f->type.isRef      ? "a reference"
                                      : f->type.isNullable ? "a nullable field"
                                                           : "a class or enum reference",
-                                     cls.name.c_str());
+                                     hooks.c_str(), effect.c_str(), hooks.c_str());
                     }
                 }
                 // --- small AST builders (capture loc) ---
@@ -422,6 +457,7 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                 };
                 auto cast = [&](const std::string& ty, ExprPtr op) -> ExprPtr {
                     auto e = std::make_unique<CastExpr>(); e->loc = loc; e->targetType = ty;
+                    e->synthetic = true;   // the author did not write this -- see CastExpr::synthetic
                     e->operand = std::move(op); return e;
                 };
                 auto binary = [&](const std::string& op, ExprPtr l, ExprPtr r) -> ExprPtr {
@@ -1044,7 +1080,11 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             bool checkOnly = false, bool regionBinder = true, bool verifyStack = false,
             const std::string& foreignLibsOut = "", const std::string& cHeaderOut = "",
             const std::string& slotsOut = "",
-            const std::vector<polaron::PolbForeignLib>& foreignLibMap = {}) {
+            const std::vector<polaron::PolbForeignLib>& foreignLibMap = {},
+            // --emit-pir=<path|->: Stage 1. Runs beside the real pipeline and feeds nothing.
+            const std::string& pirOut = "",
+            // --compare-ir: the two backends' bodies, shape by shape. See where it is used.
+            bool compareIr = false) {
     polaron::ast::Program program;
     std::string programName;
     // In check mode a broken file must not hide the others: an editor asks about the whole project and
@@ -1298,6 +1338,19 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // codegen): static linking deduplicates it against the program's own prelude, and a dynamically
     // built DLL is self-contained (every class extends the prelude's Object). This matters now that
     // Object is the universal root, so even a trivial bundle references the prelude.
+    // `partial` classes FIRST, before any pass walks the class list.
+    //
+    // It used to run inside `monomorphize`, eight passes later, and by then a two-part class has
+    // already been seen as two classes with one name -- by `qualifyNamespaces` (which renames
+    // colliding types), by the transformer and delegate expanders, and by the analyzer's own registry,
+    // which reports a redeclaration and stops the build. That is why `partial` worked only for parts
+    // written in ONE file: one file's parts survive the trip together and parts in different files do
+    // not, which is the opposite of what the keyword is for.
+    //
+    // Merging is not something those passes could be taught to tolerate. It is the step that makes the
+    // program mean what it says, so it belongs before all of them.
+    polaron::mergePartialClasses(program);          // spec 8.3: the parts of a `partial` class are one
+    phase("mergePartialClasses");
     polaron::resolveTypeAliases(program);           // expand `typealias` to its target everywhere (spec 24)
     phase("resolveTypeAliases");
     // Before qualifyNamespaces: the remote program's header carries ITS entry class, which this pass
@@ -1387,6 +1440,230 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         return 1;
     }
 
+    // `--emit-pir`: Stage 1 of the PIR migration (docs/design/polaron-ir.md §14).
+    //
+    // IN PARALLEL WITH THE REAL PIPELINE, and nothing below depends on it. That is the whole design
+    // of the stage: the compiler cannot break because of it, and what it buys immediately is every
+    // sample in the suite as PIR test input. After analysis, for the same reason the two emitters
+    // below are -- a declaration recovered from a file that did not compile is not a fact about the
+    // program.
+    //
+    // The module is VERIFIED here too, because a lowering that produces a malformed module and is
+    // never told so is one nobody can trust. §9's rules are the contract; this is the first place
+    // they meet real programs rather than a hand-built module.
+    // WHICH BACKEND BUILDS THE PROGRAM. Since 2026-08-21 that is PIR: the AST is lowered to
+    // Polaron's own IR, the passes of §11 run on it, and §12 hands the result to LLVM.
+    //
+    // `POLARON_VIA_PIR=0` still selects the older path -- AST straight to LLVM, `src/codegen/` --
+    // and it must keep working, because the differential IS the verification: every sample in the
+    // corpus is built both ways and the outputs compared, and a harness cannot compare two things
+    // if one of them is gone. Both arms of every comparison NAME what they want; leaving the
+    // variable unset selects the default, which is no longer the older path.
+    //
+    // What earned the flip, measured on this commit:
+    //
+    //   corpus       693/693 at -O0 and 694/694 at -O2, identical output, no build or link failure
+    //   ctest        1010/1010
+    //   Forge        the IDE builds, links and passes its 476 editor checks
+    //   pico         the kernel and its payload boot and pass all 219 checks, FAT16 and FAT32
+    //   speed        median 1.00x against the older path over 19 benchmarks, worst 1.08x
+    //   --test       the synthetic runner is `codegen/testrunner`, shared, and its three samples
+    //                print byte-for-byte the same through either backend
+    //
+    // The flip was tried once before and put back the same morning, for one reason: `--test` was
+    // built inside the other backend and this one had no notion of it, so a program compiled
+    // `--test` here kept its own `main` and RAN it. That is what the shared runner fixed, and it is
+    // worth remembering why it was worth fixing rather than working around -- a compiler that
+    // accepts a flag, produces an executable, and runs something else is worse than one that
+    // refuses.
+    //
+    // An environment variable rather than a flag because the switch is for a whole RUN -- a harness
+    // sets it once and compiles hundreds of programs under it, which is the same method the
+    // reachability work used against `GlobalDCE`.
+    //
+    // IT WAS OFF TWICE WHILE A FEATURE FAMILY WAS FINISHED, and each time the flip is what found
+    // the family. That is what a flip is for. All three were the same shape as `--test` was --
+    // helper code the OTHER backend synthesizes, that this one had no lowering for -- and all three
+    // are now done:
+    //
+    //   `--test`                          the synthetic runner. Shared, `codegen/testrunner`.
+    //   the freestanding runtime bridges  a bare-metal program has no libc, so the compiler itself
+    //                                     must define `__polaron_str_copy`, the cascade's pointer
+    //                                     set, the reflection tables and the data-enum allocator.
+    //                                     Shared, `codegen/bridges`.
+    //   dynamic bundle thunks             `--use-dynamic` resolves a bundle's methods at run time
+    //                                     through generated thunks. Built as PIR functions, so the
+    //                                     failure path's THROW is lowered by the same code that
+    //                                     lowers every other throw -- see `emitDynamicThunks`.
+    //
+    // The third one arrived with two facts the driver had been handing to the trusted backend
+    // ALONE, and their absence here was silent: the imported bundles' vtable slot ORDER, and the
+    // `.polb` paths. Thirteen of the eighteen bundle tests failed through PIR, none of them with a
+    // message that named a vtable or a thunk -- one printed `value = 2` where `value = 12` was
+    // expected, because an imported class's CONSTRUCTOR was never declared and so never called.
+    // Anything the driver knows and only one backend is told is a divergence waiting to be found by
+    // a user instead of by a test.
+    const char* viaPir = std::getenv("POLARON_VIA_PIR");
+    const bool wantViaPir = viaPir == nullptr || viaPir[0] != '0';
+#ifdef POLARON_WITH_LLVM
+    // Declared out here so the module the PIR backend builds survives to the point where the output
+    // is written, far below. A context must outlive every module in it, so the two travel together.
+    std::unique_ptr<llvm::LLVMContext> pirCtx;
+    std::unique_ptr<llvm::Module> pirModule;
+#endif
+
+    // THE TARGET, decided before either backend is handed anything. Both need it and both need the
+    // SAME one: it is what says whether something calls `main` at all, and asking the PROGRAM
+    // instead -- "is it freestanding" -- renames `main` to `kmain` for a freestanding program the
+    // test suite deliberately links against a real CRT, which then has no entry point. Two
+    // questions; see `entryHasCRuntime`.
+    std::string effectiveTriple = target;
+    if (effectiveTriple.empty()) {
+#ifdef _WIN32
+        effectiveTriple = "x86_64-pc-windows-msvc";
+#else
+        effectiveTriple = "x86_64-unknown-linux-gnu";
+#endif
+    }
+    if (!pirOut.empty() || wantViaPir) {
+        // The same source lookup the trusted backend is handed, for the same one reason: a contract
+        // that fails quotes the line it was written on, and the spelling is not in the AST.
+        //
+        // ...AND THE SAME BUNDLE FACTS. `seedVtableSlots` and `addDynamicBundle` below hand these to
+        // the other backend; withholding them here is what made thirteen of the eighteen bundle
+        // tests fail through PIR, none of them with a message that named the cause.
+        polaron::pir::BundleContext pirBundles;
+        pirBundles.vtableSlots = seedSlots;
+        pirBundles.library = libraryMode;
+        for (const auto& [name, path, fp] : dynBundleInfo) {
+            pirBundles.dynamic.push_back(polaron::pir::DynamicBundle{name, path, fp});
+        }
+        polaron::pir::Lowering lowered =
+            polaron::pir::lower(program, sourceLineAt, effectiveTriple, std::move(pirBundles));
+        // `-g` is the invocation's, not the program's. See `Module::debugInfo`.
+        lowered.module.debugInfo = debugInfo;
+        // `--test`: WHAT THE RUNNER WILL CALL, named before the passes can decide it is dead.
+        // The plan is computed from the AST, so it is available long before the runner is built;
+        // what it is needed for HERE is only the list of keys. See `Module::extraRoots`.
+        std::vector<polaron::CodegenError> testErrors;
+        polaron::testrunner::Plan testPlan;
+        if (testMode) {
+            // A PIR FUNCTION IS KEYED BY THE SAME "Class.method" the other backend emits, so the
+            // class key is the identity here. Where the two ever diverge, this is the one line that
+            // has to learn the difference.
+            testPlan = polaron::testrunner::collect(
+                program, [](const std::string& name) { return name; }, testErrors);
+            lowered.module.extraRoots = polaron::testrunner::rootsOf(testPlan);
+        }
+        // Stage 4: the §11 passes, on the graph. Run BEFORE the module is printed or handed to the
+        // backend, because what the backend should receive is the optimised form -- and because the
+        // contract lowering has to consume a `fact.*` the guard eliminator has already read.
+        const polaron::pir::PassReport passes = polaron::pir::runPasses(&lowered.module);
+        if (passes.didSomething()) {
+            std::fputs(polaron::pir::renderPassReport(passes).c_str(), stderr);
+        }
+        const std::string text = polaron::pir::print(lowered.module);
+        const std::vector<polaron::pir::VerifyError> bad = polaron::pir::verify(lowered.module);
+        if (!bad.empty()) {
+            std::fputs(polaron::pir::renderVerifyErrors(bad).c_str(), stderr);
+        }
+        if (!lowered.gaps.empty()) {
+            std::fputs(polaron::pir::renderGaps(lowered.gaps).c_str(), stderr);
+        }
+#ifdef POLARON_WITH_LLVM
+        if (wantViaPir) {
+            // THE MODULE IS KEPT, not measured and dropped. Until now this backend built an LLVM
+            // module, counted what §12 had put in it, and let it go out of scope -- which proves the
+            // machinery and changes nothing about any program that gets compiled.
+            //
+            // Held in a context that outlives this block so the emitted IR can become the OUTPUT.
+            // That is what makes the differential a comparison of BEHAVIOUR rather than of names:
+            // compile both ways, link both, run both, require the same output.
+            // WHICH KIND OF ARTEFACT THIS IS, which decides what stays published. The lowering
+            // cannot know it -- `--lib` is the driver's flag, not the program's -- and the backend
+            // must, or a program ships a strong definition of every prelude method it compiled.
+            lowered.module.library = libraryMode;
+            // ...AND WHO WRITES `main`. Under `--test` that is the runner, emitted below once every
+            // function it calls exists; this backend must not take the name first.
+            lowered.module.testRunnerEntry = testMode;
+            pirCtx = std::make_unique<llvm::LLVMContext>();
+            pirModule = std::make_unique<llvm::Module>(
+                programName.empty() ? "pir" : programName, *pirCtx);
+            const polaron::pir::ToLlvmResult handed =
+                polaron::pir::toLlvm(lowered.module, *pirCtx, *pirModule);
+            std::fputs(polaron::pir::renderHandoff(handed).c_str(), stderr);
+            if (!handed.ok) {
+                std::fprintf(stderr, "pir->llvm: %s\n", handed.error.c_str());
+                pirModule.reset();   // a module LLVM refuses is not an output
+            }
+            // `--test`: THE SAME RUNNER THE OTHER BACKEND USES, over the same plan. Which entry
+            // point `--test` means is the language's rule, not a backend's -- see testrunner.h for
+            // what it cost to have had it in only one of them.
+            if (testMode && pirModule != nullptr) {
+                for (const polaron::CodegenError& e : testErrors) {
+                    std::fprintf(stderr, "error: %s\n", e.message.c_str());
+                }
+                if (!testErrors.empty()) {
+                    return 1;
+                }
+                llvm::IRBuilder<> runnerBuilder(*pirCtx);
+                polaron::testrunner::Backend back;
+                back.function = [&](const std::string& key) {
+                    return pirModule->getFunction(key);
+                };
+                back.storageType = [&](const std::string& elemType) -> llvm::Type* {
+                    // WHAT ONE ELEMENT OF A `T[]` OCCUPIES. `boolean` is a byte in storage and an
+                    // i32 in a value, which is the one case a name alone gets wrong.
+                    if (elemType == "boolean") { return llvm::Type::getInt8Ty(*pirCtx); }
+                    if (elemType == "byte") { return llvm::Type::getInt8Ty(*pirCtx); }
+                    if (elemType == "short") { return llvm::Type::getInt16Ty(*pirCtx); }
+                    if (elemType == "long" || elemType == "ulong") {
+                        return llvm::Type::getInt64Ty(*pirCtx);
+                    }
+                    if (elemType == "double") { return llvm::Type::getDoubleTy(*pirCtx); }
+                    if (elemType == "float") { return llvm::Type::getFloatTy(*pirCtx); }
+                    if (elemType == "int" || elemType == "uint" || elemType == "char") {
+                        return llvm::Type::getInt32Ty(*pirCtx);
+                    }
+                    return llvm::PointerType::get(*pirCtx, 0);   // String, and every object
+                };
+                back.coerce = [&](llvm::Value* val, llvm::Type* want) -> llvm::Value* {
+                    if (val == nullptr || val->getType() == want) {
+                        return val;
+                    }
+                    if (val->getType()->isIntegerTy() && want->isIntegerTy()) {
+                        return runnerBuilder.CreateZExtOrTrunc(val, want);
+                    }
+                    return val;
+                };
+                // The init hooks the entry point would have run. `--test` loads a program's classes
+                // exactly as an ordinary run does, or a fixture reads a table its `onClassLoad`
+                // fills and every test fails for a reason none of them are about. The PIR module
+                // already carries them in order, which is the whole list -- the other backend walks
+                // the AST for the same answer.
+                back.emitClassLoadHooks = [&] {
+                    for (const polaron::pir::Hook& h : lowered.module.init) {
+                        if (llvm::Function* f = pirModule->getFunction(h.fnKey); f != nullptr) {
+                            runnerBuilder.CreateCall(f);
+                        }
+                    }
+                };
+                polaron::testrunner::emit(*pirCtx, *pirModule, runnerBuilder, testPlan, back);
+            }
+        }
+#endif
+        if (pirOut == "-") {
+            std::fputs(text.c_str(), stdout);
+        } else if (!pirOut.empty()) {
+            std::ofstream pirFile(pirOut, std::ios::binary);
+            if (!pirFile) {
+                std::fprintf(stderr, "error: cannot write '%s'\n", pirOut.c_str());
+                return 1;
+            }
+            pirFile << text;
+        }
+    }
+
     // `--emit-foreign-libs`: after analysis, because a name that came out of a file that did not compile
     // is not a fact about the program. `-` writes to stdout, which is how a test asks the question.
     if (!foreignLibsOut.empty()) {
@@ -1447,14 +1724,6 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // Always set a triple (and, through it, the data layout) -- with --target for freestanding/cross, or
     // the host's otherwise -- so ABI alignments are correct and hot loops vectorize. Without this the
     // module is layout-less and i64 loads emit `align 4`.
-    std::string effectiveTriple = target;
-    if (effectiveTriple.empty()) {
-#ifdef _WIN32
-        effectiveTriple = "x86_64-pc-windows-msvc";
-#else
-        effectiveTriple = "x86_64-unknown-linux-gnu";
-#endif
-    }
     codegen.setTargetTriple(effectiveTriple);
     codegen.setLibrary(libraryMode);  // a .polb has no entry point / `main`
     codegen.setTestMode(testMode);    // --test: synthetic [Test] runner as the entry
@@ -1493,6 +1762,42 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             sf << name << "\n";   // position IS the slot; an empty line is an unused one
         }
     }
+#ifdef POLARON_WITH_LLVM
+    // `--compare-ir`: THE TWO MODULES, BODY BY BODY, before either is optimised.
+    //
+    // The differential compares what a program PRINTS, which is the strongest evidence there is and
+    // is blind to two things: what must NOT be in the image, and a method the program never reaches.
+    // This is the other half -- for every function both backends emit, is the body the same SHAPE?
+    // Not the same text: the two paths name their values differently and always will.
+    //
+    // Before `optimize`, because after it the two have been through the same pipeline and a
+    // difference the pipeline erased is a difference that was there. The trusted module comes back
+    // through bitcode rather than through a new accessor: `codegen.h` states that it keeps LLVM
+    // behind the PIMPL, and a round trip once per compile under a flag is cheaper than that rule.
+    if (compareIr && pirModule != nullptr) {
+        const std::string bits = codegen.toBitcode();
+        llvm::SMDiagnostic ignored;
+        auto buffer = llvm::MemoryBuffer::getMemBuffer(bits, "trusted", false);
+        llvm::Expected<std::unique_ptr<llvm::Module>> mine =
+            llvm::parseBitcodeFile(buffer->getMemBufferRef(), *pirCtx);
+        if (!mine) {
+            llvm::consumeError(mine.takeError());
+            std::fputs("pir::shapes: the trusted module could not be re-read for comparison\n",
+                       stderr);
+        } else {
+            size_t both = 0;
+            for (const llvm::Function& f : **mine) {
+                if (!f.isDeclaration() && pirModule->getFunction(f.getName()) != nullptr &&
+                    !pirModule->getFunction(f.getName())->isDeclaration()) {
+                    ++both;
+                }
+            }
+            const std::vector<polaron::pir::ShapeDiff> diffs =
+                polaron::pir::compareBodies(**mine, *pirModule);
+            std::fputs(polaron::pir::renderShapeDiffs(diffs, both).c_str(), stderr);
+        }
+    }
+#endif
     codegen.optimize(optLevel);  // polc's own optimization pipeline (no-op at -O0)
 
     if (libraryMode) {
@@ -1532,7 +1837,56 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         return 0;
     }
 
-    const std::string ir = codegen.toIR();
+    // WHOSE IR REACHES THE OUTPUT. With `POLARON_VIA_PIR=1` it is the second backend's, which is
+    // what turns the differential from a comparison of NAMES into a comparison of BEHAVIOUR: the
+    // program is built from PIR, linked and run, and required to print what the trusted path prints.
+    //
+    // The old path still runs above -- it is what fills the vtable layout, the bundle and the
+    // header, and it is the comparison. Turning it off is the last stage, not this one.
+    std::string ir = codegen.toIR();
+#ifdef POLARON_WITH_LLVM
+    if (pirModule != nullptr) {
+        // ...AND IT IS OPTIMISED, at the level the driver was given. This was missing, and it was
+        // missing SILENTLY: the trusted module goes through `codegen.optimize(optLevel)` a hundred
+        // lines above, and this one went straight to the output -- so every program built through
+        // PIR ran at -O0 whatever `-O2` said. The differential could not see it (both paths print
+        // the same thing, one of them slowly) and pico could: a kernel that spends tens of seconds
+        // on one frame misses every wall-clock assertion its own suite makes.
+        // `POLARON_PIR_OPT=<n>` CAPS IT, for bisecting. When a program works at -O0 and not at -O2
+        // the question is WHICH transform, and the only way to ask is to run fewer of them. It caps
+        // rather than sets, so it can never turn an optimisation ON that the command line did not
+        // ask for -- a debugging knob that changes a release build is not a debugging knob.
+        int pirOpt = optLevel;
+        if (const char* capped = std::getenv("POLARON_PIR_OPT");
+            capped != nullptr && capped[0] >= '0' && capped[0] <= '3') {
+            pirOpt = std::min(pirOpt, capped[0] - '0');
+        }
+        polaron::optimizeModule(*pirModule, pirOpt);
+        std::string viaPirText;
+        llvm::raw_string_ostream os(viaPirText);
+        pirModule->print(os, nullptr);
+        os.flush();
+        ir = std::move(viaPirText);
+    } else if (wantViaPir) {
+        // ASKED FOR THIS BACKEND AND DID NOT GET IT IS A FAILURE, not a fallback.
+        //
+        // When `toLlvm` produced a module LLVM refused, this printed one line and then wrote the
+        // TRUSTED module to the output instead. Everything downstream then measured the old backend
+        // against itself: the sample compiled, linked, ran, printed exactly what the other arm
+        // printed, and the differential recorded it as agreement. Twenty-two of the six hundred and
+        // ninety-two samples this corpus called SAME were that -- every `async_*`, every
+        // `unimport`/`reimport`, and four others -- and the number had been read as evidence.
+        //
+        // A comparison whose two sides can quietly become the same side is not a comparison. Asking
+        // for a backend and being handed a different one has to stop the compile, so the harness
+        // counts it as the failure it is and the work queue is the true one.
+        std::fprintf(stderr,
+                     "polc: the PIR backend did not produce a usable module, and emitting the older "
+                     "path's IR in its place would hide that. Compile with POLARON_VIA_PIR=0 to use "
+                     "the AST-to-LLVM path deliberately, and please report this program\n");
+        return 1;
+    }
+#endif
     if (outPath.empty()) {
         std::fputs(ir.c_str(), stdout);
     } else {
@@ -1726,6 +2080,9 @@ int main(int argc, char** argv) {
     std::string extractFrom;  // --extract-code <dep.polb>: dump the bundle's CODE bitcode to -o
     std::string target;  // --target=<triple>, e.g. x86_64-unknown-none for freestanding/bare metal
     int optLevel = 0;    // -O0..-O3: run polc's own optimization pipeline before emitting IR
+    // `--compare-ir`: report every function the two backends build differently. Off by default: it
+    // costs a bitcode round trip and it answers a question about the COMPILER, not the program.
+    bool compareIr = false;
     bool libraryMode = false;  // --lib: compile a bundle to a .polb (+ .polh), no entry point required
     bool testMode = false;     // --test: emit a synthetic runner over the [Test] methods, not main
     bool debugInfo = false;    // -g: emit DWARF debug metadata (for @@LOW@@UPPLINGB@@@@ / the Forge debugger)
@@ -1745,6 +2102,7 @@ int main(int argc, char** argv) {
     // --emit-c-header=<path|->: the header a C or C++ caller needs for the methods this program
     // exports. The external world's counterpart to the .polh, which serves the closed one.
     std::string cHeaderOut;
+    std::string pirOut;       // --emit-pir=<path|->: the PIR text form, beside the real pipeline
     std::string slotsOut;     // --emit-vtable-slots=<path>: the merged vtable layout
     std::string remapSlots;   // --remap-slots=<path>: renumber an extracted bundle into that layout
     // --foreign-lib=<logical>:<platform>=<file>, repeatable: the manifest's [libraries] table, written
@@ -1783,6 +2141,8 @@ int main(int argc, char** argv) {
             foreignLibMap.push_back(std::move(fl));
         } else if (args[i] == "--test") {
             testMode = true;
+        } else if (args[i] == "--compare-ir") {
+            compareIr = true;   // the two backends' bodies, shape by shape -- see where it is used
         } else if (args[i] == "--use") {
             if (i + 1 >= args.size()) {
                 std::fprintf(stderr, "error: --use requires a .polb file\n");
@@ -1817,6 +2177,8 @@ int main(int argc, char** argv) {
             foreignLibsOut = std::string(args[i].substr(std::string("--emit-foreign-libs=").size()));
         } else if (args[i].rfind("--emit-c-header=", 0) == 0) {
             cHeaderOut = std::string(args[i].substr(std::string("--emit-c-header=").size()));
+        } else if (args[i].rfind("--emit-pir=", 0) == 0) {
+            pirOut = std::string(args[i].substr(std::string("--emit-pir=").size()));
         } else if (args[i].rfind("--emit-vtable-slots=", 0) == 0) {
             // The merged slot layout, for `--extract-code --remap-slots` to renumber each dependency
             // into. One name per line, position = slot; an empty line is an unused slot.
@@ -1872,5 +2234,5 @@ int main(int argc, char** argv) {
     }
     return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode, debugInfo,
                    remoteDeps, /*checkOnly=*/false, regionBinder, verifyStack, foreignLibsOut,
-                   cHeaderOut, slotsOut, foreignLibMap);
+                   cHeaderOut, slotsOut, foreignLibMap, pirOut, compareIr);
 }

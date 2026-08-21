@@ -1,0 +1,55 @@
+import System.IO.Console;
+import System.Memory.Allocator;
+import System.Memory.Raw;
+
+program BceRawPointer;
+
+// A HOSTED PROGRAM THAT INDEXES A RAW POINTER, AT -O2. It did not compile:
+//
+//     error[Polaron-0103]: class 'int*' has no method 'length'
+//
+// `hoistBoundsChecks` synthesizes a guard `base.length()` over the base of an indexed access, and a
+// pointer has no length. The symptom was known -- there is a comment about it -- and the cure was
+// aimed at the wrong place: the whole pass was skipped for FREESTANDING programs, where pointers are
+// everywhere and it was noticed at once. Hosted code kept the bug, and nothing here indexed a
+// pointer at -O2, so the suite could not find it.
+//
+// The fix is at the funnel every candidate passes through: a name declared as a pointer is not an
+// array, so there is no length to hoist and none to ask for.
+//
+// THE TEST HAS TO BE AT -O2 or it proves nothing at all: the pass does not run at -O0, which is the
+// default, so at -O0 this file compiles either way -- the same trap the `bce_affine` test above was
+// written to close.
+public bundle main {
+    public namespace app {
+        public class Main {
+            // The loop that used to be unbuildable: an indexed read of a raw pointer, bounded by a
+            // separate count, exactly as a C programmer would write it.
+            static method sumPointer(int* a, int n) returns int {
+                mutable int s = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    s = s + a[i];
+                }
+                return s;
+            }
+
+            public static method main(string[] args) returns void {
+                int n = 16;
+                address block = Allocator.alloc(cast<address>(n) * 4);
+                int* a = cast<int*>(block);
+                // A pointer taken inside a nested block, which the collector has to see too: a loop
+                // over a pointer declared in an `if` is the ordinary shape.
+                if (n > 0) {
+                    int* w = a;
+                    for (mutable int i = 0; i < n; i++) {
+                        w[i] = i + 1;
+                    }
+                }
+                // 1 + 2 + ... + 16 = 136.
+                System.IO.Console.printf("sum=%d\n", Main.sumPointer(a, n));
+                Allocator.free(block);
+                return;
+            }
+        }
+    }
+}

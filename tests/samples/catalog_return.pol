@@ -1,0 +1,89 @@
+import System.IO.Console;
+
+program CatalogReturn;
+
+// A METHOD THAT RETURNS A CATALOG, which the guide says is a first-class thing to do: "a
+// catalog-typed value is a first-class one: it may be stored, RETURNED, and passed as an argument".
+//
+// It could not be compiled. A catalog-typed value is a tagged ordinal -- (enumTypeId << 32 | ordinal),
+// an i64 -- so that a call through the catalog reaches the right implementer whichever enum the
+// constant came from. Arguments were packed into that shape and locals were too; a `return` handed
+// back the enum's own value instead, which for a java-style enum is its singleton POINTER. The module
+// verifier caught it every time: "Function return type does not match operand type of return inst".
+//
+// So any method whose result was "what happened, as one of a closed set of outcomes carrying their own
+// message" failed to build -- which is the shape a protocol check wants and the reason this was found
+// in a DNS resolver written in Polaron.
+//
+// Both implementer flavours are here, because the packing differs: an ordinal enum's value is already
+// its ordinal, and a java-style one's has to be recovered from the singleton.
+public bundle Main {
+    public namespace Reports {
+        public catalog Verdict {
+            ok,
+            broken
+
+            method score() returns int;
+        }
+
+        // Java-style: every constant carries its own number.
+        public sealed enum Grade extends Verdict {
+            halfway(50)
+
+            byCatalog {
+                ok(100),
+                broken(0)
+            }
+            ;
+            private int points;
+
+            public constructor Grade(int points) {
+                this.points = points;
+            }
+
+            public method score() returns int { return this.points; }
+        }
+
+        // ...and an ordinal one, whose value IS its ordinal. Two enums implementing one catalog is
+        // what the tag exists for: the call below has to reach the right one.
+        public enum Mood extends Verdict {
+            unsure
+
+            byCatalog {
+                ok,
+                broken
+            }
+            ;
+            public method score() returns int { return cast<int>(this) + 7; }
+        }
+
+        public class Judge {
+            // The method that could not be written.
+            public static method judge(int n) returns Verdict {
+                if (n > 10) { return Grade.ok; }
+                if (n > 5) { return Grade.halfway; }
+                if (n > 0) { return Mood.unsure; }
+                return Grade.broken;
+            }
+
+            // ...and again through a local declared as the catalog, which is the other half of the
+            // same question.
+            public static method viaLocal() returns Verdict {
+                Verdict held = Mood.ok;
+                return held;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Verdict a = Judge.judge(20);
+                Verdict b = Judge.judge(7);
+                Verdict c = Judge.judge(3);
+                Verdict d = Judge.judge(0);
+                System.IO.Console.printf("%d %d %d %d %d\n", a.score(), b.score(), c.score(),
+                                         d.score(), Judge.viaLocal().score());
+                return;
+            }
+        }
+    }
+}

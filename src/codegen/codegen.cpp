@@ -1,4 +1,13 @@
 #include "codegen/codegen_impl.h"   // `CodeGenerator::Impl`, which this file is the facade over
+#include "codegen/optimize.h"       // ...and the one pipeline, reachable by both backends
+#include "codegen/target.h"         // ...and the one data layout, for the same reason
+
+#include <llvm/TargetParser/Host.h>
+
+#include <llvm/IR/ReplaceConstant.h>   // for `materialiseUnprintableConstants`
+
+#include <algorithm>
+#include <functional>
 
 namespace polaron {
 
@@ -42,27 +51,76 @@ void CodeGenerator::setTargetTriple(const std::string& triple) {
                      SourceLocation{});
         return;
     }
+    if (const std::string layout = dataLayoutFor(triple); !layout.empty()) {
+        impl_->module.setDataLayout(layout);
+    }
+}
+
+// THE TABLE ITSELF, over any module, because the second backend needs the same answer and a module
+// with no layout is not "unset" -- it is a module with the WRONG one. See `codegen/target.h`.
+std::string dataLayoutFor(const std::string& triple) {
     const bool windows =
         triple.find("windows") != std::string::npos || triple.find("msvc") != std::string::npos;
     if (triple.find("x86_64") != std::string::npos || triple.find("amd64") != std::string::npos) {
-        impl_->module.setDataLayout(
-            windows ? "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
-                    : "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
-    } else if (triple.find("aarch64") != std::string::npos || triple.find("arm64") != std::string::npos) {
-        impl_->module.setDataLayout(
-            windows
-                ? "e-m:w-p270:32:32-p271:32:32-p272:64:64-p:64:64-i32:32-i64:64-i128:128-n32:64-S128-Fn32"
-                : "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32");
-    } else if (triple.rfind("armv", 0) == 0 || triple.find("-arm-") != std::string::npos) {
-        impl_->module.setDataLayout("e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64");
-    } else if (triple.find("i686") != std::string::npos || triple.find("i386") != std::string::npos) {
-        impl_->module.setDataLayout(
-            windows ? "e-m:x-p:32:32-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32-a:0:32-S32"
-                    : "e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-i128:128-f64:32:64-f80:32-n8:16:32-S128");
-    } else if (triple.find("wasm32") != std::string::npos) {
-        impl_->module.setDataLayout("e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20");
-    } else if (triple.find("riscv64") != std::string::npos) {
-        impl_->module.setDataLayout("e-m:e-p:64:64-i64:64-i128:128-n32:64-S128");
+        return windows
+                   ? "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+                   : "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128";
+    }
+    if (triple.find("aarch64") != std::string::npos || triple.find("arm64") != std::string::npos) {
+        return windows
+                   ? "e-m:w-p270:32:32-p271:32:32-p272:64:64-p:64:64-i32:32-i64:64-i128:128-n32:64-S128-Fn32"
+                   : "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32";
+    }
+    if (triple.rfind("armv", 0) == 0 || triple.find("-arm-") != std::string::npos) {
+        return "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64";
+    }
+    if (triple.find("i686") != std::string::npos || triple.find("i386") != std::string::npos) {
+        return windows
+                   ? "e-m:x-p:32:32-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32-a:0:32-S32"
+                   : "e-m:e-p:32:32-p270:32:32-p271:32:32-p272:64:64-i128:128-f64:32:64-f80:32-n8:16:32-S128";
+    }
+    if (triple.find("wasm32") != std::string::npos) {
+        return "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-i128:128-n32:64-S128-ni:1:10:20";
+    }
+    if (triple.find("riscv64") != std::string::npos) {
+        return "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128";
+    }
+    return {};
+}
+
+void applyTarget(llvm::Module& module, const std::string& triple) {
+    // AN EMPTY TRIPLE IS THE HOST, not "no target". A program built without `--target` runs on this
+    // machine, and asking for its layout is the difference between the sizes this compiler computes
+    // and the sizes the linker's clang will lay out an object with.
+    const std::string want = triple.empty() ? llvm::sys::getDefaultTargetTriple() : triple;
+#if LLVM_VERSION_MAJOR >= 21
+    module.setTargetTriple(llvm::Triple(want));
+#else
+    module.setTargetTriple(want);
+#endif
+    if (const std::string layout = dataLayoutFor(want); !layout.empty()) {
+        module.setDataLayout(layout);
+    }
+}
+
+void applyBareMetalAttrs(llvm::Module& module) {
+#if LLVM_VERSION_MAJOR >= 21
+    const llvm::Triple triple = module.getTargetTriple();
+#else
+    const llvm::Triple triple(module.getTargetTriple());
+#endif
+    // An unset triple is the hosted default, and an unparseable arch is not a target we can reason
+    // about -- neither is bare metal, so neither gets the attribute.
+    if (triple.getArch() == llvm::Triple::UnknownArch) {
+        return;
+    }
+    if (triple.getOS() != llvm::Triple::UnknownOS) {
+        return;  // `...-none-elf` parses as no OS
+    }
+    for (llvm::Function& f : module) {
+        if (!f.isDeclaration()) {
+            f.addFnAttr(llvm::Attribute::NoRedZone);
+        }
     }
 }
 
@@ -185,6 +243,11 @@ bool CodeGenerator::generate() {
     // terms of that allocator. Freestanding only -- hosted links the runtime's own.
     impl_->emitStringBridge();
     cg("emitStringBridge");
+    // ...and the same for the visited set a non-forest `cascade` allocates. Same reason and same
+    // place: it is written in terms of the program's own allocator, so it comes after the bridge
+    // that defines one.
+    impl_->emitPointerSetBridge();
+    cg("emitPointerSetBridge");
     cg("emitHeapBridge");
     impl_->finalizeDebugInfo();  // -g: resolve all debug metadata before verification
     if (!errors_.empty()) {
@@ -365,9 +428,56 @@ struct RecursiveInlinePass : llvm::PassInfoMixin<RecursiveInlinePass> {
     }
 };
 
+// A CONSTANT EXPRESSION THE TEXTUAL FORM NO LONGER HAS.
+//
+// `polc` hands its module to clang as TEXT, and the two are not the same language any more: LLVM
+// keeps removing constant-expression opcodes from the parser while the in-memory form still builds
+// them. The vectoriser's runtime overlap check is one -- given a constant address it folds the whole
+// comparison, and the module prints `br i1 icmp ult (i64 sub (...), i64 4), ...`, which clang then
+// refuses with "icmp constexprs are no longer supported". Legal IR, unparseable text.
+//
+// So the ones the writer can no longer spell are materialised as instructions before printing. Only
+// those: a `getelementptr` constant expression is still text, and expanding every constexpr would
+// undo the folding the pipeline just did.
+void materialiseUnprintableConstants(llvm::Module& module) {
+    auto unspellable = [](const llvm::ConstantExpr* ce) {
+        return ce->getOpcode() == llvm::Instruction::ICmp ||
+               ce->getOpcode() == llvm::Instruction::FCmp;
+    };
+    // Rewritten in place, one use at a time: `getAsInstruction` gives the same operation as a real
+    // instruction, placed immediately before whoever reads it. Its own operands stay constant --
+    // the `sub` and the `ptrtoint` under this `icmp` are still spellable, and expanding them too
+    // would be undoing the folding for nothing.
+    for (llvm::Function& f : module) {
+        for (llvm::BasicBlock& bb : f) {
+            for (llvm::Instruction& in : llvm::make_early_inc_range(bb)) {
+                for (unsigned at = 0; at < in.getNumOperands(); ++at) {
+                    auto* ce = llvm::dyn_cast<llvm::ConstantExpr>(in.getOperand(at));
+                    if (ce == nullptr || !unspellable(ce)) {
+                        continue;
+                    }
+                    // A PHI READS ITS OPERAND IN THE PREDECESSOR, not here, so the instruction has
+                    // to go at the end of that block or it would not dominate its own use.
+                    llvm::Instruction* materialised = ce->getAsInstruction();
+                    if (auto* phi = llvm::dyn_cast<llvm::PHINode>(&in)) {
+                        materialised->insertBefore(phi->getIncomingBlock(at)->getTerminator());
+                    } else {
+                        materialised->insertBefore(&in);
+                    }
+                    in.setOperand(at, materialised);
+                }
+            }
+        }
+    }
+}
+
 }  // namespace
 
-void CodeGenerator::optimize(int level) {
+// THE MODULE THIS OBJECT BUILT. The rule itself lives below, over any module, so the second backend
+// can reach the same one -- see `codegen/optimize.h`.
+void CodeGenerator::optimize(int level) { optimizeModule(impl_->module, level); }
+
+void optimizeModule(llvm::Module& module, int level) {
     if (level <= 0) {
         return;  // O0: leave the IR as generated
     }
@@ -393,7 +503,8 @@ void CodeGenerator::optimize(int level) {
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
     llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(ol);
-    mpm.run(impl_->module, mam);
+    mpm.run(module, mam);
+    materialiseUnprintableConstants(module);
 }
 
 std::string CodeGenerator::toIR() const {

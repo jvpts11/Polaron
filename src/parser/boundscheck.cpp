@@ -273,8 +273,25 @@ bool memberWrittenInBlock(const Block& b, const std::string& field) {
 
 // A stable key for a "simple" array expression, or "" if the expression is not one we can prove
 // invariant / re-evaluate in the guard. Only a bare local/param (`a`) or a `this` field (`this.data`).
+// NAMES DECLARED AS RAW POINTERS IN THE METHOD BEING WALKED. A pointer has no length, so `p[i]` on
+// one is not a bounds-checked access and there is nothing to hoist -- and the guard this pass would
+// synthesize, `p.length()`, is not merely useless: it does not compile.
+//
+// A HOSTED PROGRAM THAT INDEXED A RAW POINTER COULD NOT BE BUILT AT -O2 AT ALL: `class 'int*' has no
+// method 'length'`, on a line the programmer wrote correctly, from a pass they never asked for. The
+// symptom was known and the cure was aimed at the wrong place -- the whole pass was skipped for
+// FREESTANDING programs, where pointers are everywhere and it was noticed at once, so hosted code
+// kept the bug and nothing in the suite indexed a pointer at -O2 to find it.
+//
+// Gathered syntactically, which is all that is needed and all there is: this runs before types are
+// resolved, and a declaration states its pointer in its own text.
+std::set<std::string> g_pointerNames;
+
 std::string arrayKey(const Expr* e) {
     if (const auto* id = dynamic_cast<const IdentifierExpr*>(e)) {
+        if (g_pointerNames.count(id->name) > 0) {
+            return "";   // a pointer: no length to hoist, and none to ask for
+        }
         return "$" + id->name;
     }
     if (const auto* m = dynamic_cast<const MemberExpr*>(e)) {
@@ -807,6 +824,43 @@ void tryVersionWhile(StmtPtr& slot, bool bodyWasSafe) {
     versionLoop(slot, std::move(guard), std::move(fast), fastBody, info.var, loc);
 }
 
+// EVERY LOCAL DECLARED A POINTER, anywhere in the body -- nested blocks included, because a loop
+// over a pointer taken inside an `if` is the ordinary shape and the pass would otherwise hoist a
+// length on it. Scope is deliberately ignored: this set only ever suppresses an optimisation, so a
+// name reused as an array in a sibling block costs one guard, while missing one costs the build.
+void collectPointerLocals(const Block& b);
+
+void collectPointerLocalsStmt(const Stmt* s) {
+    if (s == nullptr) {
+        return;
+    }
+    if (const auto* vd = dynamic_cast<const VarDeclStmt*>(s)) {
+        if (vd->type.isPointer) {
+            g_pointerNames.insert(vd->name);
+        }
+        return;
+    }
+    if (const auto* blk = dynamic_cast<const Block*>(s)) { collectPointerLocals(*blk); return; }
+    if (const auto* i = dynamic_cast<const IfStmt*>(s)) {
+        collectPointerLocals(i->thenBlock);
+        if (i->elseBlock != nullptr) { collectPointerLocals(*i->elseBlock); }
+        return;
+    }
+    if (const auto* f = dynamic_cast<const ForStmt*>(s)) {
+        collectPointerLocalsStmt(f->init.get());
+        collectPointerLocals(f->body);
+        return;
+    }
+    if (const auto* w = dynamic_cast<const WhileStmt*>(s)) { collectPointerLocals(w->body); return; }
+    if (const auto* d = dynamic_cast<const DoWhileStmt*>(s)) { collectPointerLocals(d->body); return; }
+}
+
+void collectPointerLocals(const Block& b) {
+    for (const auto& s : b.statements) {
+        collectPointerLocalsStmt(s.get());
+    }
+}
+
 // ---------- driver: walk every block, versioning innermost loops first ----------
 
 void walkBlock(Block& b);
@@ -885,7 +939,20 @@ void hoistBoundsChecks(ast::Program& program) {
                 for (auto& m : cls.members) {
                     if (auto* md = dynamic_cast<ast::MethodDecl*>(m.get())) {
                         if (!md->isAbstract) {
+                            // Per method, because a name is a pointer in one and an array in the
+                            // next. Parameters and locals both, and a local shadowing a parameter
+                            // only ever ADDS to the set -- which is the safe direction: the cost of
+                            // a false "this is a pointer" is one guard not hoisted, and the cost of
+                            // a false "this is an array" is a program that will not compile.
+                            g_pointerNames.clear();
+                            for (const ast::Param& p : md->params) {
+                                if (p.type.isPointer) {
+                                    g_pointerNames.insert(p.name);
+                                }
+                            }
+                            collectPointerLocals(md->body);
                             walkBlock(md->body);
+                            g_pointerNames.clear();
                         }
                     }
                 }

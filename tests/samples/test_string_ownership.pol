@@ -1,0 +1,42 @@
+import System.IO.Console;
+import System.Test.Test;
+
+// Does a String own its buffer? A String built and dropped inside a scope must leave the live-byte
+// total where it found it. The two backends disagreed about this in the IR -- one emits
+// `__polaron_str_copy`/`__polaron_str_free` around every String local and the other emits neither --
+// and no test in the corpus could see the difference, because a leak prints nothing.
+program TestStringOwnership;
+
+public bundle main {
+    public namespace app {
+        public class Probe {
+            private static method churn() returns void {
+                mutable long i = 0;
+                while (i < 200) {
+                    String a = "hello";
+                    String b = a + " world";
+                    String c = b.substring(0, 5);
+                    i = i + 1;
+                }
+                return;
+            }
+
+            [Test]
+            public static method strings_do_not_leak() returns void {
+                Test.checking("two hundred rounds of String building leave the live total alone");
+                Probe.churn();
+                long before = Test.liveBytes();
+                Probe.churn();
+                long after = Test.liveBytes();
+                Test.assertEqualLong(before, after);
+                return;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("run me with --test");
+                return;
+            }
+        }
+    }
+}

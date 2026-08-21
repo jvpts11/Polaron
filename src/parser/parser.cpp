@@ -76,14 +76,22 @@ ast::MemberPtr buildRecordHashCode(const std::string& typeName,
     vd->init = makeInt("17");
     m->body.statements.push_back(std::move(vd));
     for (const ast::Param& f : fields) {
-        if (!isRecordNumericField(f.type.name)) {
-            continue;  // object/String fields are not hashed
+        // A POINTER IS NOT ITS POINTEE. This asked `isRecordNumericField(f.type.name)`, and the name
+        // of a `byte* p` field is "byte" -- so a record with a pointer in it generated
+        // `h = h * 31 + this.p`, and the analyzer refused the record for an addition its author never
+        // wrote: "operator '+' requires numeric operands", pointing at `public record ...`. Arrays,
+        // references and nullables have the same shape and the same answer: they have no numeric value
+        // to fold, exactly as `keyFieldKind` says one layer up.
+        if (f.type.isPointer || f.type.isRef || f.type.isArray || f.type.isNullable ||
+            !isRecordNumericField(f.type.name)) {
+            continue;  // object/String/pointer fields are not hashed
         }
         ast::ExprPtr fieldVal = makeMember(makeIdent("this", loc), f.name, loc);
         if (isRecordFloatField(f.type.name)) {  // fold a float field to int for the mix
             auto cast = std::make_unique<ast::CastExpr>();
             cast->loc = loc;
             cast->targetType = "int";
+            cast->synthetic = true;   // generated hashing, not the author's -- see CastExpr::synthetic
             cast->operand = std::move(fieldVal);
             fieldVal = std::move(cast);
         } else if (f.type.name == "boolean") {

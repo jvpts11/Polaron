@@ -37,6 +37,9 @@ int fixedExtent(const std::string& t);
 bool isFixedArrayType(const std::string& t);
 std::string elementOf(const std::string& t);
 bool isRefType(const std::string& t);
+// Trailing '*'/'&' markers, counted: 0 for `Dog`, 1 for `Dog*`, 2 for `Dog**`. `baseType` strips one;
+// this asks how many there are, which is what the subtype rule needs to keep `T**` out of a `T*`.
+std::size_t pointerDepth(const std::string& t);
 std::string baseType(const std::string& t);
 std::string typeRefStr(const ast::TypeRef& t);
 bool isFloatType(const std::string& t);

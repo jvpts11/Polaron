@@ -1,0 +1,76 @@
+program AddressDiscipline freestanding;
+
+// THE ADDRESS FAMILY, AND THE TWO WAYS OUT OF IT.
+//
+// `address`, `half address`, `short address` and `byte address` exist so that a location in memory is a
+// different type from a count, a mask or a colour. Nothing enforced that until these warnings: a
+// program could declare `fixed int Slot = 0x7F20`, cast it to a pointer at the use site, and every line
+// after that treated a machine address as arithmetic. A whole kernel did exactly that.
+//
+// This sample is the POSITIVE half -- code that should compile silently -- and it is deliberately full
+// of the shapes that used to trip the check while being perfectly correct:
+//
+//   * a mask cast to an address (`0xFFFFFFFF` is not a place);
+//   * a decimal literal widened for arithmetic (86400 seconds, not an address);
+//   * a small count widened the same way;
+//   * a byte pulled out of an address with `&`, a half with `>>`, a page number with `/`;
+//   * a distance between two addresses, which is a size and therefore a number.
+//
+// The negative half is `address_discipline_bad.pol`. Both matter: a warning that fires on correct code
+// is a warning people learn to scroll past, and this file is the proof that it does not.
+public bundle Main {
+    public namespace Bare {
+        public class Ports {
+            // A port IS an address -- in x86's other, sixteen-bit address space.
+            public fixed short address Com1 = 0x3F8;
+            public fixed half address RomWindow = 0xE0000;
+            public fixed byte address SipiVector = 0x08;
+
+            public static method masks(address at) returns void {
+                // A mask cast to an address: `0xFFFFFFFF` is all-ones, which is never a location.
+                address low = at & cast<address>(0xFFFFFFFF);
+                // Extractions: a byte, a half, a page number. Each is a number BY CONSTRUCTION.
+                int lowByte = cast<int>(at & 255);
+                int highHalf = cast<int>(at >> 32);
+                int page = cast<int>(at / 4096);
+                int within = cast<int>(at % 4096);
+                Ports.consume(low, lowByte + highHalf + page + within);
+                return;
+            }
+
+            public static method arithmetic(int days, int pages) returns address {
+                // Decimal literals and counts widened for arithmetic. Neither is a place.
+                address seconds = cast<address>(days) * cast<address>(86400);
+                address bytes = cast<address>(pages) * 4096;
+                return seconds + bytes;
+            }
+
+            public static method distance(address from, address to) returns int {
+                // A distance between two addresses is a SIZE.
+                return cast<int>(to - from);
+            }
+
+            // A narrow address widened to a wide one, which is where the sign-extension bug lived:
+            // `0x8000` in a `short address` arrived as 0xFFFF_FFFF_FFFF_8000 in an `address`
+            // parameter, and the machine faulted on a non-canonical address.
+            public static method widened() returns address {
+                short address low = 0x8000;
+                return Ports.take(low);
+            }
+            static method take(address a) returns address { return a; }
+            static method consume(address a, int n) returns void { return; }
+        }
+
+        public class Main {
+            // Called, not merely declared: an uncalled class is dead-stripped and the IR this test
+            // reads would be empty -- which is a test that passes because nothing was compiled.
+            public static method main(string[] args) returns void {
+                Ports.masks(Ports.RomWindow);
+                Ports.arithmetic(2, 3);
+                Ports.distance(Ports.RomWindow, Ports.RomWindow + 4096);
+                Ports.widened();
+                return;
+            }
+        }
+    }
+}

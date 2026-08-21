@@ -1,0 +1,97 @@
+import System.IO.Console;
+program OperatorOnStruct;
+
+// AN OPERATOR ON A VALUE TYPE, called once and chained.
+//
+// pico's compositor defines `operator &` on its `Rect` as intersection -- which is what every
+// graphics library spells it, and a rectangle IS a set of pixels. It compiled, and every window that
+// used it came up BLANK: the clip rectangle came back empty, so the glyph rasterizer and the alpha
+// blender drew nothing at all. Nothing was reported; the desktop simply stopped having text in it.
+//
+// The two shapes are separated on purpose. `a & b` is one call; `a & b & c` is the same call twice
+// with the first result as the left operand, which is the form the compositor actually writes and
+// the one where a value returned by an overload has to survive being an argument to the next.
+//
+// The numbers are chosen so a wrong answer cannot look right: the three boxes overlap in exactly
+// one 2x2 square at (4,4), and any pairwise intersection is bigger than that.
+public bundle Main {
+    public namespace App {
+        public struct Box {
+            public mutable int x;
+            public mutable int y;
+            public mutable int w;
+            public mutable int h;
+
+            public constructor Box(int px, int py, int pw, int ph) {
+                this.x = px;
+                this.y = py;
+                this.w = pw;
+                this.h = ph;
+            }
+
+            public method right() returns int { return this.x + this.w; }
+            public method bottom() returns int { return this.y + this.h; }
+            public method area() returns int { return this.w <= 0 || this.h <= 0 ? 0 : this.w * this.h; }
+
+            // `on stack`, which is what pico writes -- a rectangle is a value and allocating one on
+            // the heap to return it would be a heap operation per clip test. It matters here because
+            // the operator below RETURNS WHAT THIS RETURNED: the temporary crosses two frames, which
+            // is the shape a chained overload puts it in.
+            public method meet(Box other) returns Box {
+                int l = this.x > other.x ? this.x : other.x;
+                int t = this.y > other.y ? this.y : other.y;
+                int r = this.right() < other.right() ? this.right() : other.right();
+                int b = this.bottom() < other.bottom() ? this.bottom() : other.bottom();
+                return new Box(l, t, r - l, b - t) on stack;
+            }
+
+            // A whole box, from a method -- the third operand in the chain below. pico's is
+            // `surface.bounds()`, and the point is that the right-hand side of the second `&` is a
+            // CALL and not a variable.
+            public method whole() returns Box { return new Box(0, 4, 8, 6) on stack; }
+
+            // THE SHAPE THAT BROKE A DESKTOP: the middle operand is a struct PARAMETER, taken by
+            // value, and the right one is a method call. pico's rasterizer writes
+            // `this.inkBounds() & clip & dst.bounds()`, and with the operator there every window on
+            // the machine came up with no text and no buttons -- the clip came out wrong rather than
+            // empty, so the scan converter wrote outside the surface and took the heap with it.
+            public method clipped(Box clip) returns Box {
+                return this.meet(clip).meet(this.whole());
+            }
+            public method clippedOp(Box clip) returns Box {
+                return this & clip & this.whole();
+            }
+
+            // The same operation under the operator. Both spellings must produce the same box --
+            // that is the whole assertion, and it is why `meet` is here to compare against.
+            public operator & (Box other) returns Box { return this.meet(other); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box a = new Box(0, 0, 6, 6);
+                Box b = new Box(4, 0, 6, 8);
+                Box c = new Box(0, 4, 8, 6);
+
+                Box one = a & b;                 // one call
+                Box two = a & b & c;             // chained: the result of one is the left of the next
+                Box byHand = a.meet(b).meet(c);
+                // ...and the shape pico writes: the last operand is a METHOD CALL returning a value.
+                Box called = a & b & c.whole();
+                Box viaParam = a.clipped(b);
+                Box viaParamOp = a.clippedOp(b);
+
+                System.IO.Console.printf("one=%d,%d,%d,%d chain=%d,%d,%d,%d hand=%d,%d,%d,%d call=%d,%d,%d,%d\n",
+                    one.x, one.y, one.w, one.h,
+                    two.x, two.y, two.w, two.h,
+                    byHand.x, byHand.y, byHand.w, byHand.h,
+                    called.x, called.y, called.w, called.h);
+                // The two spellings of the same thing, through a by-value parameter. They must agree.
+                System.IO.Console.printf("param=%d,%d,%d,%d paramOp=%d,%d,%d,%d\n",
+                    viaParam.x, viaParam.y, viaParam.w, viaParam.h,
+                    viaParamOp.x, viaParamOp.y, viaParamOp.w, viaParamOp.h);
+                return;
+            }
+        }
+    }
+}

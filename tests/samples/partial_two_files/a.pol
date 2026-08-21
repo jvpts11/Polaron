@@ -1,0 +1,23 @@
+// `partial` ACROSS FILES (spec 8.3), which is the case the keyword exists for and the one that never
+// worked. Two files, one bundle, one namespace, one class in two parts.
+//
+// It failed two ways at once. `mergePartialClasses` matched parts within one `Namespace` OBJECT --
+// and a bundle written across N files is N Bundle objects with the same name, each holding its own
+// namespace object with the same name -- so parts in different files never met. And the merge ran
+// inside `monomorphize`, eight passes late, by which time `qualifyNamespaces` had renamed one of the
+// colliding names and the analyzer had already reported a redeclaration.
+//
+// Prints:
+//   sum=30
+import System.IO.Console;
+program PartialTwoFiles;
+
+public bundle main {
+    public namespace app {
+        public partial class Split {
+            private mutable int left;
+            public constructor Split() { this.left = 10; this.right = 20; }
+            public method fromA() returns int { return this.left; }
+        }
+    }
+}

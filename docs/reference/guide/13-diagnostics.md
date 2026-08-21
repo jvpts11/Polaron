@@ -130,6 +130,8 @@ two copies come to disagree.
 | `Polaron-0702` | cannot interpolate this value |
 | `Polaron-0703` | printf needs a literal format string |
 | `Polaron-0704` | this value does not fit the bits the field was given |
+| `Polaron-0705` | a packed bit field has no address of its own |
+| `Polaron-0706` | this is not an instruction the assembly checker knows |
 | `Polaron-0801` | malformed operator overload |
 | `Polaron-0802` | reflection used incorrectly |
 | `Polaron-0803` | region used incorrectly |
@@ -154,6 +156,9 @@ two copies come to disagree.
 | `Polaron-0B08` | this still works and is not going to keep working |
 | `Polaron-0B09` | these persistents will be told apart by identity, not by their contents |
 | `Polaron-0B0A` | this test reads a fixture whose setup it does not run |
+| `Polaron-0B0B` | this number is being used as an address, and it is not typed as one |
+| `Polaron-0B0C` | an address put into a number stops being an address |
+| `Polaron-0B0D` | `on stack` cannot be honoured here, so the object goes to the heap |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

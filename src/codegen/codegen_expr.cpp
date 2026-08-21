@@ -351,6 +351,24 @@ llvm::Value* CodeGenerator::Impl::emitExpr(const ast::Expr& expr) {
             return builder.CreateLoad(llvmType(staticFieldType[key]), staticGlobals[key],
                                       mem->member);
         }
+        // `Class.method` IN AN EXPRESSION IS THAT METHOD'S ADDRESS. The analyzer types it as a
+        // `funcptr<...>`; here it becomes the function itself, which in LLVM already IS a pointer to
+        // its own code -- so nothing is built, the right symbol is simply named.
+        //
+        // Until now the type existed and no value of it could be obtained from a method the program
+        // declares: taking one needed a `naked` method whose entire body was `lea rax, [rip+symbol]`.
+        // That is what the kernel's `syscall_entry_addr` is -- assembly written to work around a hole
+        // rather than to touch hardware.
+        //
+        // Guarded on the receiver not being a local, so a variable that happens to share a class's
+        // name is still read as the variable.
+        if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+            if (locals.find(oid->name) == locals.end()) {
+                if (auto fit = functions.find(oid->name + "." + mem->member); fit != functions.end()) {
+                    return fit->second;
+                }
+            }
+        }
         // A class-level const, read as Type.NAME (spec 28.1, OOP form): folded constant.
         if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
             if (const std::string ck = oid->name + "." + mem->member; namespaceConstTypes.count(ck) > 0) {

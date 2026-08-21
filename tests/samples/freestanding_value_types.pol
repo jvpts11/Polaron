@@ -1,0 +1,107 @@
+program FreestandingValueTypes freestanding;
+
+// WHAT A BARE-METAL PROGRAM MAY USE, and the two things it could not.
+//
+// A `freestanding` program has no allocator and no C library, and both of those were reachable by
+// accident from constructs that have nothing to do with either:
+//
+//   * A DATA-CARRYING ENUM. Every constant is a singleton -- one object for the whole run, never
+//     freed, which is `eternal` in this language's own words -- and it was built with a call to
+//     `__polaron_malloc` on first touch. So naming one constant of one such enum made a kernel or a
+//     ring-3 guest fail to LINK, and the feature was simply unavailable there.
+//
+//   * A VALUE STRUCT PASSED BY VALUE. Assignment in Polaron is copying, so the copy is a memcpy --
+//     emitted as a CALL to the library function, for four bytes, with the length written as a
+//     constant expression the optimiser never folded. Now it is `llvm.memcpy` with a literal size,
+//     which is expanded inline for the small cases and only becomes a libcall when it is genuinely
+//     large.
+//
+// Both were found writing pico's DNS resolver in Polaron: a resolver whose outcome is one constant of
+// an enum that carries its own message, and whose address is a four-byte value that compares itself.
+// The test is what the IR does NOT contain -- see the two `ir_absent` entries -- because that failure
+// never shows up as a wrong answer, only as a link error in somebody else's kernel.
+public bundle Main {
+    public namespace Bare {
+        public layout Quad {
+            onArrange {
+                itself.fitWithin(4 bytes);
+                itself.refuse("four bytes of address, and this type is those four bytes");
+            }
+        }
+
+        public struct Ipv4 implements Quad {
+            public mutable byte a;
+            public mutable byte b;
+            public mutable byte c;
+            public mutable byte d;
+
+            public constructor Ipv4(int a, int b, int c, int d) {
+                this.a = cast<byte>(a & 255);
+                this.b = cast<byte>(b & 255);
+                this.c = cast<byte>(c & 255);
+                this.d = cast<byte>(d & 255);
+            }
+
+            public operator == (Ipv4 other) returns boolean {
+                return this.a == other.a && this.b == other.b
+                    && this.c == other.c && this.d == other.d;
+            }
+        }
+
+        public catalog Told {
+            ok,
+            broken
+
+            method sentence() returns byte*;
+        }
+
+        public sealed enum Outcome extends Told {
+            elsewhere(b"somewhere else\n")
+
+            byCatalog {
+                ok(b"the address matched\n"),
+                broken(b"nothing at all\n")
+            }
+            ;
+            private byte* words;
+
+            public constructor Outcome(byte* words) {
+                this.words = words;
+            }
+
+            public method sentence() returns byte* { return this.words; }
+        }
+
+        public class Bare {
+            // Where the answer goes. A bare-metal program has nowhere to print to, and this file is
+            // about what the IR does NOT contain, so the result is parked in a static instead: enough
+            // that nothing here is dead code.
+            public static mutable address sink;
+
+            // A struct BY VALUE, twice: the parameter is a copy and so is the comparison's argument.
+            static method matches(Ipv4 seen) returns Told {
+                Ipv4 want = new Ipv4(203, 0, 113, 7) on stack;
+                if (seen == want) { return Outcome.ok; }
+                if (cast<int>(seen.a) == 10) { return Outcome.elsewhere; }
+                return Outcome.broken;
+            }
+
+            public unknown sysv static method _start() returns void {
+                Ipv4 saw = new Ipv4(203, 0, 113, 7) on stack;
+                Told what = Bare.matches(saw);
+                byte* s = what.sentence();
+                mutable long n = 0;
+                while (s[n] != cast<byte>(0)) { n = n + 1; }
+                Bare.sink = cast<address>(s) + cast<address>(n);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Bare._start();
+                return;
+            }
+        }
+    }
+}

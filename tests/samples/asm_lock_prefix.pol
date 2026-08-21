@@ -1,0 +1,35 @@
+program AsmLockPrefix;
+
+// `lock xchg`, WHICH THE ASM CHECKER USED TO REFUSE.
+//
+// A prefix is not an instruction. The checker read the first word of the line as the mnemonic, did not
+// find `lock` in the set it knows, and reported "'lock' is not a known x86_64 instruction" -- which is a
+// compiler refusing the atomic exchange every spinlock in existence is built from. Found writing pico's
+// first lock: two processors touching one word need one instruction that reads and writes with nothing
+// able to observe the middle, and there is no way to write that without the prefix.
+//
+// The block below is the shape that kernel uses -- `Cpu.exchange(address, int)`, the whole of a
+// spinlock's mechanism. The claim here is that it COMPILES: the prefix is stripped before the mnemonic
+// is read, and the negative half (`asm_lock_bad.pol`) shows it is stripped rather than waved through.
+// That it also RUNS is proved where it is used, by two processors reaching 40000 increments with none
+// lost -- a claim that needs two processors and so cannot be made in this suite.
+public bundle main {
+    public namespace app {
+        public class Machine {
+            public static method exchange(address at, int with) returns int {
+                mutable int was = 0;
+                asm("x86_64") { mov rdx, $1
+                                mov eax, $2
+                                lock xchg dword ptr [rdx], eax
+                                mov $0, eax } out (was) in (at, with) clobber("eax", "rdx");
+                return was;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                return;
+            }
+        }
+    }
+}

@@ -1,5 +1,7 @@
 #include "codegen/codegen_impl.h"
 
+#include "codegen/target.h"   // the red zone is the triple's decision, and both backends read it
+
 namespace polaron {
 
 std::string CodeGenerator::Impl::catalogImplementerEnum(const std::string& catalog, const std::string& method) {
@@ -648,6 +650,30 @@ llvm::GlobalVariable* CodeGenerator::Impl::enumSingletonGlobal(const std::string
     return staticGlobals[gname];
 }
 
+// THE STORAGE A SINGLETON LIVES IN, and it is static rather than allocated.
+//
+// A java-style enum constant is one object for the whole run of the program: nothing makes a second
+// `Medal.gold`, and nothing ever frees the first. That is `eternal` in this language's own words, and
+// the honest lowering of it is a slot in the image -- not a call to the allocator on first touch.
+//
+// It was a `__polaron_malloc`, and the cost was not the allocation. It was that a FREESTANDING
+// program could not use the feature at all: a kernel or a ring-3 guest with no heap links against an
+// undefined `__polaron_malloc` the moment it names one constant of an enum that carries data. Found
+// writing pico's DNS resolver, where every outcome is a constant of one such enum and the whole
+// program has no allocator by design. The `.__inst` pointer beside it still says whether the
+// constructor has run; only the memory it points at changed.
+llvm::GlobalVariable* CodeGenerator::Impl::enumSingletonStorage(const std::string& enumName,
+                                                                const std::string& constName,
+                                                                llvm::Type* objTy) {
+    const std::string gname = enumName + "." + constName + ".__store";
+    if (staticGlobals.count(gname) == 0) {
+        staticGlobals[gname] = new llvm::GlobalVariable(
+            module, objTy, /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
+            llvm::Constant::getNullValue(objTy), gname);
+    }
+    return staticGlobals[gname];
+}
+
 llvm::Value* CodeGenerator::Impl::emitJavaEnumOrdinal(llvm::Value* v, const std::string& enumName) {
     llvm::Value* ord = builder.getInt32(-1);
     auto eit = enums.find(enumName);
@@ -700,7 +726,7 @@ llvm::Value* CodeGenerator::Impl::emitEnumConstant(const ast::EnumDecl& en, cons
     auto* doneBB = llvm::BasicBlock::Create(context, "enumc.done", fn);
     builder.CreateCondBr(builder.CreateICmpEQ(cur, nullp), initBB, doneBB);
     builder.SetInsertPoint(initBB);
-    llvm::Value* objPtr = builder.CreateCall(mallocFn(), {sizeOf(cit->second.type)}, en.name);
+    llvm::Value* objPtr = enumSingletonStorage(en.name, constName, cit->second.type);
     auto fnit = functions.find(en.name + "." + en.name);
     if (fnit != functions.end()) {
         std::vector<llvm::Value*> args;
@@ -961,74 +987,10 @@ void CodeGenerator::Impl::emitCleanupAction(const Cleanup& c) {
     }
 }
 
-// The `this.<field>` names an expression mentions.
-static void collectThisFields(const ast::Expr* e, std::set<std::string>& out) {
-    if (e == nullptr) {
-        return;
-    }
-    if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
-        if (const auto* o = dynamic_cast<const ast::IdentifierExpr*>(m->object.get())) {
-            if (o->name == "this") {
-                out.insert(m->member);
-            }
-        }
-        collectThisFields(m->object.get(), out);
-        return;
-    }
-    if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) { collectThisFields(b->lhs.get(), out); collectThisFields(b->rhs.get(), out); return; }
-    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) { collectThisFields(u->operand.get(), out); return; }
-    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) { collectThisFields(ix->array.get(), out); collectThisFields(ix->index.get(), out); return; }
-    if (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) { collectThisFields(c->operand.get(), out); return; }
-    if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(e)) { collectThisFields(t->cond.get(), out); collectThisFields(t->thenExpr.get(), out); collectThisFields(t->elseExpr.get(), out); return; }
-    if (const auto* ca = dynamic_cast<const ast::CallExpr*>(e)) {
-        collectThisFields(ca->callee.get(), out);
-        for (const auto& a : ca->args) {
-            collectThisFields(a.get(), out);
-        }
-        return;
-    }
-}
-
-static bool blockAssignsThisField(const ast::Block& b, const std::set<std::string>& fields);
-
-static bool stmtAssignsThisField(const ast::Stmt* s, const std::set<std::string>& fields) {
-    if (s == nullptr) {
-        return false;
-    }
-    auto targets = [&](const ast::Expr* t) {
-        std::set<std::string> hit;
-        collectThisFields(t, hit);
-        for (const std::string& f : hit) {
-            if (fields.count(f) > 0) {
-                return true;
-            }
-        }
-        return false;
-    };
-    if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) { return targets(as->target.get()); }
-    if (const auto* idd = dynamic_cast<const ast::IncDecStmt*>(s)) { return targets(idd->target.get()); }
-    if (const auto* blk = dynamic_cast<const ast::Block*>(s)) { return blockAssignsThisField(*blk, fields); }
-    if (const auto* i = dynamic_cast<const ast::IfStmt*>(s)) {
-        return blockAssignsThisField(i->thenBlock, fields) ||
-               (i->elseBlock && blockAssignsThisField(*i->elseBlock, fields));
-    }
-    if (const auto* f = dynamic_cast<const ast::ForStmt*>(s)) { return stmtAssignsThisField(f->init.get(), fields) || stmtAssignsThisField(f->update.get(), fields) || blockAssignsThisField(f->body, fields); }
-    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(s)) { return blockAssignsThisField(w->body, fields); }
-    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(s)) { return blockAssignsThisField(d->body, fields); }
-    // Anything unrecognised is assumed to write, so the check stays.
-    return !dynamic_cast<const ast::ExprStmt*>(s) && !dynamic_cast<const ast::VarDeclStmt*>(s) &&
-           !dynamic_cast<const ast::ReturnStmt*>(s) && !dynamic_cast<const ast::BreakStmt*>(s) &&
-           !dynamic_cast<const ast::ContinueStmt*>(s);
-}
-
-static bool blockAssignsThisField(const ast::Block& b, const std::set<std::string>& fields) {
-    for (const auto& s : b.statements) {
-        if (stmtAssignsThisField(s.get(), fields)) {
-            return true;
-        }
-    }
-    return false;
-}
+// `collectThisFields`, `blockAssignsThisField` and the rule they serve used to live here. They are
+// in `cgutil` now, where the PIR path can reach them as well: which invariants a method must
+// re-check is the LANGUAGE's rule, not this backend's, and a backend that does not know it emits
+// ten checks on the way out of a `get` that assigns nothing.
 
 const std::vector<const ast::Expr*>* CodeGenerator::Impl::invariantsToCheck(
     llvm::Function* fn, const std::vector<const ast::Expr*>* all, const ast::Block& body) {
@@ -1055,9 +1017,7 @@ const std::vector<const ast::Expr*>* CodeGenerator::Impl::invariantsToCheck(
     }
     std::vector<const ast::Expr*> keep;
     for (const ast::Expr* inv : *all) {
-        std::set<std::string> fields;
-        collectThisFields(inv, fields);
-        if (fields.empty() || blockAssignsThisField(body, fields)) {
+        if (cgutil::invariantCanBreakIn(inv, body)) {
             keep.push_back(inv);
         }
     }
@@ -1295,136 +1255,20 @@ void CodeGenerator::Impl::attachTBAA() {
     }
 }
 
+// The bodies are in `codegen/bridges`, where the other backend can reach them: a program with no
+// libc has to be GIVEN these, and which backend built it is not part of that.
 void CodeGenerator::Impl::emitStringBridge() {
-    if (!freestandingProgram()) {
-        return;
+    if (freestandingProgram()) {
+        polaron::emitStringBridge(context, module);
     }
-    llvm::Type* i64 = builder.getInt64Ty();
-    llvm::PointerType* p = builder.getPtrTy();
-    llvm::StructType* strTy = llvm::StructType::get(context, {i64, p, i64});
-    auto define = [&](const char* sym, llvm::Type* ret, llvm::ArrayRef<llvm::Type*> params)
-        -> llvm::Function* {
-        llvm::FunctionType* ty = llvm::FunctionType::get(ret, params, false);
-        llvm::Function* f = module.getFunction(sym);
-        if (f == nullptr) {
-            f = llvm::Function::Create(ty, llvm::Function::ExternalLinkage, sym, module);
-        }
-        return f->empty() ? f : nullptr;   // already has a body: leave it alone
-    };
-    auto ip = builder.saveIP();
-    llvm::Function* saved = currentFn;
-
-    // __polaron_str_copy(src) -> a fresh String owning its own buffer. Null-safe.
-    if (llvm::Function* f = define("__polaron_str_copy", p, {p})) {
-        currentFn = f;
-        auto* entry = llvm::BasicBlock::Create(context, "entry", f);
-        auto* work = llvm::BasicBlock::Create(context, "copy", f);
-        auto* null = llvm::BasicBlock::Create(context, "isnull", f);
-        builder.SetInsertPoint(entry);
-        llvm::Value* src = f->getArg(0);
-        builder.CreateCondBr(
-            builder.CreateICmpEQ(src, llvm::ConstantPointerNull::get(p)), null, work);
-        builder.SetInsertPoint(null);
-        builder.CreateRet(llvm::ConstantPointerNull::get(p));
-        builder.SetInsertPoint(work);
-        llvm::Value* len = builder.CreateLoad(
-            i64, builder.CreateStructGEP(strTy, src, 0, "src.len.p"), "src.len");
-        llvm::Value* data = builder.CreateLoad(
-            p, builder.CreateStructGEP(strTy, src, 1, "src.data.p"), "src.data");
-        llvm::Value* obj = builder.CreateCall(mallocFn(), {sizeOf(strTy)}, "str.obj");
-        // len + 1: the buffer stays NUL-terminated, which is what lets a String be handed to
-        // anything that expects a C string without copying it again.
-        llvm::Value* buf = builder.CreateCall(
-            mallocFn(), {builder.CreateAdd(len, builder.getInt64(1))}, "str.buf");
-        builder.CreateMemCpy(buf, llvm::MaybeAlign(1), data, llvm::MaybeAlign(1), len);
-        builder.CreateStore(builder.getInt8(0), builder.CreateGEP(builder.getInt8Ty(), buf, len));
-        builder.CreateStore(len, builder.CreateStructGEP(strTy, obj, 0));
-        builder.CreateStore(buf, builder.CreateStructGEP(strTy, obj, 1));
-        builder.CreateStore(builder.getInt64(0), builder.CreateStructGEP(strTy, obj, 2));
-        builder.CreateRet(obj);
-    }
-
-    // __polaron_str_free(s): the buffer, then the object. Null-safe.
-    if (llvm::Function* f = define("__polaron_str_free", builder.getVoidTy(), {p})) {
-        currentFn = f;
-        auto* entry = llvm::BasicBlock::Create(context, "entry", f);
-        auto* work = llvm::BasicBlock::Create(context, "free", f);
-        auto* done = llvm::BasicBlock::Create(context, "done", f);
-        builder.SetInsertPoint(entry);
-        llvm::Value* s = f->getArg(0);
-        builder.CreateCondBr(
-            builder.CreateICmpEQ(s, llvm::ConstantPointerNull::get(p)), done, work);
-        builder.SetInsertPoint(work);
-        builder.CreateCall(freeFn(), {builder.CreateLoad(
-                                         p, builder.CreateStructGEP(strTy, s, 1, "s.data.p"))});
-        builder.CreateCall(freeFn(), {s});
-        builder.CreateBr(done);
-        builder.SetInsertPoint(done);
-        builder.CreateRetVoid();
-    }
-
-    // __polaron_str_index(h, hl, n, nl) -> first index of n in h, or -1. Length-aware, so it is
-    // correct where strstr would not be: neither buffer has to stop at a NUL.
-    if (llvm::Function* f = define("__polaron_str_index", i64, {p, i64, p, i64})) {
-        currentFn = f;
-        auto* entry = llvm::BasicBlock::Create(context, "entry", f);
-        auto* outer = llvm::BasicBlock::Create(context, "outer", f);
-        auto* inner = llvm::BasicBlock::Create(context, "inner", f);
-        auto* step = llvm::BasicBlock::Create(context, "step", f);
-        auto* hit = llvm::BasicBlock::Create(context, "hit", f);
-        auto* miss = llvm::BasicBlock::Create(context, "miss", f);
-        builder.SetInsertPoint(entry);
-        llvm::Value* h = f->getArg(0);
-        llvm::Value* hl = f->getArg(1);
-        llvm::Value* n = f->getArg(2);
-        llvm::Value* nl = f->getArg(3);
-        llvm::Value* iSlot = builder.CreateAlloca(i64, nullptr, "i");
-        llvm::Value* jSlot = builder.CreateAlloca(i64, nullptr, "j");
-        builder.CreateStore(builder.getInt64(0), iSlot);
-        // An empty needle is found at 0; a needle longer than the haystack never is.
-        auto* emptyBB = llvm::BasicBlock::Create(context, "empty", f);
-        auto* sizedBB = llvm::BasicBlock::Create(context, "sized", f);
-        builder.CreateCondBr(builder.CreateICmpEQ(nl, builder.getInt64(0)), emptyBB, sizedBB);
-        builder.SetInsertPoint(emptyBB);
-        builder.CreateRet(builder.getInt64(0));
-        builder.SetInsertPoint(sizedBB);
-        builder.CreateCondBr(builder.CreateICmpSGT(nl, hl), miss, outer);
-
-        builder.SetInsertPoint(outer);
-        llvm::Value* i = builder.CreateLoad(i64, iSlot, "i.v");
-        builder.CreateCondBr(builder.CreateICmpSLE(builder.CreateAdd(i, nl), hl), inner, miss);
-
-        builder.SetInsertPoint(inner);
-        builder.CreateStore(builder.getInt64(0), jSlot);
-        auto* cmp = llvm::BasicBlock::Create(context, "cmp", f);
-        builder.CreateBr(cmp);
-        builder.SetInsertPoint(cmp);
-        llvm::Value* j = builder.CreateLoad(i64, jSlot, "j.v");
-        auto* more = llvm::BasicBlock::Create(context, "more", f);
-        builder.CreateCondBr(builder.CreateICmpSLT(j, nl), more, hit);
-        builder.SetInsertPoint(more);
-        llvm::Value* hc = builder.CreateLoad(
-            builder.getInt8Ty(),
-            builder.CreateGEP(builder.getInt8Ty(), h,
-                              builder.CreateAdd(builder.CreateLoad(i64, iSlot), j)));
-        llvm::Value* nc =
-            builder.CreateLoad(builder.getInt8Ty(), builder.CreateGEP(builder.getInt8Ty(), n, j));
-        builder.CreateStore(builder.CreateAdd(j, builder.getInt64(1)), jSlot);
-        builder.CreateCondBr(builder.CreateICmpEQ(hc, nc), cmp, step);
-
-        builder.SetInsertPoint(step);
-        builder.CreateStore(builder.CreateAdd(builder.CreateLoad(i64, iSlot), builder.getInt64(1)),
-                            iSlot);
-        builder.CreateBr(outer);
-
-        builder.SetInsertPoint(hit);
-        builder.CreateRet(builder.CreateLoad(i64, iSlot));
-        builder.SetInsertPoint(miss);
-        builder.CreateRet(builder.getInt64(-1));
-    }
-    currentFn = saved;
-    builder.restoreIP(ip);
 }
+
+void CodeGenerator::Impl::emitPointerSetBridge() {
+    if (freestandingProgram()) {
+        polaron::emitPointerSetBridge(context, module);
+    }
+}
+
 
 void CodeGenerator::Impl::emitHeapBridge() {
     const ast::ClassDecl* heapCls = nullptr;
@@ -1552,22 +1396,12 @@ void CodeGenerator::Impl::stripDeadCode() {
     mpm.run(module, mam);
 }
 
-void CodeGenerator::Impl::applyBareMetalAttrs() {
-    const llvm::Triple triple(moduleTripleStr(module));
-    // An unset triple is the hosted default, and an unparseable arch is not a target we can reason
-    // about -- neither is bare metal, so neither gets the attribute.
-    if (triple.getArch() == llvm::Triple::UnknownArch) {
-        return;
-    }
-    if (triple.getOS() != llvm::Triple::UnknownOS) {
-        return;  // `...-none-elf` parses as no OS
-    }
-    for (llvm::Function& f : module) {
-        if (!f.isDeclaration()) {
-            f.addFnAttr(llvm::Attribute::NoRedZone);
-        }
-    }
-}
+// The rule itself moved to `target.h`, next to the data layout, because both are things the TRIPLE
+// decides and both backends have to decide them the same way. This one did not: the PIR path never
+// applied it, and the kernel it built brought up every driver, the network stack and the desktop and
+// then span for ever inside an eight-byte memcpy whose loop counter the timer interrupt kept
+// erasing. See the comment there, which is now the only copy of it.
+void CodeGenerator::Impl::applyBareMetalAttrs() { polaron::applyBareMetalAttrs(module); }
 
 void CodeGenerator::Impl::emitPhysicalCodeOp(const std::string& className, const char* runtimeFn) {
     if (codeTableBase == nullptr) {

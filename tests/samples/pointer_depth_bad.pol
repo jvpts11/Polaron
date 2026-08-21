@@ -1,0 +1,41 @@
+// A POINTER TO A POINTER IS NOT THE POINTER, and this is the program that proved the compiler
+// thought it was.
+//
+// `T*`, `T&` and `T` mix freely in this language on purpose. `T**` joining that set is not a
+// looseness, it is a hole: it went in where a `Surface*` belonged in the pico kernel's compositor --
+// `t.draw(&this.back, ...)` on a field that is already a heap pointer -- and the text rasterizer read
+// a width, a height and a pixel base out of the compositor's own storage. Nothing faulted. Every
+// window title on the desktop came out blank, the mouse cursor was invisible, and no test could see
+// either, because the program was accepted.
+//
+// EXPECT: error
+program PointerDepthBad;
+
+public bundle Main {
+    public namespace Depth {
+        public class Cell {
+            public mutable int n;
+            public constructor Cell() { this.n = 0; }
+        }
+
+        public class Holder {
+            private mutable Cell* one;
+            public constructor Holder() { this.one = new Cell() on heap; }
+
+            public static method take(Cell* c) returns int { return c.n; }
+
+            public method wrong() returns int {
+                // One '&' too many: `one` is already a pointer.
+                return Holder.take(&this.one);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Holder h = new Holder() on heap;
+                h.wrong();
+                return;
+            }
+        }
+    }
+}

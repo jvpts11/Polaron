@@ -1,0 +1,15 @@
+program AsmLockBad;
+
+// THE OTHER HALF of accepting the `lock` prefix: it is stripped, not waved through. A prefix in front of
+// a mnemonic that does not exist is still an unknown instruction, and the message names the MNEMONIC
+// rather than the prefix -- which is what a reader needs to see.
+public bundle main {
+    public namespace app {
+        public class Main {
+            public static method main(string[] args) returns void {
+                asm("x86_64") { lock xhcg dword ptr [rdx], eax }
+                return;
+            }
+        }
+    }
+}
