@@ -1,0 +1,100 @@
+import System.IO.Console;
+import System.Concurrency.Mutex;
+
+program LintBlocksSeen;
+
+// EVERY STATEMENT THAT CARRIES A BLOCK, EACH ASSIGNING TO A `mutable` INSIDE IT.
+//
+// The lint walker behind ten lints listed six block-bearing statements and missed six others, so an
+// assignment inside a `match`, a `switch`, a `defer`, a `using`, a `synchronized` or a labelled
+// statement was invisible. What that produced was not a missing warning but a WRONG one: "'packed'
+// is declared mutable and nothing ever assigns to it", pointing at a line three above the
+// assignment. An author who believes it deletes a `mutable` the program needs.
+//
+// One local per form, each assigned only inside that form, and the program prints them all. It
+// builds clean or the walker is blind again.
+public bundle Main {
+    public namespace App {
+
+        public class Held {
+            private mutable int n;
+            public constructor Held(int n) {
+                this.n = n;
+            }
+            public method value() returns int {
+                return n;
+            }
+        }
+
+        public sealed class Shape permits Round {
+            public method sides() returns int {
+                return 0;
+            }
+        }
+
+        public class Round extends Shape {
+            public override method sides() returns int {
+                return 1;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Round body = new Round() on stack;
+                Shape* what = &body;
+
+                // 1. MATCH -- the form the false positive was found in.
+                mutable int fromMatch = 0;
+                match (what) {
+                    case Round(  ) {
+                        fromMatch = 1;
+                    }
+                }
+
+                // 2. SWITCH, including the default arm.
+                mutable int fromSwitch = 0;
+                mutable int fromDefault = 0;
+                int pick = what.sides();
+                switch (pick) {
+                    case 1 {
+                        fromSwitch = 2;
+                    }
+                    default {
+                        fromDefault = 0 - 1;
+                    }
+                }
+
+                // 3. DEFER -- runs at the end of the scope, and assigns.
+                mutable int fromDefer = 0;
+                defer {
+                    fromDefer = 3;
+                    System.IO.Console.println($"from the defer: {fromDefer}");
+                }
+
+                // 4. USING -- both the block AND the declaration the header binds.
+                mutable int fromUsing = 0;
+                using (Held* h = new Held(4) on heap) {
+                    fromUsing = h.value();
+                }
+
+                // 5. SYNCHRONIZED.
+                mutable int fromLocked = 0;
+                Mutex<int> lock = new Mutex<int>(5) on stack;
+                Mutex<int>* guard = &lock;
+                synchronized (guard) using int& inside {
+                    fromLocked = inside;
+                }
+
+                // 6. A LABELLED STATEMENT, which wraps ONE statement rather than a block -- the
+                // shape that needed the walker to work a statement at a time.
+                mutable int fromLabel = 0;
+                outer: while (fromLabel == 0) {
+                    fromLabel = 6;
+                }
+
+                System.IO.Console.println($"{fromMatch} {fromSwitch} {fromDefault} {fromUsing} {fromLocked} {fromLabel}");
+                return;
+            }
+        }
+    }
+}

@@ -104,39 +104,95 @@ void collectDeclaredNames(const ast::Block& body, std::unordered_set<std::string
 }  // namespace
 
 // Walk every statement of a block, and every block nested in it, calling `fn` on each.
+//
+// EVERY STATEMENT THAT CARRIES A BLOCK MUST BE LISTED HERE, and for a long time six of them were
+// not: `match`, `switch`, `defer`, `using`, `synchronized`, and a labelled statement. Ten lints ride
+// on this walker, so each omission was ten blind spots rather than one -- and the way they showed up
+// is the way a blind spot always does, as a lint that is confidently WRONG:
+//
+//     mutable int packed = 0 - 1;
+//     match (hit) {
+//         case Some(CellHit at) { packed = at.y * w + at.x; }   // <- not seen
+//         case None() { }
+//     }
+//
+// which drew "'packed' is declared mutable and nothing ever assigns to it" against code where the
+// assignment is right there. A lint that is wrong is worse than a lint that is missing: the author
+// removes a `mutable` the program needs, and the compiler that told them to is the one that then
+// refuses to build.
+//
+// A statement at a time rather than a block at a time, because a labelled statement wraps ONE
+// statement rather than a block, and that shape has no home in a loop over `blk.statements`.
+static void eachInStmt(const ast::Stmt& st, const std::function<void(const ast::Stmt&)>& fn);
+
 static void eachStmt(const ast::Block& blk, const std::function<void(const ast::Stmt&)>& fn) {
     for (const ast::StmtPtr& st : blk.statements) {
-        if (!st) {
-            continue;
+        if (st) {
+            eachInStmt(*st, fn);
         }
-        fn(*st);
-        if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st.get())) {
-            eachStmt(iff->thenBlock, fn);
-            if (iff->elseBlock) {
-                eachStmt(*iff->elseBlock, fn);
-            }
-        } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(st.get())) {
-            eachStmt(ws->body, fn);
-        } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(st.get())) {
-            eachStmt(dw->body, fn);
-        } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(st.get())) {
-            if (fs->init) {
-                fn(*fs->init);
-            }
-            if (fs->update) {
-                fn(*fs->update);
-            }
-            eachStmt(fs->body, fn);
-        } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st.get())) {
-            eachStmt(fe->body, fn);
-        } else if (const auto* ts = dynamic_cast<const ast::TryStmt*>(st.get())) {
-            eachStmt(ts->body, fn);
-            for (const ast::CatchClause& c : ts->catches) {
-                eachStmt(c.body, fn);
-            }
-            if (ts->finallyBlock) {
-                eachStmt(*ts->finallyBlock, fn);
-            }
+    }
+}
+
+static void eachInStmt(const ast::Stmt& st, const std::function<void(const ast::Stmt&)>& fn) {
+    fn(st);
+    if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
+        eachStmt(iff->thenBlock, fn);
+        if (iff->elseBlock) {
+            eachStmt(*iff->elseBlock, fn);
+        }
+    } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
+        eachStmt(ws->body, fn);
+    } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&st)) {
+        eachStmt(dw->body, fn);
+    } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
+        if (fs->init) {
+            fn(*fs->init);
+        }
+        if (fs->update) {
+            fn(*fs->update);
+        }
+        eachStmt(fs->body, fn);
+    } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+        eachStmt(fe->body, fn);
+    } else if (const auto* ts = dynamic_cast<const ast::TryStmt*>(&st)) {
+        eachStmt(ts->body, fn);
+        for (const ast::CatchClause& c : ts->catches) {
+            eachStmt(c.body, fn);
+        }
+        if (ts->finallyBlock) {
+            eachStmt(*ts->finallyBlock, fn);
+        }
+    } else if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&st)) {
+        // The expression form's arms hold an expression rather than a block, and an expression is
+        // not this walker's business; the statement form's arms hold both, and `body` is empty in
+        // the expression form, so walking it unconditionally is right for either.
+        for (const ast::MatchCase& c : ms->cases) {
+            eachStmt(c.body, fn);
+        }
+        if (ms->defaultBody) {
+            eachStmt(*ms->defaultBody, fn);
+        }
+    } else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&st)) {
+        for (const ast::SwitchCase& c : sw->cases) {
+            eachStmt(c.body, fn);
+        }
+        if (sw->defaultBody) {
+            eachStmt(*sw->defaultBody, fn);
+        }
+    } else if (const auto* df = dynamic_cast<const ast::DeferStmt*>(&st)) {
+        eachStmt(df->body, fn);
+    } else if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&st)) {
+        // The declaration too: `using (T x = ...)` declares a local, and a walker that skipped it
+        // would leave every lint about locals unable to see one.
+        if (us->decl) {
+            fn(*us->decl);
+        }
+        eachStmt(us->body, fn);
+    } else if (const auto* sy = dynamic_cast<const ast::SynchronizedStmt*>(&st)) {
+        eachStmt(sy->body, fn);
+    } else if (const auto* ls = dynamic_cast<const ast::LabeledStmt*>(&st)) {
+        if (ls->stmt) {
+            eachInStmt(*ls->stmt, fn);
         }
     }
 }
