@@ -5,16 +5,30 @@ program LifecycleOnClassLoad;
 // before main, for class-level setup. Here Server's hook prints before main's body
 // even though Server is never instantiated.
 
+// AND THE HOOK'S BODY IS ANALYZED LIKE ANY OTHER, which it was not until
+// `lifecycle_hook_bad.pol` was written. This one carries a `demand` that HOLDS and arithmetic that
+// type-checks, so it proves the analysis lets a correct hook through -- without it, the fix could
+// have been "reject every hook" and the bad sample would still have passed.
 public bundle main {
     public namespace app {
         public class Server {
+            public static fixed int PORTS = 4;
+            private static mutable int ready;
+
             onClassLoad {
+                demand Server.PORTS == 4 otherwise "the hook's own demand holds";
+                Server.ready = Server.PORTS * 2;
                 System.IO.Console.printf("Server loaded\n");
+            }
+
+            public static method openPorts() returns int {
+                return Server.ready;
             }
         }
         public class Main {
             public static method main(string[] args) returns void {
                 System.IO.Console.printf("main start\n");
+                System.IO.Console.printf("ports %d\n", Server.openPorts());
                 return;
             }
         }

@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.161")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.162")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.161")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.162")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -602,6 +602,17 @@ add_test(NAME sema_interp_newtype_over_class_errors
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/interp_newtype_bad.pol")
 set_tests_properties(sema_interp_newtype_over_class_errors PROPERTIES
     PASS_REGULAR_EXPRESSION "interp_newtype_bad.pol:22:53.*got 'Corner'")
+
+# A LIFECYCLE HOOK IS A BODY, and it was not analyzed at all: `onClassLoad` is where a real program
+# fills its tables, and none of it was type-checked or held to a `demand`. A type error reached the
+# code generator and came back from LLVM's module verifier naming no source line; a `demand 1 == 2`
+# built clean, which is an assertion that reads as protection and is not any. Both are ordinary
+# errors now. The positive half is `lifecycle_onclassload.pol`, whose hook carries a demand that
+# HOLDS -- without it the fix could have been "reject every hook" and this sample would still pass.
+add_test(NAME sema_lifecycle_hook_is_analyzed
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lifecycle_hook_bad.pol")
+set_tests_properties(sema_lifecycle_hook_is_analyzed PROPERTIES
+    PASS_REGULAR_EXPRESSION "lifecycle_hook_bad.pol:24:17.*demand not met")
 
 # `.rejects({T})` has been in the analyzer since regions arrived and no sample used it. A rule with
 # no test is a rule that works until someone refactors near it.
@@ -9629,7 +9640,7 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lifecycle_onclassload.pol"
-            "-DEXPECTED=Server loaded main start"
+            "-DEXPECTED=Server loaded main start ports 8"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

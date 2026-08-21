@@ -3984,6 +3984,32 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         analyzeMethodBody(d->body, {}, cls.name, false);
                     }
                 }
+                // THE LIFECYCLE HOOKS ARE BODIES TOO, and they were not analyzed at all.
+                //
+                // `onClassLoad` is where the world's tables are filled -- hundreds of statements
+                // per catalogue in a real program -- and none of it was type-checked, linted or
+                // held to a `demand`. `String wrong = 7;` in one reached the CODE GENERATOR and was
+                // caught by LLVM's module verifier, which reports IR and names no source line:
+                // "Call parameter type does not match function signature! i32 7".
+                //
+                // A `demand` in one was worse than unchecked, it was silent: `demand
+                // Species.count() == 999` built clean. An assertion that cannot fire reads as
+                // protection and is not any, which is the exact failure `sizeof_budget_bad.pol`
+                // exists to forbid one method away from here.
+                //
+                // Static bodies: a hook has no `this` -- it runs before any instance exists, and
+                // after the last one is gone.
+                for (const ast::Block* hook :
+                     {cls.onClassLoad.get(), cls.onFirstInstance.get(),
+                      cls.onLastInstanceDestroyed.get()}) {
+                    if (hook == nullptr) {
+                        continue;
+                    }
+                    currentReturnType_ = "void";
+                    currentReturnIsMove_ = false;
+                    currentThrows_.clear();
+                    analyzeMethodBody(*hook, {}, /*thisClass=*/"", /*inConstructor=*/false);
+                }
             }
             // Catalog-implementing enums keep their method impls on the enum (they are
             // not desugared to a class); type-check those bodies too. `this` has the

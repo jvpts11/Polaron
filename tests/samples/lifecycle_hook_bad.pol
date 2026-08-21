@@ -1,0 +1,39 @@
+import System.IO.Console;
+program LifecycleHookBad;
+
+// A LIFECYCLE HOOK IS A BODY, and it was not analyzed at all.
+//
+// `onClassLoad` is where a real program fills its tables -- hundreds of statements per catalogue --
+// and none of it was type-checked, linted, or held to a `demand`. Two failures, both in this file:
+//
+//   * `String wrong = 7;` reached the CODE GENERATOR and came back from LLVM's module verifier as
+//     "Call parameter type does not match function signature! i32 7" -- IR, with no source line.
+//   * `demand 1 == 2` built clean. An assertion that cannot fire reads as protection and is not
+//     any, which is the exact thing `sizeof_budget_bad.pol` exists to forbid one method away.
+//
+// Both are ordinary errors now, at the line they are written on.
+public bundle Prog {
+    public namespace App {
+
+        public class Table {
+            private static mutable int rows;
+
+            onClassLoad {
+                Table.rows = 3;
+                String wrong = 7;              // a type error the analyzer never saw
+                demand 1 == 2 otherwise "a demand in a hook must fire like any other";
+            }
+
+            public static method count() returns int {
+                return Table.rows;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"rows={Table.count()}");
+                return;
+            }
+        }
+    }
+}
