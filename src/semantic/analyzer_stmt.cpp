@@ -1339,9 +1339,21 @@ void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
         // observation, made by a different rule -- and telling its author to change `T*` to `T&` is
         // advice about the one property of it that does not matter.
         bool touched = false;
+        bool mutatedThrough = false;
         eachStmt(m.body, [&](const ast::Stmt& st) {
             if (escapes) {
                 return;
+            }
+            if (const auto* effect = dynamic_cast<const ast::ExprStmt*>(&st)) {
+                const auto* c = dynamic_cast<const ast::CallExpr*>(effect->expr.get());
+                const auto* on =
+                    c != nullptr ? dynamic_cast<const ast::MemberExpr*>(c->callee.get()) : nullptr;
+                if (const auto* who =
+                        on != nullptr ? dynamic_cast<const ast::IdentifierExpr*>(on->object.get())
+                                      : nullptr;
+                    who != nullptr && who->name == p.name) {
+                    mutatedThrough = true;
+                }
             }
             // Rebound, returned, or stored: any of the three and it is not a borrow.
             if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
@@ -1426,9 +1438,16 @@ void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
             }
         });
         if (!escapes && touched) {
+            // WHAT THE BODY ACTUALLY DOES WITH IT. `T&` is the right declaration either way -- it
+            // cannot be null, rebound or stored, which is what a borrow means -- but "only ever
+            // reads through it" is false of a sink: `Inflate.stored(bits, out)` calls `out.write`
+            // on every byte, and a reader who checks the sentence and finds writes stops trusting
+            // the rest of the catalogue. A call made on the parameter and thrown away is a call
+            // made for its effect; the same test the boolean-out-parameter rule uses.
             warn(diag::Code::PointerThatIsABorrow,
-                 "'" + m.name + "' takes '" + p.name +
-                     "' as a pointer and only ever reads through it",
+                 "'" + m.name + "' takes '" + p.name + "' as a pointer and " +
+                     (mutatedThrough ? "never rebinds, stores or returns it"
+                                     : "only ever reads through it"),
                  p.loc);
         }
     }

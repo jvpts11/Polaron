@@ -377,7 +377,7 @@
             // failure would have to also catch for the other. The distinct codes are what keeps the
             // reason legible -- 526 is the certificate, 525 is the handshake, matching what the
             // proxies that invented those codes mean by them.
-            private static method sendSecure(HttpRequest* request, Url u) returns HttpResponse {
+            private static method sendSecure(HttpRequest& request, Url u) returns HttpResponse {
                 mutable nullable TlsSession* session = null;
                 try {
                     session = TlsClient.open(u.host(), u.port());
@@ -692,7 +692,7 @@
 
             // Segment by segment. A `{name}` segment captures whatever is in that position; anything
             // else must be equal. Different lengths never match, so `/a` does not answer `/a/b`.
-            public static method matches(String pattern, String path, ServerRequest* into) returns boolean {
+            public static method matches(String pattern, String path, ServerRequest& into) returns boolean {
                 ArrayList<String> want = Strings.split(pattern, "/");
                 ArrayList<String> got = Strings.split(path, "/");
                 mutable boolean ok = want.size() == got.size();

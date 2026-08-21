@@ -175,7 +175,7 @@
                 }
                 sb.append("\n");
             }
-            private static method spaces(StringBuilder* sb, int n) returns void {
+            private static method spaces(StringBuilder& sb, int n) returns void {
                 for (mutable int i = 0; i < n; i++) { sb.append(" "); }
             }
         }

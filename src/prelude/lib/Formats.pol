@@ -343,7 +343,7 @@
             }
 
             // The remaining keys of a mapping that began on a `- ` line.
-            private method mergeInto(Json* obj, int indent) returns void {
+            private method mergeInto(Json& obj, int indent) returns void {
                 while (true) {
                     this.skipBlank();
                     if (this.at >= this.lines.size()) { return; }

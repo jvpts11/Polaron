@@ -42,7 +42,6 @@ Polaron-0B28  25
 Polaron-0B29   2
 Polaron-0B3A   2
 Polaron-0B3B  22
-Polaron-0B3E  30
 Polaron-0B40 180
 Polaron-0B49   5
 Polaron-0B4A  20

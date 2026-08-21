@@ -192,7 +192,7 @@
             //
             // (`base` and not `index`: `index` is reserved, and the parser says so at the declaration
             // rather than letting it read as a variable somewhere else.)
-            public method decode(BitStream* bits) returns int {
+            public method decode(BitStream& bits) returns int {
                 mutable int code = 0;
                 mutable int first = 0;
                 mutable int base = 0;
@@ -258,7 +258,7 @@
             // An uncompressed block: align, then LEN and its one's complement, then the bytes. The
             // complement is checked because it is the only integrity the format offers here, and a
             // stream that fails it is not merely unlucky -- it is not a deflate stream.
-            private static method stored(BitStream* bits, ByteSink* out) returns boolean {
+            private static method stored(BitStream& bits, ByteSink& out) returns boolean {
                 bits.alignToByte();
                 int p = bits.bytePosition();
                 int lenLo = bits.byteAt(p);
@@ -370,8 +370,8 @@
 
             // The symbol loop, shared by fixed and dynamic blocks: a literal is a byte, 256 ends the
             // block, and anything above is a length that is followed by a distance.
-            private static method block(BitStream* bits, ByteSink* out, HuffTable* lit,
-                                        HuffTable* dist) returns boolean {
+            private static method block(BitStream& bits, ByteSink& out, HuffTable& lit,
+                                        HuffTable& dist) returns boolean {
                 mutable boolean running = true;
                 while (running) {
                     int sym = lit.decode(bits);
@@ -565,7 +565,7 @@
             // starting at 0x30, 144..255 are nine starting at 0x190, 256..279 are seven starting at 0,
             // and 280..287 are eight starting at 0xC0. Written as four ranges because that is what the
             // specification is -- deriving it would be shorter and unreadable.
-            internal static method emitLiteral(BitPacker* w, int sym) returns void {
+            internal static method emitLiteral(BitPacker& w, int sym) returns void {
                 if (sym < 144) { w.writeCode(48 + sym, 8); return; }
                 if (sym < 256) { w.writeCode(400 + (sym - 144), 9); return; }
                 if (sym < 280) { w.writeCode(sym - 256, 7); return; }
@@ -673,7 +673,7 @@
                 return have == want;
             }
 
-            private static method putLE32(ByteSink* out, long v) returns void {
+            private static method putLE32(ByteSink& out, long v) returns void {
                 out.add(cast<int>(v & cast<long>(255)));
                 out.add(cast<int>((v >> 8) & cast<long>(255)));
                 out.add(cast<int>((v >> 16) & cast<long>(255)));

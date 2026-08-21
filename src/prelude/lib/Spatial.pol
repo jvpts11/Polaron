@@ -652,7 +652,7 @@
 
             // Blending IN LINEAR LIGHT, which is the whole reason the conversions above are here: the
             // midpoint of black and white is not 50% grey in sRGB, it is about 73%.
-            public method blend(Color* to, double t) returns Color {
+            public method blend(Color& to, double t) returns Color {
                 Color* here = this.toLinear();
                 Color* there = to.toLinear();
                 Color* mixed = new Color(here.r + (there.r - here.r) * t,

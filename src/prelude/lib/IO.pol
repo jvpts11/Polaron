@@ -515,11 +515,11 @@
             // a block of bytes with a length -- so binary I/O needs no new type. ----
             // Bytes actually read: short at the end of the file, and 0 there. That IS the loop
             // condition, which is why it is returned rather than swallowed.
-            public method readBytes(Buffer* into, int count) returns int {
+            public method readBytes(Buffer& into, int count) returns int {
                 if (this.handle == 0) { return 0; }
                 return cast<int>(File.readInto(this.handle, into.start(), cast<long>(count)));
             }
-            public method writeBytes(Buffer* from, int count) returns int {
+            public method writeBytes(Buffer& from, int count) returns int {
                 if (this.handle == 0) { return 0; }
                 return cast<int>(File.writeFrom(this.handle, from.start(), cast<long>(count)));
             }

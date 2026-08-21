@@ -670,7 +670,7 @@
                 return Der.totalLength(this.der, this.subjectOffset);
             }
             // Was this issued by that one? Byte equality of the two names, as above.
-            public method isIssuedBy(Certificate* issuer) returns boolean {
+            public method isIssuedBy(Certificate& issuer) returns boolean {
                 if (this.issuerLength() != issuer.subjectLength()) { return false; }
                 int[] mine = this.issuerBytes();
                 int[] theirs = issuer.subjectBytes();
@@ -895,7 +895,7 @@
             // MGF1 (RFC 8017 B.2.1): hash the seed with a counter appended, over and over, until
             // there are enough bytes.
             private static method mgf1(int[] seed, int seedLen, int wanted,
-                                       Sha* digest) returns int[] {
+                                       Sha& digest) returns int[] {
                 int[] out = new int[wanted > 0 ? wanted : 1]();
                 mutable int produced = 0;
                 mutable int counter = 0;
@@ -2917,7 +2917,7 @@
             }
 
             // Doubling, with the a = -3 shortcut both NIST curves were chosen to allow.
-            public method twice(EcPoint* p) returns EcPoint* {
+            public method twice(EcPoint& p) returns EcPoint* {
                 if (p.infinite || U256.isZero(p.y)) { return this.infinity(); }
                 Mont* f = this.fp;
                 long[] delta = f.mul(p.z, p.z);
@@ -2943,7 +2943,7 @@
             // Addition. The two special cases are the ones that make a naive implementation answer
             // nonsense: equal points need doubling (the formula divides by zero otherwise), and
             // opposite points are the identity.
-            public method add(EcPoint* a, EcPoint* b) returns EcPoint* {
+            public method add(EcPoint* a, EcPoint& b) returns EcPoint* {
                 if (a.infinite) {
                     return new EcPoint(U256.copy(b.x), U256.copy(b.y), U256.copy(b.z), b.infinite) on heap;
                 }
@@ -3024,13 +3024,13 @@
             }
 
             // Back to an affine x: X / Z². The one inversion the whole computation needs.
-            public method affineX(EcPoint* p) returns long[] {
+            public method affineX(EcPoint& p) returns long[] {
                 if (p.infinite) { return U256.zeroOf(this.limbs); }
                 long[] zinv = this.fp.invMont(p.z);
                 long[] zinv2 = this.fp.mul(zinv, zinv);
                 return this.fp.fromMont(this.fp.mul(p.x, zinv2));
             }
-            public method affineY(EcPoint* p) returns long[] {
+            public method affineY(EcPoint& p) returns long[] {
                 if (p.infinite) { return U256.zeroOf(this.limbs); }
                 long[] zinv = this.fp.invMont(p.z);
                 long[] zinv3 = this.fp.mul(this.fp.mul(zinv, zinv), zinv);
@@ -3284,7 +3284,7 @@
             }
 
             // The root that issued `cert`, or null when this store does not vouch for it.
-            public method issuerOf(Certificate* cert) returns nullable Certificate* {
+            public method issuerOf(Certificate& cert) returns nullable Certificate* {
                 mutable int i = 0;
                 while (i < this.roots.size()) {
                     Certificate* root = this.roots.get(i);
@@ -3314,7 +3314,7 @@
         public class CertificateValidator {
             // Refuses by throwing, naming what failed. `chain` is leaf first, as TLS sends it.
             public static method check(ArrayList<Certificate*> chain, String host,
-                                       TrustStore* trusted, long nowSeconds)
+                                       TrustStore& trusted, long nowSeconds)
                                        throws(CertificateException) returns void {
                 if (chain.size() == 0) {
                     throw new CertificateException("the server sent no certificate") on heap;
@@ -3379,7 +3379,7 @@
                 return;
             }
 
-            private static method checkDates(Certificate* cert, long nowSeconds, String who)
+            private static method checkDates(Certificate& cert, long nowSeconds, String who)
                                              throws(CertificateException) returns void {
                 if (nowSeconds < cert.notBefore()) {
                     throw new CertificateException(who.concat(" is not valid yet")) on heap;
@@ -3397,7 +3397,7 @@
             // "this client is not finished". Measured against the machine's own trust store: of 18
             // roots sampled, 17 verify and the eighteenth is on P-384 -- a curve this library does
             // not implement, which is a gap in us and not a fault in the certificate.
-            public static method unsupportedReason(Certificate* cert, Certificate* issuer)
+            public static method unsupportedReason(Certificate& cert, Certificate& issuer)
                                                    returns String {
                 int alg = cert.signatureAlgorithm();
                 if (alg == 0) {
@@ -3419,7 +3419,7 @@
             // Does the issuer's key verify the signature over the signed body? Only algorithms this
             // library can actually check answer true -- an unknown one is refused rather than waved
             // through, because "I could not check it" and "it checks out" must not be the same answer.
-            public static method signedBy(Certificate* cert, Certificate* issuer) returns boolean {
+            public static method signedBy(Certificate& cert, Certificate& issuer) returns boolean {
                 int alg = cert.signatureAlgorithm();
                 if (alg == 0) { return false; }   // an algorithm this library cannot check is refused
                 int[] body = cert.signedBody();
@@ -3470,7 +3470,7 @@
             // RFC 6125 hostname matching, against the subject alternative names and nothing else.
             // The common name has not been valid for this since browsers stopped reading it, and a
             // client that falls back to it accepts certificates the issuing rules never checked.
-            public static method covers(Certificate* cert, String host) returns boolean {
+            public static method covers(Certificate& cert, String host) returns boolean {
                 ArrayList<String> names = cert.dnsNames();
                 mutable boolean hit = false;
                 mutable int i = 0;
@@ -3505,7 +3505,7 @@
 
             // For the refusal message: what the certificate actually covers, so a reader can see the
             // mismatch instead of being told there is one.
-            private static method namesOf(Certificate* cert) returns String {
+            private static method namesOf(Certificate& cert) returns String {
                 ArrayList<String> names = cert.dnsNames();
                 if (names.size() == 0) {
                     delete names;
