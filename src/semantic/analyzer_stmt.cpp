@@ -668,6 +668,16 @@ void SemanticAnalyzer::warnValidationThatIsAContract(const ast::MethodDecl& m) {
     if (m.visibility != "public" || m.body.statements.empty() || !m.requiresClauses.empty()) {
         return;
     }
+    // NOT WHERE THE REFUSAL IS PART OF THE INTERFACE. A method that declares `throws` has said its
+    // failures are for callers to catch, and the two are not interchangeable: a broken `requires`
+    // TERMINATES, while the throw it would replace unwinds to a handler that was written for it.
+    // `CertificateValidator.check` refuses an empty chain by throwing, and four tests catch exactly
+    // that -- swapping in a contract turned a handled failure into a dead process. The distinction
+    // is also the honest one: a contract is what the caller must guarantee, and a certificate chain
+    // off the network is not something any caller can.
+    if (!m.throwsTypes.empty()) {
+        return;
+    }
     const auto* iff = dynamic_cast<const ast::IfStmt*>(m.body.statements[0].get());
     if (iff == nullptr || iff->elseBlock != nullptr || iff->thenBlock.statements.size() != 1) {
         return;
@@ -683,6 +693,51 @@ void SemanticAnalyzer::warnValidationThatIsAContract(const ast::MethodDecl& m) {
         m.params.begin(), m.params.end(),
         [&text](const ast::Param& p) { return text.find(p.name) != std::string::npos; });
     if (!mentionsParam) {
+        return;
+    }
+    // AND THE CONDITION HAS TO BE ANSWERABLE BY THE CALLER, which is what makes it a precondition
+    // rather than a check. `chain.size() == 0` asks the argument about itself and a caller holding
+    // the chain can answer it; `System.OS.__envHas(name) == 0` asks the OPERATING SYSTEM about the
+    // argument, and nobody can prove that at a call site -- `Env.require` was being told to put the
+    // presence of an environment variable in a `requires`. Every call in the condition must be made
+    // ON a parameter.
+    bool onlyAsksTheArguments = true;
+    std::function<void(const ast::Expr*)> checkCalls = [&](const ast::Expr* e) {
+        if (e == nullptr || !onlyAsksTheArguments) {
+            return;
+        }
+        if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
+            const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            const auto* recv =
+                mem != nullptr ? dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())
+                               : nullptr;
+            const bool onAParam =
+                recv != nullptr && std::any_of(m.params.begin(), m.params.end(),
+                                               [&recv](const ast::Param& p) {
+                                                   return p.name == recv->name;
+                                               });
+            if (!onAParam) {
+                onlyAsksTheArguments = false;
+                return;
+            }
+            for (const ast::ExprPtr& a : call->args) {
+                checkCalls(a.get());
+            }
+            return;
+        }
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
+            checkCalls(bin->lhs.get());
+            checkCalls(bin->rhs.get());
+        } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
+            checkCalls(un->operand.get());
+        } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
+            checkCalls(cast->operand.get());
+        } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+            checkCalls(mem->object.get());
+        }
+    };
+    checkCalls(iff->cond.get());
+    if (!onlyAsksTheArguments) {
         return;
     }
     warn(diag::Code::ValidationThatIsAContract,
@@ -1646,9 +1701,13 @@ void SemanticAnalyzer::warnConstantComputedAtRuntime(const ast::MethodDecl& m) {
         long long folded = 0;
         if (evalConstInt(*vd->init, folded, &constInts_, &comptimeMethods_, &constDoubles_,
                          &enums_)) {
+            // WHERE `fixed` GOES is part of the advice, because it is a static class member and
+            // nowhere else: written on the local it points at, it is a parse error, and a rule whose
+            // fix does not parse sends its reader looking for a syntax that was never there.
             warn(diag::Code::ConstantComputedAtRuntime,
                  "'" + vd->name + "' is " + std::to_string(folded) +
-                     ", and the compiler can already work that out",
+                     ", and the compiler can already work that out -- name it `static fixed` on the "
+                     "class, where the value is stated once instead of rebuilt per call",
                  vd->loc);
         }
     }

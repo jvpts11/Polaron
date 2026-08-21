@@ -169,10 +169,11 @@
                 this.dig[0] = d;
                 this.len = this.len + 1;
             }
-            private static method normSign(BigInteger r) returns void {  // -0 -> +0
-                if (r.len == 1 && r.dig[0] == 0) { r.neg = false; }
+            private method normSign() returns void {  // -0 -> +0
+                if (this.len == 1 && this.dig[0] == 0) { this.neg = false; }
             }
-            private static method addMag(BigInteger a, BigInteger b) returns BigInteger {
+            private method addMag(BigInteger b) returns BigInteger {
+                BigInteger a = this;
                 BigInteger r = new BigInteger(cast<long>(0)) on heap;
                 int n = a.len > b.len ? a.len : b.len;
                 r.ensure(n + 2);
@@ -192,9 +193,9 @@
             }
             private method addSigned(BigInteger other, boolean otherNeg) returns BigInteger {
                 if (this.neg == otherNeg) {   // like signs: add magnitudes, keep the sign
-                    BigInteger r = BigInteger.addMag(this, other);
+                    BigInteger r = this.addMag(other);
                     r.neg = this.neg;
-                    BigInteger.normSign(r);
+                    r.normSign();
                     return r;
                 }
                 int c = this.cmpMag(other);   // unlike signs: the larger magnitude decides the sign
@@ -203,13 +204,13 @@
                     BigInteger r = this.copyMag();
                     r.subInPlace(other);
                     r.neg = this.neg;
-                    BigInteger.normSign(r);
+                    r.normSign();
                     return r;
                 }
                 BigInteger r2 = other.copyMag();
                 r2.subInPlace(this);
                 r2.neg = otherNeg;
-                BigInteger.normSign(r2);
+                r2.normSign();
                 return r2;
             }
             public method add(BigInteger other) returns BigInteger { return this.addSigned(other, other.neg); }
@@ -261,7 +262,7 @@
                 }
                 while (q.len > 1 && q.dig[q.len - 1] == 0) { q.len = q.len - 1; }
                 q.neg = this.neg != other.neg;
-                BigInteger.normSign(q);
+                q.normSign();
                 return q;
             }
             public method remainder(BigInteger other) returns BigInteger {   // sign follows the dividend
@@ -272,7 +273,7 @@
                     while (rem.cmpMag(other) >= 0) { rem.subInPlace(other); }
                 }
                 rem.neg = this.neg;
-                BigInteger.normSign(rem);
+                rem.normSign();
                 return rem;
             }
             public method toString() returns String {

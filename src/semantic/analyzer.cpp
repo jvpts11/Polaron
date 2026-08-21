@@ -3703,6 +3703,17 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // three times while these were written, twice reaching the prelude. A rule
                         // that needs a type either reads the DECLARED one off the AST, or is called
                         // from inside the statement walk with the type its caller already resolved.
+                        //
+                        // NOT ABOUT A BODY THE COMPILER WROTE. A record's `equals`, `hashCode` and
+                        // `toString` carry the record's own location, so advice about them lands on
+                        // the declaration and describes code the author has never seen -- `record
+                        // Datagram(...)` earned "the number 31 is written out 3 times in this
+                        // method", about a hash multiplier. Errors still apply; only the advice is
+                        // silenced, because the only edit it could ask for is not the author's.
+                        if (m->isSynthesized) {
+                            popAllows();
+                            continue;
+                        }
                         warnMutableNeverMutated(*m);
                         warnSwallowedCatch(m->body);
                         warnAsyncNeverAwaits(*m);

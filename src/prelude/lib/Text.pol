@@ -14,6 +14,7 @@
             // are provable they cost nothing and stay; where they are not, the cost is real and the
             // decision is a judgement about that path. This one is on the hottest string path in the
             // language, in a class every program uses, and 22% is too much to pay for it.
+            [Allow(code: "Polaron-0B3C", why: "not an address from outside: the constructor allocates it, every growth reallocates it and the destructor frees it, so its lifetime is this object's and the note above says why the raw form was chosen over Buffer")]
             private mutable address buf;
             private mutable int count;
             private mutable int cap;

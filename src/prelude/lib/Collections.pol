@@ -1869,7 +1869,7 @@
         // (arrays/lists of pointers are not yet supported, but a `nullable T*` link field is). collect does an
         // in-order walk, appending keys in sorted order.
         public class BstNode {
-            public mutable int key;
+            public int key;
             public mutable nullable BstNode* left;
             public mutable nullable BstNode* right;
             public constructor BstNode(int k) {

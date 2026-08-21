@@ -257,9 +257,9 @@
         // An RSA public key: the big-endian modulus and the public exponent, which is small enough
         // for an int.
         public class RsaPublicKey {
-            public mutable int[] modulus;
-            public mutable int modLength;
-            public mutable int exponent;
+            public int[] modulus;
+            public int modLength;
+            public int exponent;
             public constructor RsaPublicKey(int[] modulus, int modLength, int exponent) {
                 this.modulus = modulus;
                 this.modLength = modLength;
@@ -1552,7 +1552,7 @@
         // array, because the value is meaningless without the group -- and the group is exactly what
         // a client stops carrying the moment it decides it only ever offers one.
         public class KeyShare {
-            public mutable int group;
+            public int group;
             public mutable int[] value;
 
             public constructor KeyShare(int group, int[] value) {
@@ -2771,7 +2771,7 @@
             public mutable long[] x;
             public mutable long[] y;
             public mutable long[] z;
-            public mutable boolean infinite;   // the identity: no affine coordinates at all
+            public boolean infinite;   // the identity: no affine coordinates at all
 
             public constructor EcPoint(long[] x, long[] y, long[] z, boolean infinite) {
                 this.x = x;
@@ -2811,8 +2811,8 @@
             private mutable long[] bValue;
             private mutable long[] gx;
             private mutable long[] gy;
-            private mutable Mont* fp;      // arithmetic modulo the field prime: coordinates
-            private mutable Mont* fn;      // arithmetic modulo the group order: scalars
+            private mutable unique Mont* fp;   // arithmetic modulo the field prime: coordinates
+            private mutable unique Mont* fn;   // arithmetic modulo the group order: scalars
             private mutable int size;      // bytes per coordinate: 32 for P-256, 48 for P-384
             private mutable int limbs;
 
@@ -3207,7 +3207,7 @@
         // compiler would mean a list that goes stale between releases and a revocation nobody acts on.
         // A program may also supply its own -- for a private authority, or for a test.
         public class TrustStore {
-            private mutable ArrayList<Certificate*> roots;
+            private mutable unique ArrayList<Certificate*> roots;
 
             public constructor TrustStore() {
                 this.roots = new ArrayList<Certificate*>() on heap;

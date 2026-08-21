@@ -221,13 +221,22 @@
         // zip/png polynomial) and 32-bit FNV-1a. Uses unsigned 32-bit arithmetic, which wraps and shifts
         // logically. Returned as int (the same 32 bits reinterpreted).
         public class Digest {
+            // The three numbers that ARE these algorithms, named once rather than per call. Each is
+            // a choice somebody made and wrote down in a standard, not an intermediate: the CRC
+            // polynomial reversed for a least-significant-first shift, the 32-bit FNV prime, and the
+            // largest prime below 65536, which is what makes Adler-32's two sums fit.
+            private static fixed uint crcPolynomial = cast<uint>(3988292384);
+            private static fixed uint fnvPrime = cast<uint>(16777619);
+            private static fixed uint adlerModulus = cast<uint>(65521);
+
             public static method crc32(String data) returns int {
                 mutable uint crc = cast<uint>(4294967295);
-                uint poly = cast<uint>(3988292384);
                 for (mutable int i = 0; i < data.length(); i++) {
                     crc = crc ^ cast<uint>(cast<int>(data.charAt(i)));
                     for (mutable int b = 0; b < 8; b++) {
-                        if ((crc & cast<uint>(1)) != cast<uint>(0)) { crc = (crc >> 1) ^ poly; }
+                        if ((crc & cast<uint>(1)) != cast<uint>(0)) {
+                            crc = (crc >> 1) ^ Digest.crcPolynomial;
+                        }
                         else { crc = crc >> 1; }
                     }
                 }
@@ -236,9 +245,8 @@
             }
             public static method fnv1a(String data) returns int {
                 mutable uint h = cast<uint>(2166136261);
-                uint prime = cast<uint>(16777619);
                 for (mutable int i = 0; i < data.length(); i++) {
-                    h = (h ^ cast<uint>(cast<int>(data.charAt(i)))) * prime;
+                    h = (h ^ cast<uint>(cast<int>(data.charAt(i)))) * Digest.fnvPrime;
                 }
                 return cast<int>(h);
             }
@@ -246,10 +254,9 @@
             public static method adler32(String data) returns int {
                 mutable uint a = cast<uint>(1);
                 mutable uint b = cast<uint>(0);
-                uint m = cast<uint>(65521);
                 for (mutable int i = 0; i < data.length(); i++) {
-                    a = (a + cast<uint>(cast<int>(data.charAt(i)))) % m;
-                    b = (b + a) % m;
+                    a = (a + cast<uint>(cast<int>(data.charAt(i)))) % Digest.adlerModulus;
+                    b = (b + a) % Digest.adlerModulus;
                 }
                 return cast<int>((b << 16) | a);
             }

@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.155")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.156")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.155")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.156")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1613,6 +1613,15 @@ set_tests_properties(lint_declaration_shapes PROPERTIES
 # those has one, so the fix the rule names cannot be written. Untested, the rule reported the entire
 # utility surface of the standard library -- 73 classes, `Strings` and `Files` and `Machine` among
 # them -- with advice none of them can take.
+# NO ADVICE ABOUT A BODY THE COMPILER WROTE. A record's `equals`, `hashCode`, `toString` and the
+# value-key hooks beside them carry the record's own location, so a rule that reads a body reports
+# at the declaration about code the author has never seen: `record Triple(int one, int two, int
+# three)` earned "the number 31 is written out 3 times in this method", about a hash multiplier.
+add_test(NAME lint_says_nothing_about_generated_bodies
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
+set_tests_properties(lint_says_nothing_about_generated_bodies PROPERTIES
+    FAIL_REGULAR_EXPRESSION "the number 31 is written out")
+
 add_test(NAME lint_statics_without_state_needs_a_subject
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
 set_tests_properties(lint_statics_without_state_needs_a_subject PROPERTIES
@@ -1650,7 +1659,7 @@ add_test(NAME lint_declarations_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"
     "-DCLANG=${POLARON_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol"
-    "-DCONTAINS=8 8 0 2 5 3 3 80 10"
+    "-DCONTAINS=8 8 0 2 5 3 12 3 80 10"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

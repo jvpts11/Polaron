@@ -162,12 +162,10 @@
         internal class HuffTable {
             private mutable int[] counts;    // how many codes of each length, 0..15
             private mutable int[] symbols;   // symbols ordered by (length, symbol)
-            private mutable int nsym;
 
             public constructor HuffTable(int[] lengths, int count) {
                 this.counts = new int[16]();
                 this.symbols = new int[count]();
-                this.nsym = count;
                 for (mutable int i = 0; i < count; i++) {
                     this.counts[lengths[i]] = this.counts[lengths[i]] + 1;
                 }
@@ -428,7 +426,7 @@
         // The writing end of the same bit order. Kept next to the reader so the two orders stay one
         // decision: ordinary fields go out least-significant-first, a Huffman code most-significant.
         internal class BitPacker {
-            private mutable ByteSink* out;
+            private mutable unique ByteSink* out;
             private mutable int cur;
             private mutable int nbits;
             public constructor BitPacker() {

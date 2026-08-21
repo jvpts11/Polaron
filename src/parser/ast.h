@@ -1033,6 +1033,14 @@ struct AnnotationDecl {
 // Base for class-body members (method now; field/constructor/destructor later).
 struct MemberDecl {
     SourceLocation loc;
+    // WRITTEN BY THE COMPILER, not by anybody. A record's `equals`, `hashCode` and `toString` carry
+    // the record's own source location, because that is the only place a reader could be sent -- and
+    // that made every rule that reads a body report about code nobody typed. `record Datagram(String
+    // data, String host, int port)` earned "the number 31 is written out 3 times in this method",
+    // about the multiplier in a hash the author never saw. Advice skips these; errors do not, since
+    // a generated body that does not compile is a real defect (see the note in buildRecordHashCode
+    // about a `+` reported on a record declaration).
+    bool isSynthesized = false;
     virtual ~MemberDecl() = default;
     virtual void dump(std::string& out, int indent) const = 0;
 };

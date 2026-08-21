@@ -76,7 +76,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "polc 1.0.155";
+constexpr std::string_view kVersion = "polc 1.0.156";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -470,6 +470,7 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                     }
                     if (!expr) { auto b = std::make_unique<BoolLiteralExpr>(); b->loc = loc; b->value = true; expr = std::move(b); }
                     method->body.statements.push_back(ret(std::move(expr)));
+                    method->isSynthesized = true;   // advice never reports a body nobody typed
                     cls.members.push_back(std::move(method));
                 }
 
@@ -509,6 +510,7 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                                      std::move(contrib));
                     }
                     method->body.statements.push_back(ret(std::move(acc)));
+                    method->isSynthesized = true;   // advice never reports a body nobody typed
                     cls.members.push_back(std::move(method));
                 }
 
@@ -544,6 +546,7 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                         }
                     }
                     method->body.statements.push_back(ret(intLit("0")));
+                    method->isSynthesized = true;   // advice never reports a body nobody typed
                     cls.members.push_back(std::move(method));
                 }
             }

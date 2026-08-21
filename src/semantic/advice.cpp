@@ -277,6 +277,18 @@ void indexExpr(const ast::Expr* e, const std::string& bundle, ProgramUse& use,
         indexExpr(ix->index.get(), bundle, use, localTypes);
     } else if (const auto* aw = dynamic_cast<const ast::AwaitExpr*>(e)) {
         indexExpr(aw->operand.get(), bundle, use, localTypes);
+    } else if (const auto* tern = dynamic_cast<const ast::TernaryExpr*>(e)) {
+        // A ternary is three expressions and the index went into none of them, so anything read
+        // ONLY inside one was invisible: `Command.combineStderr` and `Command.visible` are read as
+        // `this.combineStderr ? 1 : 0` in the one place a Command is spawned, and both were reported
+        // as fields nothing reads -- which is the advice to delete a working option.
+        indexExpr(tern->cond.get(), bundle, use, localTypes);
+        indexExpr(tern->thenExpr.get(), bundle, use, localTypes);
+        indexExpr(tern->elseExpr.get(), bundle, use, localTypes);
+    } else if (const auto* interp = dynamic_cast<const ast::InterpStringExpr*>(e)) {
+        for (const ast::ExprPtr& part : interp->exprs) {
+            indexExpr(part.get(), bundle, use, localTypes);
+        }
     }
 }
 
@@ -533,7 +545,26 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
     // Public fields, no methods, no invariant: the class is a row. A `record` says that, and the
     // compiler then writes the equality, the hash and the copy that would otherwise be forgotten
     // or written three different ways.
-    if (!c.isRecord && !c.isStruct && !c.isInterface && !c.isAbstract && !c.isUnion &&
+    //
+    // A DESTRUCTOR IS BEHAVIOUR, and the one kind that settles this outright. A class that frees
+    // something owns it, and a record is a value: it is copied where a class is referred to, so the
+    // advice would hand every copy a second claim on the same memory and the second destructor a
+    // pointer that is already gone. `KeyShare`, `RsaPublicKey` and `EcPoint` are all fields and a
+    // `delete`, and all three were being told to become rows.
+    const bool owns = std::any_of(c.members.begin(), c.members.end(), [](const ast::MemberPtr& m) {
+        return dynamic_cast<const ast::DestructorDecl*>(m.get()) != nullptr;
+    });
+    // AND EVERY FIELD HAS TO BE A VALUE, because what a record buys is equality, hashing and a
+    // string form written over the fields -- and a function value has none of the three. `Route` is
+    // a verb, a pattern and a handler; the first two are a row and the third is a body of code, and
+    // the record generated for it does not compile. A rule whose fix does not build is worse than
+    // silence: it costs the reader the time to find that out.
+    const bool everyFieldIsAValue =
+        std::all_of(fields.begin(), fields.end(), [](const ast::FieldDecl* f) {
+            return typeRefStr(f->type).rfind("function<", 0) != 0;
+        });
+    if (!c.isRecord && !c.isStruct && !c.isInterface && !c.isAbstract && !c.isUnion && !owns &&
+        everyFieldIsAValue &&
         c.invariants.empty() && methods.empty() && fields.size() >= 2 &&
         std::all_of(fields.begin(), fields.end(), [](const ast::FieldDecl* f) {
             return f->visibility == "public" && !f->isStatic;
@@ -935,7 +966,14 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     }
                     // A field nothing reads (catalogue 64). It is written, carried in every
                     // instance, copied by every copy, and never asked about.
-                    if (use.membersRead.count(f->name) == 0) {
+                    //
+                    // Decidable only for a field the outside cannot reach. A `private` field is read
+                    // by its own class or by nobody, and the class is all here; a wider one in a
+                    // library is read by programs that have not been written yet, and "nothing in
+                    // this compilation reads it" is not evidence about `ProcessResult.output`.
+                    const bool reachableFromOutside =
+                        f->visibility != "private" && (bundle.isPrelude || bundle.isImported);
+                    if (!reachableFromOutside && use.membersRead.count(f->name) == 0) {
                         warn(diag::Code::FieldNeverRead,
                              "nothing reads '" + c.name + "." + f->name + "'", f->loc);
                         continue;

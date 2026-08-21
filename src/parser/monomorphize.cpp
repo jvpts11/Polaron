@@ -1076,7 +1076,20 @@ std::vector<ast::AnnotationUse> cloneAnnotations(const std::vector<ast::Annotati
     return out;
 }
 
+// Every branch copies field by field, so anything added to a declaration has to be added here too --
+// which is what the note further down is about. `isSynthesized` is set once for all of them at the
+// return, because it belongs to `MemberDecl` and not to any one kind.
+ast::MemberPtr cloneMemberOfKind(const ast::MemberDecl* m, const Subst& s);
+
 ast::MemberPtr cloneMember(const ast::MemberDecl* m, const Subst& s) {
+    ast::MemberPtr out = cloneMemberOfKind(m, s);
+    if (out != nullptr) {
+        out->isSynthesized = m->isSynthesized;
+    }
+    return out;
+}
+
+ast::MemberPtr cloneMemberOfKind(const ast::MemberDecl* m, const Subst& s) {
     if (const auto* x = dynamic_cast<const ast::MethodDecl*>(m)) {
         auto n = std::make_unique<ast::MethodDecl>();
         n->loc = x->loc;

@@ -23,16 +23,7 @@
             public method close() returns void { Net.close(this.handle); }
         }
         // A received datagram (spec 34): its payload plus the sender's address, so a server can reply.
-        public class Datagram {
-            public String data;
-            public String host;
-            public int port;
-            public constructor Datagram(String data, String host, int port) {
-                this.data = data;
-                this.host = host;
-                this.port = port;
-            }
-        }
+        public record Datagram(String data, String host, int port) {}
         // A UDP socket (spec 34): connectionless datagrams. Open with port 0 for an ephemeral client port,
         // or a fixed port to receive on. send addresses each datagram; receive returns the payload together
         // with the sender's address (via the runtime's last-sender record) for request/reply exchanges.
@@ -647,9 +638,9 @@
 
         // One route: a verb, a pattern and what answers it.
         public class Route {
-            public mutable String verb;
-            public mutable String pattern;
-            public mutable function<ServerResponse*, ServerRequest*> handler;
+            public String verb;
+            public String pattern;
+            public function<ServerResponse*, ServerRequest*> handler;
             public constructor Route(String verb, String pattern,
                                      function<ServerResponse*, ServerRequest*> handler) {
                 this.verb = verb;

@@ -93,7 +93,7 @@ public bundle Main {
                 // half-dark grey that is the commonest graphics mistake there is.
                 mutable Color* black = Color.rgb(0.0, 0.0, 0.0);
                 mutable Color* white = Color.rgb(1.0, 1.0, 1.0);
-                mutable Color mid = Color.blend(black, white, 0.5);
+                mutable Color mid = black.blend(white, 0.5);
                 System.IO.Console.printf("blend=%d\n", (mid.toPacked() >> 16) & 255);
 
                 delete green; delete black; delete white;

@@ -109,12 +109,10 @@
         public class SparseTable {
             private mutable int[] table;
             private mutable int n;
-            private mutable int k;
             public constructor SparseTable(int[] data) {
                 this.n = data.length();
                 mutable int K = 1;
                 while ((1 << K) <= this.n) { K = K + 1; }
-                this.k = K;
                 this.table = new int[K * this.n]();
                 for (mutable int i = 0; i < this.n; i++) { this.table[i] = data[i]; }
                 for (mutable int j = 1; j < K; j++) {

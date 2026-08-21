@@ -66,6 +66,15 @@ public bundle Main {
             public method width() returns int { return this.to - this.from; }
         }
 
+        // QUIET, AND FOR A REASON THAT IS NOT ABOUT RECORDS: three numeric fields make the compiler
+        // write a `hash` that mixes with `31` three times, and the advice reported "the number 31 is
+        // written out 3 times in this method" AT THIS LINE -- about a body the author has never
+        // seen and cannot edit. Every rule that reads a body now skips the members the compiler
+        // wrote: a record's `equals`, `hashCode`, `toString` and the value-key hooks beside them.
+        public record Triple(int one, int two, int three) {
+            public method total() returns int { return this.one + this.two + this.three; }
+        }
+
         // FIRES (0B12): three int constants sharing a prefix are a set kept by hand -- nothing stops
         // two being equal, and no match over them can be checked for completeness.
         public class Speeds {
@@ -102,7 +111,8 @@ public bundle Main {
                 p.y = 3;
                 Bag b = new Bag(5) on heap;
                 Stretch s = new Stretch(1, 4);
-                System.IO.Console.println($"{Helpers.twice(new Reading(4) on stack)} {Arithmetic.twice(4)} {Extremes.zero()} {Counter.two()} {p.x + p.y} {s.width()} {Speeds.fastest()} {Limits.widest()} {Bag.combine(b, 2)}");
+                Triple t3 = new Triple(3, 4, 5);
+                System.IO.Console.println($"{Helpers.twice(new Reading(4) on stack)} {Arithmetic.twice(4)} {Extremes.zero()} {Counter.two()} {p.x + p.y} {s.width()} {t3.total()} {Speeds.fastest()} {Limits.widest()} {Bag.combine(b, 2)}");
                 delete b;
                 return;
             }

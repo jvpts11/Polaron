@@ -781,7 +781,7 @@
         // knowing it is one -- which is the point of having the interface at all.
         public class LineReader implements Iterator<String> {
             private mutable FileStream stream;
-            private mutable Buffer* chunk;
+            private mutable unique Buffer* chunk;
             private mutable String held;      // bytes read but not yet returned as a line
             private mutable boolean drained;  // the stream reached its end
 
@@ -851,9 +851,9 @@
         // things with each: a build recompiles what changed, drops what was removed, and indexes
         // what appeared.
         public class DirectoryChanges {
-            public mutable ArrayList<String> added;
-            public mutable ArrayList<String> removed;
-            public mutable ArrayList<String> changed;
+            public ArrayList<String> added;
+            public ArrayList<String> removed;
+            public ArrayList<String> changed;
             public constructor DirectoryChanges() {
                 this.added = new ArrayList<String>() on heap;
                 this.removed = new ArrayList<String>() on heap;

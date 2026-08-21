@@ -1547,10 +1547,15 @@ ast::ClassDecl Parser::parseRecord() {
             assign->value = makeIdent(f.name, c.loc);
             ctor->body.statements.push_back(std::move(assign));
         }
+        ctor->isSynthesized = true;
         c.members.push_back(std::move(ctor));
     }
-    c.members.push_back(buildRecordEquals(c.name, fields, c.loc));
-    c.members.push_back(buildRecordHashCode(c.name, fields, c.loc));
+    auto compilerWrote = [&c](ast::MemberPtr m) {
+        m->isSynthesized = true;   // so the advice does not report a body nobody typed
+        c.members.push_back(std::move(m));
+    };
+    compilerWrote(buildRecordEquals(c.name, fields, c.loc));
+    compilerWrote(buildRecordHashCode(c.name, fields, c.loc));
     // `toString` returns a String, and String is a managed object that freestanding does not have
     // (spec 36.3). Generating it there made every `record` UNDECLARABLE -- the type was rejected for a
     // method the author never wrote, with an error pointing at the String machinery rather than at the
@@ -1560,7 +1565,7 @@ ast::ClassDecl Parser::parseRecord() {
     // by design), and they are the two that make a record worth having as an immutable value -- which
     // is exactly the shape a kernel wants for a descriptor.
     if (!freestanding_) {
-        c.members.push_back(buildRecordToString(c.name, fields, c.loc));
+        compilerWrote(buildRecordToString(c.name, fields, c.loc));
     }
 
     // Body: methods and constants only -- no extra fields (spec 10).
