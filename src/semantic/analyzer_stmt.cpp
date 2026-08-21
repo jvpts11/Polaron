@@ -650,8 +650,15 @@ void SemanticAnalyzer::warnThrowInLoop(const ast::Block& body) {
         }
     });
     for (const ast::ThrowStmt* ts : found) {
+        // WHAT THE COST ACTUALLY IS, which the old wording got wrong. It said unwinding is "paid on
+        // every iteration that takes it" -- and an iteration that takes it is the LAST one, because
+        // a throw leaves the loop. Nothing repeats. The real cost is the one the catalogue entry has
+        // always described: the unwind edge is an edge the optimiser cannot see through, so the loop
+        // around it stops being a loop it can reason about, whether or not the throw is ever taken.
+        // A reader who checks the claim and finds it false stops believing the rest of the rule.
         warn(diag::Code::ThrowInLoop,
-             "this throw is inside a loop, where unwinding is paid on every iteration that takes it",
+             "this throw is inside a loop, whose body the optimiser cannot reason about while an "
+             "unwind edge runs through it",
              ts->loc);
     }
 }
