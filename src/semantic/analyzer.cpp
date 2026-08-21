@@ -731,6 +731,22 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     // `ArrayListIterator<Node*>`, a value -- so stripping it produces a type that does not exist and the
     // hierarchy walk below finds nothing. findField already had to learn this; the same trap is here.
     if (isRefType(sub) || isRefType(super)) {
+        // AND THE GUARD ABOVE HAD A HOLE THE SHAPE OF `&`. It is an OR, and a type ending in `&` is
+        // never a class -- so the moment either side was a reference, `lookupClass(super)` was null
+        // and the names-as-written protection was skipped, every time. Then `baseType` took ONE
+        // marker off each: `ArrayList$ArrayList$int*` lost the `*` that belongs to its type ARGUMENT
+        // and became a name no class has, while `ArrayList$ArrayList$int*&` lost only its `&`. Two
+        // spellings of the same type stopped matching, and passing `this` to a `T&` parameter was
+        // refused inside any generic instantiated over a pointer.
+        //
+        // So: take off the reference marker and nothing else, and try that first. `T` and `T&` are
+        // the same type wearing different clothes, whatever `T` is made of.
+        const std::string subBare = !sub.empty() && sub.back() == '&' ? sub.substr(0, sub.size() - 1) : sub;
+        const std::string superBare =
+            !super.empty() && super.back() == '&' ? super.substr(0, super.size() - 1) : super;
+        if (subBare == superBare) {
+            return true;
+        }
         if (lookupClass(sub) == nullptr || lookupClass(super) == nullptr) {
             return isSubtype(baseType(sub), baseType(super), depth + 1);
         }

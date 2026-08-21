@@ -299,10 +299,23 @@
             }
         }
         // The cursor an ArrayList hands out: walks indices 0..size over the list it was given.
+        //
+        // A POINTER, AND IT WAS A VALUE. Assignment copies in Polaron, so `ArrayList<T> list` as a
+        // parameter and as a field meant `iterator()` DEEP-COPIED THE WHOLE LIST -- object, backing
+        // array, and every element in it -- and then walked the duplicate. Every `foreach` over any
+        // ArrayList in the language paid for a second copy of the collection before it read the
+        // first element of it, and nothing in the source said so.
+        //
+        // Measured before the fix, on a list of three: take an iterator, `set(0, 99)`, `add(4)`,
+        // then walk. It saw `3` elements totalling `6` -- the list as it stood when the cursor was
+        // made. A cursor is not a snapshot; it is a place in something that exists.
+        //
+        // The copy was also the wrong ANSWER, not only the wrong cost: a walk that cannot see a
+        // write made through the collection it is walking is a walk over a different collection.
         public class ArrayListIterator<T> implements Iterator<T> {
-            private mutable ArrayList<T> list;
+            private mutable ArrayList<T>& list;
             private mutable int pos;
-            public constructor ArrayListIterator(ArrayList<T> list) {
+            public constructor ArrayListIterator(ArrayList<T>& list) {
                 this.list = list;
                 this.pos = 0;
             }

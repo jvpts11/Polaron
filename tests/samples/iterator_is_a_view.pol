@@ -1,0 +1,78 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Collections.Iterator;
+
+program IteratorIsAView;
+
+// A CURSOR IS A PLACE IN SOMETHING THAT EXISTS, NOT A PHOTOGRAPH OF IT.
+//
+// `ArrayList.iterator()` builds `new ArrayListIterator<T>(this)`, and that constructor took its
+// list BY VALUE. Assignment copies in Polaron, so every `foreach` over any ArrayList in the
+// language deep-copied the whole collection -- object, backing array, and every element in it --
+// and then walked the duplicate. Nothing in the source said so, and the loop that looked like the
+// cheapest way to read a list was the most expensive.
+//
+// It was also the wrong ANSWER and not only the wrong cost. Take an iterator, change an element,
+// add another, then walk: a cursor over the list sees `4` elements totalling `108`; a cursor over a
+// copy sees the `3` and `6` that were there when it was made. A walk that cannot see a write made
+// through the collection it is walking is a walk over a different collection.
+//
+// The second half is `ArrayList<T*>`, and it is here because it is what the fix broke first. A
+// monomorphized generic whose type argument is a pointer has a NAME ending in `*` --
+// `ArrayList$Cell*` is `ArrayList<Cell*>`, a value -- and the subtype check took one marker off
+// each side before comparing, so `ArrayList$Cell*` and `ArrayList$Cell*&` stopped being the same
+// type. Passing `this` to a `T&` parameter was refused inside any generic over a pointer.
+public bundle Main {
+    public namespace App {
+
+        public class Cell {
+            private mutable int n;
+            public constructor Cell(int n) {
+                this.n = n;
+            }
+            public method value() returns int {
+                return n;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int>* nums = new ArrayList<int>() on heap;
+                nums.add(1);
+                nums.add(2);
+                nums.add(3);
+
+                Iterator<int>* walk = nums.iterator();
+                nums.set(0, 99);        // both changes are made AFTER the cursor exists
+                nums.add(4);
+
+                mutable int seen = 0;
+                mutable int total = 0;
+                while (walk.hasNext()) {
+                    total = total + walk.next();
+                    seen = seen + 1;
+                }
+                delete walk;
+                delete nums;
+
+                // And the same list over a POINTER element type, which is the shape whose mangled
+                // name ends in a `*` of its own.
+                ArrayList<Cell*>* cells = new ArrayList<Cell*>() on heap;
+                Cell* one = new Cell(10) on heap;
+                Cell* two = new Cell(20) on heap;
+                cells.add(one);
+                cells.add(two);
+                mutable int sum = 0;
+                foreach (Cell* c in cells) {
+                    sum = sum + c.value();
+                }
+                delete cells;
+                delete two;
+                delete one;
+
+                System.IO.Console.println($"seen {seen} total {total} sum {sum}");
+                return;
+            }
+        }
+    }
+}

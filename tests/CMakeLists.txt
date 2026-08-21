@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.169")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.170")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.169")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.170")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1793,6 +1793,22 @@ add_test(NAME lint_bound_unrelated_promise_still_fires
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_bound_contract.pol")
 set_tests_properties(lint_bound_unrelated_promise_still_fires PROPERTIES
     PASS_REGULAR_EXPRESSION "indexes 'offtopic'")
+
+# A CURSOR IS A PLACE IN SOMETHING THAT EXISTS. `ArrayList.iterator()` handed its list to the cursor
+# BY VALUE, and assignment copies in Polaron -- so every `foreach` over every ArrayList in the
+# language deep-copied the whole collection and walked the duplicate. `seen 4 total 108` is a cursor
+# over the list; `seen 3 total 6` is a cursor over a photograph of it taken when it was made.
+#
+# `sum 30` is the half that the fix broke first: a monomorphized generic over a POINTER has a name
+# ending in `*` of its own, and the subtype check took one marker off each side before comparing, so
+# `ArrayList$Cell*` and `ArrayList$Cell*&` stopped being the same type.
+add_test(NAME iterator_is_a_view COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/iterator_is_a_view.pol"
+    "-DCONTAINS=seen 4 total 108 sum 30"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # A ROUTE THAT SAYS NO MUST LEAVE NOTHING BEHIND. `Router.matches` captured `{name}` segments as it
 # scanned, so a pattern that agreed on three segments and failed on the fourth had already written
