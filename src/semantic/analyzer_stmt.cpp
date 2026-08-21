@@ -373,14 +373,25 @@ void SemanticAnalyzer::warnRepeatedMagicNumber(const ast::MethodDecl& m) {
     //
     // 0, 1 and 2 are excluded: they are almost never a decision, and including them would bury the
     // ones that are.
+    //
+    // AND SO IS A BIT PATTERN. `x & 255` is not a number written out, it is the low byte, and the
+    // `&` is what says so -- naming it `byteMask` puts a word between the reader and an idiom every
+    // reader of this kind of code already knows, and leaves them one indirection further from the
+    // layout. Same for the shift distances beside it: `(v >> 24) & 255` is byte three, stated the
+    // only way there is. Thirty-seven of the library's hundred and twenty-six were `255`, all of
+    // them inside a mask, in the codecs and the hashes where the layout IS the specification. A
+    // literal counts only where it appears somewhere other than a bitwise operator.
+    auto bitwise = [](const std::string& op) {
+        return op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>";
+    };
     std::unordered_map<long long, int> seen;
     std::unordered_map<long long, SourceLocation> first;
-    std::function<void(const ast::Expr*)> scan = [&](const ast::Expr* e) {
+    std::function<void(const ast::Expr*, bool)> scan = [&](const ast::Expr* e, bool inBitPattern) {
         if (e == nullptr) {
             return;
         }
         if (dynamic_cast<const ast::IntLiteralExpr*>(e) != nullptr) {
-            if (long long v = 0; readIntLiteral(*e, v) && (v > 2 || v < -2)) {
+            if (long long v = 0; !inBitPattern && readIntLiteral(*e, v) && (v > 2 || v < -2)) {
                 if (++seen[v] == 1) {
                     first[v] = e->loc;
                 }
@@ -388,35 +399,36 @@ void SemanticAnalyzer::warnRepeatedMagicNumber(const ast::MethodDecl& m) {
             return;
         }
         if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(e)) {
-            scan(bin->lhs.get());
-            scan(bin->rhs.get());
+            const bool mask = bitwise(bin->op);
+            scan(bin->lhs.get(), mask);
+            scan(bin->rhs.get(), mask);
         } else if (const auto* un = dynamic_cast<const ast::UnaryExpr*>(e)) {
-            scan(un->operand.get());
+            scan(un->operand.get(), un->op == "~");
         } else if (const auto* call = dynamic_cast<const ast::CallExpr*>(e)) {
             for (const ast::ExprPtr& a : call->args) {
-                scan(a.get());
+                scan(a.get(), false);
             }
         } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
-            scan(ix->index.get());
+            scan(ix->index.get(), false);
         } else if (const auto* cast = dynamic_cast<const ast::CastExpr*>(e)) {
-            scan(cast->operand.get());
+            scan(cast->operand.get(), inBitPattern);
         }
     };
     eachStmt(m.body, [&](const ast::Stmt& st) {
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
-            scan(vd->init.get());
+            scan(vd->init.get(), false);
         } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
-            scan(as->value.get());
+            scan(as->value.get(), false);
         } else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
-            scan(es->expr.get());
+            scan(es->expr.get(), false);
         } else if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&st)) {
-            scan(rs->value.get());
+            scan(rs->value.get(), false);
         } else if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
-            scan(iff->cond.get());
+            scan(iff->cond.get(), false);
         } else if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) {
-            scan(ws->cond.get());
+            scan(ws->cond.get(), false);
         } else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) {
-            scan(fs->cond.get());
+            scan(fs->cond.get(), false);
         }
     });
     for (const auto& [value, count] : seen) {

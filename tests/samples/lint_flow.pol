@@ -97,6 +97,18 @@ public bundle Main {
                 return room + half + over;
             }
 
+            // QUIET: a BIT PATTERN is not a number written out. `& 255` is the low byte and the `&`
+            // is what says so; naming it puts a word between the reader and an idiom, and leaves
+            // them one indirection further from the layout. Thirty-seven of the standard library's
+            // hits were this, all of them in the codecs and hashes where the layout IS the
+            // specification.
+            public static method packed(int v) returns int {
+                int b0 = v & 255;
+                int b1 = (v >> 8) & 255;
+                int b2 = (v >> 16) & 255;
+                return b0 + b1 + b2;
+            }
+
             // FIRES (0B18): raised and caught four lines apart is local control flow wearing the
             // machinery built for failures that leave the method.
             public static method local() returns int {
@@ -135,7 +147,7 @@ public bundle Main {
             public static method main(string[] args) returns void {
                 Shape* one = new Round(3) on heap;
                 Solid* two = new Cube(4) on heap;
-                System.IO.Console.println($"{Flow.describe(one)} {Flow.describeWell(two)} {Flow.rank(22)} {Flow.mixed(44, 0)} {Flow.sized()} {Flow.local()} {Flow.ignores()} {Flow.reads()}");
+                System.IO.Console.println($"{Flow.describe(one)} {Flow.describeWell(two)} {Flow.rank(22)} {Flow.mixed(44, 0)} {Flow.sized()} {Flow.packed(66051)} {Flow.local()} {Flow.ignores()} {Flow.reads()}");
                 delete one;
                 delete two;
                 return;

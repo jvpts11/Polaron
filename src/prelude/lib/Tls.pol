@@ -624,13 +624,15 @@
             // Where an extension's value starts, or -1 when the certificate does not carry it.
             // Extension ::= SEQUENCE { extnID OID, critical BOOLEAN DEFAULT FALSE, extnValue OCTET STRING }
             private method extension(int[] oid, int oidLen) returns int {
+                // The caller builds the OID and hands it over; this method owns it from here, and
+                // there are three ways out. Written once, at the top, where a reader sees it before
+                // the returns rather than having to find all three and check they agree.
+                defer { delete oid; }
                 if (this.extensionsOffset < 0) {
-                    delete oid;
                     return 0 - 1;
                 }
                 int seq = this.extensionsOffset;
                 if (Der.tag(this.der, seq) != 48) {
-                    delete oid;
                     return 0 - 1;
                 }
                 int end = seq + Der.totalLength(this.der, seq);
@@ -645,7 +647,6 @@
                     }
                     off = Der.nextOffset(this.der, off);
                 }
-                delete oid;
                 return found;
             }
 
@@ -2528,6 +2529,9 @@
                 int[] h = aes.encryptBlock(zero);
                 delete zero;
                 int[] j0 = new int[16]();
+                // Both ways out of this method free these two, and the refusal path is the one it
+                // would be quietly wrong to forget.
+                defer { delete h; delete j0; }
                 for (mutable int i = 0; i < 12; i++) { j0[i] = iv[i] & 255; }
                 j0[15] = 1;
                 int[] s = Gcm.ghash(h, aad, aadLength, protectedBytes, cipherLength);
@@ -2541,9 +2545,7 @@
                 delete mask;
                 delete s;
                 if (!authentic) {
-                    delete h;
-                    delete j0;
-                        return new int[1]();        // refused: the caller must not read past this
+                    return new int[1]();        // refused: the caller must not read past this
                 }
                 int[] plain = new int[cipherLength > 0 ? cipherLength : 1]();
                 int[] counter = Gcm.copyBlock(j0);
@@ -2561,8 +2563,6 @@
                     off = off + 16;
                 }
                 delete counter;
-                delete h;
-                delete j0;
                 return plain;
             }
 
@@ -3492,8 +3492,8 @@
             // mismatch instead of being told there is one.
             private static method namesOf(Certificate& cert) returns String {
                 ArrayList<String> names = cert.dnsNames();
+                defer { delete names; }
                 if (names.size() == 0) {
-                    delete names;
                     return "no host names at all";
                 }
                 StringBuilder out = new StringBuilder() on stack;
@@ -3504,7 +3504,6 @@
                     i = i + 1;
                 }
                 if (names.size() > 4) { out.append(", and more"); }
-                delete names;
                 return out.toString();
             }
         }

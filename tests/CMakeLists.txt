@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.158")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.159")
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +44,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.158")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.159")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -1593,6 +1593,15 @@ add_test(NAME lint_repeated_magic_number
 set_tests_properties(lint_repeated_magic_number PROPERTIES
     PASS_REGULAR_EXPRESSION "0B17.*number 96 is written out 3 times")
 
+# ...and a BIT PATTERN is not a number written out. `x & 255` is the low byte and the `&` is what
+# says so. Thirty-seven of the standard library's hundred and twenty-six were `255` inside a mask,
+# in the codecs and the hashes where the layout is the specification and a name would put a word
+# between the reader and it.
+add_test(NAME lint_magic_number_is_not_a_mask
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
+set_tests_properties(lint_magic_number_is_not_a_mask PROPERTIES
+    FAIL_REGULAR_EXPRESSION "number 255 is written out")
+
 add_test(NAME lint_throw_caught_here
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol")
 set_tests_properties(lint_throw_caught_here PROPERTIES
@@ -1614,7 +1623,7 @@ add_test(NAME lint_flow_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"
     "-DCLANG=${POLARON_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_flow.pol"
-    "-DCONTAINS=3 4 2 1 241 7 0 1"
+    "-DCONTAINS=3 4 2 1 241 6 7 0 1"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

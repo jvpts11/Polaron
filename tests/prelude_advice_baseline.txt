@@ -27,10 +27,23 @@
 # this counted the day it was written, and two files -- `Arena.pol` and `Compare.pol`, which are
 # generic end to end -- were not covered by a single line of it.
 
+# WHAT THE TWO BIG NUMBERS ARE, since they are the ones a reader will ask about.
+#
+# 0B40 is 180 loops whose index the range analysis cannot relate to the array's length, and every
+# one of them is a loop `hoistBoundsChecks` refuses -- a call in the body, a nested loop, an index
+# the versioner cannot prove affine. The COST is real and measured: the check stays. What is not
+# available is the fix the catalogue names, because the bound is genuinely a third quantity: a flat
+# matrix indexed `row * n + col`, a stack pointer, a message schedule of eighty words. Paying it off
+# means slices or invariants through the numeric and crypto code, which is a piece of work and not
+# a pass.
+#
+# 0B24 is 31 signatures taking three or more of one primitive, where any order compiles. That is a
+# real hazard and the fix is a `newtype` or a slice per concept -- an API change across `Time`,
+# `Tls` and `Math`, again a piece of work rather than a pass.
+
 Polaron-0B0B   4
 Polaron-0B10   1
-Polaron-0B17 126
-Polaron-0B1B   4
+Polaron-0B17  81
 Polaron-0B1C  10
 Polaron-0B20   3
 Polaron-0B21   2

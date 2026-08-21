@@ -313,6 +313,7 @@
                 // written table-at-a-time gets wrong on real files only.
                 int total = hlit + hdist;
                 int[] lengths = new int[total]();
+                defer { delete lengths; }   // both ways out of this method free it
                 mutable int i = 0;
                 mutable boolean ok = true;
                 while (i < total && ok) {
@@ -344,7 +345,7 @@
                 }
                 delete clen;
                 delete order;
-                if (!ok) { delete lengths; return false; }
+                if (!ok) { return false; }
 
                 int[] litLen = new int[hlit]();
                 for (mutable int k = 0; k < hlit; k++) { litLen[k] = lengths[k]; }
@@ -355,7 +356,6 @@
                 boolean r = Inflate.block(bits, out, lit, dist);
                 delete litLen;
                 delete distLen;
-                delete lengths;
                 return r;
             }
 

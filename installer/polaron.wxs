@@ -4,7 +4,7 @@
      the compiler (required), the polaron-studio TUI, and installing the VS Code extension. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Polaron Toolchain" Manufacturer="Joao Victor Pereira Tavares"
-           Version="1.0.158.0" UpgradeCode="7f3a1c9e-2b4d-4e6a-9f10-3c5d7e8a1b20"
+           Version="1.0.159.0" UpgradeCode="7f3a1c9e-2b4d-4e6a-9f10-3c5d7e8a1b20"
            Scope="perMachine" Compressed="yes">
     <MajorUpgrade DowngradeErrorMessage="A newer version of Polaron is already installed." />
     <MediaTemplate EmbedCab="yes" />
