@@ -14,7 +14,124 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.170")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.171")
+
+# ---- PIR (docs/design/polaron-ir.md) ----
+#
+# Stage 1: a real program lowers to PIR and the module VERIFIES. The check is not "did it print
+# something" -- it is that `pir::verify` found nothing to say about a module lowered from a program
+# with the whole standard library monomorphised into it. A lowering can keep producing text long
+# after it stopped producing a well-formed module, and that is exactly what this refuses to let
+# happen quietly.
+#
+# Gaps are expected here and are not failures: they are the work queue, printed and counted.
+foreach(sample fixed_array type_queries collections_basic abstain_raii)
+    add_test(NAME pir_lowers_${sample} COMMAND "${CMAKE_COMMAND}"
+        "-DPOLC=$<TARGET_FILE:polc>"
+        "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${sample}.pol"
+        "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/pir_${sample}.ll"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_verify_test.cmake")
+endforeach()
+
+# Stage 2: the second backend emits a module LLVM accepts, and §12's facts actually arrive.
+if(POLARON_WITH_LLVM)
+    foreach(sample fixed_array collections_basic)
+        add_test(NAME pir_backend_${sample} COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${sample}.pol"
+            "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/pirback_${sample}.ll"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_backend_test.cmake")
+    endforeach()
+
+    # Stage 3's ORACLE. Not the flip -- the thing that decides when the flip is safe. Every function
+    # the trusted path defines must exist in the PIR module; a definition that vanished is the
+    # failure that must not be found after the default has been changed.
+    # The ratchet per sample: how many of the old path's definitions the PIR path does not yet have.
+    # It may only go DOWN. What is left is what the front end synthesises rather than what a program
+    # declares -- an implicit constructor, a class-load hook -- and each one lowered is a number
+    # lowered here.
+    set(pir_diff_samples fixed_array collections_basic abstain_raii)
+    # Down to ONE each: the only definition the trusted path has and the lowering does not is
+    # `Test.__onClassLoad`, which the front end synthesises for the test framework.
+    set(pir_diff_allowed 1            1                 1)
+    list(LENGTH pir_diff_samples n)
+    math(EXPR last "${n} - 1")
+    foreach(i RANGE ${last})
+        list(GET pir_diff_samples ${i} sample)
+        list(GET pir_diff_allowed ${i} allowed)
+        add_test(NAME pir_differential_${sample} COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${sample}.pol"
+            "-DOUT_OLD=${CMAKE_CURRENT_BINARY_DIR}/diff_old_${sample}.ll"
+            "-DOUT_NEW=${CMAKE_CURRENT_BINARY_DIR}/diff_new_${sample}.ll"
+            "-DOUT_PIR=${CMAKE_CURRENT_BINARY_DIR}/diff_${sample}.pir"
+            "-DALLOWED=${allowed}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_differential_test.cmake")
+    endforeach()
+
+    # THE BEHAVIOURAL COMPARISON -- what "compare bodies, not names" actually means. The program is
+    # built BOTH ways, linked, run, and required to print the same thing. Comparing names can only
+    # ever say a function exists; this says the program does the same thing, which is the only claim
+    # that justifies turning the trusted path off.
+    if(POLARON_CLANG)
+        # `addr_static` is here because the corpus could not have found it: not one of the 844
+        # samples stores the address of an object in a static. pico's ring-3 guest does -- two
+        # `atomic<int>` cells on a frame that outlives every thread it spawns -- and through the PIR
+        # path `Guest.lockWord.compareAndSet(...)` read an INVENTED global rather than the pointer,
+        # so the kernel reported a user page fault at CR2=0x8. Eight lines reproduce it.
+        foreach(sample hello_world addr_static)
+            add_test(NAME pir_behaviour_${sample} COMMAND "${CMAKE_COMMAND}"
+                "-DPOLC=$<TARGET_FILE:polc>"
+                "-DCLANG=${POLARON_CLANG}"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${sample}.pol"
+                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+                "-DRT=${POLARON_RT_OBJ}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_behaviour_test.cmake")
+        endforeach()
+
+        # THE NUMBER THAT DECIDES PHASE FOUR. Sixty samples, compiled both ways, run, compared.
+        # Ratcheted: it may only go up, and a crash fails outright. When it reaches the sample
+        # count, the trusted path can be turned off; until then, this says how far away that is.
+        #
+        # THE SIXTY ARE SPREAD ACROSS ALL 844, every fifteenth -- see the harness. They used to be
+        # the first sixty of a sorted list, which is every file beginning with `a` or `b`, and the
+        # difference is not cosmetic: the head read 31 of 47 while a stride over the same corpus
+        # read 19 of 67. `EXPECT_SAME` DROPPED FROM 31 TO 13 ON THAT CHANGE ALONE, and nothing
+        # regressed -- the old number was measuring a corner and reporting it as the whole.
+        add_test(NAME pir_batch_agreement COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DSAMPLES=${CMAKE_CURRENT_SOURCE_DIR}/samples"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DLIMIT=120"
+            # 89 OF 89, AND ZERO DIFFER.
+            #
+            # It read 96 once and that number was not true: when `toLlvm` produced a module LLVM
+            # refused, polc printed one line and then wrote the TRUSTED module to the output -- so
+            # the sample compiled, linked, ran, and printed exactly what the other arm printed,
+            # because it WAS the other arm. Twenty-two samples were counted as agreement on that
+            # basis. Asking for a backend and being handed a different one is now a failure, the
+            # number dropped to 87, and every one of the twenty-two has since been fixed.
+            #
+            # Whole corpus, measured the same way: 693 of 693 comparable at -O0 and 694 of 694 at
+            # -O2. No sample in this corpus is now built differently by the two backends.
+            #
+            # 89 -> 87 ON THE PIR MERGE, AND NOT BECAUSE ANYTHING REGRESSED. The run that reported it
+            # said `87 agree, 0 differ, 0 do not build`: nothing disagrees and nothing fails to
+            # build. The picked set is `every Nth of the directory`, so the twenty-nine samples the
+            # merge added -- twenty-four from the fork, five from the advice work -- re-picked it,
+            # and the number is about different files. The header of `run_pir_batch_test.cmake`
+            # records this same hazard biting once before, when the stride changed and the count fell
+            # from 31 to 13.
+            #
+            # A count with two causes and no way to tell them apart is why that script now fails on
+            # `differ > 0` and `broke > 0` DIRECTLY, naming the samples. Those two checks are
+            # corpus-independent; this number is a floor, and a floor that moves when the floorplan
+            # does is not evidence of subsidence.
+            "-DEXPECT_SAME=87"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_batch_test.cmake")
+    endif()
+endif()
 
 # THE REFERENCE COVERS THE LANGUAGE, checked against the compiler rather than against good intentions.
 # Every keyword the lexer reserves and every diagnostic code the compiler can emit must appear in the
@@ -44,7 +161,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.170")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.171")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -430,6 +547,23 @@ if(POLARON_CLANG)
         DEPENDS polaron_build_project
         PASS_REGULAR_EXPRESSION "cleaned")
 
+    # ONE PROJECT DIRECTORY, FIVE TESTS THAT WRITE IN IT. `polaron_build_project` and
+    # `polaron_build_debug` both run `polaron build` inside `demoproj`, into the same `build-output`,
+    # and `clean` deletes that out from under whichever is still going. `DEPENDS` orders them after
+    # the scaffold and says nothing about each other, so under `-j` they collide -- measured here as
+    # `polaron_build_debug` failing in a full run and passing on its own.
+    #
+    # Same defect the bundle tests had, and the same fix: a shared LOCK, not a fixed order, because
+    # what they contend for is the directory and not a sequence. Worth the two minutes, because a
+    # failure that goes away when you re-run trains you to re-run instead of to look -- which is
+    # exactly how a real one gets waved through.
+    foreach(_dp polaron_new_scaffolds polaron_new_wrote_manifest polaron_build_project
+                polaron_build_debug polaron_clean_removes_output)
+        if(TEST ${_dp})
+            set_tests_properties(${_dp} PROPERTIES RESOURCE_LOCK demoproj)
+        endif()
+    endforeach()
+
     # End to end: plug a local library and build+run a consumer that calls into it.
     add_test(NAME polaron_dep_build COMMAND "${CMAKE_COMMAND}"
         "-DPOLARON=$<TARGET_FILE:polaron>"
@@ -498,6 +632,87 @@ set_tests_properties(codegen_asm_wrong_arch_errors PROPERTIES
 add_test(NAME codegen_asm_right_arch_ok
     COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/asm_wrong_arch.pol"
             -o "${CMAKE_CURRENT_BINARY_DIR}/asm_right_arch.ll")
+
+# ---- THE ADDRESS FAMILY, AND THE DISCIPLINE THAT MAKES IT WORTH HAVING ----
+#
+# Three tests, and the middle one is the important one: a warning that fires on correct code is a
+# warning people learn to ignore, so the positive sample is deliberately full of masks, distances,
+# page numbers and widened counts -- every shape that looks like an address and is not.
+add_test(NAME sema_address_discipline_is_quiet_on_correct_code
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/address_discipline.pol")
+set_tests_properties(sema_address_discipline_is_quiet_on_correct_code PROPERTIES
+    FAIL_REGULAR_EXPRESSION "Polaron-0B4D|Polaron-0B4E")
+
+# ...and it does fire on the two shapes it is for. A number used as an address, and an address stored
+# in a number: both warnings, so the program still compiles.
+add_test(NAME sema_address_discipline_flags_a_constant_used_as_an_address
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/address_discipline_bad.pol")
+set_tests_properties(sema_address_discipline_flags_a_constant_used_as_an_address PROPERTIES
+    PASS_REGULAR_EXPRESSION "Polaron-0B4D")
+
+add_test(NAME sema_address_discipline_flags_an_address_in_an_int
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/address_discipline_bad.pol")
+set_tests_properties(sema_address_discipline_flags_an_address_in_an_int PROPERTIES
+    PASS_REGULAR_EXPRESSION "Polaron-0B4E")
+
+# A `weak` FIELD OVER AN INTERFACE ATE ITS TARGET'S FIELDS.
+#
+# The intrusive weak list's head was placed after each class's own fields and located by the field's
+# STATIC type, so `weak SomeInterface*` wrote the head eight bytes into the implementer -- over its
+# first two fields, silently. The head now sits directly behind the vtable pointer for every class in
+# a weakly-referenced hierarchy, so a base and its subclasses agree on where it is. Run rather than
+# inspected: the failure was corrupted DATA, which no IR pattern would have caught.
+add_test(NAME codegen_weak_through_interface_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/weak_through_interface.pol"
+    "-DEXPECTED=624 x 384 / through weak: 624 x 384 / after unlink: 624 x 384"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A POINTER TO A POINTER IS NOT THE POINTER. `T*`, `T&` and `T` mix freely by design; `T**` slipping
+# into that set is how the pico desktop shipped blank window titles and an invisible mouse cursor --
+# `&this.back` on a field that is already a `Surface*`, accepted silently, drawing into the
+# compositor's own fields. The message names the shape, so the test asks for the sentence and not only
+# for a failure.
+add_test(NAME sema_pointer_to_pointer_is_not_a_pointer
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/pointer_depth_bad.pol")
+set_tests_properties(sema_pointer_to_pointer_is_not_a_pointer PROPERTIES
+    WILL_FAIL TRUE)
+add_test(NAME sema_pointer_to_pointer_says_which_way
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/pointer_depth_bad.pol")
+set_tests_properties(sema_pointer_to_pointer_says_which_way PROPERTIES
+    PASS_REGULAR_EXPRESSION "level\\(s\\) of pointer too many")
+
+# A NARROW ADDRESS WIDENS WITH ZEROES, and this is the test for a bug that reached a running machine:
+# an argument was widened by `coerceToType`, which sees LLVM types where an i16 carries no signedness,
+# and it chose `sext`. `short address` 0x8000 arrived in an `address` parameter as
+# 0xFFFF_FFFF_FFFF_8000 and the kernel page-faulted on a non-canonical address. The IR must contain the
+# zero-extension; `sext` of that value would be the bug returning.
+add_test(NAME codegen_narrow_address_widens_unsigned COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/address_discipline.pol"
+    "-DNEEDLE=zext i16"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# `lock xchg` -- the atomic exchange a spinlock is made of, which the asm checker refused outright: it
+# read the PREFIX as the mnemonic and reported "'lock' is not a known x86_64 instruction". No output
+# pattern, for the same reason as the arch test above: the claim is that it compiles. That it RUNS is
+# proved where it is used -- two processors reaching 40000 increments with none lost, which needs two
+# processors and so cannot be claimed in this suite.
+add_test(NAME codegen_asm_lock_prefix_compiles
+    COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/asm_lock_prefix.pol"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/asm_lock_prefix.ll")
+
+# A PREFIX IS STRIPPED, NOT WAVED THROUGH. `lock` in front of a mnemonic that does not exist is still an
+# unknown instruction, and the message names the mnemonic rather than the prefix. Without this the fix
+# that accepted `lock xchg` could have been "add lock to the known set", which accepts `lock anything`.
+add_test(NAME codegen_asm_lock_prefix_still_checks
+    COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/asm_lock_bad.pol"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/asm_lock_bad.ll")
+set_tests_properties(codegen_asm_lock_prefix_still_checks PROPERTIES
+    PASS_REGULAR_EXPRESSION "'xhcg' is not a known x86_64 instruction")
 
 # `on heap` on a region class is refused rather than obeyed OR ignored. Ignoring it would be the worst
 # of the three: the author wrote a placement and the compiler did something else without saying so.
@@ -644,6 +859,22 @@ add_test(NAME codegen_ffi_syscall_emits COMMAND "${CMAKE_COMMAND}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ffi_syscall.pol"
     "-DTARGET_TRIPLE=x86_64-unknown-linux-gnu"
     "-DNEEDLE=asm sideeffect \"syscall\""
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# A METHOD EXPORTED TO SOMETHING OUTSIDE THE PROGRAM SURVIVES REACHABILITY. `unknown <world>` says
+# the caller adopts a foreign ABI, so the caller is not in the program and no edge inside it can ever
+# reach the method; a `naked` body then takes its own `.bss` down with it when the function goes.
+# pico failed to link on `undefined symbol: stack_bottom` -- a label inside an asm body nobody calls.
+#
+# ITS OWN TEST BECAUSE THE ORACLE IS BLIND TO IT. Every sample is compiled with and without
+# reachability and compared against GlobalDCE, which shares the blind spot exactly: it would delete an
+# unreferenced entry point too, so both modes agreed and the hole passed. An oracle answers only the
+# question it can ask, and a freestanding entry point is a fact about the LINKER, not the module.
+add_test(NAME codegen_exported_entry_survives_reachability COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/reach_exported_entry.pol"
+    "-DNEEDLE=probe_stack_bottom"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
 
@@ -1810,6 +2041,22 @@ add_test(NAME iterator_is_a_view COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# THE TARGET DECIDES WHETHER AN ASSIGNMENT COPIES. `T* f = x` shares; `T f = x` copies. The PIR
+# lowering asked the VALUE's pointer depth instead, so `this.direct = this` on a `Owner*` field
+# deep-copied the object -- and inside a constructor that recursion reads fields not yet written and
+# `memcpy`s from whatever the fresh allocation held. `lint_program.pol` segfaulted after its printf
+# had run, and stdout being buffered to a pipe meant the crash ate the output: the program looked
+# like it printed nothing.
+#
+# One hop and two, because the first guess was that only the chained form was broken. It was not.
+add_test(NAME assign_shares_through_pointer COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/assign_shares_through_pointer.pol"
+    "-DEXPECTED=direct=42 chained=42"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # A ROUTE THAT SAYS NO MUST LEAVE NOTHING BEHIND. `Router.matches` captured `{name}` segments as it
 # scanned, so a pattern that agreed on three segments and failed on the fourth had already written
 # three parameters into the request -- and `dispatch` hands the same request to every route in turn,
@@ -2169,6 +2416,23 @@ add_test(NAME codegen_bce_affine_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+# A HOSTED PROGRAM THAT INDEXES A RAW POINTER, AT -O2 -- which did not compile at all:
+# `class 'int*' has no method 'length'`, from a guard `hoistBoundsChecks` synthesizes over the base
+# of an indexed access. The symptom was known and the cure was aimed at the wrong place: the pass was
+# skipped for FREESTANDING programs, where pointers are everywhere and it was noticed at once, so
+# hosted code kept the bug and nothing here indexed a pointer at -O2 to find it.
+#
+# `-DOPT=-O2` is the whole test, for the same reason it is on `bce_affine` above: the pass does not
+# run at -O0, so at the default this file compiles either way and proves nothing.
+add_test(NAME codegen_bce_raw_pointer_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DOPT=-O2"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bce_raw_pointer.pol"
+    "-DCONTAINS=sum=136"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 # `address` no longer widens from/to a plain integer in hosted code: turning a number into a pointer
 # is the conversion a no-exploitable-UB language has to make somebody write down. Freestanding is
 # exempt -- the pico kernel does it 210 times and means every one of them.
@@ -2405,6 +2669,113 @@ add_test(NAME sema_warns_transformer_naming
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/transformer_naming_warn.pol")
 set_tests_properties(sema_warns_transformer_naming PROPERTIES
     PASS_REGULAR_EXPRESSION "transformer 'Describable' should be named `TDescriber`")
+
+# AN ADDRESS DECLARED AS A NUMBER, with no cast to point at. `int vram = 0xB8000;` is the commonest
+# and quietest form of the mistake `address` exists to stop, and the cast check could not see it.
+add_test(NAME sema_warns_address_shaped_declaration
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/address_shaped_decl.pol")
+set_tests_properties(sema_warns_address_shaped_declaration PROPERTIES
+    PASS_REGULAR_EXPRESSION "`vram` is declared `int` and holds what is written as an address")
+
+# ...AND THE SILENCE, which is the half that decides whether anybody reads the other one. A big hex
+# constant is not always a place: `0x53425355` is 'USBS' (every byte a printable character), `magic`
+# says what it is in its own name, `0xFFFFFFFF` is a mask and `0x800` is smaller than a page. The
+# first of those was found by running this check over pico, where it was the only thing it reported.
+add_test(NAME sema_address_shaped_spares_magics
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/address_shaped_decl.pol")
+set_tests_properties(sema_address_shaped_spares_magics PROPERTIES
+    PASS_REGULAR_EXPRESSION "`apic` is declared `long`"
+    FAIL_REGULAR_EXPRESSION "`(usbStatus|magic|mask|small|framebuffer|count)` is declared")
+
+# ...AND THE OTHER TWO PLACES AN ADDRESS CAN ARRIVE. A check that only reads declarations reports a
+# clean kernel while the addresses turn up somewhere else: a driver names its bases in a `fixed` block
+# and ASSIGNS to its fields three hundred lines away, which is where a reader is no longer looking at
+# the type. Both forms warn; a `fixed` is the highest-value one of the three.
+add_test(NAME sema_warns_address_shaped_assignment
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/address_shaped_assign.pol")
+set_tests_properties(sema_warns_address_shaped_assignment PROPERTIES
+    PASS_REGULAR_EXPRESSION "`(Base|where|spot)` is declared `int`")
+
+# ...AND THE SILENCE AGAIN, now over the families a KERNEL is actually made of. Running the first
+# version of this check over pico reported 64 places, and not one of them was an address: ARGB
+# colours, Unicode codepoints, single-bit device flags, register offsets and MSR numbers. A warning
+# that fires on half the constants in every driver is a warning that gets switched off.
+add_test(NAME sema_address_shaped_spares_devices
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/address_shaped_assign.pol")
+set_tests_properties(sema_address_shaped_spares_devices PROPERTIES
+    PASS_REGULAR_EXPRESSION "`Base` is declared `int`"
+    FAIL_REGULAR_EXPRESSION "`(Ident|Magic|Mask|Port|EnableBit|Argb|RegHead|proper|kept)` is declared")
+
+# A `typealias` MUST NOT CHANGE THE PROGRAM. Declaring one makes the alias pass re-clone every class
+# with an empty substitution, so the cloner becomes a rewrite of the whole program -- and everything
+# it silently fails to copy is silently deleted from a program whose author added two words in
+# another file. pico lost its inline assembly, its `volatile` locals, its byte literals, its layouts,
+# its unions and its chaos tetrad in one build, and polc crashed emitting a `naked` method whose body
+# had been removed. Three needles, one per clone path that was broken.
+add_test(NAME codegen_alias_reclone_keeps_asm COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/alias_reclone_fidelity.pol"
+    "-DTARGET_TRIPLE=x86_64-unknown-none-elf"
+    "-DNEEDLE=asm sideeffect"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# The one that cost the kernel: a `volatile int*` LOCAL is how every MMIO register and every wait
+# loop in a freestanding program is read, and without the word -O2 hoists the read out of the loop.
+add_test(NAME codegen_alias_reclone_keeps_volatile_locals COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/alias_reclone_fidelity.pol"
+    "-DTARGET_TRIPLE=x86_64-unknown-none-elf"
+    "-DNEEDLE=load volatile"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# ...and the chaos tetrad, whose `abstainfrom` lowers to a private counter. A dropped `abstainfrom`
+# leaves the label with nothing to disable it, so a one-shot runs every time.
+add_test(NAME codegen_alias_reclone_keeps_abstain COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/alias_reclone_fidelity.pol"
+    "-DTARGET_TRIPLE=x86_64-unknown-none-elf"
+    "-DNEEDLE=@abstain."
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# A `cascade` OVER A SHARED NODE LINKS BARE METAL. Two classes owning the same kind of thing makes
+# the owned graph stop being a forest, so the walk allocates a visited set -- which was a hosted
+# runtime call and three undefined symbols on a freestanding target. `define` and not `declare` is
+# the whole assertion: the set is generated from the program's own `heap class`, like the String
+# helpers, so a program that says where memory comes from has said enough for `cascade` to work.
+add_test(NAME codegen_freestanding_cascade_defines_ptrset COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/cascade_shared_freestanding.pol"
+    "-DTARGET_TRIPLE=x86_64-unknown-none-elf"
+    "-DNEEDLE=define internal i32 @__polaron_ptrset_add"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# ...and a HOSTED program still takes the runtime's own. Generating a second copy into every hosted
+# module would be a duplicate definition of something the runtime library already exports.
+add_test(NAME codegen_hosted_cascade_uses_runtime_ptrset COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/cascade_graph.pol"
+    "-DNEEDLE=define internal i32 @__polaron_ptrset_add"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+
+# THE KEY WARNING NAMES ONLY THE HOOKS IT IS ACTUALLY GENERATING. `HalfPainted` writes equalsKey and
+# hash, so only `compareTo` is generated and only `compareTo` may be named -- and the consequence
+# changes with it, from "compare EQUAL" to "order as equal", because the equality is the author's now.
+add_test(NAME sema_key_warning_names_generated_hooks
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/record_key_hooks_warn.pol")
+set_tests_properties(sema_key_warning_names_generated_hooks PROPERTIES
+    PASS_REGULAR_EXPRESSION "field 'tint' of 'HalfPainted'.*left out of compareTo.*order as equal")
+
+# ...and it is SILENT for the record that wrote all three. This is the half that matters: a warning
+# that survives its own fix is a warning people learn to scroll past. `Painted` must not be named.
+add_test(NAME sema_key_warning_stops_when_fixed
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/record_key_hooks_warn.pol")
+set_tests_properties(sema_key_warning_stops_when_fixed PROPERTIES
+    FAIL_REGULAR_EXPRESSION "of 'Painted'")
 
 # A TYPED ARENA REFUSES THE WRONG TYPE, and until now it refused it only when the region happened to
 # be a LOCAL: the accepts check was never reached for a region held in a field, which is the only
@@ -3535,6 +3906,31 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `&Class.staticField` -- the address of a static field, which the analyzer refused to type
+        # because its bit-field guard asked for the type of the RECEIVER, and a class name is not a
+        # variable. Nothing could take the address of a static; a futex word is exactly one.
+        add_test(NAME codegen_static_field_address_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_field_address.pol"
+            "-DEXPECTED=value=42 wide=908"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A METHOD THAT RETURNS A CATALOG, which the guide lists as a first-class thing to do and the
+        # compiler could not emit at all: a catalog value is a tagged ordinal (i64) and `return
+        # Grade.ok` handed back the enum's own value -- an i32 ordinal, or a java-style enum's
+        # SINGLETON POINTER. The module verifier rejected it every time, so any method whose result was
+        # "one of a closed set of outcomes, each carrying its own data" failed to build. Both
+        # implementer flavours and a catalog-typed local are in the sample, because the packing differs.
+        add_test(NAME codegen_catalog_return_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/catalog_return.pol"
+            "-DEXPECTED=100 50 7 0 8"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # F8: async/await (slice A) -- two async tasks run on the worker pool; main awaits both.
         add_test(NAME codegen_async_basic_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
@@ -4215,6 +4611,30 @@ if(POLARON_WITH_LLVM)
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/freestanding_no_prelude_hooks.pol"
             "-DNEEDLE=__polaron_str_copy"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+
+        # A DATA-CARRYING ENUM NEEDS NO ALLOCATOR. Every constant of one is a singleton -- one object
+        # for the whole run, never freed -- and it was built with `__polaron_malloc` on first touch. So
+        # a freestanding program that named a single constant of one did not link, and the feature was
+        # unavailable on bare metal: pico's DNS resolver, whose every outcome is such a constant, was
+        # where this surfaced. The storage is now a slot in the image.
+        add_test(NAME codegen_freestanding_data_enum_has_no_allocator COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/freestanding_value_types.pol"
+            "-DNEEDLE=__polaron_malloc"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+
+        # ...and A SMALL VALUE STRUCT IS COPIED WITHOUT A C LIBRARY. Assignment is copying, so passing
+        # a four-byte struct by value is a copy -- emitted as a CALL to `memcpy`, with the length
+        # written as a constant expression that never folded, so even four bytes went out as a libcall.
+        # `llvm.memcpy` with a literal size is expanded inline instead; a genuinely large copy still
+        # becomes the libcall, which the freestanding runtime provides weakly.
+        add_test(NAME codegen_freestanding_struct_copy_has_no_libc COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/freestanding_value_types.pol"
+            "-DNEEDLE=call ptr @memcpy"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
 
@@ -7204,7 +7624,11 @@ if(POLARON_WITH_LLVM)
         add_test(NAME codegen_interrupt_binds_receiver COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_entry.pol"
-            "-DNEEDLE=store ptr %kbd1, ptr @\"Keyboard$interrupt$self\""
+            # THE STORE is the property, not what the stored value happens to be CALLED. `%kbd1` is
+            # one backend's naming of an SSA value; the other numbers it `%1`. Pinning the name was
+            # pinning an implementation detail, and it went red the day the default backend changed
+            # while the feature it tests worked perfectly.
+            "-DNEEDLE=, ptr @\"Keyboard$interrupt$self\", align 8"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
 
@@ -7216,7 +7640,10 @@ if(POLARON_WITH_LLVM)
         add_test(NAME codegen_interrupt_atomic_state_ok COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_atomic_ok.pol"
-            "-DNEEDLE=atomicrmw add ptr %atomic.value, i32 1 seq_cst"
+            # The claim is a REAL `atomicrmw` with no `__atomic_*` libcall behind it -- what the
+            # pointer operand is named is one backend's spelling (`%atomic.value` against `%value`)
+            # and not part of it.
+            "-DNEEDLE=atomicrmw add ptr %"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
 
@@ -7408,6 +7835,13 @@ if(POLARON_WITH_LLVM)
             --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/bit_field_literal_bad.pol")
         set_tests_properties(sema_rejects_bitfield_literal_overflow PROPERTIES
             PASS_REGULAR_EXPRESSION "does not fit 'state'")
+
+        # A packed bit field still has no address. Untested until the guard that says so was
+        # rewritten to stop type-probing a type-name receiver -- see static_field_address.pol.
+        add_test(NAME sema_rejects_bitfield_address COMMAND polc
+            --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/bit_field_address_bad.pol")
+        set_tests_properties(sema_rejects_bitfield_address PROPERTIES
+            PASS_REGULAR_EXPRESSION "cannot take the address of 'mode'")
 
         # And the computed half still compiles clean: same struct, same overflow, through a variable.
         add_test(NAME sema_accepts_bitfield_runtime_truncation COMMAND polc
@@ -8909,6 +9343,26 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # A `String` OWNS ITS BUFFER, and the scope end is where it gives it back (spec 21).
+        #
+        # This is here because NOTHING ELSE COULD SEE IT. A leaked String prints exactly what an
+        # owned one prints, so the 846-sample differential -- which compares what programs write --
+        # called the two backends equal on every string test in the corpus while one of them was
+        # releasing nothing at all. Only a probe that ASKS THE ALLOCATOR catches it, and only after
+        # `--test` was made to work through both backends could that probe be pointed at either.
+        #
+        # Two rounds of the same work: the second must leave the live total where the first did.
+        # Through the AST-to-LLVM path it does. Through PIR the total doubles -- 19200 bytes to
+        # 38400 -- which is every String of the first round still held.
+        add_test(NAME codegen_string_ownership_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DOPT=--test"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_string_ownership.pol"
+            "-DEXPECTED=PASS Probe.strings_do_not_leak tests: 1 passed, 0 failed, 0 skipped"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # A test runs against a LOADED program: the synthesized runner emits the onClassLoad hooks
         # the program's own main would (spec 32.5). Without this, agents-exe's whole suite panicked
         # in its first fixture on a table an onClassLoad fills.
@@ -9868,6 +10322,34 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `partial` ACROSS FILES (spec 8.3) -- the case the keyword exists for, and the one that never worked.
+#
+# Two bugs at once. `mergePartialClasses` matched parts within one `Namespace` OBJECT, and a bundle
+# written across N files is N Bundle objects of the same name each holding its own namespace object of
+# the same name -- so parts in different files never met. And it ran inside `monomorphize`, eight
+# passes late, by which time `qualifyNamespaces` had renamed one of the colliding names and the
+# analyzer had reported a redeclaration. Found by splitting a kernel's scheduler in two.
+add_test(NAME codegen_partial_across_files_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/partial_two_files/a.pol"
+    "-DINPUT2=${CMAKE_CURRENT_SOURCE_DIR}/samples/partial_two_files/b.pol"
+    "-DEXPECTED=sum=30"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A `fixed` may have a NEWTYPE over a numeric type (spec 24 + 28.1). Naming the values is the
+        # first thing anyone does with a newtype, and it was refused -- so the feature worked for
+        # parameters and not for the constants those parameters are called with. Found in a kernel,
+        # where `openLine(line, vector)` takes two small integers that compile fine when swapped.
+        add_test(NAME codegen_newtype_fixed_const_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/newtype_fixed_const.pol"
+            "-DEXPECTED=timer=32 keyboard=33 line=1 sum=65"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # Custom annotations (spec 14.3): declare with `annotation`, apply `[Name(args)]` on a
         # class/method/field; [CompileTimeProcessor] (spec 14.4). Validated, then compiles & runs.
         add_test(NAME codegen_annotations_runs COMMAND "${CMAKE_COMMAND}"
@@ -10434,6 +10916,7 @@ add_executable(polaron_unit_tests
     unit/test_discovery.cpp # toolchain driver: project discovery
     unit/test_jsonout.cpp   # toolchain driver: --json workspace output
     unit/test_lsp_json.cpp  # language server: JSON-RPC value parse/dump
+    unit/test_pir.cpp       # PIR: the text form round-trips, and the §9 verifier rules bite
     ${CMAKE_SOURCE_DIR}/src/lsp/json.cpp
 )
 target_link_libraries(polaron_unit_tests PRIVATE polaron_core polaron_driver doctest::doctest)

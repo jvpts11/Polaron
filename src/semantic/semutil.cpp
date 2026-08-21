@@ -106,6 +106,20 @@ std::string elementOf(const std::string& t) {
 bool isRefType(const std::string& t) {
     return !t.empty() && (t.back() == '*' || t.back() == '&');
 }
+// HOW MANY LEVELS DEEP a pointer type is: 0 for `Dog`, 1 for `Dog*`, 2 for `Dog**`.
+//
+// `baseType` deliberately strips only ONE marker, because a monomorphized generic's name can end in a
+// '*' that belongs to its type argument. This counts them, which is a different question and the one
+// the subtype rule needs: `T*` and `T` are allowed to mix, `T**` and `T*` are not, and nothing could
+// tell those two situations apart while the only tool was "strip one and compare".
+std::size_t pointerDepth(const std::string& t) {
+    const std::string s = ast::stripNullable(t);
+    std::size_t n = 0;
+    for (std::size_t i = s.size(); i > 0 && (s[i - 1] == '*' || s[i - 1] == '&'); --i) {
+        ++n;
+    }
+    return n;
+}
 std::string baseType(const std::string& t) {
     std::string s = ast::stripNullable(t);           // strip the `nullable ` prefix (spec 3.7)
     // Strip ONE trailing pointer/reference marker: a generic with a pointer type argument mangles to a
@@ -270,7 +284,12 @@ bool intLiteralFits(const ast::Expr& init, const std::string& target) {
                dynamic_cast<const ast::UnaryExpr*>(&init) != nullptr;
     }
     const unsigned bits = intBits(target);
-    const bool uns = !target.empty() && target[0] == 'u';
+    // `u`-prefixed names AND the whole address family. An address has no sign -- `isUnsignedIntName`
+    // says so, and every widening already obeys it -- but this range check looked at the first letter,
+    // so `short address trampoline = 0x8000;` was refused for not fitting a SIGNED sixteen bits. That
+    // made the entire upper half of every narrow address space unwritable as a literal: 0x8000 is
+    // where a real-mode trampoline lives, and 0xB8000 and 0xFEE00000 have the same shape one width up.
+    const bool uns = ast::isUnsignedIntName(target) || (!target.empty() && target[0] == 'u');
     if (uns) {
         if (v < 0) {
             return false;

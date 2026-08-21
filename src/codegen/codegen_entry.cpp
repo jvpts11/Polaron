@@ -506,148 +506,13 @@ void CodeGenerator::Impl::emitAsyncStateMachine(const ast::ClassDecl& cls, const
     emitAsyncWrapper(stateTy, m, mangled);
 }
 
+// WHAT tests this program holds. The walk itself is in `testrunner`, because "`--test` means the
+// entry is a runner over the `[Test]` methods" is the LANGUAGE's rule and both backends need it --
+// see the note at the top of testrunner.h. All that is left here is the one thing only this backend
+// can answer: how it spelled a class's key.
 void CodeGenerator::Impl::collectTests() {
-    for (const ast::Bundle& bundle : program.bundles) {
-        if (bundle.isImported || bundle.isPrelude) {
-            continue;
-        }
-        for (const ast::Namespace& ns : bundle.namespaces) {
-            currentNamespace = ns.name;
-            currentBundleName = bundle.name;
-            for (const ast::ClassDecl& cls : ns.classes) {
-                for (const ast::MemberPtr& member : cls.members) {
-                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
-                    if (m == nullptr) {
-                        continue;
-                    }
-                    bool isTest = false;
-                    const ast::AnnotationUse* ignore = nullptr;
-                    const ast::AnnotationUse* cases = nullptr;
-                    const ast::AnnotationUse* repeat = nullptr;
-                    const ast::AnnotationUse* maxTime = nullptr;
-                    const ast::AnnotationUse* bench = nullptr;
-                    const ast::AnnotationUse* xfail = nullptr;
-                    std::string tags;
-                    const char* hook = nullptr;  // the lifecycle annotation this method carries
-                    for (const ast::AnnotationUse& a : m->annotations) {
-                        if (a.name == "Test") {
-                            isTest = true;
-                        } else if (a.name == "Ignore") {
-                            ignore = &a;
-                        } else if (a.name == "Cases") {
-                            cases = &a;
-                        } else if (a.name == "Repeat") {
-                            repeat = &a;
-                        } else if (a.name == "MaxTime") {
-                            maxTime = &a;
-                        } else if (a.name == "Benchmark") {
-                            bench = &a;
-                        } else if (a.name == "ExpectedToFail") {
-                            xfail = &a;
-                        } else if (a.name == "Tag") {
-                            if (!tags.empty()) {
-                                tags += ",";
-                            }
-                            tags += annotationStringArg(a, "name");
-                        } else if (a.name == "BeforeAll" || a.name == "AfterAll" || a.name == "Setup" ||
-                                   a.name == "Teardown") {
-                            hook = a.name.c_str();
-                        }
-                    }
-                    if (bench != nullptr) {
-                        collectBenchmark(cls, *m, *bench, isTest);
-                        continue;
-                    }
-                    if (hook != nullptr) {
-                        collectHook(cls, *m, hook);
-                        if (!isTest) {
-                            continue;
-                        }
-                        errors.push_back(CodegenError{
-                            std::string("'[") + hook + "]' and '[Test]' cannot mark the same method '" +
-                                cls.name + "." + m->name + "': a hook runs around the tests, so it " +
-                                "cannot be one of them",
-                            m->loc});
-                        continue;
-                    }
-                    if (!isTest) {
-                        if (ignore != nullptr) {
-                            errors.push_back(CodegenError{
-                                "'[Ignore]' on '" + cls.name + "." + m->name +
-                                    "' has no effect: it only applies to a '[Test]' method",
-                                m->loc});
-                        }
-                        continue;
-                    }
-                    const std::string trt = typeRefName(m->returnType);
-                    if (!m->isStatic || (trt != "boolean" && trt != "void")) {
-                        errors.push_back(CodegenError{
-                            "[Test] method '" + cls.name + "." + m->name +
-                                "' must be a public static method returning boolean (the test's own "
-                                "verdict) or void (the verdict comes from its Test.assert* calls)",
-                            m->loc});
-                        continue;
-                    }
-                    TestCase tc;
-                    // THE SYMBOL BY KEY, THE DISPLAY BY NAME. The runner calls the function, so the
-                    // symbol has to be the one that was emitted -- which for a class whose name the
-                    // standard library also uses carries its path. Composed from the bare name, the
-                    // lookup silently found nothing and the class's tests VANISHED from the run: a
-                    // suite that reports "8 passed" when it holds eleven tests is worse than one
-                    // that fails. What a reader sees stays `Report.the_assertion_surface`, because
-                    // the path is the compiler's business and the test's name is the author's.
-                    tc.sym = clsKey(cls.name) + "." + m->name;
-                    tc.display = cls.name + "." + m->name;  // what --filter matches and the report prints
-                    tc.cls = cls.name;
-                    tc.isVoid = trt == "void";  // spec 32.11: verdict is "no assertion failed"
-                    tc.tags = tags;
-                    if (ignore != nullptr) {
-                        tc.ignored = true;
-                        tc.ignoreReason = annotationStringArg(*ignore, "reason");
-                    }
-                    tc.expectedToFail = xfail != nullptr;
-                    if (repeat != nullptr) {
-                        tc.repeat = static_cast<int>(annotationIntArg(*repeat, "times", 1));
-                        if (tc.repeat < 1) {
-                            errors.push_back(CodegenError{
-                                "'[Repeat(times: ...)]' on '" + tc.sym + "' needs a count of at "
-                                "least 1", repeat->loc});
-                            tc.repeat = 1;
-                        }
-                    }
-                    if (maxTime != nullptr) {
-                        tc.maxTimeNs = annotationIntArg(*maxTime, "ms", 0) * 1000000LL;
-                    }
-                    if (!collectCases(cls, *m, cases, tc)) {
-                        continue;
-                    }
-                    testMethods.push_back(std::move(tc));
-                }
-            }
-        }
-    }
-}
-
-void CodeGenerator::Impl::collectHook(const ast::ClassDecl& cls, const ast::MethodDecl& m, const std::string& kind) {
-    if (!m.isStatic || typeRefName(m.returnType) != "void") {
-        errors.push_back(CodegenError{"'[" + kind + "]' method '" + cls.name + "." + m.name +
-                                          "' must be a public static method returning void",
-                                      m.loc});
-        return;
-    }
-    TestHooks& h = testHooks_[cls.name];
-    std::string& slot = kind == "BeforeAll" ? h.beforeAll
-                      : kind == "AfterAll"  ? h.afterAll
-                      : kind == "Setup"     ? h.setup
-                                            : h.teardown;
-    if (!slot.empty()) {
-        errors.push_back(CodegenError{"class '" + cls.name + "' already has a '[" + kind +
-                                          "]' method ('" + slot + "'); there may be only one, "
-                                          "because two would have no defined order",
-                                      m.loc});
-        return;
-    }
-    slot = clsKey(cls.name) + "." + m.name;  // the emitted symbol; see the note on tc.sym
+    testPlan_ = testrunner::collect(
+        program, [this](const std::string& name) { return clsKey(name); }, errors);
 }
 
 void CodeGenerator::Impl::emitClassLoadHooks() {
@@ -693,290 +558,25 @@ void CodeGenerator::Impl::emitIfThen(llvm::Function* fn, llvm::Value* cond, cons
     builder.SetInsertPoint(contBB);
 }
 
+// The runner itself is in `testrunner`; this hands it the four things only this backend can answer.
+// `functions["@entry"]` is still registered here because the rest of this backend looks the entry
+// up by that name.
 void CodeGenerator::Impl::emitTestRunner() {
-    llvm::Type* i32 = builder.getInt32Ty();
-    llvm::Type* i64 = builder.getInt64Ty();
-    llvm::Type* ptr = builder.getPtrTy();
-    llvm::Type* v = builder.getVoidTy();
-
-    llvm::FunctionType* mainTy = llvm::FunctionType::get(i32, {i32, ptr}, false);
-    llvm::Function* mainFn =
-        llvm::Function::Create(mainTy, llvm::Function::ExternalLinkage, "main", module);
-    functions["@entry"] = mainFn;
-    builder.SetInsertPoint(llvm::BasicBlock::Create(context, "entry", mainFn));
-
-    llvm::FunctionCallee beginFn = module.getOrInsertFunction(
-        "__polaron_test_begin", llvm::FunctionType::get(v, {i32, ptr}, false));
-    llvm::FunctionCallee shouldFn = module.getOrInsertFunction(
-        "__polaron_test_should_run", llvm::FunctionType::get(i32, {ptr, ptr}, false));
-    llvm::FunctionCallee startFn = module.getOrInsertFunction(
-        "__polaron_test_start", llvm::FunctionType::get(v, {ptr, i32}, false));
-    llvm::FunctionCallee recordFn = module.getOrInsertFunction(
-        "__polaron_test_record", llvm::FunctionType::get(v, {ptr, i32, i64, ptr, i64}, false));
-    llvm::FunctionCallee summaryFn =
-        module.getOrInsertFunction("__polaron_test_summary", llvm::FunctionType::get(i32, {}, false));
-    llvm::FunctionCallee nowFn =
-        module.getOrInsertFunction("__polaron_now_ns", llvm::FunctionType::get(i64, {}, false));
-    llvm::FunctionCallee cstrFn = module.getOrInsertFunction(
-        "__polaron_str_cstr", llvm::FunctionType::get(ptr, {ptr}, false));
-    llvm::FunctionCallee caseNameFn = module.getOrInsertFunction(
-        "__polaron_test_case_name", llvm::FunctionType::get(ptr, {ptr, i64}, false));
-    llvm::FunctionCallee repeatFailedFn = module.getOrInsertFunction(
-        "__polaron_test_repeat_failed", llvm::FunctionType::get(v, {i64}, false));
-    llvm::FunctionCallee abortedFn =
-        module.getOrInsertFunction("__polaron_test_aborted", llvm::FunctionType::get(i32, {}, false));
-
-    auto argIt = mainFn->arg_begin();
-    llvm::Value* argc = &*argIt++;
-    llvm::Value* argv = &*argIt;
-    builder.CreateCall(beginFn, {argc, argv});
-    emitClassLoadHooks();  // the program's classes load before its tests run, exactly as in main
-
-    // A prelude static, by "Class.method". Absent only if the stdlib was not linked in.
-    auto prelude = [&](const char* sym) -> llvm::Function* {
-        const auto it = functions.find(sym);
+    testrunner::Backend back;
+    back.function = [this](const std::string& key) -> llvm::Function* {
+        const auto it = functions.find(key);
         return it == functions.end() ? nullptr : it->second;
     };
-    llvm::Function* resetFn = prelude("Test.reset");
-    llvm::Function* failuresFn = prelude("Test.failures");
-    llvm::Function* skippedFn = prelude("Test.wasSkipped");
-    llvm::Function* reasonFn = prelude("Test.skipReason");
-    auto callHook = [&](const std::string& sym) {
-        if (sym.empty()) {
-            return;
-        }
-        if (const auto it = functions.find(sym); it != functions.end()) {
-            builder.CreateCall(it->second, {});
-        }
-    };
-
-    // Group by class, keeping first-appearance order, so a class's [BeforeAll]/[AfterAll] bracket
-    // exactly its own tests however they are interleaved in the source.
-    std::vector<std::string> classOrder;
-    std::map<std::string, std::vector<const TestCase*>> byClass;
-    for (const TestCase& t : testMethods) {
-        if (byClass.find(t.cls) == byClass.end()) {
-            classOrder.push_back(t.cls);
-        }
-        byClass[t.cls].push_back(&t);
-    }
-    static const TestHooks kNoHooks;
-
-    for (const std::string& cls : classOrder) {
-        const auto hookIt = testHooks_.find(cls);
-        const TestHooks& hooks = hookIt == testHooks_.end() ? kNoHooks : hookIt->second;
-        const std::vector<const TestCase*>& cases = byClass[cls];
-
-        // Ask the selection question for every test FIRST, then reuse the answers: the class's
-        // expensive [BeforeAll] fixture must not be built when --filter selected none of them.
-        std::vector<llvm::Value*> selected;
-        llvm::Value* anySelected = builder.getInt1(false);
-        for (const TestCase* t : cases) {
-            llvm::Value* nameStr = createGlobalStringPtr(builder, t->display, ".test.name");
-            llvm::Value* tagStr = createGlobalStringPtr(builder, t->tags, ".test.tags");
-            llvm::Value* s = builder.CreateICmpNE(builder.CreateCall(shouldFn, {nameStr, tagStr}),
-                                                  builder.getInt32(0), "sel");
-            selected.push_back(s);
-            anySelected = builder.CreateOr(anySelected, s, "any");
-        }
-        emitIfThen(mainFn, anySelected, [&] { callHook(hooks.beforeAll); });
-
-        // Runs one test (or one row of a [Cases] test) under `caseName`, and reports it.
-        auto runOne = [&](const TestCase& t, llvm::Value* caseName, llvm::Value* arg) {
-            const auto fnIt = functions.find(t.sym);
-            if (fnIt == functions.end()) {
-                return;
-            }
-            // Name the test to the runtime BEFORE running it, so the first failing assertion can
-            // print the "FAIL <name>" header itself and its details read underneath.
-            builder.CreateCall(startFn,
-                               {caseName, builder.getInt32(t.expectedToFail ? 1 : 0)});
-            llvm::Value* started = builder.CreateCall(nowFn, {}, "t0");
-            // [Repeat(times: N)] runs the whole thing N times and reports ONE verdict: a test
-            // that fails 3 times in 100 is a flaky test, and 100 report lines would bury that.
-            llvm::Value* failCount = builder.CreateAlloca(i32, nullptr, "failcount");
-            builder.CreateStore(builder.getInt32(0), failCount);
-            for (int rep = 0; rep < t.repeat; ++rep) {
-                // Reset before EVERY run (not just the void ones): the failure count, the
-                // Test.checking label and the skip flag must never bleed into the next.
-                if (resetFn != nullptr) {
-                    builder.CreateCall(resetFn, {});
-                }
-                callHook(hooks.setup);
-                llvm::Value* failed = nullptr;
-                llvm::SmallVector<llvm::Value*, 1> callArgs;
-                if (arg != nullptr && fnIt->second->arg_size() >= 1) {
-                    callArgs.push_back(coerceToType(arg, fnIt->second->getArg(0)->getType()));
-                }
-                if (t.isVoid) {
-                    // spec 32.11: a void test passes when none of its Test.assert* calls failed.
-                    builder.CreateCall(fnIt->second, callArgs);
-                    llvm::Value* f = failuresFn != nullptr
-                                         ? builder.CreateCall(failuresFn, {}, "fails")
-                                         : llvm::cast<llvm::Value>(builder.getInt32(0));
-                    failed = builder.CreateICmpNE(f, builder.getInt32(0), "failed");
-                } else {
-                    llvm::Value* r = builder.CreateCall(fnIt->second, callArgs, "verdict");
-                    failed = builder.CreateICmpEQ(r, builder.getInt32(0), "failed");
-                }
-                // [Teardown] runs before the clock stops: releasing the fixture is part of the
-                // test's cost, and a teardown that hangs should show up as a slow test.
-                callHook(hooks.teardown);
-                if (t.repeat > 1) {
-                    const int iteration = rep + 1;
-                    emitIfThen(mainFn, failed, [&] {
-                        builder.CreateCall(repeatFailedFn, {builder.getInt64(iteration)});
-                    });
-                }
-                builder.CreateStore(
-                    builder.CreateAdd(builder.CreateLoad(i32, failCount),
-                                      builder.CreateZExt(failed, i32)),
-                    failCount);
-            }
-            llvm::Value* anyFailed = builder.CreateICmpNE(builder.CreateLoad(i32, failCount),
-                                                          builder.getInt32(0), "anyfailed");
-            llvm::Value* elapsed =
-                builder.CreateSub(builder.CreateCall(nowFn, {}, "t1"), started, "ns");
-            // Test.skip(why) at runtime outranks the pass/fail verdict: the test never reached
-            // the point of having one.
-            llvm::Value* skipped =
-                skippedFn != nullptr
-                    ? builder.CreateICmpNE(builder.CreateCall(skippedFn, {}, "skipped"),
-                                           builder.getInt32(0))
-                    : llvm::cast<llvm::Value>(builder.getInt1(false));
-            llvm::Value* why =
-                reasonFn != nullptr
-                    ? builder.CreateCall(cstrFn, {builder.CreateCall(reasonFn, {}, "why")})
-                    : llvm::cast<llvm::Value>(createGlobalStringPtr(builder, "", ".test.why"));
-            // [ExpectedToFail] inverts the verdict: failing is the expected outcome (3), and
-            // passing is itself a failure (4) -- the bug got fixed and the annotation is a lie.
-            llvm::Value* pass = t.expectedToFail ? builder.getInt32(4) : builder.getInt32(0);
-            llvm::Value* fail = t.expectedToFail ? builder.getInt32(3) : builder.getInt32(1);
-            llvm::Value* verdict = builder.CreateSelect(
-                skipped, builder.getInt32(2), builder.CreateSelect(anyFailed, fail, pass),
-                "verdict");
-            builder.CreateCall(recordFn,
-                               {caseName, verdict, elapsed, why, builder.getInt64(t.maxTimeNs)});
-        };
-
-        for (std::size_t i = 0; i < cases.size(); ++i) {
-            const TestCase& t = *cases[i];
-            // --fail-fast is asked HERE, not in the selection above: selection is decided for the
-            // whole class before anything runs, so at that point nothing has failed yet.
-            llvm::Value* live = builder.CreateAnd(
-                selected[i],
-                builder.CreateICmpEQ(builder.CreateCall(abortedFn, {}, "aborted"),
-                                     builder.getInt32(0)),
-                "live");
-            emitIfThen(mainFn, live, [&] {
-                llvm::Value* nameStr = createGlobalStringPtr(builder, t.display, ".test.name");
-                if (t.ignored) {
-                    // [Ignore]: never run, reported as a skip carrying its reason, so a
-                    // known-broken case stays visible instead of quietly disappearing.
-                    builder.CreateCall(
-                        recordFn,
-                        {nameStr, builder.getInt32(2), builder.getInt64(0),
-                         createGlobalStringPtr(builder, t.ignoreReason, ".test.why"),
-                         builder.getInt64(0)});
-                    return;
-                }
-                if (t.casesSym.empty()) {
-                    runOne(t, nameStr, nullptr);
-                    return;
-                }
-                // [Cases]: call the source once, then run the body over every row, each reported
-                // as its own result under "Class.method[i]".
-                const auto srcIt = functions.find(t.casesSym);
-                if (srcIt == functions.end()) {
-                    return;
-                }
-                llvm::Value* block = builder.CreateCall(srcIt->second, {}, "rows");
-                llvm::Value* len = builder.CreateLoad(i64, block, "rows.len");
-                llvm::Type* storageTy = arrayStorageTy(t.paramType);
-                llvm::Value* iv = builder.CreateAlloca(i64, nullptr, "row");
-                builder.CreateStore(builder.getInt64(0), iv);
-                llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context, "rows.cond", mainFn);
-                llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context, "rows.body", mainFn);
-                llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(context, "rows.done", mainFn);
-                builder.CreateBr(condBB);
-                builder.SetInsertPoint(condBB);
-                llvm::Value* i0 = builder.CreateLoad(i64, iv, "i");
-                builder.CreateCondBr(builder.CreateICmpULT(i0, len), bodyBB, doneBB);
-                builder.SetInsertPoint(bodyBB);
-                llvm::Value* i1 = builder.CreateLoad(i64, iv, "i");
-                llvm::Value* elemPtr =
-                    builder.CreateGEP(storageTy, arrayData(block), i1, "row.elem");
-                llvm::Value* value = builder.CreateLoad(storageTy, elemPtr, "row.val");
-                if (t.paramType == "boolean") {  // 1-byte storage, i32 value
-                    value = builder.CreateZExt(value, i32);
-                }
-                llvm::Value* caseName = builder.CreateCall(caseNameFn, {nameStr, i1}, "casename");
-                runOne(t, caseName, value);
-                builder.CreateStore(builder.CreateAdd(i1, builder.getInt64(1)), iv);
-                builder.CreateBr(condBB);
-                builder.SetInsertPoint(doneBB);
-            });
-        }
-        emitIfThen(mainFn, anySelected, [&] { callHook(hooks.afterAll); });
-    }
-    emitBenchmarks(mainFn);
-    builder.CreateRet(builder.CreateCall(summaryFn, {}, "rc"));
+    back.storageType = [this](const std::string& elemType) { return arrayStorageTy(elemType); };
+    back.coerce = [this](llvm::Value* val, llvm::Type* ty) { return coerceToType(val, ty); };
+    back.emitClassLoadHooks = [this] { emitClassLoadHooks(); };
+    testrunner::emit(context, module, builder, testPlan_, back);
+    functions["@entry"] = module.getFunction("main");
 }
 
-void CodeGenerator::Impl::emitBenchmarks(llvm::Function* mainFn) {
-    if (benchMethods.empty()) {
-        return;
-    }
-    llvm::Type* i32 = builder.getInt32Ty();
-    llvm::Type* i64 = builder.getInt64Ty();
-    llvm::Type* ptr = builder.getPtrTy();
-    llvm::FunctionCallee shouldFn = module.getOrInsertFunction(
-        "__polaron_bench_should_run", llvm::FunctionType::get(i32, {ptr}, false));
-    llvm::FunctionCallee recordFn = module.getOrInsertFunction(
-        "__polaron_bench_record",
-        llvm::FunctionType::get(builder.getVoidTy(), {ptr, i64, i64}, false));
-    llvm::FunctionCallee nowFn =
-        module.getOrInsertFunction("__polaron_now_ns", llvm::FunctionType::get(i64, {}, false));
+// (the runner's body now lives in testrunner.cpp)
 
-    for (const BenchCase& b : benchMethods) {
-        const auto fnIt = functions.find(b.sym);
-        if (fnIt == functions.end()) {
-            continue;
-        }
-        llvm::Value* nameStr = createGlobalStringPtr(builder, b.display, ".bench.name");
-        llvm::Value* sel = builder.CreateICmpNE(builder.CreateCall(shouldFn, {nameStr}),
-                                                builder.getInt32(0), "bsel");
-        emitIfThen(mainFn, sel, [&] {
-            auto loop = [&](long long count, const char* tag) {
-                if (count <= 0) {
-                    return;
-                }
-                llvm::Value* iv = builder.CreateAlloca(i64, nullptr, tag);
-                builder.CreateStore(builder.getInt64(0), iv);
-                llvm::BasicBlock* c = llvm::BasicBlock::Create(context, "b.cond", mainFn);
-                llvm::BasicBlock* bd = llvm::BasicBlock::Create(context, "b.body", mainFn);
-                llvm::BasicBlock* d = llvm::BasicBlock::Create(context, "b.done", mainFn);
-                builder.CreateBr(c);
-                builder.SetInsertPoint(c);
-                llvm::Value* i0 = builder.CreateLoad(i64, iv);
-                builder.CreateCondBr(builder.CreateICmpULT(i0, builder.getInt64(count)), bd, d);
-                builder.SetInsertPoint(bd);
-                builder.CreateCall(fnIt->second, {});
-                builder.CreateStore(builder.CreateAdd(builder.CreateLoad(i64, iv),
-                                                      builder.getInt64(1)),
-                                    iv);
-                builder.CreateBr(c);
-                builder.SetInsertPoint(d);
-            };
-            loop(b.warmup, "warm");  // untimed: let the caches and the branch predictor settle
-            llvm::Value* t0 = builder.CreateCall(nowFn, {}, "b0");
-            loop(b.iterations, "iter");
-            llvm::Value* total =
-                builder.CreateSub(builder.CreateCall(nowFn, {}, "b1"), t0, "bns");
-            builder.CreateCall(recordFn, {nameStr, total, builder.getInt64(b.iterations)});
-        });
-    }
-}
+// `emitBenchmarks` moved into `testrunner`, beside the runner that calls it.
 
 // WHICH CLASSES THIS PROGRAM CAN REACH.
 //
@@ -1060,6 +660,35 @@ void CodeGenerator::Impl::computeReachableClasses() {
                     root(cls.name);
                     continue;
                 }
+                // A CLASS THAT EXPORTS A METHOD TO SOMETHING OUTSIDE THE PROGRAM. `unknown <world>`
+                // says the caller adopts a foreign ABI, so the caller is not in here and no edge
+                // inside can ever reach the method -- that is what the word means. Same category as
+                // `Object` above: reached by the running program, named by no source the analyzer
+                // walks.
+                //
+                // A `naked` method needs it for a second reason on top of the first: the body IS the
+                // method, raw assembly owning everything it declares, so dropping the function drops
+                // the STORAGE with it. pico's `_start` is `unknown sysv naked` and its block defines
+                // the page tables and the boot stack, so the kernel failed to link on `undefined
+                // symbol: stack_bottom` -- a `.bss` label inside an asm body nothing calls.
+                //
+                // AND THE ORACLE COULD NOT SEE THIS. Both modes are compared against GlobalDCE,
+                // which shares the blind spot exactly: it would delete an unreferenced `_start` too,
+                // so the two modes agreed and the hole passed. An oracle answers only the question
+                // it can ask, and a freestanding entry point is a fact about the LINKER rather than
+                // about the module.
+                bool exportsOutward = false;
+                for (const ast::MemberPtr& m : cls.members) {
+                    const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+                    if (md != nullptr &&
+                        (md->isNaked || md->externConvention.rfind("unknown:", 0) == 0)) {
+                        exportsOutward = true;
+                    }
+                }
+                if (exportsOutward) {
+                    root(cls.name);
+                    continue;
+                }
                 // A class owning a `comptime literal` suffix: `64 kilobytes` builds a ByteSize
                 // through its constructor, and the suffix is not a method call the analyzer resolves,
                 // so nothing recorded the edge.
@@ -1100,14 +729,14 @@ void CodeGenerator::Impl::computeReachableClasses() {
         rootBoth(c);
     }
     if (testMode) {
-        for (const TestCase& t : testMethods) {
+        for (const testrunner::Case& t : testPlan_.tests) {
             rootBoth(t.cls);
         }
-        for (const auto& [cls, hooks] : testHooks_) {
+        for (const auto& [cls, hooks] : testPlan_.hooks) {
             (void)hooks;
             rootBoth(cls);
         }
-        for (const BenchCase& b : benchMethods) {
+        for (const testrunner::Bench& b : testPlan_.benches) {
             const std::size_t dot = b.sym.rfind('.');
             if (dot != std::string::npos) {
                 rootBoth(b.sym.substr(0, dot));
@@ -1200,6 +829,9 @@ void CodeGenerator::Impl::emitFunctions() {
                             emitBody(functions["@entry"], m->body, m->params, "",
                                      builder.getInt32Ty(), nullptr, nullptr, nullptr, nullptr, false,
                                      nullptr, nullptr, "", nullptr, false,
+                                     // "the entry has the C `main(argc, argv)` SIGNATURE" -- the
+                                     // same question codegen_module asks to declare it. Whether
+                                     // there is an argv worth unpacking is decided inside.
                                      /*argvEntry=*/entryHasCRuntime());
                         } else if (m->isGeneratorBody) {
                             emitGeneratorMethod(cls, *m);  // spec 22.6: $start/$resume/$current/$free

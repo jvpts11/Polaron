@@ -1,0 +1,122 @@
+// A `typealias` MUST NOT CHANGE THE PROGRAM.
+//
+// Declaring one makes `resolveTypeAliases` re-clone every class in the program with an empty
+// substitution -- that is how aliases get expanded everywhere for free. So the cloner becomes a
+// rewrite of the WHOLE program, and everything it silently fails to copy is silently deleted from a
+// program whose author added a two-word declaration in another file.
+//
+// pico found the whole family at once, and the cost was a kernel:
+//   * `asm` blocks were dropped, so every `naked` stub became an empty function and polc crashed
+//     emitting one;
+//   * `volatile` was dropped from LOCALS, so MMIO reads got hoisted out of their wait loops and the
+//     timer, the APIC, the NVMe queue, the USB disk and the second processor all stopped coming up;
+//   * `b"..."` came back as a `String`, which a freestanding program has no runtime for;
+//   * `isLayout` was dropped, so every `implements <layout>` became "not an interface";
+//   * `isUnion` was dropped, so a union's fields stopped overlapping;
+//   * `isProcedure` was dropped while `applies` was kept, so a transformer's procedures turned into
+//     ordinary methods and the expansion pass rejected the type that applied it;
+//   * `goto`, `abstainfrom`, `cascade` and the region snapshot statements were dropped outright.
+//
+// Every one of those is invisible in the source and invisible in the diagnostics. This sample puts
+// one of each in one program, so a clone that loses any of them fails HERE, on a file whose only
+// purpose is to be re-cloned.
+program AliasRecloneFidelity freestanding;
+
+public bundle Kernel {
+    public namespace Boot {
+        // The declaration that triggers the whole re-clone. Two words, three files away, in the real
+        // case that found this.
+        public typealias Millis = uint64;
+
+        public heap class Heap {
+            private static mutable address next;
+            private static mutable boolean armed;
+            public static method allocate(address size) returns address {
+                if (!Heap.armed) { Heap.next = 1048576; Heap.armed = true; }
+                address at = Heap.next;
+                Heap.next = Heap.next + size + 15;
+                return at;
+            }
+            public static method release(address p) returns void { return; }
+        }
+
+        // A LAYOUT and its implementer: `implements` here must survive as a layout and not be
+        // mistaken for an interface.
+        public layout WireRecord {
+            onArrange {
+                itself.fitWithin(32 bytes);
+                itself.refuse("a wire record is 32 bytes; both ends index it");
+            }
+        }
+
+        public struct Packet implements WireRecord {
+            public mutable address a;
+            public mutable address b;
+            public mutable address c;
+            public mutable address d;
+            public constructor Packet() { this.a = 0; this.b = 0; this.c = 0; this.d = 0; }
+        }
+
+        // A UNION: its two fields share one storage, and a clone that forgot would give it two.
+        public union Word {
+            public mutable uint64 whole;
+            public mutable uint32 half;
+        }
+
+        public class Machine {
+            // A `volatile` FIELD and, below, a `volatile` LOCAL -- two different flags in two
+            // different clone paths, and the local one is the one that cost the kernel.
+            private volatile mutable int flag;
+            private mutable Millis at;
+
+            public constructor Machine() { this.flag = 0; this.at = cast<uint64>(0); }
+
+            // The wait loop. `volatile` is the whole of it: without the word this reads the location
+            // once and spins on a value that cannot change.
+            public method waitFor(address port) returns int {
+                volatile int* mmio = cast<int*>(port);
+                mutable int spins = 0;
+                while (spins < 4) {
+                    if ((mmio[0] & 1) != 0) { return spins; }
+                    spins = spins + 1;
+                }
+                return 0 - 1;
+            }
+
+            // `asm`, which a naked entry point is made of.
+            public method cpuId() returns int {
+                mutable int out = 0;
+                asm("x86_64") {
+                    mov $0, 1
+                } out (out)
+                return out;
+            }
+
+            // The chaos tetrad's one-shot: the label, and the abstain that disables it.
+            public method once() returns int {
+                label first;
+                abstainfrom first;
+                this.flag = this.flag + 1;
+                label after;
+                return this.flag;
+            }
+
+            // ...and a byte literal, which must still be bytes.
+            public method name() returns byte* { return b"machine"; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Machine* m = new Machine() on heap;
+                Packet p = new Packet() on stack;
+                Word w = new Word() on stack;
+                w.whole = cast<uint64>(0);
+                int seen = m.once() + m.cpuId() + m.waitFor(cast<address>(0xB8000));
+                mutable int out = seen + cast<int>(m.name()[0]) + cast<int>(w.half);
+                if (p.a != cast<address>(0)) { out = out + 1; }
+                cascade delete m;
+                return out;
+            }
+        }
+    }
+}

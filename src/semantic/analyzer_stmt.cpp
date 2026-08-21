@@ -2415,6 +2415,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                      vd->loc);
             }
         }
+        // A HEX ADDRESS DECLARED AS A NUMBER. `int vram = 0xB8000;` -- no cast to complain about, and
+        // every line after it is arithmetic on a location that has been told it is a quantity.
+        checkAddressShapedInit(declType, vd->name, vd->init.get(), vd->loc);
         if (vd->isMutable && vd->type.name == "RegionSnapshot") {
             error("a snapshot is constant: '" + vd->name +
                       "' cannot be 'mutable'. It names a state that was captured; re-capturing is "
@@ -2746,6 +2749,39 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 }
             }
         }
+        // AN ADDRESS ASSIGNED INTO A NUMBER, which is the same mistake as declaring one and is the
+        // form that survives a review: the declaration is where a reader looks for the type, and the
+        // assignment three hundred lines away is where the address actually arrives.
+        //
+        //     private mutable int base;       // reads like a count
+        //     ...
+        //     this.base = 0xFEE00000;         // ...and is the local APIC
+        //
+        // Only the two shapes that resolve WITHOUT read-typing the target: a plain name and
+        // `recv.field`. `typeOf` on an assignment target read-types it and errors on a moved
+        // variable -- the note directly below is about the same hazard -- and a diagnostic must
+        // never be the thing that breaks a build.
+        if (freestanding_) {
+            std::string targetType;
+            std::string targetName;
+            if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
+                targetName = tid->name;
+                if (const LocalVar* lv = lookupLocal(tid->name)) {
+                    targetType = lv->type;
+                } else if (!currentClass_.empty()) {
+                    if (const FieldInfo* fi = findField(currentClass_, tid->name)) {
+                        targetType = fi->type;
+                    }
+                }
+            } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
+                targetName = mem->member;
+                targetType = fieldTypeOf(*mem);
+            }
+            if (!targetType.empty()) {
+                checkAddressShapedInit(targetType, targetName, assign->value.get(), assign->loc);
+            }
+        }
+
         // atomic<T> assignment (spec 20.6): `counter = counter +/- n` (a lock-free atomicrmw,
         // from `+=`/`-=`) or `counter = v` (atomic store). The atomic<T> <-> T mixing is allowed
         // here rather than through the usual numeric checks (which reject atomic + int). Detect via
@@ -3256,6 +3292,39 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
+        // `return new X(...) on stack;` WHERE X IS A CLASS: the placement cannot be honoured.
+        //
+        // A stack object lives in THIS frame, and this frame is about to end -- so the compiler
+        // quietly puts it on the heap instead and hands back a pointer. That is the only thing it
+        // can do, and it is silent, and nobody owns what comes out: not the callee, which has
+        // returned, and not the caller, which was handed what it believes is a value.
+        //
+        // pico found it the expensive way. `Rect.intersect` -- a rectangle, sixteen bytes, a VALUE
+        // by every line of its own documentation -- was a `class`, so every clip test on the
+        // compositor's path allocated sixteen bytes of kernel heap and leaked them, a few thousand
+        // times a second. The machine ran for a minute and then started losing windows. The fix was
+        // one word (`class` -> `struct`), and the compiler had known all along.
+        //
+        // A `struct`/`record`/`union` is exempt because for those the placement is real: a value
+        // aggregate is returned BY VALUE, into storage the caller provides.
+        if (rs->value != nullptr) {
+            if (const auto* ne = dynamic_cast<const ast::NewExpr*>(rs->value.get())) {
+                if (ne->locationWritten && ne->location == "stack" && ne->region.empty()) {
+                    if (auto ci = classes_.find(ne->className);
+                        ci != classes_.end() && !ci->second.isStruct) {
+                        warn(diag::Code::StackReturnEscapes,
+                             "`on stack` cannot be honoured here: this object is returned, so it "
+                             "cannot live in this frame -- it is put on the heap instead, and "
+                             "nothing owns it. If '" + ne->className +
+                                 "' is a value (no identity, copied freely), declare it a `struct` "
+                                 "and the placement becomes real: it is returned into the caller's "
+                                 "own storage with no allocation at all. If it is an object, say so "
+                                 "-- `on heap` -- and name who deletes it.",
+                             rs->loc);
+                    }
+                }
+            }
+        }
         if (rs->value) {
             const std::string vt = typeOf(*rs->value);
             // Null safety (spec 3.7): a null/nullable value may not be returned where the declared

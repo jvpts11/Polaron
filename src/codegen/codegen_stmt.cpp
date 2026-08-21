@@ -515,7 +515,11 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
         // from its source so a later in-place append never aliases it. Reassignment frees the old
         // buffer first (the String assign path), so the copy here never double-frees.
         bool declIsString = (declType == "String" || declType == "string");
-        if (declIsString) {
+        if (declIsString && !claimStringTemp(initV)) {
+            // ...COPIED ONLY WHEN THE VALUE IS SOMEBODY ELSE'S. A temporary this statement built --
+            // `sb.toString()`, `a + b` -- is TAKEN instead: nothing else has a name for it, so the
+            // copy was a malloc and a memcpy to move a value that was already nobody's. See
+            // `claimStringTemp` for why this is the one case where that is safe.
             initV = emitStringCopy(initV);
         }
         llvm::Value* slot = createEntryAlloca(vd->name, llvmType(declType));
@@ -971,7 +975,13 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
             // unshared, heap buffer (null-safe; the fresh copy is distinct from the old value, so a
             // self-assign is fine too). The RHS producer temp is freed at the statement end below.
             if (targetType == "String" || targetType == "string") {
-                sv = emitStringCopy(sv);
+                if (!claimStringTemp(sv)) {
+                    // ...and again only when the value belongs to somebody else. `s = a + b` built
+                    // its right-hand side in this statement; copying it and then freeing the
+                    // original two lines down is two allocator operations to move a value nothing
+                    // else names.
+                    sv = emitStringCopy(sv);
+                }
                 const ast::Expr* tgt = assign->target.get();
                 if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(tgt)) {
                     if (auto lit = locals.find(tid->name);
@@ -1905,6 +1915,26 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
         }
         if (rs->value != nullptr) {
             llvm::Value* v = emitExpr(*rs->value);
+            // A CATALOG-TYPED RETURN, before the numeric cases, because it is not one of them.
+            //
+            // `returns Verdict` where Verdict is a method-carrying catalog hands back a TAGGED ordinal
+            // -- (enumTypeId << 32 | ordinal), an i64 -- so that a call through the catalog reaches
+            // the right implementer's method whichever enum the constant came from. `return
+            // Resolution.silent` produces that enum's own value instead: an i32 ordinal, or for a
+            // java-style enum its singleton POINTER. Neither is the return type, and the module
+            // verifier said so outright ("return type does not match operand type").
+            //
+            // Arguments already had this (see coerceArg) and locals get it from the declaration path;
+            // the return statement was the one place a catalog value was produced and not packed,
+            // which made a method that returns a catalog fail to compile at all -- and the guide says
+            // a catalog-typed value may be returned. Found writing pico's DNS resolver, whose every
+            // outcome is one constant of one such enum.
+            if (v != nullptr && !currentRetTypeName_.empty() && isTaggedCatalog(currentRetTypeName_)) {
+                const std::string fromName = typeName(*rs->value);
+                if (!fromName.empty() && fromName != currentRetTypeName_) {
+                    v = coerce(v, fromName, currentRetTypeName_);
+                }
+            }
             // Widen/convert the returned value to the declared return type, the same implicit numeric
             // coercion assignments and arguments already apply (e.g. `return 0;` from a `long` method,
             // or an int/float from a double method). Signedness of any integer widening follows the
@@ -1937,7 +1967,11 @@ void CodeGenerator::Impl::emitStatement(const ast::Stmt& stmt) {
             // stage-2 free would free a string-literal global (heap corruption).
             if ((currentRetTypeName_ == "String" || currentRetTypeName_ == "string" ||
                  typeName(*rs->value) == "String" || typeName(*rs->value) == "string") &&
-                v != nullptr) {
+                v != nullptr && !claimStringTemp(v)) {
+                // ...UNLESS THIS STATEMENT BUILT IT. `return a + b`, and every method in the
+                // standard library that ends by handing back a String it just assembled, was
+                // copying a value nothing else names and then freeing the original one line below.
+                // Claiming it hands the caller the same buffer and skips both.
                 v = emitStringCopy(v);
             }
             freeStringTemps();

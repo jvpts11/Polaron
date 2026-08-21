@@ -31,6 +31,9 @@
 #include "llvm/IR/MDBuilder.h"
 #include "codegen/codegen.h"
 #include "codegen/cgutil.h"   // the pure helpers this file used to carry at its top
+#include "codegen/target.h"   // the layout, the bare-metal attrs, and `createGlobalStringPtr`
+#include "codegen/bridges.h"  // what a program with no libc has to be given
+#include "codegen/testrunner.h"   // `--test`: the runner both backends share
 
 #include <llvm/ADT/ScopeExit.h>
 #include <llvm/BinaryFormat/Dwarf.h>
@@ -99,18 +102,8 @@ inline std::string moduleTripleStr(const llvm::Module& m) {
 #endif
 }
 
-// A pointer to a private, null-terminated constant string. LLVM 21 removed IRBuilder::CreateGlobalStringPtr
-// and made CreateGlobalString return the pointer directly; older LLVM (17/18, the Windows build) keeps the
-// *Ptr spelling (there CreateGlobalString returns a GlobalVariable*, not a usable pointer). Templated on the
-// builder type so it works with any IRBuilder folder/inserter.
-template <typename B>
-llvm::Value* createGlobalStringPtr(B& b, llvm::StringRef s, const llvm::Twine& name = "") {
-#if LLVM_VERSION_MAJOR >= 21
-    return b.CreateGlobalString(s, name);
-#else
-    return b.CreateGlobalStringPtr(s, name);
-#endif
-}
+// `createGlobalStringPtr` moved to `codegen/target.h`, where the other things that depend on the
+// LLVM being built against already live -- the `--test` runner needs it from outside this class.
 
 // The pure helpers (type-name questions, AST walks, literal decoding) now live in cgutil.{h,cpp}:
 // 543 lines that never mention llvm, and were being recompiled behind the whole backend. Pulled in
@@ -200,38 +193,10 @@ struct CodeGenerator::Impl {
     // message. Empty when the driver did not supply one.
     std::function<std::string(std::string_view, int)> sourceLookup;
     bool testMode = false;     // `polc --test`: the entry is a synthetic [Test] runner
-    // One discovered [Test] method (spec 32.11), in declaration order.
-    struct TestCase {
-        std::string sym;      // "Class.method" -- the key into `functions`
-        std::string display;  // what the runner prints, and what --filter matches against
-        std::string cls;      // owning class, to find its lifecycle hooks
-        bool isVoid = false;  // verdict comes from Test.assert* rather than a returned boolean
-        bool ignored = false;         // [Ignore(...)]: reported as SKIP, never run
-        std::string ignoreReason;
-        std::string tags;             // [Tag(name:)] entries, comma-joined, for --tag/--exclude-tag
-        // [Cases(source: "m")]: the test takes one parameter and runs once per element of the array
-        // that `m` returns. Empty when the test takes no parameters.
-        std::string casesSym;         // "Class.m"
-        std::string paramType;        // the element type, for the load out of the array block
-        int repeat = 1;               // [Repeat(times:)]: all runs must pass
-        bool expectedToFail = false;  // [ExpectedToFail]: the verdict is inverted
-        long long maxTimeNs = 0;      // [MaxTime(ms:)]: a pass that overran becomes a failure
-    };
-    std::vector<TestCase> testMethods;
-    // [Benchmark] methods: timed loops rather than verdicts, run only under --bench.
-    struct BenchCase {
-        std::string sym;
-        std::string display;
-        long long iterations = 1000;
-        long long warmup = 100;
-    };
-    std::vector<BenchCase> benchMethods;
-    // Per-class lifecycle hooks. [Setup]/[Teardown] run around EACH test of the class; [BeforeAll]/
-    // [AfterAll] run ONCE around the whole class, so an expensive fixture is built one time.
-    struct TestHooks {
-        std::string beforeAll, afterAll, setup, teardown;
-    };
-    std::map<std::string, TestHooks> testHooks_;
+    // The [Test] methods, the [Benchmark]s and the per-class lifecycle hooks this program holds.
+    // `TestCase`/`BenchCase`/`TestHooks` used to be declared here; they are `testrunner::Case`,
+    // `::Bench` and `::Hooks` now, because the other backend needs them too -- see testrunner.h.
+    testrunner::Plan testPlan_;
     std::vector<CodegenError>& errors;
     llvm::LLVMContext context;
     llvm::Module module;
@@ -1084,6 +1049,17 @@ struct CodeGenerator::Impl {
             if (!want.empty() && want != fromType && isTaggedCatalog(want)) {
                 return coerce(v, fromType, want);
             }
+            // WIDENING AN ARGUMENT HAS TO KNOW ITS SIGNEDNESS, and only the type NAME carries that.
+            //
+            // `coerceToType` sees LLVM types, where i16 is i16 and nothing says whether it is signed;
+            // it widens with `sext`, which is right for `short` and catastrophic for `short address`.
+            // `Cpu.outb(ApBoot.TrampolineAt, ...)` passed 0x8000 as a `short address` into an
+            // `address` parameter and it arrived as 0xFFFF_FFFF_FFFF_8000 -- a page fault at a
+            // non-canonical address, from a widening. The declared names are right here; the
+            // language-level `coerce` reads them and zero-extends what is unsigned.
+            if (!want.empty() && want != fromType && isIntName(want) && isIntName(fromType)) {
+                return coerce(v, fromType, want);
+            }
         }
         if (argIndex < fn->arg_size()) {
             return coerceToType(v, fn->getArg(argIndex)->getType());
@@ -1108,6 +1084,13 @@ struct CodeGenerator::Impl {
     // imported `__polaron_malloc` and `strlen` to marshal an argv that does not exist. `wasm32-wasi`
     // is excluded: WASI supplies both.
     bool entryHasCRuntime() const {
+        // NOT "is the program freestanding". Those are two questions, and running them together
+        // renamed `main` to `kmain` for every freestanding program -- including the ones this suite
+        // deliberately links against a real CRT to run them, which then had no entry point at all.
+        // What a `freestanding` program states is that nothing hands it an argv; whether something
+        // calls `main` is the linker's business and the triple's. See `entryMarshalsArgv`.
+        //
+        // Asking the program before the triple is also the general form of the two cases below:
         const std::string triple = moduleTripleStr(module);
         if (triple.find("none") != std::string::npos) {
             return false;
@@ -1117,6 +1100,18 @@ struct CodeGenerator::Impl {
         }
         return true;
     }
+
+    // DOES `main` GET AN ARGV TO UNPACK? A separate question from the one above, and the separation
+    // is the whole point: a `freestanding` PROGRAM says nothing hands it a command line, whatever
+    // its triple says about the machine. A static ELF with no libc and no CRT is still
+    // `x86_64-unknown-linux-gnu` -- the machine really is Linux -- so the triple answers "hosted"
+    // and the entry marshalled an argv nobody would pass it, asking the linker for
+    // `__polaron_malloc` and `strlen` to build the array. A program with no C library has neither,
+    // and the link failed on symbols the source never mentions.
+    //
+    // The entry symbol stays `main` in that case, because the linker may still be told to call it
+    // and the word `freestanding` makes no claim about that.
+    bool entryMarshalsArgv() const { return entryHasCRuntime() && !freestandingProgram(); }
 
     // Masks a value to a member's bit-field width (spec 11.1): only the low N bits
     // are kept, so `f : 4 = 20` stores 4. No-op for a non-bit-field member. (Value
@@ -2273,9 +2268,21 @@ struct CodeGenerator::Impl {
         return builder.CreateCall(
             memsetFn(), {dst, byte, builder.CreateZExtOrTrunc(len, sizeTy(), "len")});
     }
+    // THE INTRINSIC, not the library function. `llvm.memcpy` with a size the optimiser can see is
+    // expanded INLINE for the small copies -- which is what a value struct is: four bytes of an IPv4
+    // address, sixteen of a packet header. The library call was emitted for those too, so a
+    // freestanding program that copied one struct by value linked against `memcpy`, and a ring-3
+    // guest with no C library could not pass a `struct` to a method at all. A copy too large to
+    // inline still becomes the libc call, and the freestanding runtime still provides it weakly, so
+    // nothing that worked before stops working -- the small cases just stop asking.
+    //
+    // The alignments are the ones the pointers actually have (an alloca or a global says so), which
+    // is how the four-byte case lowers to one load and one store instead of four of each.
     llvm::CallInst* emitMemcpy(llvm::Value* dst, llvm::Value* src, llvm::Value* len) {
-        return builder.CreateCall(
-            memcpyFn(), {dst, src, builder.CreateZExtOrTrunc(len, sizeTy(), "len")});
+        const llvm::DataLayout& dl = module.getDataLayout();
+        return builder.CreateMemCpy(dst, dst->getPointerAlignment(dl), src,
+                                    src->getPointerAlignment(dl),
+                                    builder.CreateZExtOrTrunc(len, sizeTy(), "len"));
     }
     llvm::FunctionCallee memsetFn();
 
@@ -2837,7 +2844,15 @@ struct CodeGenerator::Impl {
     // destination owns its own buffer and no live String is ever aliased.
     llvm::Value* emitStringCopy(llvm::Value* v);
     // Record a freshly-owned String temporary to free at the statement boundary.
+    // What a call PROMISED, handed to the optimiser at the place that called it. See the definition
+    // for which clauses are refused and why.
+    void assumePostconditions(const ast::MethodDecl* m, const std::string& owner,
+                              llvm::Value* receiver, const std::vector<llvm::Value*>& args);
+
     void trackStringTemp(llvm::Value* v);
+    // Take a tracked temporary instead of copying it; false if the value was not one. See the
+    // definition for why this is safe exactly here and nowhere else.
+    bool claimStringTemp(llvm::Value* v);
     // Wrap a fresh-malloc String producer: track it as an owned temporary, then return it unchanged.
     llvm::Value* ownedStr(llvm::Value* v) { trackStringTemp(v); return v; }
     // At a statement boundary: free the owned temporaries created in the CURRENT block (they dominate the
@@ -3371,6 +3386,10 @@ struct CodeGenerator::Impl {
     // The private global caching a Java-style enum constant's singleton (null until first use).
     // Shared by constant materialization and ordinal recovery so both name the same slot.
     llvm::GlobalVariable* enumSingletonGlobal(const std::string& enumName, const std::string& constName);
+    // The singleton's own storage: a slot in the image, so naming an enum constant does not need an
+    // allocator (which is what stopped a freestanding program using a data-carrying enum at all).
+    llvm::GlobalVariable* enumSingletonStorage(const std::string& enumName,
+                                               const std::string& constName, llvm::Type* objTy);
 
     // The ordinal (declaration index) of a Java-style enum value at runtime. Each constant is a
     // cached singleton, so identity against each singleton recovers the index -- the basis for
@@ -3764,6 +3783,10 @@ struct CodeGenerator::Impl {
     //
     // The object is { i64 len, ptr data, i64 hash }, which is the layout the hosted runtime uses.
     void emitStringBridge();
+    // The visited set `cascade` needs when the owned graph is not a forest. Generated for a
+    // freestanding program, which has no runtime library to take it from -- see the note on the
+    // definition for what pico ran into.
+    void emitPointerSetBridge();
 
     void emitHeapBridge();
 
@@ -4965,7 +4988,15 @@ struct CodeGenerator::Impl {
         }
         if (argvEntry && !params.empty()) {
             // int main(int argc, char** argv): build main's `string[] args` from the C argv.
-            llvm::Value* arr = emitArgvArray(fn->getArg(0), fn->getArg(1));
+            //
+            // ...unless the program is `freestanding`, in which case there is no command line to
+            // build it from. The signature is still the C one -- something may yet call `main` --
+            // but the array is empty, and it has to be bound to SOMETHING or `args` is a name with
+            // no storage. Marshalling it anyway is what asked the linker for `__polaron_malloc` and
+            // `strlen` in a program that has no C library to supply them.
+            llvm::Value* arr = entryMarshalsArgv()
+                                   ? emitArgvArray(fn->getArg(0), fn->getArg(1))
+                                   : llvm::Constant::getNullValue(builder.getPtrTy());
             llvm::Value* slot = createEntryAlloca(params[0].name, builder.getPtrTy());
             builder.CreateStore(arr, slot);
             locals[params[0].name] = LocalSlot{slot, typeRefName(params[0].type)};
@@ -5245,129 +5276,8 @@ struct CodeGenerator::Impl {
     // never a test that silently does not run.
     void collectTests();
 
-    // Record one [BeforeAll]/[AfterAll]/[Setup]/[Teardown] against its class, rejecting a second one:
-    // two hooks of the same kind have no defined order, so the runner would silently pick one.
-    void collectHook(const ast::ClassDecl& cls, const ast::MethodDecl& m, const std::string& kind);
-
-    // The string value of one annotation argument, e.g. the "..." of [Ignore(reason: "...")].
-    // Empty when absent or not a string literal.
-    static std::string annotationStringArg(const ast::AnnotationUse& use, const std::string& name) {
-        for (const ast::AnnotationArg& a : use.args) {
-            if (a.name != name) {
-                continue;
-            }
-            if (const auto* s = dynamic_cast<const ast::StringLiteralExpr*>(a.value.get())) {
-                return s->value;
-            }
-        }
-        return "";
-    }
-
-    // The integer value of one annotation argument, e.g. the 500 of [MaxTime(ms: 500)].
-    static long long annotationIntArg(const ast::AnnotationUse& use, const std::string& name,
-                                      long long fallback) {
-        for (const ast::AnnotationArg& a : use.args) {
-            if (a.name != name) {
-                continue;
-            }
-            if (const auto* i = dynamic_cast<const ast::IntLiteralExpr*>(a.value.get())) {
-                try {
-                    return std::stoll(i->text, nullptr, 0);
-                } catch (const std::exception&) {
-                    return fallback;
-                }
-            }
-        }
-        return fallback;
-    }
-
-    // Resolves [Cases(source: "m")] against the test's parameter list. A parametrized test takes
-    // exactly one parameter and runs once per element of the array `m` returns; anything else is
-    // rejected here rather than producing a test that quietly never runs. Returns false to drop the
-    // test after reporting.
-    bool collectCases(const ast::ClassDecl& cls, const ast::MethodDecl& m,
-                      const ast::AnnotationUse* cases, TestCase& tc) {
-        if (cases == nullptr) {
-            if (m.params.empty()) {
-                return true;
-            }
-            errors.push_back(CodegenError{
-                "[Test] method '" + tc.sym + "' takes parameters, so it needs a "
-                "'[Cases(source: \"...\")]' naming the static method that supplies its rows",
-                m.loc});
-            return false;
-        }
-        if (m.params.size() != 1) {
-            errors.push_back(CodegenError{
-                "'[Cases]' test '" + tc.sym + "' must take exactly one parameter (it is called once "
-                "per row); group several values into a record and take that",
-                m.loc});
-            return false;
-        }
-        const std::string source = annotationStringArg(*cases, "source");
-        if (source.empty()) {
-            errors.push_back(CodegenError{
-                "'[Cases]' on '" + tc.sym + "' needs a source: [Cases(source: \"methodName\")]",
-                cases->loc});
-            return false;
-        }
-        const std::string want = typeRefName(m.params.front().type);
-        const ast::MethodDecl* src = nullptr;
-        for (const ast::MemberPtr& member : cls.members) {
-            const auto* cand = dynamic_cast<const ast::MethodDecl*>(member.get());
-            if (cand != nullptr && cand->name == source) { src = cand; break; }
-        }
-        if (src == nullptr) {
-            errors.push_back(CodegenError{"'[Cases]' source '" + source + "' is not a method of class '" +
-                                              cls.name + "'",
-                                          cases->loc});
-            return false;
-        }
-        const std::string got = typeRefName(src->returnType);
-        if (!src->isStatic || got != want + "[]") {
-            errors.push_back(CodegenError{
-                "'[Cases]' source '" + cls.name + "." + source + "' must be a public static method "
-                "returning '" + want + "[]' to match the parameter of '" + tc.sym + "' (it returns '" +
-                    got + "')",
-                src->loc});
-            return false;
-        }
-        tc.casesSym = cls.name + "." + source;
-        tc.paramType = want;
-        return true;
-    }
-
-    // [Benchmark]: a timed loop, not a verdict. Kept out of the test list entirely so a benchmark can
-    // never turn a suite red, and run only under --bench so it never slows an ordinary run.
-    void collectBenchmark(const ast::ClassDecl& cls, const ast::MethodDecl& m,
-                          const ast::AnnotationUse& use, bool alsoTest) {
-        const std::string sym = cls.name + "." + m.name;
-        if (alsoTest) {
-            errors.push_back(CodegenError{"'[Benchmark]' and '[Test]' cannot mark the same method '" +
-                                              sym + "': a benchmark measures, a test judges",
-                                          m.loc});
-            return;
-        }
-        if (!m.isStatic || typeRefName(m.returnType) != "void" || !m.params.empty()) {
-            errors.push_back(CodegenError{"'[Benchmark]' method '" + sym +
-                                              "' must be a public static method taking no arguments "
-                                              "and returning void",
-                                          m.loc});
-            return;
-        }
-        BenchCase bc;
-        bc.sym = sym;
-        bc.display = sym;
-        bc.iterations = annotationIntArg(use, "iterations", 1000);
-        bc.warmup = annotationIntArg(use, "warmup", 100);
-        if (bc.iterations < 1) {
-            errors.push_back(CodegenError{"'[Benchmark(iterations: ...)]' on '" + sym +
-                                              "' needs at least 1 iteration",
-                                          use.loc});
-            return;
-        }
-        benchMethods.push_back(std::move(bc));
-    }
+    // `collectHook`, `annotationStringArg`, `annotationIntArg`, `collectCases` and
+    // `collectBenchmark` moved into `testrunner`, with the rest of what `--test` means.
 
     // Every class's onClassLoad hook, once, at the top of the entry point (spec 32.5). Called from
     // BOTH entry points -- the program's own `main` and the synthesized --test runner -- because a
@@ -5400,10 +5310,6 @@ struct CodeGenerator::Impl {
     // Argument policy and report formatting are the runtime's (__polaron_test_*), so what is emitted here
     // stays about ORDER: when a fixture is built, when a test runs, when it is torn down.
     void emitTestRunner();
-
-    // [Benchmark] methods: a warmup pass the timer ignores, then the measured loop. Reported as
-    // ns/op, never as a verdict, and only when --bench asked for them.
-    void emitBenchmarks(llvm::Function* mainFn);
 
     void emitFunctions();
 };

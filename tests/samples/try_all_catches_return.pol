@@ -1,0 +1,44 @@
+import System.IO.Console;
+import System.Runtime.DivideByZeroException;
+import System.Runtime.ArithmeticException;
+
+// EVERY `catch` RETURNS, AND THE CODE CARRIES ON AFTER THE `try`.
+//
+// The shape `HttpClient.sendSecure` has in the standard library, and the PIR path produced a module
+// LLVM refused outright: "Basic Block in function 'HttpClient.sendSecure' does not have terminator!"
+// Nothing noticed for as long as it did, because that method is unreachable in the programs that get
+// built and the reachability pass turned its body into a declaration before the backend ever saw it
+// -- so the bug was real, present, and invisible.
+program TryAllCatchesReturn;
+
+public bundle main {
+    public namespace app {
+
+        public class Risky {
+            // Both handlers leave; the statements below the `try` are reached only when it does not
+            // throw, and they still have to be emitted into a block that ends somewhere.
+            public static method guarded(int n) returns int {
+                mutable int got = 0;
+                try {
+                    got = 100 / n;
+                } catch (DivideByZeroException e) {
+                    return 0 - 1;
+                } catch (ArithmeticException e) {
+                    return 0 - 2;
+                }
+                got = got + 1;
+                return got;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int five = 5;
+                mutable int zero = 0;
+                System.IO.Console.printf("ok %d\n", Risky.guarded(five));
+                System.IO.Console.printf("bad %d\n", Risky.guarded(zero));
+                return;
+            }
+        }
+    }
+}

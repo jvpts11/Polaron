@@ -1,0 +1,48 @@
+import System.IO.Console;
+
+program StaticFieldAddress;
+
+// `&Class.staticField` -- the address of a static field.
+//
+// It could not be written. Codegen has always known how (a static field IS a global, and the
+// global's address is the answer), but the analyzer's address-of path ran a bit-field check that
+// asked for the TYPE OF THE RECEIVER first -- and a class name is not a variable, so the whole
+// expression died with `use of undeclared variable 'Counter'` pointing at the class.
+//
+// It is the shape a futex needs: the kernel is handed the address of a word two tasks share, and a
+// static field is exactly such a word. Written here without a kernel, because the bug was in the
+// language and belongs to every program that has a static and wants to point at it.
+public bundle Main {
+    public namespace Shared {
+        public class Counter {
+            public static mutable int value;
+            public static mutable long wide;
+
+            // A bit field still has no address, and this file's whole point is that the check which
+            // says so kept working -- see static_field_address_bad.pol for the refusal.
+            public static method cell() returns int* { return &Counter.value; }
+            public static method wideCell() returns long* { return &Counter.wide; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter.value = 0;
+                Counter.wide = 0;
+
+                // Write THROUGH the pointer and read back through the name: if the address were the
+                // wrong one, or a copy's, these two would disagree and the numbers below would not
+                // move together.
+                int* p = Counter.cell();
+                p[0] = 41;
+                Counter.value = Counter.value + 1;
+
+                long* w = Counter.wideCell();
+                w[0] = 900;
+                Counter.wide = Counter.wide + 8;
+
+                System.IO.Console.printf("value=%d wide=%d\n", Counter.value, Counter.wide);
+                return;
+            }
+        }
+    }
+}

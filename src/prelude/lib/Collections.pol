@@ -41,13 +41,17 @@
                 // a growable array actually makes -- reallocating and losing the count.
                 ensures this.count == old(this.count) + 1
             {
+                // THE GROWTH IS SOMEBODY ELSE'S METHOD, and that is a speed decision rather than a
+                // tidiness one. Written out here -- an allocation, a copy loop and a `delete` --
+                // `add` came to 143 lines of IR across 23 blocks, which is past what the inliner
+                // will take. So the hot path of the commonest operation in the language stayed a
+                // real call, twenty million times in `coll_list`, on account of code that runs
+                // log(n) times in n.
+                //
+                // Delegating leaves `add` as a compare, a store and an increment. `ensureCapacity`
+                // already held exactly this code, so it also stops being written twice.
                 if (this.count >= this.data.length()) {
-                    T[] bigger = new T[this.data.length() * 2]();
-                    for (mutable int i = 0; i < this.count; i++) {
-                        bigger[i] = this.data[i];
-                    }
-                    delete this.data;
-                    this.data = bigger;
+                    this.ensureCapacity(this.data.length() * 2);
                 }
                 this.data[this.count] = item;
                 this.count = this.count + 1;
@@ -55,8 +59,22 @@
             // Grow the backing store to hold at least n elements up front, so a known-size fill (a copy,
             // a filter/map/sort output) does not pay repeated doubling reallocations. A no-op when the
             // capacity already suffices; never shrinks.
+            // `[Cold]` because a doubling happens log(n) times in n adds, and without it the
+            // inliner pulls this whole body -- an allocation, a copy loop and a `delete` -- back
+            // into `add`, which is then too big to inline anywhere. That cost `coll_list` a real
+            // call twenty million times: 44 ms through `add` against 9 ms for the same store
+            // written by hand.
             [Allow(code: "Polaron-0B28", why: "this IS the collection the rule points to: sizing the backing store once is the service every caller is told to use instead of growing by hand")]
-            public method ensureCapacity(int n) returns void {
+            [Cold]
+            public method ensureCapacity(int n) returns void
+                // WHAT THE CALLER MAY RELY ON THE MOMENT THIS RETURNS. `[Cold]` makes the body
+                // opaque to the inliner, which is the point -- and the price was that `add` could
+                // no longer see that the array is big enough afterwards, so its bounds check
+                // stopped folding. Stating the promise gives that back: the compiler hands an
+                // `ensures` to the optimiser at every call site, so the check folds again without
+                // the body having to be visible.
+                ensures this.data.length() >= n
+            {
                 if (n > this.data.length()) {
                     T[] bigger = new T[n]();
                     for (mutable int i = 0; i < this.count; i++) { bigger[i] = this.data[i]; }

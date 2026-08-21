@@ -1,0 +1,39 @@
+import System.IO.Console;
+
+// A STATIC POINTER FIELD HOLDING THE ADDRESS OF A STACK OBJECT.
+//
+// This is how pico's ring-3 guest shares two cells between its threads: the frame that owns them
+// outlives every thread, so the cells live `on stack` and the static holds their address. Through
+// the PIR path the static read back as null and the guest died at CR2=0x8 -- offset 8 of nothing.
+program AddrStatic;
+
+public bundle main {
+    public namespace app {
+
+        public class Cell {
+            public mutable int value;
+            public constructor Cell(int v) {
+                this.value = v;
+            }
+        }
+
+        public class Shared {
+            public static mutable Cell* one;
+            public static mutable Cell* two;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Cell a = new Cell(11) on stack;
+                Cell b = new Cell(22) on stack;
+                Shared.one = &a;
+                Shared.two = &b;
+                System.IO.Console.println($"one {Shared.one.value}");
+                System.IO.Console.println($"two {Shared.two.value}");
+                Shared.one.value = 33;
+                System.IO.Console.println($"a {a.value}");
+                return;
+            }
+        }
+    }
+}

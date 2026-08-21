@@ -675,6 +675,60 @@ void CodeGenerator::Impl::declareClasses() {
         }
     }
     subclassed_ = bases;  // remember which types have a subtype, for devirtualization at call sites
+
+    // ---- A WEAK POINTER MAY NAME AN INTERFACE OR A BASE, and until now that silently ate the
+    // target's fields. ----
+    //
+    // The weak list is intrusive: each pointee carries a head pointer, and `weak_link` writes it at
+    // `target + headOff` where `headOff` came from the field's STATIC type. For `weak Dog*` with a
+    // leaf `Dog` that is right. For `weak Canvas*` -- an interface -- the offset was the interface's
+    // own, 8 bytes past a lone vtable pointer, and the implementer's first two fields lived there.
+    // Storing into the field overwrote them. No fault, no diagnostic: in pico, a console holding a
+    // `weak Canvas*` stomped the surface's width and height, and the terminal came up claiming to be
+    // 526348 columns wide.
+    //
+    // Two things make it correct, and both are needed:
+    //   1. EVERY implementer/subclass of a weak target is itself a weak target, so it carries a head.
+    //   2. The head sits at ONE offset -- immediately after the vtable pointer -- so a write through a
+    //      base or interface pointer lands on the same field the concrete class reserved. Appending it
+    //      last, which is what the code did, puts it at a different offset in every class, which is
+    //      exactly why the old comment restricted weak targets to leaf classes.
+    // It is the WHOLE FAMILY that has to agree, not only the descendants. A subclass's fields are laid
+    // out after its superclass's, so reserving the head in `Framebuffer` alone pushed every field it
+    // inherited from `Peripheral` along by one -- and `Peripheral.describe()`, reading `role` at the
+    // index IT was laid out with, got the weak head instead. Every device on the machine reported
+    // itself as "unclassified: down" while working perfectly. So: mark the connected component of the
+    // super/sub and interface/implementer relation. One pointer per object in that family, and every
+    // class in it agrees on where the head is.
+    {
+        std::unordered_set<std::string> marked = weaklyReferenced_;
+        bool grew = true;
+        while (grew) {
+            grew = false;
+            for (const auto& [cname, cl] : classes) {
+                std::vector<std::string> kin;
+                if (!cl.superclass.empty()) {
+                    kin.push_back(baseType(cl.superclass));
+                }
+                for (const std::string& i : cl.interfaces) {
+                    kin.push_back(baseType(i));
+                }
+                const bool self = marked.count(cname) > 0;
+                for (const std::string& k : kin) {
+                    if (self && marked.count(k) == 0 && classes.count(k) > 0) {
+                        marked.insert(k);       // a marked class marks what it is built on
+                        grew = true;
+                    }
+                    if (!self && marked.count(k) > 0) {
+                        marked.insert(cname);   // ...and everything built on a marked class
+                        grew = true;
+                        break;
+                    }
+                }
+            }
+        }
+        weaklyReferenced_ = marked;
+    }
     // Adopt the slot layout of imported bundles first, so a virtual call on an imported object
     // hits the slot its baked-in vtable (in the .polb) uses (spec 2.5 ABI). Fresh local methods
     // then take the slots after these.
@@ -751,6 +805,18 @@ void CodeGenerator::Impl::declareClasses() {
                     fieldTypes.push_back(builder.getPtrTy());  // vtable ptr
                 }
                 unsigned idx = layout.hasVtable ? 1u : 0u;
+                // THE WEAK-LIST HEAD GOES FIRST, right behind the vtable pointer, for every class that
+                // can be the target of a `weak` field. It used to be appended after the fields, which
+                // put it at a different byte offset in every class -- and `weak_link` computes that
+                // offset from the field's static type, so a `weak Base*` or a `weak SomeInterface*`
+                // wrote the list head over a subclass's data. Here it is at 8 for everybody (0 for the
+                // vtable-less, which cannot be a weak target anyway), so the offset a base agrees on
+                // is the offset the concrete class reserved.
+                if (weaklyReferenced_.count(cls.name) > 0) {
+                    layout.needsWeakHead = true;
+                    layout.weakHeadIdx = idx++;
+                    fieldTypes.push_back(builder.getPtrTy());
+                }
                 // BIT-FIELD PACKING (spec 11.1). The spec gives a `PacketHeader` and no semantics,
                 // and for a language that points at hardware registers and wire formats there is only
                 // one defensible reading: the bits are laid out PHYSICALLY, predictably, and it is
@@ -830,10 +896,10 @@ void CodeGenerator::Impl::declareClasses() {
                     layout.fieldType[fname] = ftype;
                     // a `weak T*` field is a 2-ptr WeakSlot {ptr, next}; an `A*` whose A is a region
                     // class is a 32-bit offset into that family's arena (see isNarrowField -- this is
-                    // where the halved node comes from); every other field is its own type. (v1
-                    // constraint: a weak TARGET should be a concrete/leaf class -- the weak-list head
-                    // is appended per class, so a polymorphic base with a differently-laid subclass
-                    // would place the head at a different offset.)
+                    // where the halved node comes from); every other field is its own type. (The weak
+                    // TARGET no longer has to be a leaf class: the list head is reserved before the
+                    // fields, at one offset for the whole hierarchy, and every implementer of a
+                    // weakly-referenced interface carries one -- see the propagation in pass 1.5.)
                     if (fieldIsWeak(cls.name, fname)) {
                         fieldTypes.push_back(weakSlotType());
                     } else if (!narrowTargetClass(ftype).empty()) {
@@ -842,12 +908,8 @@ void CodeGenerator::Impl::declareClasses() {
                         fieldTypes.push_back(llvmType(ftype));
                     }
                 }
-                // a class that is the target of some `weak T*` carries a weak-list head (one ptr).
-                if (weaklyReferenced_.count(cls.name) > 0) {
-                    layout.needsWeakHead = true;
-                    layout.weakHeadIdx = idx++;
-                    fieldTypes.push_back(builder.getPtrTy());
-                }
+                // (the weak-list head was reserved above, before the fields, so that every class in a
+                // hierarchy puts it at the same offset)
                 // Persistent instance fields also get an out-of-object block; the object
                 // holds a pointer to it (set at construction) so this.f and var.f both work
                 // and the field survives `delete` (it lives in the block, not the object).
@@ -1721,6 +1783,25 @@ void CodeGenerator::Impl::declareFunctions() {
                             fn->addFnAttr(llvm::Attribute::NoInline);
                             fn->addFnAttr(llvm::Attribute::OptimizeNone);
                         }
+                        // `[Cold]`: THIS PATH IS RARELY TAKEN, so keep it out of the ones that are.
+                        //
+                        // The inliner costs a method by its SIZE, and size is a poor proxy when the
+                        // bulk of a method runs log(n) times in n. `ArrayList.add` is the case that
+                        // asked for this: a compare, a store and an increment, plus a growth path --
+                        // an allocation, a copy loop and a `delete` -- that runs on a doubling. At
+                        // 143 lines of IR across 23 blocks the whole thing was past what the inliner
+                        // takes, so the commonest operation in the language stayed a real call
+                        // twenty million times in `coll_list` on account of code that ran
+                        // twenty-five times. Measured: 44 ms through `add` against 9 ms writing the
+                        // same store by hand.
+                        //
+                        // Moving the growth into `ensureCapacity` was not enough on its own, because
+                        // the inliner then pulled it straight back in. Marking it says the thing the
+                        // size cannot: this is not code the hot path should carry.
+                        if (hasAnnotation(*m, "Cold")) {
+                            fn->addFnAttr(llvm::Attribute::Cold);
+                            fn->addFnAttr(llvm::Attribute::NoInline);
+                        }
                         markReceiver(fn, cls.name, m->isStatic);
                         functions[mangled] = fn;
                         paramTypeNames[fn] = pnames;
@@ -2075,135 +2156,27 @@ void CodeGenerator::Impl::emitAwaitRethrowCheck(llvm::Value* handle) {
     builder.SetInsertPoint(okBB);
 }
 
+// THE WALK ITSELF LIVES IN `cgutil`, because it is an AST walk with no LLVM in it and because the
+// second backend needs the same answer. See the note above its declaration.
 void CodeGenerator::Impl::collectReturnedNames(const ast::Stmt* st, std::set<std::string>& out) {
-    if (st == nullptr) {
-        return;
-    }
-    if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(st)) {
-        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get())) {
-            out.insert(id->name);
-        }
-        return;
-    }
-    auto blk = [&](const ast::Block& b) {
-        for (const auto& s : b.statements) {
-            collectReturnedNames(s.get(), out);
-        }
-    };
-    if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) {
-        blk(i->thenBlock);
-        if (i->elseBlock) {
-            blk(*i->elseBlock);
-        }
-        return;
-    }
-    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
-    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
-    if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
-    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
-    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) {
-        for (auto& c : sw->cases) {
-            blk(c.body);
-        }
-        if (sw->defaultBody) {
-            blk(*sw->defaultBody);
-        }
-        return;
-    }
-    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) {
-        for (auto& c : ms->cases) {
-            blk(c.body);
-        }
-        if (ms->defaultBody) {
-            blk(*ms->defaultBody);
-        }
-        return;
-    }
-    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) {
-        blk(tr->body);
-        for (auto& c : tr->catches) {
-            blk(c.body);
-        }
-        if (tr->finallyBlock) {
-            blk(*tr->finallyBlock);
-        }
-        return;
-    }
-    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
-    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
-    if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { collectReturnedNames(lb->stmt.get(), out); return; }
+    cgutil::collectReturnedNames(st, out);
 }
 
-void CodeGenerator::Impl::promoteEscapingNews(const ast::Stmt* st, const std::set<std::string>& returned) {
-    if (st == nullptr) {
-        return;
-    }
-    if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) {
-        if (returned.count(vd->name) > 0) {
-            if (const auto* cnw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
-                // NOT A REGION CLASS, whose instances already outlive the frame -- they come from
-                // the type's own region, released at program exit. Promoting one to the heap made
-                // the emitter refuse the very line the author wrote: `Node* one = new Node(v); ...
-                // return one;` reported "`Node` is a region class, so `on heap` has nowhere to put
-                // this", pointing at a `new` with no placement on it. The compiler had written the
-                // placement and then blamed the author for it.
-                //
-                // A region class has no promoting to do: escape is what its region is FOR.
-                if (cnw->location == "stack" && cnw->region.empty() &&
-                    !livesInClassArena(clsKey(cnw->className))) {
-                    const_cast<ast::NewExpr*>(cnw)->location = "heap";
-                }
-            }
-        }
-        return;
-    }
-    auto blk = [&](const ast::Block& b) {
-        for (const auto& s : b.statements) {
-            promoteEscapingNews(s.get(), returned);
-        }
-    };
-    if (const auto* i = dynamic_cast<const ast::IfStmt*>(st)) {
-        blk(i->thenBlock);
-        if (i->elseBlock) {
-            blk(*i->elseBlock);
-        }
-        return;
-    }
-    if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) { blk(w->body); return; }
-    if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) { blk(d->body); return; }
-    if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) { blk(f->body); return; }
-    if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) { blk(fe->body); return; }
-    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) {
-        for (auto& c : sw->cases) {
-            blk(c.body);
-        }
-        if (sw->defaultBody) {
-            blk(*sw->defaultBody);
-        }
-        return;
-    }
-    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) {
-        for (auto& c : ms->cases) {
-            blk(c.body);
-        }
-        if (ms->defaultBody) {
-            blk(*ms->defaultBody);
-        }
-        return;
-    }
-    if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) {
-        blk(tr->body);
-        for (auto& c : tr->catches) {
-            blk(c.body);
-        }
-        if (tr->finallyBlock) {
-            blk(*tr->finallyBlock);
-        }
-        return;
-    }
-    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) { blk(df->body); return; }
-    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) { blk(us->body); return; }
-    if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(st)) { promoteEscapingNews(lb->stmt.get(), returned); return; }
+// THE WALK LIVES IN `cgutil` AND THE ANSWER LIVES HERE, which is why this takes a predicate rather
+// than being a free function outright. `livesInClassArena` is a question about the code generator's
+// own tables; the tree-walk that asks it touches no LLVM and belongs on the pure side of that line.
+//
+// The predicate is the whole of what this call adds, and dropping it is not cosmetic: a region class
+// must NOT be promoted, because escape is exactly what its region is for. Rewriting the placement
+// made the emitter refuse the very line the author wrote -- `Node* one = new Node(v); ... return
+// one;` reported "`Node` is a region class, so `on heap` has nowhere to put this", pointing at a
+// `new` with no placement on it. The compiler had written the placement and then blamed the author.
+void CodeGenerator::Impl::promoteEscapingNews(const ast::Stmt* st,
+                                              const std::set<std::string>& returned) {
+    cgutil::promoteEscapingNews(st, returned, [this](const std::string& cls) {
+        return livesInClassArena(clsKey(cls));
+    });
 }
+
 
 }  // namespace polaron

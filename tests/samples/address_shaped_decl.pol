@@ -1,0 +1,60 @@
+// A HEX ADDRESS DECLARED AS A NUMBER, with no cast anywhere to point at.
+//
+// `checkAddressDiscipline` catches `cast<int>(somewhere)` and `cast<address>(0xB8000)`. It cannot see
+// the commoner and quieter form, which is that the literal simply arrives in a variable whose type
+// says it is a quantity: `int vram = 0xB8000;`. There is no cast to complain about, every later line
+// is arithmetic on a location that has been told it is a number, and on a 64-bit target `int` is 32
+// bits, so anything above 4 GiB has already been truncated where nobody wrote a narrowing.
+//
+// THE HALF THAT MATTERS IS THE SILENCE. A warning that fires on correct code is a warning people
+// learn to scroll past, and a big hex constant is not always a place:
+//
+//   * `0x53425355` is `'USBS'`, the tag at the head of every USB bulk-only status packet. Every byte
+//     is a printable character, which is what says it is a name written as a number.
+//   * `0x1BADB002` is the multiboot header's magic. It spells nothing -- so the byte test cannot see
+//     it -- but the declaration is CALLED `magic`, which is the author saying what it is for.
+//   * `0xFFFFFFFF` is a mask, and `0x800` is smaller than a page: both were already exempt.
+//
+// The first of those was found by running this check over pico, where it was the only thing it
+// reported -- and it was wrong.
+program AddressShapedDecl freestanding;
+
+public bundle Kernel {
+    public namespace Boot {
+        public class Screen {
+            // WARNED: a real hardware address in an `int`. The VGA text buffer, which is where this
+            // mistake is written more often than anywhere else.
+            private mutable int vram = 0xB8000;
+            // ...and a WIDE one, which loses no bits and is still the wrong type: `long` says this
+            // is a quantity, and every line that touches it is arithmetic on a place.
+            private mutable long apic = 0xFEE00000;
+
+            // NOT WARNED: a four-character code.
+            private mutable int usbStatus = 0x53425355;
+            // NOT WARNED: named for what it is.
+            private mutable int magic = 0x1BADB002;
+            // NOT WARNED: a mask, and a number smaller than a page.
+            private mutable int mask = 0xFFFFFFFF;
+            private mutable int small = 0x800;
+            // NOT WARNED: already an address, which is the whole point of the advice.
+            private mutable address framebuffer = 0xFD000000;
+
+            public constructor Screen() { }
+
+            public method poke() returns int {
+                // WARNED: the same thing as a local.
+                int port = 0xE0000000;
+                // NOT WARNED: decimal is how a count is written.
+                int count = 1048576;
+                return port + count + this.vram;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Screen* s = new Screen() on stack;
+                return s.poke();
+            }
+        }
+    }
+}

@@ -6,6 +6,7 @@
 #include "semantic/comptime.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -604,6 +605,25 @@ std::string SemanticAnalyzer::addressHint(const std::string& from, const std::st
            ">(...)' if that is what you mean";
 }
 
+// A POINTER TO A POINTER, where a pointer belonged. Almost always one `&` too many, and almost always
+// on a field that is already a heap object -- so the sentence names that shape rather than describing
+// the depths abstractly. The bug this was written for read `t.draw(&this.back, ...)` where the
+// compositor's `back` is a `Surface*`: it built a `Surface**`, drew nothing, and faulted nowhere.
+std::string SemanticAnalyzer::pointerDepthHint(const std::string& from, const std::string& to) const {
+    const std::size_t f = pointerDepth(from);
+    const std::size_t t = pointerDepth(to);
+    if (f == t || (f < 2 && t < 2)) {
+        return "";
+    }
+    if (f > t) {
+        return ". That is " + std::to_string(f - t) +
+               " level(s) of pointer too many -- an '&' on a name that already holds a pointer makes "
+               "a pointer to it. Pass the name itself";
+    }
+    return ". That is " + std::to_string(t - f) +
+           " level(s) of pointer too few -- the parameter wants the address OF this pointer";
+}
+
 // A BOXED SUM CASE DOES NOT FLOW INTO THE VALUE FORM.
 //
 // `Option<T>` and `Result<T,E>` have two representations (spec 21): written plain they are a
@@ -731,7 +751,32 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
     // `ArrayListIterator<Node*>`, a value -- so stripping it produces a type that does not exist and the
     // hierarchy walk below finds nothing. findField already had to learn this; the same trap is here.
     if (isRefType(sub) || isRefType(super)) {
-        // AND THE GUARD ABOVE HAD A HOLE THE SHAPE OF `&`. It is an OR, and a type ending in `&` is
+        // ...but a POINTER TO A POINTER is not the pointer, and this is where that used to be lost.
+        // `T*`, `T&` and `T` mixing freely is a deliberate looseness; letting `T**` join them is not,
+        // and it is silently wrong every single time. Found in the pico kernel, where the compositor
+        // holds `Surface* back` and the chrome painter wrote `t.draw(&this.back, ...)`: `Surface**`
+        // went in where a surface belonged, the rasterizer read a width, a height and a pixel base
+        // out of the compositor's own fields, and every window title on the desktop came out blank
+        // while the buttons beside it drew perfectly. No fault, no diagnostic, no test that could see
+        // it -- and the same expression made the mouse cursor invisible one line above.
+        //
+        // The rule is only about the depths that cannot be an honest mistake in the other direction:
+        // once either side is two levels deep, the two have to agree exactly.
+        // ...but NOT for a monomorphized generic, whose mangled name ends in the stars of its last
+        // TYPE ARGUMENT rather than its own. `HashMap<String, ArrayList<int*>>` is
+        // `HashMap$String$ArrayList$int*` -- a value with one star in its name -- and a pointer to it
+        // has two. Counting them there compares a type argument against a pointer, and the rule
+        // refused `HashMap$String$ArrayList$int**` for `...$int*`, which is a variable being
+        // initialised from itself. The `$` is what says "this name was assembled", and it is the one
+        // place the count cannot be read literally.
+        const bool mangled = sub.find('$') != std::string::npos ||
+                             super.find('$') != std::string::npos;
+        const std::size_t subStars = pointerDepth(sub);
+        const std::size_t supStars = pointerDepth(super);
+        if (!mangled && subStars != supStars && (subStars >= 2 || supStars >= 2)) {
+            return false;
+        }
+        // AND THE GUARD BELOW HAD A HOLE THE SHAPE OF `&`. It is an OR, and a type ending in `&` is
         // never a class -- so the moment either side was a reference, `lookupClass(super)` was null
         // and the names-as-written protection was skipped, every time. Then `baseType` took ONE
         // marker off each: `ArrayList$ArrayList$int*` lost the `*` that belongs to its type ARGUMENT
@@ -740,7 +785,10 @@ bool SemanticAnalyzer::isSubtype(const std::string& sub, const std::string& supe
         // refused inside any generic instantiated over a pointer.
         //
         // So: take off the reference marker and nothing else, and try that first. `T` and `T&` are
-        // the same type wearing different clothes, whatever `T` is made of.
+        // the same type wearing different clothes, whatever `T` is made of. It cannot let through
+        // anything the depth rule above just refused: it accepts only two spellings that are equal
+        // once one `&` comes off, and two such spellings have the same number of stars by
+        // construction.
         const std::string subBare = !sub.empty() && sub.back() == '&' ? sub.substr(0, sub.size() - 1) : sub;
         const std::string superBare =
             !super.empty() && super.back() == '&' ? super.substr(0, super.size() - 1) : super;
@@ -1917,6 +1965,22 @@ void SemanticAnalyzer::checkAnnotationUses(const std::vector<ast::AnnotationUse>
             }
             continue;
         }
+        // `[Cold]`: THIS METHOD IS RARELY CALLED. It becomes `cold` and `noinline` on the emitted
+        // function, in both backends. A compiler attribute like the one above rather than a user
+        // annotation, because it has no definition to look up -- it is a fact about code
+        // generation.
+        //
+        // The inliner costs a method by its SIZE, and size is the wrong measure when the bulk of
+        // one runs log(n) times in n. `ArrayList.ensureCapacity` is an allocation, a copy loop and
+        // a `delete` that happen on a doubling; inlined back into `add` it made `add` too big to
+        // inline anywhere, so the commonest operation in the language stayed a real call twenty
+        // million times in `coll_list` -- 44 ms against 9 ms for the same store written by hand.
+        if (use.name == "Cold") {
+            if (!use.args.empty()) {
+                error("'[Cold]' takes no arguments", use.loc);
+            }
+            continue;
+        }
         auto it = annotations_.find(use.name);
         if (it == annotations_.end()) {
             error("unknown annotation '" + use.name + "'", use.loc);
@@ -2837,6 +2901,10 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
                      "' has no effect yet: the field keeps its ordinary storage (spec 18.7).",
                  f->loc);
         }
+        // ...and the same question about a FIELD's starting value. `private mutable int port = 0x3F8;`
+        // is the shape a driver writes without thinking about it, and it is the one that survives
+        // longest: a local is read a few lines later, a field is read from everywhere.
+        checkAddressShapedInit(typeRefStr(f->type), f->name, f->init.get(), f->loc);
         // spec 32.2: a snapshot is a captured state, not a variable. Checked on the WRITTEN type name,
         // because `RegionSnapshot` canonicalizes to `address` and the two are indistinguishable after.
         if (f->isMutable && f->type.name == "RegionSnapshot") {
@@ -4665,16 +4733,39 @@ void SemanticAnalyzer::registerLiterals(const ast::Program& program) {
 void SemanticAnalyzer::registerConsts(const ast::Program& program) {
     auto reg = [&](const ast::ConstDecl& c, const std::string& owner) {
         const std::string type = typeRefStr(c.type);
-        // A NEWTYPE OVER A NUMBER IS A NUMBER HERE. `fixed` asks what the value is made of, and a
-        // newtype is its underlying type in every way that question means -- same representation,
-        // same literals, folded the same at compile time. Refusing it split the feature against
-        // itself: a program that gives its ids a type of their own then has to write the one id
-        // that means "nobody" as a bare int, which is the assignment `newtype` exists to stop.
-        // Chased through a chain, so a newtype over a newtype answers too.
+        // A NEWTYPE OVER A NUMBER IS A NUMBER HERE, and both sides of the merge found this the same
+        // week from opposite ends. `newtype Vector = int;` exists precisely so that the interrupt
+        // vectors can be NAMED -- `fixed Vector TimerVector = cast<Vector>(32);` is the first thing
+        // anyone writes with one, and refusing it left the feature usable for parameters and locals
+        // but not for the constants those parameters are called with. The game hit it from the other
+        // side: a program that gives its ids a type of their own then has to write the one id that
+        // means "nobody" as a bare int, which is the assignment `newtype` exists to stop.
+        //
+        // `fixed` asks what the value is MADE OF, and a newtype is its underlying type in every way
+        // that question means -- same representation, same literals, folded the same at compile
+        // time. Classified by the underlying type exactly as casts are (analyzer_typeof.cpp), so the
+        // constant stays a distinct type everywhere it is used and is merely storable here.
+        //
+        // Through `groundOf` rather than one lookup in `newtypes_`, because the chain can be longer
+        // than one link: a newtype over a newtype over an int answers too.
         const std::string ground = groundOf(type);
         if (!isNumeric(ground) && ground != "boolean" && ground != "char") {
             error("a 'fixed' must have a numeric, boolean, or char type, got '" + type + "'", c.loc);
             return;
+        }
+        // ...AND A `fixed` IS WHERE MOST OF A KERNEL'S ADDRESSES ACTUALLY LIVE. `public fixed int
+        // Port = 0x3F8;`, `fixed int Lapic = 0xFEE00000;` -- named once at the top of a driver and
+        // used everywhere, which makes this the single highest-value place to ask the question and
+        // the one a check on locals and fields alone walks straight past.
+        //
+        // `currentClass_` is lent to the check for the length of the call: this pass walks classes
+        // without entering them, and the check reads the enclosing type to recognise a palette from
+        // a driver. Restored immediately, because nothing else in this pass may see it set.
+        {
+            const std::string keep = currentClass_;
+            currentClass_ = owner;
+            checkAddressShapedInit(type, c.name, c.init.get(), c.loc);
+            currentClass_ = keep;
         }
         const std::string key = owner.empty() ? c.name : owner + "." + c.name;
         if (constTypes_.count(key) > 0) {
@@ -5657,6 +5748,316 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
 //
 // Only the operators that can carry bits past the narrow width are flagged (`<<`, `*`, `+`, `-`); `&`,
 // `|`, `>>` and comparisons cannot produce a value the narrow type could not already hold.
+// THE NARROWEST ADDRESS TYPE A VALUE FITS IN. Suggesting `address` for `0x8000` would be advice to
+// spend sixty-four bits on a sixteen-bit real-mode offset -- and the width is half the reason the
+// family exists, so the message names the right one rather than the general one.
+static std::string narrowestAddressFor(long long v) {
+    if (v < 0) {
+        return "address";
+    }
+    if (v <= 0xFF) {
+        return "byte address";
+    }
+    if (v <= 0xFFFF) {
+        return "short address";
+    }
+    if (v <= 0xFFFFFFFFLL) {
+        return "half address";
+    }
+    return "address";
+}
+
+// How an expression reads back to somebody looking at the message: `Foo.Bar`, `x`, or nothing.
+static std::string nameOfOperand(const ast::Expr& e) {
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
+        return id->name;
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&e)) {
+        if (const auto* base = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+            return base->name + "." + mem->member;
+        }
+        return mem->member;
+    }
+    return "";
+}
+
+// ADDRESSES ARE NOT NUMBERS, and this is where the compiler says so.
+//
+// `address` and its three narrower forms exist so that a location in memory is a different type from a
+// count, a mask or a colour. Nothing enforced that: a program could declare `fixed int Slot = 0x7F20`
+// and cast it to a pointer at the use site, and every later line treated a machine address as
+// arithmetic. This kernel did exactly that in a dozen places, which is what these two warnings were
+// asked for.
+//
+// FREESTANDING ONLY, because that is where the type is. A hosted program has no raw addresses to get
+// wrong, and warning there would be advice about a feature it cannot use.
+//
+// Both halves are deliberately narrow, because a warning that fires on correct code is a warning
+// people learn to scroll past:
+//
+//   * a number becoming an address is flagged when the destination is a POINTER (making a pointer out
+//     of a number is never incidental), or when the destination is the address family AND the operand
+//     is a literal big enough to be a location rather than a count. `cast<address>(4)` on a page count
+//     is arithmetic and stays silent.
+//   * an address becoming a number is flagged unless the operand is a MASK or a REMAINDER -- `a & 255`
+//     and `a % 16` are deliberate extractions of a small number out of an address, which is what a
+//     wire format and an alignment check are made of.
+// IS THIS LITERAL SHAPED LIKE A PLACE? The three conditions are the ones the cast check below argued
+// for, lifted out so the no-cast case can ask the same question and get the same answer:
+//
+//   * WRITTEN IN HEX. Nobody writes an address in decimal and nobody writes a count in hex.
+//   * AT LEAST A PAGE. Below 4096 a constant is far more often a size, an index or a small count.
+//   * NOT ALL-ONES. `0xFFFFFFFF` is a MASK -- the commonest hex constant there is, never an address.
+//
+// `out` receives the value, so a caller can name the width that would hold it.
+bool SemanticAnalyzer::addressShapedLiteral(const ast::Expr& e, long long& out) {
+    const ast::Expr* p = &e;
+    if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(p)) { p = u->operand.get(); }
+    const auto* lit = dynamic_cast<const ast::IntLiteralExpr*>(p);
+    if (lit == nullptr || lit->text.size() <= 2 || lit->text[0] != '0' ||
+        (lit->text[1] != 'x' && lit->text[1] != 'X')) {
+        return false;
+    }
+    if (!readIntLiteral(e, out)) {
+        return false;
+    }
+    if (out < 4096 || (out > 0 && (out & (out + 1)) == 0)) {
+        return false;   // small, or all-ones: a mask, not a place
+    }
+    // AN ADDRESS IS ALIGNED, and almost nothing else written in hex is.
+    //
+    // This one line is what makes the warning usable. Without it the check fires on every ARGB
+    // colour (`0xFF0078D4`) and every Unicode constant (`0xFFFD`, `0x10FFFF`) in the program -- 64 of
+    // them in this project's own kernel, none of them a location, which is a warning nobody would
+    // leave switched on.
+    //
+    // The rule is not a heuristic about how numbers look; it is a fact about what addresses ARE. A
+    // base a driver names is a page, a bank, a BAR or a controller's register file, and all of those
+    // begin on a boundary: 0xB8000, 0xFEE00000, 0x100000, 0x8000. A colour is three colour channels
+    // and an alpha, and a codepoint is an ordinal -- neither has any reason to end in zeros, and when
+    // one accidentally does (0xD800, the first UTF-16 surrogate) the name says what it is.
+    //
+    // Sixteen bytes rather than a page, deliberately: it still exempts every colour and codepoint,
+    // and it KEEPS the register offsets from a controller's base (`0xFEE00020`, `0xFEE000B0`), which
+    // are exactly the addresses a driver is most likely to write as plain integers.
+    if ((out & 0xF) != 0) {
+        return false;
+    }
+    // ...AND ONE SET BIT IS A FLAG, not a place. `0x4000000` is bit 26 of the E1000's control
+    // register, `0x8000` is the AHCI command-list-running bit, and a driver's header is mostly these:
+    // aligned by construction, large, and hex, so every earlier rule lets them through.
+    //
+    // The cost is stated rather than hidden: 0x100000 and 0x200000 are real addresses AND powers of
+    // two, so a one-megabyte load base written as a plain `int` goes unreported. That is the right
+    // side to lose on. A warning that fires on half the constants in every device driver is a warning
+    // that gets switched off, and then it catches nothing at all.
+    return (out & (out - 1)) != 0;
+}
+
+// A HEX ADDRESS DECLARED AS A NUMBER, with no cast anywhere to point at.
+//
+// The cast check below catches `cast<int>(somewhere)` and `cast<address>(0xB8000)`. What it cannot
+// see is the commoner and quieter form: `int vram = 0xB8000;`, `private mutable long apic = 0xFEE00000;`,
+// `public fixed int Port = 0x3F8;`. There is no cast there to complain about -- the literal simply
+// arrives in a variable whose type says it is a quantity -- and every later line that touches it is
+// arithmetic on a number that is really a location. On a 64-bit target `int` is 32 bits, so the
+// address above 4 GiB is also being truncated where nobody wrote a narrowing.
+//
+// Freestanding only, because `address` is: in a hosted program 0xB8000 is a number and nothing else.
+void SemanticAnalyzer::checkAddressShapedInit(const std::string& declType, const std::string& name,
+                                              const ast::Expr* init, const SourceLocation& loc) {
+    if (!freestanding_ || init == nullptr) {
+        return;
+    }
+    if (!isIntName(declType) || isAddressName(declType) || isRefType(declType)) {
+        return;
+    }
+    // WHERE IT WAS DECLARED IS ALSO THE AUTHOR SPEAKING. A constant inside `Theme` or `Palette` is a
+    // colour whatever it is called -- `Mica`, `Hairline`, `TextOnShell` -- and no list of field names
+    // will ever cover a designer's vocabulary. The enclosing type covers all of them at once, which
+    // is the same argument as the name list one level up.
+    {
+        std::string owner;
+        for (char c : currentClass_) {
+            owner += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        static const char* kNotPlaceTypes[] = {"theme",  "palette", "colour", "color",
+                                               "look",   "style",   "ascii",  "codepoint",
+                                               "letter", "unicode"};
+        for (const char* w : kNotPlaceTypes) {
+            if (owner.find(w) != std::string::npos) {
+                return;
+            }
+        }
+    }
+    long long v = 0;
+    if (!addressShapedLiteral(*init, v)) {
+        return;
+    }
+    // THE OTHER THINGS A BIG HEX CONSTANT CAN BE, and both exemptions were put here by a false
+    // positive on this project's own kernel the first time this ran.
+    //
+    // A FOUR-CHARACTER CODE. `int signature = 0x53425355;` is `'USBS'`, the tag at the head of every
+    // USB bulk-only status packet -- hex, well over a page, not a mask, and not remotely an address.
+    // Every byte being a printable character is what says so, and it is not a guess: a constant whose
+    // bytes all spell something IS a name written as a number, which is what a magic is.
+    {
+        bool printable = v > 0;
+        for (long long w = v; w != 0 && printable; w >>= 8) {
+            const long long b = w & 0xFF;
+            printable = b >= 0x20 && b <= 0x7E;
+        }
+        if (printable) {
+            return;
+        }
+    }
+    // ...AND WHAT THE AUTHOR ALREADY CALLED IT. A multiboot header's magic (`0x1BADB002`) spells
+    // nothing, so the test above cannot see it -- but the declaration is called `magic`, and a name
+    // is the author saying what the number is for. Cheaper and more honest than a longer list of
+    // numeric shapes, and it fails in the safe direction: a real address called `magic` goes
+    // unreported, which is a missed warning rather than a wrong one.
+    {
+        std::string lower;
+        for (char c : name) {
+            lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        // Three families, and each word is here because a real declaration in a real kernel used it.
+        // A NAME IS THE AUTHOR SAYING WHAT THE NUMBER IS FOR, which is better evidence than any
+        // property of the number -- and it fails in the safe direction: a genuine address called
+        // `mask` goes unreported, which is a missed warning rather than a wrong one.
+        static const char* kNotPlaces[] = {
+            // a number standing in for a name
+            "magic", "signature", "sig", "cookie", "poison", "guard", "pattern", "crc", "seed",
+            "checksum", "version", "revision", "mask", "token",
+            // a colour. `0xFF0078D4` is opaque Windows blue and is aligned to nothing, but a palette
+            // is written in hex from end to end and one entry landing on a boundary is a matter of
+            // taste rather than of memory.
+            "colour", "color", "argb", "rgb", "tint", "accent", "ink", "paper", "shade", "hue",
+            "alpha", "palette", "theme", "desktop", "hover", "press", "border", "shadow",
+            // a character. Codepoints run to 0x10FFFF, and the surrogate bounds (0xD800, 0xDC00) are
+            // round -- the only place in Unicode where alignment is not evidence of anything.
+            "codepoint", "surrogate", "glyph", "unicode", "replacement", "char", "lowest",
+            // a DEVICE's own numbering, which is the largest family in a kernel and the one that
+            // reads most like an address without being one. A register offset is a displacement from
+            // a base the driver is handed at run time (`RegTxHead`, `DoorbellBase`), an MSR is an
+            // index into a namespace the CPU owns and not into memory at all (`MsrFsBase` =
+            // 0xC0000100), and a control-register field is a bit pattern (`RxCtrlBroadcast`).
+            "reg", "msr", "doorbell", "offset", "ctrl", "flag", "enable", "valid", "running", "bit",
+            "assert", "change", "sequence", "status", "level", "caps"};
+        for (const char* w : kNotPlaces) {
+            if (lower.find(w) != std::string::npos) {
+                return;
+            }
+        }
+    }
+    const unsigned bits = intBits(declType);
+    const std::string lost =
+        bits < 64 ? (", and `" + declType + "` is " + std::to_string(bits) +
+                     " bits wide, so anything above that is already gone")
+                  : "";
+    warn(diag::Code::IntegerAsAddress,
+         "`" + name + "` is declared `" + declType + "` and holds what is written as an address" +
+             lost + " -- declare it `" + narrowestAddressFor(v) +
+             "`, which is the type that says so and keeps the whole value",
+         loc);
+}
+
+void SemanticAnalyzer::checkAddressDiscipline(const ast::CastExpr& cst, const std::string& src,
+                                              const std::string& dst) {
+    if (!freestanding_ || cst.operand == nullptr || cst.synthetic) {
+        return;   // advice about a cast the author did not write is unfixable where it points
+    }
+    const bool dstPointer = isRefType(dst);
+    const bool dstAddress = isAddressName(dst) || dstPointer;
+    const bool srcAddress = isAddressName(src) || isRefType(src);
+
+    // ---- a number made into an address ----
+    if (dstAddress && !srcAddress && isIntName(src)) {
+        long long v = 0;
+        const bool literal = readIntLiteral(*cst.operand, v);
+        // WHICH LITERALS LOOK LIKE A PLACE. Three conditions, and each of them was put here by a
+        // false positive on this project's own kernel:
+        //
+        //   * WRITTEN IN HEX. `cast<address>(86400)` is the number of seconds in a day being widened
+        //     for arithmetic. Nobody writes an address in decimal and nobody writes a count in hex.
+        //   * AT LEAST A PAGE. Below 4096 a constant is far more often a size, an index or a small
+        //     count; above it a bare number in systems code is almost always a location.
+        //   * NOT ALL-ONES. `cast<address>(0xFFFFFFFF)` is a MASK -- the commonest hex constant there
+        //     is, and never an address. `v & (v + 1)` is zero exactly for 2^n - 1.
+        const bool hexWritten = [&] {
+            const ast::Expr* p = cst.operand.get();
+            if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(p)) { p = u->operand.get(); }
+            const auto* lit = dynamic_cast<const ast::IntLiteralExpr*>(p);
+            return lit != nullptr && lit->text.size() > 2 && lit->text[0] == '0' &&
+                   (lit->text[1] == 'x' || lit->text[1] == 'X');
+        }();
+        const bool allOnes = literal && v > 0 && (v & (v + 1)) == 0;
+        const bool addressShaped = literal && hexWritten && v >= 4096 && !allOnes;
+        const std::string named = nameOfOperand(*cst.operand);
+        // A POINTER made out of a MASK is still a mask being misused, but `cast<T*>(x & ~0xFFF)` is a
+        // page-aligned address and perfectly ordinary -- so the all-ones exemption applies to the
+        // pointer case too when the operand is nothing but the mask itself.
+        if ((dstPointer && !(literal && allOnes)) || addressShaped) {
+            std::string what = literal ? ("this " + std::string(v >= 4096 ? "address" : "value") +
+                                          " is written as `" + src + "`")
+                                       : (named.empty() ? ("this `" + src + "` value")
+                                                        : ("`" + named + "` is declared `" + src + "`"));
+            std::string fix = literal
+                                  ? (" -- write it as `" + narrowestAddressFor(v) + "`")
+                                  : (" -- declare it as an address (`address`, `half address`, "
+                                     "`short address` or `byte address`, whichever width the hardware "
+                                     "uses)");
+            if (!literal && named.empty() && !dstPointer) {
+                return;  // nothing useful to say about an anonymous runtime expression
+            }
+            warn(diag::Code::IntegerAsAddress,
+                 what + ", and it is being used as an address" + fix +
+                     ", and the cast here goes away", cst.loc);
+            return;
+        }
+    }
+
+    // ---- an address put into a number ----
+    if (srcAddress && !dstAddress && isIntName(dst)) {
+        // A MASK, A REMAINDER OR A SHIFT is an extraction, and an extraction of a small number out of
+        // an address is what a wire format, an alignment check and a split 64-bit register are made
+        // of: `cast<int>(phys >> 32)` writes the high half of a physical address into a 32-bit device
+        // register, and there is no other way to say it. The author has already said "I want part of
+        // this, as a number" -- which is precisely the decision this warning exists to ask for.
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(cst.operand.get())) {
+            if (bin->op == "&" || bin->op == "%" || bin->op == ">>") {
+                return;
+            }
+            // DIVIDING AN ADDRESS BY A SCALE IS HOW A PLACE BECOMES A QUANTITY. `at / 4096` is a page
+            // number, `pos / blockSize` is a block index, `bytes / 4` is a word count -- the result is
+            // a number by construction, and the whole point of the expression is that it stopped being
+            // an address.
+            if (bin->op == "/") {
+                return;
+            }
+            // ...and SUBTRACTING TWO ADDRESSES gives a distance, which is also a number: `limit - base`
+            // is a size, not a location. Only when BOTH sides are addresses -- `p - 1` is still a
+            // pointer walking backwards, and narrowing that is the mistake this warning is about.
+            if (bin->op == "-" && bin->lhs != nullptr && bin->rhs != nullptr) {
+                const std::string l = typeOf(*bin->lhs);
+                const std::string r = typeOf(*bin->rhs);
+                if ((isAddressName(l) || isRefType(l)) && (isAddressName(r) || isRefType(r))) {
+                    return;
+                }
+            }
+        }
+        const std::string named = nameOfOperand(*cst.operand);
+        const unsigned bits = intBits(dst);
+        std::string lost = bits < 64 ? (", and `" + dst + "` is " + std::to_string(bits) +
+                                        " bits wide, so the top of it goes with it")
+                                     : "";
+        warn(diag::Code::AddressAsInteger,
+             (named.empty() ? ("this `" + src + "`") : ("`" + named + "`, an `" + src + "`,")) +
+                 " is an address and this stores it in a number, which stops it being one" + lost,
+             cst.loc);
+    }
+}
+
 void SemanticAnalyzer::checkWideningLostBits(const ast::CastExpr& cst, const std::string& src,
                                              const std::string& dst) {
     if (!isIntName(src) || !isIntName(dst)) {
@@ -6243,9 +6644,18 @@ void SemanticAnalyzer::checkCallArgs(const std::vector<ast::ExprPtr>& args,
                                          "result, a cleverer condition), so state the check with 'cast<" +
                                          pt + ">(...)', which is verified at runtime")),
                   args[i]->loc);
-        } else if (!isSubtype(at, pt) || isBoxedSumMismatch(at, pt)) {
+        } else if ((!isSubtype(at, pt) || isBoxedSumMismatch(at, pt)) &&
+                   !intLiteralFits(*args[i], pt)) {
+            // A LITERAL THAT FITS IS THE VALUE, whatever its default type says. `Cpu.outb(0x3F8, 3)`
+            // passes a port to a `short address` parameter, and `0x3F8` is a port -- it is not an `int`
+            // that has to be converted into one. Declarations and assignments have taken literals this
+            // way for as long as they have existed (`intLiteralFits` is the same predicate); arguments
+            // did not, so the moment a parameter was given a narrow or address type every literal call
+            // site needed a cast. That is a tax on using the right type, which is the opposite of what
+            // the type is for -- and it is why every port in this kernel was an `int`.
             error("argument " + std::to_string(i + 1) + " to " + desc + " has type '" + at +
-                      "' but the parameter type is '" + pt + "'" + sumFormHint(at, pt),
+                      "' but the parameter type is '" + pt + "'" + sumFormHint(at, pt) +
+                      addressHint(at, pt) + pointerDepthHint(at, pt),
                   args[i]->loc);
         }
         // spec 19.2: passing an object that owns a `unique` field BY VALUE would copy it and alias the

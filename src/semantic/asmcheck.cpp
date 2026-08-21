@@ -193,6 +193,23 @@ std::vector<Line> splitLines(const std::string& body) {
             lines.push_back(ln);
             return;
         }
+        // A PREFIX IS NOT AN INSTRUCTION. `lock xchg dword ptr [rdx], eax` is one instruction with a
+        // prefix on it, and reading the first word as the mnemonic rejected it as "'lock' is not a known
+        // x86_64 instruction" -- which is a checker refusing the atomic exchange every spinlock in
+        // existence is built from. Stripped rather than added to the mnemonic set, so `lock` in front of
+        // a mnemonic that is genuinely wrong is still caught.
+        //
+        // `lock` only; `rep` and its family stay in the mnemonic set, because they are written alone as
+        // often as they are written in front of something (`rep movsb` and `rep stosb` both appear in
+        // this project's own string routines) and their operand shape is checked differently.
+        for (const char* pfx : {"lock ", "lock\t"}) {
+            const std::string p(pfx);
+            if (lower(t.substr(0, p.size())) == p) {
+                std::size_t after = t.find_first_not_of(" \t", p.size() - 1);
+                if (after != std::string::npos) { t = t.substr(after); }
+                break;
+            }
+        }
         // mnemonic, then a comma-separated operand list
         std::size_t sp = t.find_first_of(" \t");
         ln.mnemonic = lower(sp == std::string::npos ? t : t.substr(0, sp));
@@ -483,10 +500,19 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
                 }
                 continue;
             }
-            if (ln.mnemonic == "push" || ln.mnemonic == "pushq") {
+            // `pushfq` PUSHES, and the checker did not know it. Reading RFLAGS is `pushfq; pop rax` --
+            // the only way to get the interrupt flag into a register -- and the balance tracker saw a
+            // `pop` with nothing pushed and refused the block. The operand it pushes has no name (it is
+            // the flags register), so it goes on the stack as an anonymous slot: the pair still has to
+            // balance, and the pop's register is not checked against it.
+            if (ln.mnemonic == "pushf" || ln.mnemonic == "pushfq") {
+                pushed.push_back("");
+            } else if (ln.mnemonic == "push" || ln.mnemonic == "pushq") {
                 if (!ln.operands.empty()) {
                     pushed.push_back(operandRegister(ln.operands.front()));
                 }
+            } else if (ln.mnemonic == "popf" || ln.mnemonic == "popfq") {
+                if (!pushed.empty()) { pushed.pop_back(); }
             } else if (ln.mnemonic == "pop" || ln.mnemonic == "popq") {
                 if (pushed.empty()) {
                     rep.findings.push_back(

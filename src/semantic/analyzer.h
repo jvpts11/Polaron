@@ -400,6 +400,8 @@ private:
                               SourceLocation loc, const std::string& what);
     // The advice tail for an address/integer mismatch; empty when that is not the mismatch.
     std::string addressHint(const std::string& from, const std::string& to) const;
+    // One '&' too many: `T**` where a `T*` belonged. Empty when the depths agree.
+    std::string pointerDepthHint(const std::string& from, const std::string& to) const;
     // True if `className` owns a `unique` field, directly, through a superclass, or through a value
     // sub-object -- such an object may not be value-copied (spec 19.2).
     bool classHasUniqueField(const std::string& className);
@@ -420,6 +422,16 @@ private:
     // Whether `sub` is `base` or inherits from it -- the question `protected` asks.
     bool inheritsFrom(const std::string& sub, const std::string& base) const;
     // cast<Wide>(narrow arithmetic): the bits are gone before the cast runs. See the definition.
+    // Freestanding only: a number cast into an address, or an address cast into a number. See the
+    // definition for why each half is scoped the way it is.
+    void checkAddressDiscipline(const ast::CastExpr& cst, const std::string& src,
+                                const std::string& dst);
+    // Is this literal shaped like a place rather than a quantity? Hex, at least a page, not a mask.
+    static bool addressShapedLiteral(const ast::Expr& e, long long& out);
+    // ...and the declaration that puts one in an integer, with no cast anywhere to point at:
+    // `int vram = 0xB8000;`. The quieter and commoner half of the same mistake.
+    void checkAddressShapedInit(const std::string& declType, const std::string& name,
+                                const ast::Expr* init, const SourceLocation& loc);
     void checkWideningLostBits(const ast::CastExpr& cst, const std::string& src,
                                const std::string& dst);
     void checkBitCounted(const std::string& typeName, SourceLocation loc);
@@ -931,9 +943,13 @@ private:
     void computeOwnership(const ast::Program& program);
     void computeOwnershipRound(const ast::Program& program);
     bool freshGrew_ = false;   // fixpoint flag: a method joined `returnsFresh_` this round
+    // `calls` collects every `this.<m>(...)` in the body, on the SAME walk that finds the deletes.
+    // One traversal answers both questions, so the set of shapes a helper can hide in cannot drift
+    // from the set a delete can hide in -- which is exactly what a second walker would do.
     void collectFreed(const ast::Block& body, std::unordered_set<std::string>& freed,
                       std::unordered_set<std::string>& contents,
-                      const std::string& selfName = "") const;
+                      const std::string& selfName = "",
+                      std::unordered_set<std::string>* calls = nullptr) const;
     // §3 at a call, for BOTH call paths -- static calls resolve elsewhere and were checked nowhere.
     void checkKeptArguments(const std::string& ownerClass, const std::string& methodName,
                             const ast::CallExpr& call, const ast::Expr* receiver,

@@ -75,6 +75,45 @@ safety without a borrow checker.
 order: a scratch node pointing at durable data stays silent, and the durable node pointing into the
 scratch region is the one error.
 
+### Two more shapes it could not place — 2026-08-17, found by the kernel
+
+The kernel was the first program to run against this and it reported **7**. Six of them were the
+analysis, in two shapes, and both are closed the way the others were: by teaching it to place a real
+shape, not by relaxing anything. 961 tests, and pico went 7 → 1.
+
+**An accessor returning a borrowed field placed nowhere, while reading the field placed at the
+object.** `p.handles` was `Object(p)`; `p.table()`, whose whole body is `return this.handles;`, was
+unplaceable — `ownsField` gated the call path while the field path used the borrowed-field induction.
+Two spellings of one value disagreeing is not a rule, and it was the whole of what stopped the
+kernel, because every store there goes through the accessor. The induction is the same one the field
+read already runs on: every store into that field was itself checked, so the holder is a true LOWER
+BOUND, and a lower bound can refuse a program that was fine but never accept one that was not.
+
+**Ownership written more than one call from the destructor was not read.** The helper scan went one
+level deep, on the reasoning that ownership three calls away is unreadable anyway. The ordinary shape
+reaches two by itself: `~HandleTable` calls `closeAll`, `closeAll` closes each slot in a loop, and
+the `delete` is in `close`. Nothing about that is hard to read. It is a worklist now rather than a
+depth limit — the right bound is "everything this destructor can reach on itself", and any number
+picked instead is a number some real cleanup chain exceeds. The `this.<m>()` calls are collected on
+the SAME walk that finds the deletes, so a helper hiding in a `while` is found by the code that
+already finds a `delete` hiding there, and the two cannot drift.
+
+### The shape the MODEL has no word for
+
+The one diagnostic left in the kernel is not the analysis being wrong. `TcpListener.openTo` returns
+`this.slots[i]` — a connection living in the listener's own array, which the listener **recycles**
+when it goes idle — and `SocketFile.attach` keeps that pointer with no identity check, while
+`destroy` frees only the datagram endpoint. So a socket outliving its connection reads a slot that
+`openTo` may already have handed to somebody else. That is the same defect as a result set holding
+rows its table freed, and the region binder found it in a kernel that had passed 132 tests.
+
+It also names a gap in the model rather than in the code. What the socket wants is neither of the two
+things the message offers: not a copy, and not ownership of a slot somebody else recycles. It wants a
+**validated handle into another object's pool** — an index plus a generation, the standard answer for
+every pool, slab and handle table — and the language has no word for that. `weak` is the closest and
+is wrong here: it nulls on a target's DEATH, and a recycled slot never dies, so marking the field
+`weak` would silence the diagnostic and leave the bug.
+
 ### What is still not built
 
 `&mut` exclusivity — a separate question about aliasing, and it should stay one. Steps 1–3 plus §10

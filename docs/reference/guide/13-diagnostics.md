@@ -130,6 +130,8 @@ two copies come to disagree.
 | `Polaron-0702` | cannot interpolate this value |
 | `Polaron-0703` | printf needs a literal format string |
 | `Polaron-0704` | this value does not fit the bits the field was given |
+| `Polaron-0705` | a packed bit field has no address of its own |
+| `Polaron-0706` | this is not an instruction the assembly checker knows |
 | `Polaron-0801` | malformed operator overload |
 | `Polaron-0802` | reflection used incorrectly |
 | `Polaron-0803` | region used incorrectly |
@@ -221,6 +223,9 @@ two copies come to disagree.
 | `Polaron-0B4A` | element-wise arithmetic with a call in the middle of it |
 | `Polaron-0B4B` | this is handed to something that keeps it, and never read again here |
 | `Polaron-0B4C` | this override has the same body as the method it overrides |
+| `Polaron-0B4D` | this number is being used as an address, and it is not typed as one |
+| `Polaron-0B4E` | an address put into a number stops being an address |
+| `Polaron-0B4F` | `on stack` cannot be honoured on a returned object |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

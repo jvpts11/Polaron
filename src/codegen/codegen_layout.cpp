@@ -1568,35 +1568,11 @@ llvm::FunctionCallee CodeGenerator::Impl::exitFn() {
     return module.getOrInsertFunction("exit", ty);
 }
 
+// The walk itself lives in `cgutil`, because the PIR path needs the SAME set of `old(...)` nodes in
+// the SAME order -- one snapshot slot is allocated per node as they come back, so two traversals
+// that disagree by a single node have every later slot holding the wrong value.
 void CodeGenerator::Impl::collectOld(const ast::Expr* e, std::vector<const ast::OldExpr*>& out) {
-    if (e == nullptr) {
-        return;
-    }
-    if (const auto* o = dynamic_cast<const ast::OldExpr*>(e)) {
-        out.push_back(o);
-        collectOld(o->inner.get(), out);  // old(... old(x) ...) is odd but harmless
-    } else if (const auto* b = dynamic_cast<const ast::BinaryExpr*>(e)) {
-        collectOld(b->lhs.get(), out);
-        collectOld(b->rhs.get(), out);
-    } else if (const auto* u = dynamic_cast<const ast::UnaryExpr*>(e)) {
-        collectOld(u->operand.get(), out);
-    } else if (const auto* t = dynamic_cast<const ast::TernaryExpr*>(e)) {
-        collectOld(t->cond.get(), out);
-        collectOld(t->thenExpr.get(), out);
-        collectOld(t->elseExpr.get(), out);
-    } else if (const auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
-        collectOld(m->object.get(), out);
-    } else if (const auto* c = dynamic_cast<const ast::CallExpr*>(e)) {
-        collectOld(c->callee.get(), out);
-        for (const auto& a : c->args) {
-            collectOld(a.get(), out);
-        }
-    } else if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
-        collectOld(ix->array.get(), out);
-        collectOld(ix->index.get(), out);
-    } else if (const auto* ca = dynamic_cast<const ast::CastExpr*>(e)) {
-        collectOld(ca->operand.get(), out);
-    }
+    cgutil::collectOld(e, out);
 }
 
 std::string CodeGenerator::Impl::clauseText(const SourceLocation& loc) const {
@@ -1860,7 +1836,19 @@ bool CodeGenerator::Impl::isOwnedFieldRegion(const std::string& name) {
     return ownedFieldRegions_.count(currentClass + "." + name.substr(dot + 1)) > 0;
 }
 
+// HOW BIG IS THIS TYPE -- as a NUMBER when the module knows, and only otherwise as the pointer trick.
+//
+// `ptrtoint (getelementptr (%T, null, 1))` is the portable way to ask a target you have not been told
+// about. This module has been told: a data layout is set before anything is emitted. Asking it
+// directly puts a literal in the IR, and the difference is not cosmetic -- `llvm.memcpy` with a
+// literal length is expanded INLINE, while the same call with a constant EXPRESSION for a length went
+// out as a call to `memcpy` even for four bytes. That is how a freestanding program ended up needing
+// a C library to copy a struct.
 llvm::Value* CodeGenerator::Impl::sizeOf(llvm::Type* type) {
+    if (type != nullptr && type->isSized()) {
+        return builder.getInt64(
+            static_cast<std::uint64_t>(module.getDataLayout().getTypeAllocSize(type)));
+    }
     llvm::Value* gep = builder.CreateConstGEP1_64(
         type, llvm::ConstantPointerNull::get(builder.getPtrTy()), 1);
     return builder.CreatePtrToInt(gep, builder.getInt64Ty());
@@ -2940,6 +2928,99 @@ void CodeGenerator::Impl::trackStringTemp(llvm::Value* v) {
     if (v != nullptr) {
         stringTemps.emplace_back(v, builder.GetInsertBlock());
     }
+}
+
+// WHAT A CALL PROMISED, HANDED TO THE OPTIMISER AT THE PLACE THAT CALLED IT.
+//
+// An `ensures` is checked at the callee's exit, which stops a wrong program. It is also a FACT the
+// caller may rely on the instant the call returns, and nothing was doing anything with that.
+// Contracts already become `llvm.assume` at a method's own ENTRY (that is what `requires` and the
+// invariants are for) -- this is the other direction, and it is the one LLVM can never work out for
+// itself, because the callee may be opaque.
+//
+// `ArrayList.add` is the case that asked for it. Its growth lives in a `[Cold] ensureCapacity`, so
+// the inliner cannot see the body and cannot know that the array is big enough afterwards -- four
+// bounds checks stayed in the hot path that the compiler used to fold when it could read the code.
+// `ensures this.data.length() >= n` says exactly what was lost, and this is where it is said.
+//
+// THE CLAUSE IS WRITTEN IN THE CALLEE'S WORDS, so it is emitted with the callee's names bound to the
+// caller's values: `this` is the receiver, each parameter its argument. The bindings are swapped in,
+// the clause emitted, and swapped back -- the same shape `emitInvariantAssumes` uses for `this`.
+//
+// REFUSED WHERE THE PROMISE WOULD COST MORE THAN IT BUYS, or would not be a promise at all:
+//
+//   `old(...)`   -- names the state at ENTRY, which at a call site means before the call. That
+//                   needs a snapshot taken beforehand; until it is, such a clause is skipped.
+//   a call       -- an `ensures` may call a method, and emitting it here would call it FOR REAL,
+//                   once per call site. A postcondition must not make the program do work.
+void CodeGenerator::Impl::assumePostconditions(const ast::MethodDecl* m, const std::string& owner,
+                                               llvm::Value* receiver,
+                                               const std::vector<llvm::Value*>& args) {
+    if (m == nullptr || m->ensuresClauses.empty() || currentFn == nullptr) {
+        return;
+    }
+    llvm::Value* savedThis = currentThis;
+    std::unordered_map<std::string, LocalSlot> savedLocals = locals;
+    // ...AND THE CLASS, or a field named in the clause is looked up on the caller's class and is
+    // not there: `no such field 'count'` from a clause that reads `this.count` perfectly correctly.
+    const std::string savedClass = currentClass;
+    currentThis = receiver;
+    currentClass = owner.empty() ? currentClass : owner;
+    // Each parameter gets a slot holding the argument, so the clause reads them the way the callee
+    // would. A slot rather than the value itself because every local in this backend is a slot.
+    for (std::size_t i = 0; i < m->params.size() && i + 1 < args.size(); ++i) {
+        const std::string pt = typeRefName(m->params[i].type);
+        llvm::Value* slot = createEntryAlloca(m->params[i].name + ".post", llvmType(pt));
+        builder.CreateStore(args[i + 1], slot);
+        locals[m->params[i].name] = LocalSlot{slot, pt};
+    }
+    // A CLAUSE THAT CALLS SOMETHING IS ALLOWED ONLY BESIDE A COLD CALL, and the reason is where the
+    // cost lands. The assume is emitted exactly where the call already stands, so a clause reading
+    // `this.data.length()` makes that read happen there and nowhere else. Beside a `[Cold]` call --
+    // one the program has already said is rare -- that is proportionate. Beside a hot one it would
+    // be a promise the program pays for on every iteration, which is not a promise, it is a cost.
+    const bool coldCall = cgutil::hasAnnotation(*m, "Cold");
+    for (const ast::ExprPtr& clause : m->ensuresClauses) {
+        if (clause == nullptr || (!coldCall && cgutil::mentionsCall(clause.get()))) {
+            continue;
+        }
+        if (cgutil::mentionsOld(clause.get())) {
+            continue;   // names the state at the callee's entry; nothing here snapshotted it
+        }
+        llvm::Value* held = emitExpr(*clause);
+        if (held == nullptr || !held->getType()->isIntegerTy()) {
+            continue;
+        }
+        builder.CreateIntrinsic(builder.getVoidTy(), llvm::Intrinsic::assume, {asI1(held)});
+    }
+    locals = std::move(savedLocals);
+    currentThis = savedThis;
+    currentClass = savedClass;
+}
+
+// A NAME TAKES A FRESH STRING RATHER THAN COPYING IT, and says whether it could.
+//
+// `String s = sb.toString();` built a String nobody else held, COPIED it -- a malloc plus a memcpy
+// the length of the text -- bound the copy to `s`, and freed the original at the end of the
+// statement. Three allocator operations to move a value that was already nobody's.
+//
+// The copy is not decoration in general: a String local owns its buffer and is released at the
+// scope end, so binding one to a value a caller still holds would free the caller's buffer. What
+// makes THIS case different is that the value is a tracked TEMPORARY -- built by the compiler in
+// this same statement, with no other name for it anywhere -- so the ownership can simply move.
+//
+// `strings` does it two hundred thousand times, once per iteration.
+bool CodeGenerator::Impl::claimStringTemp(llvm::Value* v) {
+    if (v == nullptr) {
+        return false;
+    }
+    for (std::size_t i = stringTemps.size(); i > 0; --i) {
+        if (stringTemps[i - 1].first == v) {
+            stringTemps.erase(stringTemps.begin() + static_cast<std::ptrdiff_t>(i - 1));
+            return true;
+        }
+    }
+    return false;
 }
 
 void CodeGenerator::Impl::freeStringTemps() {

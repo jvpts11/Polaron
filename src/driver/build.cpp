@@ -1674,10 +1674,26 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
                << ")\n\nSECTIONS {\n    . = " << m.loadAddress << ";\n\n";
             // The boot protocol decides what has to come FIRST: a loader scans the head of the image for
             // its handshake structure, so the section carrying it must lead.
-            if (m.bootProtocol == "pvh") {
-                ls << "    .note.Xen : { *(.note.Xen) }\n\n";
-            } else if (m.bootProtocol == "multiboot2") {  // GRUB scans the first 32 KiB for the header
-                ls << "    .multiboot : { KEEP(*(.multiboot)) }\n\n";
+            //
+            // BOTH PLACEMENTS, ALWAYS, and the named protocol only decides which one leads.
+            //
+            // A boot image is not started by the protocol its author had in mind; it is started by
+            // whatever is in front of it. A kernel that carries a PVH note AND a multiboot2 header can
+            // be launched by a hypervisor and by GRUB off a disc, which is what every real kernel
+            // does -- and these two were written as alternatives, so naming one made the other's
+            // section an ORPHAN. An orphan is not dropped: lld places it after everything else, so
+            // the header still existed, 660 KiB into the image, and GRUB -- which scans the first
+            // 32 KiB -- would never have found it. Nothing failed to build and nothing failed to
+            // boot; the image simply could not be booted the other way, silently.
+            //
+            // Naming a section with no input costs an empty output section and nothing else, so
+            // there is no reason to make this conditional beyond the ordering.
+            if (m.bootProtocol == "multiboot2") {
+                ls << "    .multiboot : { KEEP(*(.multiboot)) }\n"      // GRUB: first 32 KiB
+                      "    .note.Xen  : { *(.note.Xen) }\n\n";
+            } else {
+                ls << "    .note.Xen  : { *(.note.Xen) }\n"
+                      "    .multiboot : { KEEP(*(.multiboot)) }\n\n";
             }
             // `.text.boot` leads so the boot stub sits at the image's load address. A loader that
             // enters at a fixed address rather than at e_entry (several do) then lands on it.

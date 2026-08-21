@@ -118,7 +118,8 @@ bool SemanticAnalyzer::outlivesOrEqual(const Lifetime& a, const Lifetime& b) con
 void SemanticAnalyzer::collectFreed(const ast::Block& body,
                                     std::unordered_set<std::string>& freed,
                                     std::unordered_set<std::string>& contents,
-                                    const std::string& selfName) const {
+                                    const std::string& selfName,
+                                    std::unordered_set<std::string>* calls) const {
     // The root field name of an expression like `this.rows.get(i)` -> "rows". Anything that does not
     // start at `this` is not about this object's fields.
     // A STATIC FIELD IS NAMED AFTER ITS CLASS, NOT AFTER `this`, and there is no destructor that can
@@ -175,6 +176,24 @@ void SemanticAnalyzer::collectFreed(const ast::Block& body,
     std::function<void(const ast::Stmt*)> walkStmt = [&](const ast::Stmt* st) {
         if (st == nullptr) {
             return;
+        }
+        // A CALL ON OURSELVES, wherever it sits. `~HandleTable` calls `closeAll`, which closes each
+        // slot in a LOOP -- so a scan that only read the destructor's top-level statements found the
+        // first hop and lost the second, and the class that plainly deletes what it holds read as a
+        // borrower of it. Collected on this walk rather than a separate one, so a helper hiding in a
+        // `while` is found by the same code that finds a `delete` hiding there.
+        if (calls != nullptr) {
+            if (const auto* es = dynamic_cast<const ast::ExprStmt*>(st)) {
+                if (const auto* c = dynamic_cast<const ast::CallExpr*>(es->expr.get())) {
+                    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(c->callee.get())) {
+                        if (const auto* id =
+                                dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                            id != nullptr && id->name == "this") {
+                            calls->insert(mem->member);
+                        }
+                    }
+                }
+            }
         }
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st)) {
             if (vd->init != nullptr) {
@@ -596,37 +615,53 @@ void SemanticAnalyzer::computeOwnershipRound(const ast::Program& program) {
                         collectFreed(dtor->body, freed, contents, baseType(cls.name));
                     }
                 }
-                // ...and one level of helper, which is how a destructor that shares its cleanup with
-                // a `clear()` is written. Deeper than one level is not chased: a class whose
-                // ownership is three calls away is a class whose ownership nobody can read either.
-                if (!freed.empty() || true) {
+                // ...AND THROUGH ITS HELPERS, however many deep. One level was chased on the
+                // reasoning that ownership three calls away is unreadable anyway -- but the ordinary
+                // shape reaches two on its own: `~HandleTable` calls `closeAll`, and `closeAll`
+                // closes each slot in a loop, so the `delete` sits in `close`. Nothing about that is
+                // hard to read, and stopping at one level called a class that plainly frees what it
+                // holds a borrower of it -- which is what stopped a kernel from compiling, on every
+                // store that went through the accessor.
+                //
+                // A worklist rather than a depth limit, because the right bound is "everything this
+                // destructor can reach on itself" and any number picked instead of that is a number
+                // some real cleanup chain will exceed. It terminates on the visited set, so a helper
+                // that calls itself -- a recursive free, the exact shape a tree destructor has -- is
+                // scanned once.
+                {
+                    std::unordered_map<std::string, const ast::MethodDecl*> byName;
+                    for (const ast::MemberPtr& other : cls.members) {
+                        if (const auto* m = dynamic_cast<const ast::MethodDecl*>(other.get())) {
+                            byName[m->name] = m;
+                        }
+                    }
+                    std::unordered_set<std::string> pending;
                     for (const ast::MemberPtr& member : cls.members) {
-                        const auto* dtor = dynamic_cast<const ast::DestructorDecl*>(member.get());
-                        if (dtor == nullptr) {
+                        if (const auto* dtor =
+                                dynamic_cast<const ast::DestructorDecl*>(member.get())) {
+                            std::unordered_set<std::string> discard1;
+                            std::unordered_set<std::string> discard2;
+                            collectFreed(dtor->body, discard1, discard2, baseType(cls.name),
+                                         &pending);
+                        }
+                    }
+                    std::unordered_set<std::string> visited;
+                    while (!pending.empty()) {
+                        const std::string name = *pending.begin();
+                        pending.erase(pending.begin());
+                        if (!visited.insert(name).second) {
                             continue;
                         }
-                        std::unordered_set<std::string> calledNames;
-                        std::function<void(const ast::Stmt*)> findCalls = [&](const ast::Stmt* st) {
-                            if (const auto* es = dynamic_cast<const ast::ExprStmt*>(st)) {
-                                if (const auto* call = dynamic_cast<const ast::CallExpr*>(es->expr.get())) {
-                                    if (const auto* mem =
-                                            dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
-                                        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(
-                                                mem->object.get());
-                                            id != nullptr && id->name == "this") {
-                                            calledNames.insert(mem->member);
-                                        }
-                                    }
-                                }
-                            }
-                        };
-                        for (const auto& st : dtor->body.statements) {
-                            findCalls(st.get());
+                        auto mit = byName.find(name);
+                        if (mit == byName.end()) {
+                            continue;
                         }
-                        for (const ast::MemberPtr& other : cls.members) {
-                            const auto* m = dynamic_cast<const ast::MethodDecl*>(other.get());
-                            if (m != nullptr && calledNames.count(m->name) > 0) {
-                                collectFreed(m->body, freed, contents, baseType(cls.name));
+                        std::unordered_set<std::string> deeper;
+                        collectFreed(mit->second->body, freed, contents, baseType(cls.name),
+                                     &deeper);
+                        for (const std::string& next : deeper) {
+                            if (visited.count(next) == 0) {
+                                pending.insert(next);
                             }
                         }
                     }
@@ -1296,8 +1331,20 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
             } else {
                 recvType = baseType(typeOf(*mem->object));
             }
+            // A BORROWED FIELD GETS THE SAME ANSWER HERE AS WHEN IT IS READ DIRECTLY, and for the
+            // same reason. `ownsField` used to gate this, so `p.handles` placed at the object while
+            // `p.table()` -- whose body is `return this.handles;` -- placed nowhere at all. Two
+            // spellings of one value disagreeing is not a rule, and it is what stopped a kernel from
+            // compiling: every store there goes through the accessor.
+            //
+            // The induction is the one the field read already runs on: every store into that field
+            // was itself checked against this rule, so what is in there outlives the object holding
+            // it. The holder is therefore a true LOWER BOUND on the value's lifetime, and a lower
+            // bound is exactly what a source position may be understated to -- it can refuse a
+            // program that was fine, never accept one that was not. Owned is the exact answer;
+            // borrowed is an understatement of it, which is the safe direction.
             const std::string returned = returnedFieldOf(recvType, mem->member);
-            if (!returned.empty() && ownsField(recvType, returned)) {
+            if (!returned.empty()) {
                 return Lifetime{RegionKind::Object, describePath(*mem->object)};
             }
             // A method that hands back FRESH storage hands back something nobody owns yet, and

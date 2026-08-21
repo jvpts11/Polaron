@@ -39,6 +39,16 @@ New-Item -ItemType Directory -Force $out | Out-Null
 # -ffp-contract=off everywhere: FMA contraction changes FP results, and a benchmark whose checksum
 # moves between arms is comparing two different computations.
 $common = @("-ffp-contract=off")
+# ...AND THE REFERENCE CARRIES ITS OWN RUNTIME. A g++ binary here loads `libstdc++-6.dll` and
+# `libgcc_s_seh-1.dll` by name, and this machine has more than one of each: whichever comes first on
+# PATH wins, and when that is not MinGW's the program dies at start-up with 0xC0000139
+# (ENTRYPOINT_NOT_FOUND) before `main` runs.
+#
+# That is not a slow reference or a broken one -- it is NO reference, and the table said so for four
+# benchmarks: `coll_map`, `coll_mapput`, `collections` and `mapkeys`, which are exactly the family
+# where we are behind. Four rows reading "REF NAO COMPILA" against the code we most needed to
+# measure against. Linking the runtime in removes the question.
+$common += @("-static-libstdc++", "-static-libgcc")
 if ($Align -gt 0) { $common += "-falign-functions=$Align" }
 # -Native goes on EVERY arm, ours and GCC's alike -- otherwise it is not a comparison, it is a
 # handicap. It matters more than it sounds: the default target is generic x86-64, i.e. SSE2 and a

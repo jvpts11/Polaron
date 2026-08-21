@@ -1,0 +1,44 @@
+import System.IO.Console;
+program NewtypeFixedConst;
+
+// A `fixed` MAY have a newtype over a numeric type (spec 24 + 28.1), and this is the first thing
+// anyone writes with a newtype: the values that motivated declaring it get NAMED.
+//
+// It used to be refused -- "a 'fixed' must have a numeric, boolean, or char type, got 'Vector'" --
+// which left the feature usable for parameters and locals but not for the constants those parameters
+// are called with. It was found in a kernel, where the point of the type is that an interrupt VECTOR
+// (32, 33, 44) and an ISA LINE (0, 1, 12) are two small integers that sit side by side in
+// `openLine(line, vector)` and produce a working compile when swapped.
+//
+// The constant keeps the newtype's identity: it goes where a `Vector` is wanted and needs a cast to
+// become a number, which is the whole reason for declaring one.
+//
+// Prints:
+//   timer=32 keyboard=33 line=1 sum=65
+public bundle main {
+    public namespace app {
+        public newtype Vector = int;
+
+        public class Irq {
+            public fixed Vector TimerVector    = cast<Vector>(32);
+            public fixed Vector KeyboardVector = cast<Vector>(33);
+            public fixed int    KeyboardLine   = 1;      // an ordinary int, and NOT interchangeable
+
+            // Takes both, in the order that is easy to get wrong.
+            public static method openLine(int line, Vector vector) returns int {
+                return line + cast<int>(vector);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Vector t = Irq.TimerVector;              // a fixed of newtype type, used as one
+                Vector k = Irq.KeyboardVector;
+                int sum = Irq.openLine(Irq.KeyboardLine, k) + cast<int>(t) - 1;
+                System.IO.Console.printf("timer=%d keyboard=%d line=%d sum=%d\n",
+                                         cast<int>(t), cast<int>(k), Irq.KeyboardLine, sum);
+                return;
+            }
+        }
+    }
+}

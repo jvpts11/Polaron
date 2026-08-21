@@ -1,0 +1,33 @@
+import System.IO.Console;
+
+program BitFieldAddressBad;
+
+// A PACKED BIT FIELD HAS NO ADDRESS (spec 11.1), and the refusal is the point of this file.
+//
+// It is here because the check that says so was rewritten: it used to resolve the owner by asking
+// for the TYPE of the receiver, which meant `&Class.staticField` -- a class name, not a value --
+// died on it, and no program could take the address of a static. The rewrite resolves a type-name
+// receiver by name instead. Nothing tested this refusal at the time, so the rewrite could have
+// deleted it in silence; that is what this sample is for.
+public bundle Main {
+    public namespace App {
+        public struct Flags {
+            public mutable int mode : 3;     // three bits, sharing a unit with `level`
+            public mutable int level : 5;
+            public constructor Flags() {
+                this.mode = 0;
+                this.level = 0;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Flags f = new Flags();
+                // Refused: the only address that could come back is the whole unit's, and a write
+                // through it would erase `level` -- silently, and nowhere near this line.
+                int* p = &f.mode;
+                Console.writeLine("p=" + cast<long>(cast<address>(p)));
+                return;
+            }
+        }
+    }
+}

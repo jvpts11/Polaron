@@ -1,0 +1,70 @@
+import System.IO.Console;
+program RecordKeyHooksWarn;
+
+// A WARNING MUST STOP WHEN YOU DO WHAT IT SAYS.
+//
+// A record's key is generated from the fields that have a structural value, and a field that has
+// none -- a pointer, an array, a class or enum reference -- is left out. Saying so is right: two
+// records that differ only in that field compare equal, and nothing in the declaration shows it.
+//
+// What was wrong was WHEN. The warning fired whenever any of `equalsKey`, `hash` or `compareTo` was
+// missing, and then claimed the field was "left out of equalsKey, hash and compareTo alike" -- so a
+// record that took the advice and wrote its own equalsKey and hash was told, on every build after
+// that, to write an equalsKey. pico's `AppEntry` did exactly that.
+//
+// Two records here, and the pair is the test:
+//   * `Painted` writes all three, so nothing about its key is generated and there is nothing to
+//     warn about. Its name must not appear in the output at all.
+//   * `HalfPainted` writes two, so `compareTo` IS still generated and still ignores `tint` -- and
+//     the warning has to say that, naming compareTo alone rather than all three.
+
+public bundle Main {
+    public namespace App {
+        // `toString` written out because a record generates one that prints every field, and a
+        // record with an enum field can only do that if the enum can name itself.
+        public enum Colour {
+            red, green
+            ;
+            public method toString() returns String {
+                if (cast<int>(this) == 0) { return "red"; }
+                return "green";
+            }
+        }
+
+        public record Painted(Colour tint, int n) {
+            public method equalsKey(Painted other) returns boolean {
+                return cast<int>(this.tint) == cast<int>(other.tint) && this.n == other.n;
+            }
+            public method hash() returns long {
+                return cast<long>(cast<int>(this.tint)) * cast<long>(31) + cast<long>(this.n);
+            }
+            public method compareTo(Painted other) returns int {
+                if (cast<int>(this.tint) != cast<int>(other.tint)) {
+                    return cast<int>(this.tint) < cast<int>(other.tint) ? 0 - 1 : 1;
+                }
+                if (this.n != other.n) { return this.n < other.n ? 0 - 1 : 1; }
+                return 0;
+            }
+        }
+
+        public record HalfPainted(Colour tint, int n) {
+            public method equalsKey(HalfPainted other) returns boolean {
+                return cast<int>(this.tint) == cast<int>(other.tint) && this.n == other.n;
+            }
+            public method hash() returns long {
+                return cast<long>(cast<int>(this.tint)) * cast<long>(31) + cast<long>(this.n);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Painted a = new Painted(Colour.red, 1);
+                Painted b = new Painted(Colour.green, 1);
+                HalfPainted c = new HalfPainted(Colour.red, 1);
+                System.IO.Console.printf("same=%d half=%d\n",
+                    a.equalsKey(b), c.equalsKey(c));
+                return;
+            }
+        }
+    }
+}

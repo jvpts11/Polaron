@@ -1,0 +1,57 @@
+import System.IO.Console;
+
+program AssignSharesThroughPointer;
+
+// THE TARGET DECIDES WHETHER AN ASSIGNMENT COPIES, and that is the whole rule: assignment is a deep
+// copy in this language, and to SHARE you write `T*` or `T&`. It is a fact about the LEFT side.
+//
+// The PIR lowering asked the right side instead. `this.direct = this` on a `Owner* direct` saw that
+// `this` had no stars recorded, decided it was a value assignment, and deep-copied the whole object
+// -- so the field pointed at a duplicate and `o.direct.mark` read the value the object had when the
+// constructor ran rather than the one it has now.
+//
+// INSIDE A CONSTRUCTOR THAT IS NOT SLOWNESS, IT IS A CRASH. The copy recurses into the object's
+// owned children, and in a constructor the other fields have not been written yet -- so it read
+// `kid.owner` out of fresh allocation and `memcpy`d twenty-four bytes from whatever was there.
+// `lint_program.pol` segfaulted exactly so, AFTER its `printf` had run: stdout to a pipe is
+// buffered, the crash ate the buffer, and the program looked like it printed nothing at all.
+//
+// BOTH SPELLINGS ARE HERE. One hop and two, because the first guess was that only the chained form
+// was broken -- it was not, and a test that pins only the interesting-looking half is a test that
+// lets the other half come back.
+public bundle Main {
+    public namespace App {
+
+        public class Kid {
+            public mutable Owner* owner;
+            public constructor Kid() {}
+        }
+
+        public class Owner {
+            public mutable Kid* kid;
+            public mutable Owner* direct;
+            public mutable int mark;
+            public constructor Owner() {
+                this.kid = new Kid() on heap;
+                this.mark = 7;
+                this.direct = this;        // one hop
+                this.kid.owner = this;     // two
+            }
+            public destructor ~Owner() returns void {
+                delete this.kid;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Owner* o = new Owner() on heap;
+                o.mark = 42;
+                // A copy would still hold the 7 the constructor wrote.
+                System.IO.Console.println($"direct={o.direct.mark} chained={o.kid.owner.mark}");
+                delete o;
+                return;
+            }
+        }
+    }
+}

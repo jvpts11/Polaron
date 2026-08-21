@@ -1,0 +1,36 @@
+program ReachExportedEntry freestanding;
+
+// A METHOD NOTHING IN THE PROGRAM CALLS, AND THAT THE PROGRAM CANNOT RUN WITHOUT.
+//
+// `unknown <world>` says the caller adopts a foreign ABI, so the caller is not in here: no edge
+// inside the program can ever reach it. Reachability dropped the whole class, and with it the `.bss`
+// its assembly declares -- pico failed to link on `undefined symbol: stack_bottom`, a label inside a
+// naked body nothing calls.
+//
+// THE ORACLE CANNOT CATCH THIS ONE, which is why it needs a test of its own. Every sample is compiled
+// with and without reachability and the two modules compared against GlobalDCE -- and GlobalDCE has
+// the same blind spot exactly: it would delete an unreferenced entry point too. Both modes agreed,
+// and the hole passed. A freestanding entry point is a fact about the LINKER, not about the module.
+public bundle Kernel {
+    public namespace Boot {
+        public class Start {
+            // Nothing calls this. The linker's ENTRY does.
+            public unknown sysv naked static method _start() returns void {
+                asm("x86_64") {
+                    lea rsp, [rip + probe_stack_top]
+                    jmp probe_halt
+                    probe_halt:
+                    hlt
+                    .section .bss
+                    .align 16
+                    probe_stack_bottom: .skip 4096
+                    probe_stack_top:
+                }
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int { return 0; }
+        }
+    }
+}

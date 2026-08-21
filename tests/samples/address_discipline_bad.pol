@@ -1,0 +1,34 @@
+program AddressDisciplineBad freestanding;
+
+// The NEGATIVE half of `address_discipline.pol`: the two shapes the warnings exist for.
+//
+//   * a constant that is used as an address and is not typed as one -- here a `fixed int` cast to a
+//     pointer, which is exactly how pico's trampoline, TSS and framebuffer addresses were written;
+//   * an address stored in a number, which loses both that it points at something and, on a 64-bit
+//     target, the top half of its value.
+//
+// Both are WARNINGS, so this file compiles. What is asserted is that the compiler says something.
+public bundle Main {
+    public namespace Bare {
+        public class Wrong {
+            public fixed int TrampolineAt = 0x8000;   // a place, typed as a number
+
+            public static method makeAPointer() returns int {
+                // The constant is used as an address: the cast here is what says so.
+                volatile int* p = cast<int*>(Wrong.TrampolineAt);
+                return p[0];
+            }
+
+            public static method loseIt(address where) returns int {
+                // An address into an `int`: half the value and all of the meaning.
+                return cast<int>(where);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                return;
+            }
+        }
+    }
+}

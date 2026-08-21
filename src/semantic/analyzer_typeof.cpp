@@ -283,7 +283,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // only address that could be handed back is the unit's, which would let a write through it
             // destroy every field packed beside this one -- silently, and nowhere near the `&`.
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(un->operand.get())) {
-                const std::string owner = baseType(typeOf(*mem->object));
+                // THE RECEIVER MAY BE A TYPE NAME RATHER THAN A VALUE. `&Class.staticField` names a
+                // real address -- the global's -- and codegen has always been able to emit it, but
+                // this guard asked `typeOf` for the type of `Class`, and a class name is not a
+                // variable. The whole expression died on the check, with the error pointing at the
+                // class: `&Class.staticField` could not be written anywhere in the language.
+                //
+                // So resolve the owner the way the static-member path does, by name, and keep the
+                // probe for the case it was written for -- a receiver that really is a value.
+                std::string owner;
+                if (const auto* recv = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
+                    recv != nullptr && recv->name != "this" && lookupLocal(recv->name) == nullptr &&
+                    lookupClass(recv->name) != nullptr) {
+                    owner = recv->name;
+                } else {
+                    owner = baseType(typeOf(*mem->object));
+                }
                 if (const FieldInfo* fi = findField(owner, mem->member); fi != nullptr && fi->bitWidth > 0) {
                     error("cannot take the address of '" + mem->member + "': it is a " +
                           std::to_string(fi->bitWidth) + "-bit field packed into a storage unit it "
@@ -666,7 +681,8 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string srcRaw = typeOf(*cst->operand);
         const std::string& dst = cst->targetType;
         checkBitCounted(dst, cst->loc);  // reject cast<int64> etc. outside freestanding mode
-        checkWideningLostBits(*cst, srcRaw, dst);  // cast<address>(f << 12): the bits are already gone  // cast<address>(f << 12): the bits are already gone
+        checkWideningLostBits(*cst, srcRaw, dst);  // cast<address>(f << 12): the bits are already gone
+        checkAddressDiscipline(*cst, srcRaw, dst); // a number made into an address, or the reverse
         // A `newtype` casts to/from its underlying type (spec 24): classify both by the underlying
         // so cast<OrderId>(long) and cast<long>(orderId) are accepted while staying distinct types.
         auto under = [&](const std::string& t) {
@@ -3240,9 +3256,32 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                         ct != constTypes_.end()) {
                         return ct->second;
                     }
+                    // `Class.method` WITHOUT A CALL IS THE METHOD'S ADDRESS, and the language had no
+                    // way to say it. `methodptr<Ret, Args...>` existed as a TYPE with no way to
+                    // obtain one except from a foreign symbol found at run time -- so taking the
+                    // address of a method the program itself declares needed a naked `lea` in
+                    // assembly. That is exactly what the kernel's `syscall_entry_addr` is, and why
+                    // it exists.
+                    //
+                    // Only a STATIC method. An instance method has a receiver this expression does
+                    // not name, and a pointer to one without it is a `this` nobody supplied -- that
+                    // is a different feature, and it should be asked for rather than fall out of a
+                    // spelling.
                     const FieldInfo* f = findField(objId->name, mem->member);
                     if (f == nullptr) {
-                        error("class '" + objId->name + "' has no static field '" + mem->member + "'",
+                        if (const MethodInfo* mi = findMethod(objId->name, mem->member);
+                            mi != nullptr && mi->isStatic) {
+                            // `funcptr<...>` is the CANONICAL spelling both words normalise to --
+                            // `methodptr` is the newer name for the same type, and the canonical
+                            // form is what every comparison downstream comes back to.
+                            std::string t = "funcptr<" + mi->returnType;
+                            for (const std::string& pt : mi->paramTypes) { t += "," + pt; }
+                            return t + ">";
+                        }
+                        error("class '" + objId->name + "' has no static field '" + mem->member +
+                                  "', and no static method by that name either -- `Class.method` "
+                                  "without a call is that method's ADDRESS, and there is none here "
+                                  "to take",
                               mem->loc);
                         return "";
                     }

@@ -2982,6 +2982,7 @@ llvm::Value* CodeGenerator::Impl::emitCall(const ast::CallExpr& call) {
         for (const auto& [idx, cn] : freeAfter) {
             emitDeleteObject(args[idx], cn);
         }
+        assumePostconditions(mdecl, owner, objPtr, args);
         return res;
     }
     // Unqualified same-class call: Polaron has no free functions, and locals/lambdas were resolved above,

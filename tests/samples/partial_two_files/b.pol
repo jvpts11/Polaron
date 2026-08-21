@@ -1,0 +1,23 @@
+// The other part, in another file: its own fields and methods, merged into the same type.
+program PartialTwoFiles;
+
+public bundle main {
+    public namespace app {
+        public partial class Split {
+            private mutable int right;
+            public method fromB() returns int { return this.right; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Split* s = new Split() on heap;
+                // A field declared in a.pol and a field declared in b.pol, read through methods
+                // declared in the other file each time. Nothing here works unless the parts are one
+                // type with one set of fields.
+                System.IO.Console.printf("sum=%d\n", s.fromA() + s.fromB());
+                delete s;
+                return;
+            }
+        }
+    }
+}

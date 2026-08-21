@@ -31,6 +31,17 @@ set(POLARON_CORE_SOURCES
     src/semantic/implicitthis.cpp  # a bare name finds the enclosing class's own member
     src/semantic/layouts.cpp  # `layout`: an interface for memory, implemented by value aggregates
     src/semantic/advice.cpp   # the structural advice that reads a declaration rather than a statement
+    # PIR -- the middle. See docs/design/polaron-ir.md. NO LLVM here, deliberately: PIR is what
+    # everything above the backend speaks, and the backend is one of its consumers rather than its
+    # definition. That is the whole demotion the design is about.
+    src/pir/type.cpp     # the type table: a shape PLUS five facts (size/align/isValue/owns/isUnique)
+    src/pir/module.cpp   # module, function, block, value, and one opcode table read both ways
+    src/pir/print.cpp    # the text form, out
+    src/pir/parse.cpp    # ...and back in. `parse(print(m))` is Stage 0's acceptance criterion
+    src/pir/verify.cpp   # the twenty-one rules of §9, and nothing that is not one of them
+    src/pir/lower.cpp    # Stage 1: the AST lowered to PIR, and a gap list for what it does not cover
+    src/pir/passes.cpp   # Stage 4: guard elimination, immutability, DCE -- §11, on the graph
+    src/pir/shapediff.cpp # `--compare-ir`: the two backends' BODIES, shape by shape, not their names
     src/diag/catalog.cpp  # rich-diagnostic catalog: why/fix/prevent per error code
     src/diag/render.cpp   # rich-diagnostic renderer: snippet + caret + sections, or one concise line
     src/bundle/polh.cpp  # public-API header (.polh) generation; AST-only, no LLVM
@@ -60,7 +71,18 @@ if(POLARON_WITH_LLVM)
         src/codegen/codegen_emit.cpp
         src/codegen/codegen_module.cpp
         src/codegen/codegen_entry.cpp
-        src/codegen/cgutil.cpp)
+        src/codegen/cgutil.cpp
+        # `--test`: the synthetic runner over a program's [Test] methods. Beside the backends rather
+        # than inside one, because which entry point `--test` means is the LANGUAGE's rule -- and a
+        # backend that did not know it silently ran the program's own `main` instead.
+        src/codegen/testrunner.cpp
+        # ...and what a program with NO LIBC has to be given: the String primitives and the visited
+        # set a `cascade` needs. Both are promises of the language, so neither belongs to a backend.
+        src/codegen/bridges.cpp
+        # Stage 2: the SECOND backend, consuming PIR. This is the only file in the PIR directory
+        # that holds an `llvm::` type -- which is the demotion the whole design is about, and it is
+        # also where §12's hand-off table stops being a promise.
+        src/pir/tollvm.cpp)
 endif()
 
 add_library(polaron_core ${POLARON_CORE_SOURCES})

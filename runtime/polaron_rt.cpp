@@ -714,6 +714,12 @@ long long __polaron_decimal_str(int neg, long long intPart, unsigned long long f
             *p++ = frac18[i];
         }
     }
+    // TERMINATED, because this buffer is read as a C STRING as well as by length. The caller builds
+    // a String from the returned length -- which is exact -- and something downstream then prints
+    // the data with `%s`, so an unterminated buffer prints whatever the allocator happened to leave
+    // after it: `-2.75` came out of `println` as `-2.75\001`. Sixty-four bytes are reserved and at
+    // most forty are used, so the terminator always fits; the returned length still excludes it.
+    *p = '\0';
     return static_cast<long long>((p - buf));
 }
 

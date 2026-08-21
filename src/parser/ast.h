@@ -505,6 +505,13 @@ struct CastExpr : Expr {
     int op = 0;  // 0 = cast/as, 1 = is, 2 = as?
     bool targetVolatile = false;  // cast<volatile T*>: the result is an MMIO pointer; accesses through it
                                   // (indexing/deref) are volatile -- never reordered, fused, or elided.
+    // THE COMPILER WROTE THIS ONE, not the author. A record's generated `hash` folds every scalar
+    // field into a `long`, an `address` field included -- which is right there, and is exactly the
+    // shape the address-discipline warning reports. A warning pointing at `public struct WmRequest`
+    // about a cast nobody wrote is the worst kind of noise: unfixable at the line it names. Advice is
+    // suppressed for these. Errors are not: generated code that cannot compile is a compiler bug and
+    // has to be reported somewhere.
+    bool synthetic = false;
     void dump(std::string& out, int indent) const override;
 };
 
