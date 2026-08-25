@@ -147,6 +147,7 @@ enum class Code {
     MutableNeverMutated,  // `mutable` on something nothing ever assigns to
     SwallowedCatch,       // a `catch` whose body neither rethrows, reports nor records
     AsyncNeverAwaits,     // an `async` method with no `await` in it -- a scheduler for nothing
+    LossyWidening,        // a conversion the rules call widening that cannot hold every value
     StaticsWithoutState,  // a class that is only static methods: a namespace, or a transformer
     DataWithoutBehaviour, // public fields, no methods, no invariant: a `record`
     ConstantsThatAreAnEnum,  // int constants sharing a prefix: a set kept by hand

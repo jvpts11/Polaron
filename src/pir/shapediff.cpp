@@ -3,10 +3,14 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/InstIterator.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Transforms/Utils/Mem2Reg.h>
 
 #include <algorithm>
 #include <map>
 #include <set>
+#include <utility>
 
 namespace polaron::pir {
 
@@ -79,10 +83,41 @@ std::string firstDisagreements(const std::map<std::string, unsigned>& a,
 
 }  // namespace
 
+void normalizeForShapeCompare(llvm::Module& m) {
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    llvm::PassBuilder pb;
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    llvm::FunctionPassManager fpm;
+    fpm.addPass(llvm::PromotePass());   // mem2reg, and deliberately nothing beside it
+    llvm::ModulePassManager mpm;
+    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    mpm.run(m, mam);
+}
+
 std::vector<ShapeDiff> compareBodies(const llvm::Module& trusted, const llvm::Module& viaPir) {
     std::vector<ShapeDiff> out;
     for (const llvm::Function& a : trusted) {
         if (a.isDeclaration()) {
+            continue;
+        }
+        // THE ENTRY WRAPPER IS THE COMPILER'S, NOT THE PROGRAM'S, and the two paths build it
+        // differently on purpose: the trusted one fuses `Main.main` into it and emits no
+        // `Main.main` at all, while PIR emits both and calls across. They also order argv
+        // construction and static class load oppositely, and both orders run class load before
+        // user code. 609 of the census's 9 402 lines were this one function.
+        //
+        // Comparing it against the other path's version says nothing; what it must do is
+        // absolute -- argv arrives intact, class load precedes user code, the exit code is right --
+        // and that is a test, not a diff. See tests/pir_shape_baseline.md, class B.
+        if (a.getName() == "main") {
             continue;
         }
         const llvm::Function* b = viaPir.getFunction(a.getName());

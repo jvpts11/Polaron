@@ -1,0 +1,78 @@
+import System.Collections.Iterator;
+import System.Collections.Iterable;
+import System.IO.Console;
+
+// A `foreach` GOES THROUGH THE PROTOCOL, WHATEVER THE TYPE.
+//
+// The census found PIR lowering `foreach` over an `Iterable` without calling `iterator()` or
+// `hasNext()` (baseline class N), and every sample agreed on the output anyway -- because the only
+// `Iterable` in 874 samples is `ArrayList`, whose iteration a compiler may reasonably know by heart.
+// A user type whose `next()` does something would be bypassed by the same shortcut and no sample
+// would notice.
+//
+// So this one's protocol methods COUNT THEIR OWN CALLS, and the program prints the counts. A
+// `foreach` that walks the backing array directly cannot produce them; one that goes through the
+// protocol cannot avoid them.
+//
+// Six elements: `hasNext` is asked seven times -- once more than there are elements, to learn the
+// sequence has ended -- and `next` six.
+//
+// The answer: both back ends call the protocol, exactly this many times. Class N was a difference in
+// SHAPE, not in what runs.
+//
+// Prints: sum=21 hasNext=7 next=6 / second pass sum=21
+program CustomIterator;
+
+public bundle Main {
+    public namespace App {
+
+        public class Countdown implements Iterator<int> {
+            private mutable int at;
+            private mutable int stop;
+            public mutable int asked;    // how many times hasNext() ran
+            public mutable int taken;    // how many times next() ran
+
+            public constructor Countdown(int from, int stop) {
+                at = from;
+                this.stop = stop;
+                asked = 0;
+                taken = 0;
+            }
+
+            public override method hasNext() returns boolean {
+                asked = asked + 1;
+                return at > stop;
+            }
+
+            public override method next() returns int {
+                taken = taken + 1;
+                at = at - 1;
+                return at + 1;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Countdown* c = new Countdown(6, 0) on heap;
+                mutable int sum = 0;
+                for (int v in c) {
+                    sum = sum + v;
+                }
+                // The values are 6,5,4,3,2,1 and their sum is 21. The two counts are what this
+                // sample is really for: they cannot be produced by walking anything directly.
+                System.IO.Console.printf("sum=%d hasNext=%d next=%d\n", sum, c.asked, c.taken);
+                delete c;
+
+                // And again over a fresh one, so nothing can pass by remembering the first answer.
+                Countdown* d = new Countdown(6, 0) on heap;
+                mutable int again = 0;
+                for (int v in d) {
+                    again = again + v;
+                }
+                System.IO.Console.printf("second pass sum=%d\n", again);
+                delete d;
+                return;
+            }
+        }
+    }
+}

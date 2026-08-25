@@ -433,6 +433,60 @@ class PolaronHostedAllocBacking {
 #define POLARON_ALLOC_CORE_IMPL
 #include "polaron_alloc_core.hpp"
 
+// ---- THE LINE THE DIFFERENTIAL ORACLE WAS MISSING ----
+//
+// `POLARON_LIVE=1` prints the live-block total when the program ends.
+//
+// It exists because the oracle that compares the two backends compares what a program PRINTS, and
+// has now missed FIVE memory defects for that one reason: a per-iteration allocation leaking 480 MB,
+// an array leaked through a field, the value form of Result heap-allocated, a String field losing
+// ownership, and an array strided wrongly. Every one of them prints exactly what a correct program
+// prints. Two runs of the same source that disagree on this line disagree about memory even when
+// every byte of stdout matches.
+//
+// EXACT BYTES, not megabytes. The defects this is meant to catch are 16 and 112 bytes per object,
+// and the memory profiler's `%.1f MB` renders every one of them as `0.0`.
+//
+// NOT behind POLARON_PROFILING: a check the suite depends on cannot need a special build. The
+// counters are thread-local (polaron_alloc_core.hpp), so this reports the thread that exits -- which
+// is what a differential needs, and is deliberately not a whole-program leak check.
+// `Test.assertNoLeaks` is the one that runs inside the program and sees its own thread.
+static void polaronLiveDump() {
+    fprintf(stderr, "[live] bytes=%lld count=%lld\n", __polaron_live_bytes(), __polaron_live_count());
+    // `POLARON_LIVE=2` ADDS THE BREAKDOWN BY SIZE, which is what says WHAT is being held.
+    //
+    // The total alone begins every investigation the same way: compile both paths, read the IR
+    // function by function, and guess. A size names a shape -- 24 bytes is a `String` object and
+    // almost nothing else, 16 is a two-field object -- so the histogram usually points at the
+    // culprit before any IR is opened. Behind a level because the ordinary differential wants one
+    // line it can compare.
+    const char* e = getenv("POLARON_LIVE");
+    if (e != nullptr && e[0] == '2') {
+        for (int cls = 0; cls <= 32; ++cls) {
+            const long long n = __polaron_live_class(cls);
+            if (n == 0) {
+                continue;
+            }
+            if (cls == 32) {
+                fprintf(stderr, "[live]   >512 bytes: %lld blocks\n", n);
+            } else {
+                fprintf(stderr, "[live]   %4d bytes: %lld blocks\n", (cls + 1) * 16, n);
+            }
+        }
+    }
+    fflush(stderr);
+}
+
+struct PolaronLiveInit {
+    PolaronLiveInit() {
+        const char* e = getenv("POLARON_LIVE");
+        if (e != nullptr && e[0] != '\0' && e[0] != '0') {
+            atexit(polaronLiveDump);
+        }
+    }
+};
+static PolaronLiveInit g_polaron_live_init;
+
 // The same defined, reported end for the two hosted allocators the core does not cover: `realloc`'s
 // growth of a large block, and the region-class arena's commit. Says the size, which is the one fact
 // worth having and the one a bare `std::bad_alloc` never carries.

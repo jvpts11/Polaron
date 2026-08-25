@@ -1,0 +1,35 @@
+program AbstractLib;
+
+// AN `abstract` CLASS, EXPORTED. Two things the ledger lists as broken meet here:
+//
+//   * `polc` SEGFAULTED on an imported `abstract` class -- exit 139, both back ends, no diagnostic
+//   * a CROSS-BUNDLE CONSTRUCTOR SYMBOL was built from the qualified key, so it failed to link
+//
+// They meet because an abstract base is the one shape that has both: it is never instantiated
+// itself, so what crosses is a vtable slot and a constructor the SUBCLASS calls through `super`.
+//
+// `Shape` declares one abstract method the consumer must supply, one concrete method the consumer
+// inherits, and a constructor the consumer's `super` reaches -- which is the symbol that failed.
+public bundle AbstractLib {
+    public namespace Geometry {
+
+        public abstract class Shape {
+            protected mutable int sides;
+
+            // The constructor a consumer's subclass calls through `super`. Compiled here, named
+            // here, and called from the other side of the bundle boundary.
+            public constructor Shape(int sides) {
+                this.sides = sides;
+            }
+
+            // Supplied by the consumer.
+            public abstract method area() returns int;
+
+            // Inherited, and it calls the abstract one on `this` -- so the call is compiled into
+            // this bundle's numbering and has to land on the consumer's override.
+            public method describe() returns int {
+                return this.sides * 100 + this.area();
+            }
+        }
+    }
+}

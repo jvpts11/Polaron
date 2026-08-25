@@ -79,7 +79,38 @@ if(POLARON_WITH_LLVM)
         # `atomic<int>` cells on a frame that outlives every thread it spawns -- and through the PIR
         # path `Guest.lockWord.compareAndSet(...)` read an INVENTED global rather than the pointer,
         # so the kernel reported a user page fault at CR2=0x8. Eight lines reproduce it.
-        foreach(sample hello_world addr_static)
+        # THE TWO PATHS ALSO HAVE TO AGREE ABOUT MEMORY, and now they do -- exactly, with no waiver.
+        #
+        # They did not when this gate was written: PIR did not implement String field ownership
+        # (tests/pir_shape_baseline.md, D1), so the trusted path exited holding two copied Strings
+        # that PIR never made -- 112 bytes in 5 blocks against 16 in 1, on every program in the
+        # corpus. Each registration carried the EXACT pair as a waiver rather than an allowance with
+        # slack, so that any movement in either number would fail and a second memory defect could
+        # not hide inside the first one's shadow.
+        #
+        # D1 is fixed and every pair collapsed. The waivers are gone with it, which is the point of
+        # having written them as pairs: an allowance would still be sitting here, tolerating a range
+        # nothing needs any more.
+        # `entry_wrapper` is here because the shape comparison now SKIPS `main` (609 of the census's
+        # 9 402 difference lines were that one synthesised function, and the two paths structure it
+        # differently on purpose -- tests/pir_shape_baseline.md, class B). Skipping it in a
+        # differential is only honest if something asserts what it must DO, absolutely: argv built
+        # and intact, static class load before the first line of user code, exit 0. This runs that
+        # sample through BOTH paths, so the wrapper is still compared -- by its behaviour, which is
+        # the property that matters, rather than by its shape, which is not.
+        # `unwind_raii` runs through both arms because the defect it guards was invisible to output
+        # on every sample that had it: the rethrow edge existed and nothing walked it.
+        #
+        # Each of the four below is a sample written FOR a defect the shape census found, and each
+        # is here rather than only in `codegen_*` because the claim is not "PIR prints this" but
+        # "the two paths print the same thing and leak the same nothing".
+        # `generator` is the one that is here for MEMORY alone. Its output was identical on both
+        # paths from the first day and it exited holding 304 bytes in 12 blocks against 112 in 5:
+        # three `foreach`es over generators, none of them disposed, plus a `delete` through an
+        # interface-typed local that ran the destructor and left the block. Nothing stdout can see.
+        foreach(sample hello_world addr_static entry_wrapper unwind_raii
+                       bare_object_dispatch region_field_dtor receiver_once generator
+                       struct_array_stride)
             add_test(NAME pir_behaviour_${sample} COMMAND "${CMAKE_COMMAND}"
                 "-DPOLC=$<TARGET_FILE:polc>"
                 "-DCLANG=${POLARON_CLANG}"
@@ -98,6 +129,20 @@ if(POLARON_WITH_LLVM)
         # difference is not cosmetic: the head read 31 of 47 while a stride over the same corpus
         # read 19 of 67. `EXPECT_SAME` DROPPED FROM 31 TO 13 ON THAT CHANGE ALONE, and nothing
         # regressed -- the old number was measuring a corner and reporting it as the whole.
+        # THE SHAPE GATE. `--compare-ir` existed and gated nothing: over all 874 samples it reported
+        # 9 402 differences and not one program in full agreement, so nobody could read it and five
+        # memory defects walked past it. Two classes are now answered inside the comparison itself
+        # (promotion, and skipping the synthesised entry wrapper); the rest are classified in
+        # tests/pir_shape_baseline.md and checked here BY KIND, not by count -- a count lets a new
+        # defect hide on the day an old one is fixed.
+        add_test(NAME pir_shape_classified COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DSAMPLES=${CMAKE_CURRENT_SOURCE_DIR}/samples"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DLIMIT=120"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_shape_test.cmake")
+        set_tests_properties(pir_shape_classified PROPERTIES TIMEOUT 900)
+
         add_test(NAME pir_batch_agreement COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
@@ -1925,6 +1970,29 @@ add_test(NAME lint_statics_without_state_needs_a_subject
 set_tests_properties(lint_statics_without_state_needs_a_subject PROPERTIES
     FAIL_REGULAR_EXPRESSION "0B10.*'(Arithmetic|Extremes)'")
 
+# `int -> float` IS GROUPED WITH THE INTEGER WIDENINGS AND IS NOT ONE. A float has 24 bits of
+# significand, so every whole number above 16777216 rounds -- one of the two silent narrowings the
+# ledger names, and silent is the complaint. `double` holds every int exactly and stays quiet, which
+# is what keeps this from being noise on the commonest conversion in the language.
+add_test(NAME lint_lossy_widening
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lossy_widening.pol")
+set_tests_properties(lint_lossy_widening PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B4A.*does not fit in a 'float'")
+
+# ...and it does NOT fire on the double beside it.
+add_test(NAME lint_lossy_widening_spares_double
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lossy_widening.pol")
+set_tests_properties(lint_lossy_widening_spares_double PROPERTIES
+    FAIL_REGULAR_EXPRESSION "0B4A.*'double'")
+
+add_test(NAME codegen_lossy_widening_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lossy_widening.pol"
+    "-DEXPECTED=f=16777216 d=16777217"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
 add_test(NAME lint_data_without_behaviour
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_declarations.pol")
 set_tests_properties(lint_data_without_behaviour PROPERTIES
@@ -2224,6 +2292,223 @@ add_test(NAME sema_rejects_nonconst_const
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/const_nonconst_bad.pol")
 set_tests_properties(sema_rejects_nonconst_const PROPERTIES
     PASS_REGULAR_EXPRESSION "must be a compile-time constant")
+
+# `release region` RUNS THE DESTRUCTORS OF WHAT LIVES IN THE REGION.
+#
+# The dogs are made in `makeDog` and the arena is released in `~Pool`; no list the compiler keeps
+# spans that gap, so the region has to keep its own. PIR gated the registry on `flavor == "stack"`
+# and a plain `region` FIELD got neither the tracking nor the teardown -- and the sample that had the
+# defect printed the same on both paths, because nothing in its region had a destructor that said
+# anything. `~Dog 22 / ~Dog 11` is what the fix is for.
+add_test(NAME codegen_region_field_dtor COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_field_dtor.pol"
+    "-DCONTAINS=~Dog 22"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# AN EXCEPTION LEAVING A METHOD STILL LEAVES ITS SCOPES.
+#
+# `exceptions_edge` has a stack object beside a `try` whose `catch` matches, so the rethrow edge
+# exists in the IR and no program walks it -- which is why the corpus called this correct while the
+# trusted path ran `~Guard` twice and PIR ran it once. This sample walks the other edge: a `throw`
+# with no `try` at all, and a `try` whose `catch` does not match. Each must print its destructor
+# before the caller's handler prints.
+#
+# `lowerTry`'s resume path ran the body's own teardown and not the scopes AROUND it, so an exception
+# leaving the function tore down nothing declared before the `try`.
+add_test(NAME codegen_unwind_raii COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/unwind_raii.pol"
+    # `dtor 2` is the one that matters: it is the destructor on the RESUME edge -- the `try` whose
+    # `catch` did not match -- which is the path nothing in the corpus walked. `dtor 1` (a bare
+    # `throw` with no `try`) already ran.
+    "-DCONTAINS=dtor 2"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A BARE `Object`, CONSTRUCTED AND DISPATCHED ON.
+#
+# Found by the shape census, not by the corpus: `Object.Object` wrote `@Object.vtable` on the trusted
+# path and nothing on the PIR path, so slot 0 of a bare `Object` held whatever the allocator last
+# left there and `a.equals(a)` jumped through it -- trusted printed and exited 0, PIR exited
+# 0xC0000005. Not one of the 874 samples constructs a bare `Object`, which is exactly why comparing
+# the two modules was needed to see it at all.
+#
+# The cause was an optimisation that went one step too far: `buildVtable` emits a table only for
+# methods something actually dispatches, and returned early when there were none -- while
+# `carriesVtable` had already decided the LAYOUT reserves the pointer. The slot existed and nothing
+# filled it. Fixed by emitting the eight-byte table anyway when the layout carries the slot.
+#
+# It ran as WILL_FAIL for exactly as long as the defect lived, which is what a ratchet is for.
+add_test(NAME codegen_bare_object_dispatch COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bare_object_dispatch.pol"
+    "-DCONTAINS=same true"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# READING A VALUE AGGREGATE OUT OF A COLLECTION GIVES YOU THE VALUE.
+#
+# `ArrayList<Point>.get` is `return this.data[i];` with `T` monomorphised to a value struct. An
+# element's address carries the ARRAY's type -- a slice, so the backend knows the stride -- and the
+# return path only loaded when the source type was exactly `Ptr`. So it fell through to a conversion
+# with nothing to convert a slice into a struct with, and the method came out as
+# `ret %class.Point undef`: every element read back as zeros.
+#
+# Wrong ANSWERS, silently, on the most ordinary use of a collection there is -- and the corpus held
+# no `ArrayList` of a `struct` whose elements it read back.
+add_test(NAME codegen_value_element_copy COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/value_element_copy.pol"
+    "-DEXPECTED=stored=1,2 after mutating source=1,2 read back=1,2"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A NAMESPACE NAME IS NOT UNIQUE ACROSS BUNDLES.
+#
+# `App` is the obvious name for an application's namespace, and the standard library has one. Type
+# resolution matched "your own namespace" on the NAME alone, so the two were one place: a program
+# declaring any type the library also has in its `App` handed the library the program's version, and
+# the errors landed inside the prelude on lines the author never wrote. `Money` is the collision
+# that found it -- the library's has `long cents` and this one `int cents`, so they disagree about a
+# field they both have. `Scanner`, already shadowed elsewhere in the corpus, never showed it: its
+# fields are named differently, so nothing collided.
+add_test(NAME codegen_shadow_namespace_name COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/shadow_namespace_name.pol"
+    "-DEXPECTED=money=300"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A `foreach` GOES THROUGH THE PROTOCOL, WHATEVER THE TYPE.
+#
+# The census found PIR's `foreach` over an `Iterable` differing in shape from the other path's
+# (baseline class N), and the corpus could not say whether that mattered: its only `Iterable` is
+# `ArrayList`, whose iteration a compiler may reasonably know by heart. This type's `hasNext` and
+# `next` COUNT THEIR OWN CALLS, so a loop that walks the backing store directly cannot produce the
+# numbers and one that goes through the protocol cannot avoid them. Both paths print 7 and 6.
+add_test(NAME codegen_custom_iterator COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/custom_iterator.pol"
+    "-DEXPECTED=sum=21 hasNext=7 next=6 second pass sum=21"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# AWAIT SUSPENDS; IT DOES NOT BLOCK -- and a bounded pool is the only place that is visible.
+#
+# PIR lowered `await` to `__polaron_task_wait`, which sleeps on a condition variable and holds the
+# worker. On an unbounded pool that is indistinguishable from suspending: same output, more threads.
+# With more outstanding tasks than workers, each awaiting one more, every waiter holds a worker that
+# the task it waits for needs -- the classic deadlock. Nothing in the corpus filled a pool.
+#
+# THE FAILURE MODE HERE IS A HANG, not a wrong number, so the timeout is the assertion. Sixty
+# seconds is far more than the ~0.1s this takes when it works.
+add_test(NAME codegen_await_bounded_pool COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/await_bounded_pool.pol"
+    "-DEXPECTED=done=32 sum=496"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+set_tests_properties(codegen_await_bounded_pool PROPERTIES TIMEOUT 60)
+
+# A JAVA-STYLE ENUM CONSTANT IS BUILT ONCE, HOWEVER MANY TIMES IT IS NAMED (spec 12.2).
+#
+# The census counted PIR emitting twelve constructor calls against three, and that number alone
+# proves nothing: a lazily-built singleton guarded by a flag can be WRITTEN twelve times and RUN
+# three. This constructor speaks, so the two can be told apart -- three constants, twelve mentions,
+# and `build` must appear THREE times. It does, on both paths. D12 was a shape difference, not a
+# behaviour one; what remains is code size, which belongs to the pass wave and not to this one.
+add_test(NAME codegen_enum_singleton_once COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/enum_singleton_once.pol"
+    "-DEXPECTED=build 3 build 9 build 10 d 3 3 5 l 5 3 3 again 3 3 5 same=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# DEREFERENCING A NULLABLE RECEIVER IS CHECKED, AND SAYS WHERE (spec 3.7).
+#
+# PIR emitted this check nowhere, on any program. Hosted that loses the diagnostic; on a target with
+# no MMU it loses everything, because there is no fault to take -- the read returns whatever is
+# mapped at zero and the program carries on with a wrong answer. That is precisely the case the
+# no-UB rule exists for.
+#
+# The sample reads through a live receiver TWICE before the null one, so a compiler that panics on
+# every dereference cannot pass: `ok=7` and `still here` have to come out first.
+add_test(NAME codegen_null_receiver_guard COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/null_receiver_guard.pol"
+    "-DEXPECT_EXIT=70"
+    "-DCONTAINS=still here"
+    "-DERRCONTAINS=null reference dereference"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# AN ARRAY OF STRUCTS STEPS BY THE STRUCT'S SIZE, NOT BY THE SUM OF ITS FIELDS.
+#
+# `Cell { int; double }` sums to twelve and measures sixteen. PIR scaled an index by the sum while
+# the LLVM type it geps a FIELD through uses the real layout, so element one began four bytes before
+# it lived and every write of a tag landed inside the previous element's double: `0.0 0.0 0.0 3.5`.
+# The allocation was short by the same arithmetic -- `4 * 12` for data needing 64 -- so the last
+# element wrote past the block.
+#
+# The corpus could not catch it: every array of value aggregates in it either has fields needing no
+# padding, or never reads an element back past the first.
+add_test(NAME codegen_struct_array_stride COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_array_stride.pol"
+    "-DCONTAINS=total=8.0"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A RECEIVER WRITTEN ONCE RUNS ONCE.
+#
+# `implicit_this_receiver.pol` covers the same three shapes and stayed green through the whole
+# defect, because its receiver is `return this;` -- calling it twice and keeping the second answer
+# prints what calling it once prints. The census could only see it as `calls Holder.table 1->2`, and
+# a call count is not a wrong answer. Here the receiver counts its own evaluations, so the defect
+# has to come out in the output or not at all.
+#
+# Two guesses made before the object was known, and abandoned after: the interrupt-binding probe
+# (asked on EVERY member read) and the swizzle-lane probe (`.x` on a call named `transform`). Both
+# evaluated the object to decide, and both dropped what they evaluated. `calls=3` is the claim.
+add_test(NAME codegen_receiver_once COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/receiver_once.pol"
+    "-DCONTAINS=calls=3"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# The entry wrapper, with real arguments: argv built and intact, and a static that class load set
+# already readable on the FIRST line of user code. The shape comparison skips `main` because the two
+# backends structure it differently on purpose; this is the absolute claim that replaces it.
+add_test(NAME codegen_entry_wrapper_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/entry_wrapper.pol"
+    "-DRUNARGS=one two"
+    "-DCONTAINS=ready=7"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+add_test(NAME codegen_entry_wrapper_argv COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/entry_wrapper.pol"
+    "-DRUNARGS=one two"
+    "-DCONTAINS=argc=2"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # main receives the real command-line arguments (spec 2.9): string[] args from argv.
 add_test(NAME codegen_main_args_runs COMMAND "${CMAKE_COMMAND}"
@@ -3291,6 +3576,25 @@ if(POLARON_WITH_LLVM)
             "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_lib.pol"
             "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_app.pol"
             "-DEXPECTED=square = 49"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_polb_link_test.cmake")
+
+        # AN IMPORTED `abstract` CLASS, EXTENDED. Two ledger entries meet in this one shape: `polc`
+        # segfaulted on an imported abstract class (exit 139, both back ends, no diagnostic), and a
+        # cross-bundle constructor symbol was built from the qualified key on one side and the bare
+        # name on the other, so `super(4)` failed to link. An abstract base is the only shape with
+        # both, because it is never instantiated itself: what crosses is a vtable slot and a
+        # constructor only a subclass reaches.
+        #
+        # 416 separates the three things that must be right -- `describe` is compiled INSIDE the
+        # library and calls `area()` through the slot the library assigned, `sides` is the 4 that
+        # `super` carried across, and the constructor linked at all.
+        add_test(NAME bundle_abstract_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DLIB=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_abstract_lib.pol"
+            "-DAPP=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_abstract_app.pol"
+            "-DEXPECTED=describe=416 through base=16"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_polb_link_test.cmake")
 
@@ -9359,7 +9663,7 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DOPT=--test"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/test_string_ownership.pol"
-            "-DEXPECTED=PASS Probe.strings_do_not_leak tests: 1 passed, 0 failed, 0 skipped"
+            "-DEXPECTED=PASS Probe.strings_do_not_leak PASS Probe.string_fields_do_not_leak tests: 2 passed, 0 failed, 0 skipped"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

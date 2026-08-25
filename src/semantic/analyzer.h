@@ -292,6 +292,8 @@ private:
     void warnMutableNeverMutated(const ast::MethodDecl& m);
     void warnSwallowedCatch(const ast::Block& body);
     void warnAsyncNeverAwaits(const ast::MethodDecl& m);
+    // `int -> float` is grouped with the integer widenings and is not one: see the definition.
+    void warnLossyWidening(const std::string& from, const std::string& to, SourceLocation loc);
     // These two take the type their caller already resolved: asking `typeOf` after the body has
     // been analysed asks about names whose scope has been popped, and it REPORTS an undeclared
     // name rather than shrugging at it.

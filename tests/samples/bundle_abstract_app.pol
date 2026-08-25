@@ -1,0 +1,43 @@
+import System.IO.Console;
+import AbstractLib.Geometry.Shape;
+program AbstractApp;
+
+// Extends an IMPORTED ABSTRACT class. `polc` used to segfault on this -- exit 139 on both back ends,
+// with no diagnostic to say what it choked on -- and when it did not, the `super(4)` failed to link,
+// because the constructor's symbol was built from the qualified key on one side and the bare name on
+// the other.
+//
+// The number separates the three things that have to be right: `describe` is compiled INSIDE the
+// library and calls `area()` on `this` through the slot the library assigned, so it must arrive at
+// the override below; `sides` must be the 4 that `super` passed across; and the constructor must
+// have linked at all.
+//
+// 4 * 100 + 4 * 4 = 416.
+public bundle Main {
+    public namespace App {
+
+        public class Square extends Shape {
+            private mutable int side;
+
+            public constructor Square(int side) {
+                super(4);
+                this.side = side;
+            }
+
+            public override method area() returns int {
+                return side * side;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Square* s = new Square(4) on heap;
+                System.IO.Console.printf("describe=%d\n", s.describe());
+                Shape* asBase = s;
+                System.IO.Console.printf("through base=%d\n", asBase.area());
+                delete s;
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,48 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+
+// PUTTING A VALUE AGGREGATE INTO A COLLECTION COPIES IT.
+//
+// Assignment in this language is a deep copy, and `T*` is how you say you meant to share (spec 5).
+// A `struct` is a value, so `list.add(p)` must give the list its OWN copy: changing `p` afterwards
+// cannot reach inside the list, and changing the list's cannot reach `p`.
+//
+// This is not a memory question, it is an answers question. If the element is shared, the second
+// print below reports the mutation and the program silently disagrees with what the language says
+// assignment means.
+//
+// Prints: stored=1,2 after mutating source=1,2 read back=1,2
+program ValueElementCopy;
+
+public bundle Main {
+    public namespace App {
+
+        public struct Point {
+            public mutable int x;
+            public mutable int y;
+            public constructor Point(int x, int y) { this.x = x; this.y = y; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<Point>* pts = new ArrayList<Point>() on heap;
+                mutable Point p = new Point(1, 2);
+                pts.add(p);
+                Point stored = pts.get(0);
+                System.IO.Console.printf("stored=%d,%d ", stored.x, stored.y);
+
+                // Change the SOURCE. The list holds a copy, so it must not move.
+                p.x = 99;
+                p.y = 98;
+                Point again = pts.get(0);
+                System.IO.Console.printf("after mutating source=%d,%d ", again.x, again.y);
+
+                // And a second read, so nothing can pass by caching the first answer.
+                Point third = pts.get(0);
+                System.IO.Console.printf("read back=%d,%d\n", third.x, third.y);
+                delete pts;
+                return;
+            }
+        }
+    }
+}

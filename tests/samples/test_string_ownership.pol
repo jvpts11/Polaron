@@ -1,14 +1,28 @@
 import System.IO.Console;
 import System.Test.Test;
 
-// Does a String own its buffer? A String built and dropped inside a scope must leave the live-byte
-// total where it found it. The two backends disagreed about this in the IR -- one emits
-// `__polaron_str_copy`/`__polaron_str_free` around every String local and the other emits neither --
-// and no test in the corpus could see the difference, because a leak prints nothing.
+// Does a String own its buffer? A String built and dropped must leave the live-byte total where it
+// found it -- a leak prints nothing, so nothing but a byte count can tell.
+//
+// THE FIRST TEST WAS PROBING THE WRONG SITE. It measures String LOCALS, and both back ends have
+// always released those identically: `Probe.churn` emits one copy and three frees on each. (The
+// measurement that said otherwise was taken from a module compiled WITHOUT `--test`, where `churn`
+// is not emitted at all -- nothing but the `[Test]` method calls it, so reachability drops it. Zero
+// against zero is not agreement, it is absence.)
+//
+// The real divergence was at FIELD stores, where the protocol says a String field owns its buffer:
+// storing one copies, overwriting one frees the previous. PIR implemented neither half, anywhere --
+// so the second test below is the one this file exists for, and it is measured the same way.
 program TestStringOwnership;
 
 public bundle main {
     public namespace app {
+        // Whose field the second test writes. One String, written two hundred times.
+        public class Holder {
+            public mutable String caption;
+            public constructor Holder() { caption = ""; }
+        }
+
         public class Probe {
             private static method churn() returns void {
                 mutable long i = 0;
@@ -27,6 +41,32 @@ public bundle main {
                 Probe.churn();
                 long before = Test.liveBytes();
                 Probe.churn();
+                long after = Test.liveBytes();
+                Test.assertEqualLong(before, after);
+                return;
+            }
+
+            // THE SITE THAT ACTUALLY DIVERGED. A String written into a FIELD, over and over: the
+            // field owns its buffer, so each store copies the new one and releases the one before.
+            // Without the release the object grows a buffer per assignment and never gives one
+            // back -- which is what a per-frame `this.caption = producer()` does in a loop.
+            private static method overwrite() returns void {
+                Holder* h = new Holder() on heap;
+                mutable long i = 0;
+                while (i < 200) {
+                    h.caption = "round " + i.toString();
+                    i = i + 1;
+                }
+                delete h;
+                return;
+            }
+
+            [Test]
+            public static method string_fields_do_not_leak() returns void {
+                Test.checking("two hundred stores into a String field leave the live total alone");
+                Probe.overwrite();
+                long before = Test.liveBytes();
+                Probe.overwrite();
                 long after = Test.liveBytes();
                 Test.assertEqualLong(before, after);
                 return;

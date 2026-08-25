@@ -1,0 +1,44 @@
+import System.IO.Console;
+
+// THE ENTRY WRAPPER, ASSERTED ABSOLUTELY.
+//
+// `main` is synthesised by the compiler, not written by the program, and the two backends build it
+// differently on purpose: the trusted path fuses `Main.main` into it and emits no `Main.main` at all,
+// while the PIR path emits both and calls across; they also order argv construction and static class
+// load oppositely. 609 of the shape census's 9 402 difference lines were this one function
+// (tests/pir_shape_baseline.md, class B), which is why the shape comparison skips it.
+//
+// Skipping it in a differential is only honest if something else asserts what it must DO, and that
+// something is absolute rather than comparative -- "it looks like the other path's version" is not a
+// property of a correct entry point. Three claims, all observable from inside the program:
+//
+//   ARGV IS BUILT AND INTACT     the count, and every element readable in order. A wrapper that
+//                                mis-strides the vector, drops argv[0], or leaves the array
+//                                uninitialised fails here.
+//   CLASS LOAD RAN FIRST         a static initialised at class load is already set when the first
+//                                line of user code reads it. Both paths order the call differently
+//                                relative to argv; both must order it before user code.
+//   THE PROGRAM RETURNS 0        the harness checks the exit code.
+program EntryWrapper;
+
+public bundle Main {
+    public namespace App {
+
+        public class Boot {
+            // Set during static class load, before any user code runs. Reading it from the first
+            // line of `main` is the assertion.
+            public static fixed int ready = 7;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"ready={Boot.ready}");
+                System.IO.Console.println($"argc={args.length()}");
+                for (mutable int i = 0; i < args.length(); i++) {
+                    System.IO.Console.println($"arg[{i}]={args[i]}");
+                }
+                return;
+            }
+        }
+    }
+}

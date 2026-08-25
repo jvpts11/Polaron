@@ -936,30 +936,88 @@ Region binding, ownership flow, guard elimination, reachability: each moves from
 pass, one at a time, each keeping its tests. This is where the win is collected — these are the
 analyses that are hard on a tree and natural on a graph.
 
-**There is no Stage 5, and the reason is worth writing down.**
+**Stage 5 — a back end of our own, replacing LLVM. Not scheduled; the ambition is recorded.**
 
-The plan used to end with `pir → x86-64` directly, "for debug builds and for freestanding". It was
-cut, because every argument for it fails against this document's own measurements:
+Stage 5 was cut once, and the cut was correct **for the thing that was proposed then**: a second
+back end, for debug builds and freestanding, sitting beside LLVM. Those reasons are kept below,
+because two of the three do not survive a change of ambition and one does.
 
-- **Debug speed.** `clang -O0 -c` costs 162 ms against our 264–381 ms. A perfect backend removes 23%
-  of the pipeline for months of work — and the "why NOT" section already says a backend written to
-  make compilation faster optimises the cheaper half.
-- **Dropping the LLVM dependency.** Stage 3 keeps LLVM for release *on purpose*, so anyone building
-  the compiler still needs it. A second backend that is not the only backend does not remove a
-  dependency.
-- **The UB mismatch.** Paid by Stage 2, not by a backend: PIR names the rule on the instruction
-  (`add.checked`) and hands LLVM the right intrinsic.
+### 15.1 What was written against it, and what still stands
 
-And a cost that was never written down: **a second backend is a second place where lowering bugs
-live.** The table at the top of this document says every recent defect was in our lowering layer and
-none in LLVM. A second lowering layer doubles exactly the surface this project bleeds from.
+| the argument against | under a *replacement* |
+|---|---|
+| **Debug speed.** `clang -O0 -c` costs 162 ms against our 264–381 ms; a perfect back end removes 23% of the pipeline for months of work | **never was the point of a replacement.** Speed of compilation is not why one would be written; control of code generation is |
+| **Dropping the LLVM dependency.** *"A second back end that is not the only back end does not remove a dependency"* | **answered.** The bar below is that it is the only one |
+| **A second back end is a second place where lowering bugs live** — and every recent defect was in our lowering layer, none in LLVM | **answered by the same bar.** One lowering layer, not two — but see §15.4, because during the transition there are two |
+| **The UB mismatch** — paid by Stage 2, which names the rule on the instruction | still true, and unaffected either way |
 
-A backend for debug only would also be the wrong shape on its own terms: it would have to serve
-everything, and every architecture already supported would have to be ported to it.
+### 15.2 The bar, and it is the whole of the decision
 
-## 15. The one backend that would be worth writing: IA-64
+> **A back end of our own is worth building only if it is built to cover everything** — every target
+> already supported, every optimisation level, release as well as debug, and everything the language
+> gains afterwards.
 
-Named here rather than planned, because the case is specific and does not generalise.
+This is the bar that kills the alternative. Zig and Rust both ship their own back ends **for debug
+only** and keep LLVM for release; the result is two lowering layers, two sets of bugs, and a
+dependency that never goes away. Built that way, the project would take the cost of §15.1's third
+row and none of the benefit of its second.
+
+Everything or nothing.
+
+### 15.3 What is actually gained, and it is not speed of compilation
+
+**We would dictate exactly how everything Polaron knows becomes machine code.**
+
+The §12 hand-off table exists because today our facts have to be *translated* into LLVM's vocabulary
+and then hoped over. `isUnique` becomes `noalias` — which is close, not equal. A guard that pass 3
+*proved* redundant becomes an absence, not a proof. `switch ... total` becomes a `switch` and the
+totality is dropped at the boundary. A back end reading PIR consumes the facts themselves: it does
+not approximate them into another IR's nearest word.
+
+And the campaign that produced `PLAN.md` added an argument the original cut did not have:
+
+> **Our last step is clang, and on a strided read over an array of records clang is 2–5.7× behind
+> GCC — on identical C, with no bounds checks and no header.** Four tests reach it independently.
+> Raising Polaron to `-O3` moves it 1028 → 924, so it is a vectoriser and not an optimisation level.
+
+That is a ceiling we do not control and cannot raise from our side. A back end of our own is the only
+path that is not hostage to it.
+
+### 15.4 What remains true, and must not be soft-pedalled
+
+**The scale.** Covering everything means instruction selection, register allocation, scheduling, the
+ABI for every supported target, unwind tables, DWARF, atomics, SIMD, inline-assembly integration,
+relocations, object formats (ELF/COFF/Mach-O) and a linker. It is the largest single undertaking
+available to this project, by a wide margin.
+
+**And LLVM's optimiser is thousands of person-years.** The honest division is that PIR's passes do
+the work LLVM *cannot* do — the language-specific proofs — and a native back end does the
+machine-specific work. Matching the machine-specific half is the hard part, and the vectoriser gap
+above cuts both ways: it shows LLVM is beatable on one shape, not that it is beatable in general.
+
+**During the transition there are two lowering layers**, which is exactly the surface §15.1's third
+row warns about. It is survivable only with the instrument that Stage 3 already requires: a
+differential oracle comparing **bodies**, not names.
+
+### 15.5 When it becomes a sane thing to start
+
+Three preconditions, in order:
+
+1. **Stages 0–4 finished** — in particular every §12 hand-off row emitted and measured, because that
+   table is what says which facts actually pay. Building a back end before knowing that is guessing
+   at its input.
+2. **`PLAN.md` Wave 4 has run** — the experiment that hands LLVM `noalias`, real TBAA and
+   `dereferenceable` and asks whether it vectorises the strided read it refuses to vectorise for C.
+   If it does, the ceiling of §15.3 lifts and Stage 5 loses its sharpest argument. **If it does not,
+   Stage 5 stops being an ambition and becomes the answer to a measured problem.**
+3. **Somebody wants it** for a reason bigger than elegance.
+
+### 15.6 IA-64 stops being the target and becomes the proof
+
+The case below was written when IA-64 was the *only* back end thought worth writing. Under §15.2 it
+is something better: **the instance that shows the general case is right.** If a back end has to be
+built to cover everything, then building it to cover a machine LLVM has no target for at all costs
+nothing extra in ambition — and IA-64 is the machine that most rewards exactly what PIR carries.
 
 **LLVM has no IA-64 target.** The Itanium backend was removed long ago. For every other
 architecture, writing a backend means competing with one that exists and wins; for IA-64 there is

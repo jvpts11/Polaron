@@ -1,0 +1,32 @@
+import System.IO.Console;
+
+// A CONVERSION THE RULES CALL WIDENING THAT CANNOT HOLD EVERY VALUE.
+//
+// An integer widens to a wider integer and loses nothing, which is why the language allows it with
+// no cast. `int` to `float` is grouped with those and is not one of them: a `float` has 24 bits of
+// significand, so every whole number above 16777216 rounds to an even neighbour.
+//
+// The ledger calls this one of two silent narrowings, and silent is the whole complaint -- the
+// arithmetic is defined and the answer is wrong by one, with nothing in the source to say a digit
+// went missing. It is a warning rather than an error: the conversion is usually harmless, most
+// `int`s that reach a `float` are small, and refusing it would make `float f = 3;` need a cast.
+//
+// `double` is exempt and stays silent below: it holds every `int` exactly, so there is nothing to
+// warn about on by far the commonest conversion in the language.
+//
+// Prints: f=16777216 d=16777217 (the float rounded; the double did not)
+program LossyWidening;
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                int big = 16777217;        // 2^24 + 1: the first int a float cannot hold
+                float f = big;             // warns
+                double d = big;            // exact, and silent
+                System.IO.Console.printf("f=%d d=%d\n", cast<int>(f), cast<int>(d));
+                return;
+            }
+        }
+    }
+}

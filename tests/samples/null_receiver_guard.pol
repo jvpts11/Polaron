@@ -1,0 +1,47 @@
+import System.IO.Console;
+
+// DEREFERENCING A NULLABLE RECEIVER IS CHECKED, AND SAYS SO (§3.7).
+//
+// A `nullable Node*` is the language admitting the field may hold nothing. Reading a member through
+// one, calling a method on one, or assigning through one all dereference it -- and where it IS null
+// the program must stop with a diagnostic naming the line, not read address 8 and carry on.
+//
+// PIR emitted this check NOWHERE, on any program. Hosted that costs the diagnostic; on a target
+// with no MMU it costs everything, because there is no fault to take -- the read simply returns
+// whatever is mapped at zero and the program continues with a wrong answer. That is the exact case
+// the no-UB rule exists for.
+//
+// The first two lines prove the guard does NOT fire where the receiver is real, so a compiler that
+// panics on everything cannot pass this. The third dereferences a null and must stop.
+//
+// Prints `ok=7` and `still here`, then dies on the third with `null reference dereference`.
+program NullReceiverGuard;
+
+public bundle Main {
+    public namespace App {
+
+        public class Node {
+            public mutable int value;
+            public constructor Node(int v) { value = v; }
+            public method get() returns int { return value; }
+        }
+
+        public class Holder {
+            public nullable Node* node;
+            public constructor Holder() { node = null; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Holder* h = new Holder() on heap;
+                h.node = new Node(7) on heap;
+                System.IO.Console.printf("ok=%d\n", h.node.get());
+                System.IO.Console.printf("still here\n");
+                // Now empty it, and read through it anyway. The guard is the whole test.
+                h.node = null;
+                System.IO.Console.printf("never=%d\n", h.node.get());
+                return;
+            }
+        }
+    }
+}

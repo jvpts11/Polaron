@@ -1,0 +1,37 @@
+import System.IO.Console;
+import System.Runtime.Object;
+
+// A BARE `Object`, constructed and dispatched on.
+//
+// Found by the shape census (tests/pir_shape_baseline.md): the trusted backend writes
+// `@Object.vtable` into slot 0 inside `Object.Object`, and the PIR backend writes nothing there --
+// it stores `this` into a local and returns. PIR does write the vtable for user classes (a sample
+// with Animal/Dog/Cat gets all three), so the gap is `Object` itself: the one class nobody declares
+// and every program has.
+//
+// The consequence is not a wrong number. Slot 0 holds whatever the allocator last left there, and a
+// virtual call reads it as a function pointer:
+//
+//     trusted: prints `same true` / `diff false`, exits 0
+//     PIR:     exits -1073741819 (0xC0000005, access violation)
+//
+// 874 samples never found it because not one of them constructs a bare `Object`. That is the blind
+// spot the census exists to close: a defect the corpus cannot reach is a defect the corpus calls
+// correct.
+program BareObjectDispatch;
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Object* a = new Object() on heap;
+                Object* b = new Object() on heap;
+                System.IO.Console.println($"same {a.equals(a)}");
+                System.IO.Console.println($"diff {a.equals(b)}");
+                delete a;
+                delete b;
+                return;
+            }
+        }
+    }
+}

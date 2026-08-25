@@ -22,6 +22,17 @@
 // and functions only one side emits. The first three are spelling; the last is a real difference but
 // a noisy one -- a backend is free to synthesise a helper -- and it is already visible as a link
 // failure when it matters.
+//
+// AND TWO MORE, ADDED AFTER MEASURING. A census over all 874 samples reported 9 402 differences and
+// ZERO programs in full agreement, which is a report nobody can act on -- and is why five memory
+// defects walked past this file while it was already built. `tests/pir_shape_baseline.md` classifies
+// every systematic difference; two of the four classes are answered here:
+//
+//   * where PIR keeps a value in a stack slot and the trusted path uses the value -- 2 981 lines,
+//     reaching `Object.Object` and therefore every program. `normalizeForShapeCompare` promotes
+//     those away first (see there for why promotion and not the pipeline);
+//   * the synthesised entry wrapper, which the two paths structure differently on purpose -- 609
+//     lines. Skipped here and asserted absolutely instead.
 
 #include <llvm/IR/Module.h>
 
@@ -34,6 +45,16 @@ struct ShapeDiff {
     std::string function;   // the symbol both modules define
     std::string what;       // one line saying how the two bodies differ
 };
+
+// Promotes stack slots to values, and nothing else. Run on BOTH modules before comparing.
+//
+// The comparison runs before `optimize` deliberately -- "after it the two have been through the same
+// pipeline, and a difference the pipeline erased is a difference that was there". That is sound
+// about the OPTIMISER and too broad for this one pass: a difference `mem2reg` erases is not a
+// difference in behaviour, by construction, because promotion only removes a slot whose every use it
+// can see. So this runs promotion, alone -- not the pipeline, not `-O1` -- which erases exactly the
+// class that was drowning the report and nothing else.
+void normalizeForShapeCompare(llvm::Module& m);
 
 // Every function both modules define, whose bodies are not the same shape. Empty means the two
 // backends built the same program.

@@ -71,6 +71,15 @@ static POLARON_ALLOC_TLS char* g_polaron_slab_end;
 static POLARON_ALLOC_TLS long long g_live_bytes;
 static POLARON_ALLOC_TLS long long g_live_count;
 
+// ...AND THE SAME COUNT BROKEN DOWN BY SIZE CLASS, which is what turns a leak hunt into a reading.
+//
+// `bytes=976 count=41` says a program held 41 blocks and nothing about WHAT they were, so every
+// investigation of a differing total began by compiling both paths and reading IR function by
+// function. A block of 24 bytes is a `String` object and almost nothing else; 16 is a two-field
+// object; the size names the shape. One array of 33 counters, incremented where the total already
+// is, and the answer is in the report instead of in an afternoon.
+static POLARON_ALLOC_TLS long long g_live_class[POLARON_NCLASSES + 1];
+
 // Out of memory stops the program HERE, saying what it was asked for.
 //
 // Returning nullptr instead sent the null straight back to codegen, which zero-fills a fresh array and
@@ -100,6 +109,7 @@ POLARON_ALLOC_API void* __polaron_malloc(unsigned long long size) {
         h->pad = static_cast<unsigned>(size);   // the size, for the free path's accounting
         g_live_bytes += static_cast<long long>(size);
         g_live_count++;
+        g_live_class[POLARON_NCLASSES]++;   // the "larger than any class" bucket
         POLARON_ALLOC_BACKEND::profileAlloc(h, size, POLARON_LARGE);
         return p + 16;
     }
@@ -110,6 +120,7 @@ POLARON_ALLOC_API void* __polaron_malloc(unsigned long long size) {
         reinterpret_cast<PolaronHdr*>(reinterpret_cast<char*>(n) - 16)->magic = POLARON_MAGIC;
         g_live_bytes += static_cast<long long>(cls + 1) * 16;
         g_live_count++;
+        g_live_class[cls]++;
         POLARON_ALLOC_BACKEND::profileAlloc(reinterpret_cast<PolaronHdr*>(reinterpret_cast<char*>(n) - 16), static_cast<unsigned long long>(cls + 1) * 16, cls);
         return static_cast<void*>(n);
     }
@@ -129,6 +140,7 @@ POLARON_ALLOC_API void* __polaron_malloc(unsigned long long size) {
     h->cls = cls;
     g_live_bytes += static_cast<long long>(cls + 1) * 16;
     g_live_count++;
+    g_live_class[cls]++;
     POLARON_ALLOC_BACKEND::profileAlloc(h, static_cast<unsigned long long>(cls + 1) * 16, cls);
     return p + 16;
 }
@@ -184,12 +196,14 @@ POLARON_ALLOC_API void __polaron_free(void* ptr) {
         h->magic = POLARON_FREED;   // stamped before release: guards a same-run double free
         g_live_bytes -= static_cast<long long>(h->pad);
         g_live_count--;
+        g_live_class[POLARON_NCLASSES]--;
         POLARON_ALLOC_BACKEND::profileFree(h, h->pad, POLARON_LARGE);
         POLARON_ALLOC_BACKEND::blockFree(h);
         return;
     }
     g_live_bytes -= static_cast<long long>(h->cls + 1) * 16;
     g_live_count--;
+    g_live_class[h->cls]--;
     POLARON_ALLOC_BACKEND::profileFree(h, static_cast<unsigned long long>(h->cls + 1) * 16, h->cls);
     h->magic = POLARON_FREED;   // __polaron_malloc clears it on reuse
     PolaronFreeNode* n = static_cast<PolaronFreeNode*>(ptr);   // the payload becomes the list node
@@ -213,6 +227,13 @@ POLARON_ALLOC_API void __polaron_check_live(void* ptr) {
 
 POLARON_ALLOC_API long long __polaron_live_bytes() { return g_live_bytes; }
 POLARON_ALLOC_API long long __polaron_live_count() { return g_live_count; }
+
+// How many blocks of one size class are live. Class `k` is `(k + 1) * 16` bytes; class
+// `POLARON_NCLASSES` is everything bigger than the classes cover. Out of range answers zero, so a
+// caller can walk past the end without knowing where it is.
+POLARON_ALLOC_API long long __polaron_live_class(int cls) {
+    return (cls < 0 || cls > static_cast<int>(POLARON_NCLASSES)) ? 0 : g_live_class[cls];
+}
 
 // ---- The owned String, which is the heap's most frequent customer and needs nothing else ----
 //

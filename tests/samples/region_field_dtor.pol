@@ -1,0 +1,59 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+
+// DOES `release region` RUN THE DESTRUCTORS OF WHAT LIVES IN THE REGION?
+//
+// `__polaron_region_teardown` is not a `free`. It walks the region's track table and calls each live
+// object's destructor before releasing the table -- "freeing the block alone reclaims the memory and
+// skips every destructor in it", as the lowering's own comment puts it.
+//
+// The shape census found the PIR path omitting that call in `~Pool`, `~Kennel` and
+// `~LinkedList$int`, and omitting `__polaron_region_track` at the other end so nothing was
+// registered to destruct in the first place. Every sample that had the defect printed the same on
+// both paths, because nothing in their regions had a destructor that said anything -- and the
+// live-byte check could not see it either, since a region's memory comes from the arena and not the
+// heap. What was lost was destructors, not bytes.
+//
+// The rule the two paths now agree on: a LOCAL region needs no registry, because it cannot outlive
+// its function and every object that enters it is written in one block the compiler can see. A FIELD
+// region always needs one -- it lives as long as its owner, objects enter it from any method, and
+// the block that releases it sees none of them.
+//
+// Prints: a=11 b=22 / ~Dog 22 / ~Dog 11 / pool gone
+program RegionFieldDtor;
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int id;
+            public constructor Dog(int id) { this.id = id; }
+            public destructor ~Dog() returns void {
+                System.IO.Console.printf("~Dog %d\n", this.id);
+            }
+        }
+        public class Pool {
+            public region arena;
+            public constructor Pool() {
+                this.arena = itself.allocate(1 kilobytes);
+            }
+            public destructor ~Pool() returns void { release region this.arena; }
+            // The dogs are made HERE and the arena is released THERE. That gap is the whole point:
+            // no list the compiler keeps can span it.
+            public method makeDog(int n) returns Dog* {
+                Dog* d = new Dog(n) in region this.arena;
+                return d;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Pool* p = new Pool() on heap;
+                Dog* a = p.makeDog(11);
+                Dog* b = p.makeDog(22);
+                System.IO.Console.printf("a=%d b=%d\n", a.id, b.id);
+                delete p;
+                System.IO.Console.printf("pool gone\n");
+                return;
+            }
+        }
+    }
+}

@@ -1850,6 +1850,20 @@ constexpr Row kCatalog[] = {
         "advance is how a codebase ends up with a scheduler between two functions that could have "
         "been one call." }},
 
+    {Code::LossyWidening, {
+        "Polaron-0B4A", "this conversion is called widening and cannot hold every value",
+        "An integer widens to a wider integer and never loses anything, which is why the language "
+        "lets it happen without a cast. `int` to `float` is grouped with those and is not one of "
+        "them: a `float` has 24 bits of significand, so every whole number above 16777216 rounds to "
+        "an even neighbour. `int n = 16777217; float f = n;` reads back 16777216, and nothing in the "
+        "source says a digit was dropped. The same holds for `long` into `float` or `double`.",
+        "Write the cast -- `cast<float>(n)` -- where the rounding is intended, so the line says so. "
+        "Where it is not intended, keep the value in an integer or move to `double`, which holds "
+        "every `int` exactly.",
+        "Pick the width from the range the value can take, not from the arithmetic around it. A "
+        "count and a measurement are different kinds of number and mixing them is what makes this "
+        "conversion appear." }},
+
     {Code::ImportNameMismatch, {
         "Polaron-0106", "this name was brought in under a different path",
         "An import names one type by its full path, and inside the file that name means exactly what "

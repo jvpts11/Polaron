@@ -281,6 +281,35 @@ void SemanticAnalyzer::warnSwallowedCatch(const ast::Block& body) {
     });
 }
 
+// A CONVERSION THE RULES CALL WIDENING THAT CANNOT HOLD EVERY VALUE.
+//
+// `isSubtype` groups `int -> float` with the integer widenings, which never lose anything, and this
+// one does: a `float` carries 24 bits of significand, so every whole number above 16777216 rounds.
+// `int n = 16777217; float f = n;` reads back 16777216 and the source says nothing about it -- the
+// second of the two silent narrowings the ledger names.
+//
+// A WARNING, NOT AN ERROR. The conversion is defined and usually harmless -- most `int`s that reach
+// a `float` are small -- and the language already has `[Allow]` for where the author has decided.
+// Refusing it outright would make `float f = 3;` need a cast, which is ceremony for nothing.
+void SemanticAnalyzer::warnLossyWidening(const std::string& from, const std::string& to,
+                                         SourceLocation loc) {
+    if (from.empty() || to.empty() || from == to) {
+        return;
+    }
+    // Only into a 32-bit `float`. A `double` holds every `int` exactly, so `int -> double` loses
+    // nothing and warning about it would be noise on the commonest conversion in the language.
+    if (baseType(to) != "float" || !isIntName(baseType(from))) {
+        return;
+    }
+    // 32 bits of integer do not fit 24 bits of significand; 8 and 16 do, exactly.
+    if (intBits(baseType(from)) < 32) {
+        return;
+    }
+    warn(diag::Code::LossyWidening,
+         "'" + from + "' does not fit in a 'float' -- values above 16777216 round to a neighbour",
+         loc);
+}
+
 void SemanticAnalyzer::warnAsyncNeverAwaits(const ast::MethodDecl& m) {
     // `async` TURNS THE METHOD INTO A STATE MACHINE: a `Task<T>` instead of the value, an allocation,
     // and a scheduling hop. A body with no `await` has nothing to suspend on, so all of it is paid
@@ -2524,6 +2553,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                       "' with a value of type '" + initType + "'" + addressHint(initType, declType) +
                       sumFormHint(initType, declType),
                   vd->loc);
+        }
+        // A LITERAL IS EXEMPT: the value is written right there, so it either fits or it does not,
+        // and `intLiteralFits` has already had that argument. What this warns about is a VALUE
+        // whose range nobody can see at the declaration.
+        if (!vd->isVar && vd->init != nullptr &&
+            dynamic_cast<const ast::IntLiteralExpr*>(vd->init.get()) == nullptr) {
+            warnLossyWidening(initType, declType, vd->loc);
         }
         if (lookupLocal(vd->name) != nullptr && deleted_.count(vd->name) == 0) {
             error("redeclaration or shadowing of variable '" + vd->name + "'", vd->loc);

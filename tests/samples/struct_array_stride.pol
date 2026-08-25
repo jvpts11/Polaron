@@ -1,0 +1,53 @@
+import System.IO.Console;
+
+// AN ARRAY OF STRUCTS STEPS BY THE STRUCT'S SIZE, NOT BY THE SUM OF ITS FIELDS.
+//
+// Those two numbers are the same only when nothing needs alignment. `Cell` below holds an `int` and
+// a `double`: the fields add up to twelve, and the struct is SIXTEEN, because the double must start
+// on an eight-byte boundary and the compiler pads to get it there. Step by twelve and every element
+// after the first is read from four bytes before where it lives -- the tag comes back as half of
+// the previous element's padding, and the value as two halves of two different doubles.
+//
+// This is the shape of defect the corpus is worst at catching. It does not crash, it does not leak,
+// it does not print a diagnostic: it prints NUMBERS, and they are wrong. Every sample in the corpus
+// that holds an array of value aggregates either has fields that need no padding, or never reads
+// back an element past the first.
+//
+// Written so the answer is checkable by eye rather than by a total: each cell's tag is its index and
+// each value is its index plus a half, so `2 2.5` at index two is right and anything else is not.
+//
+// Prints: 0 0.5 / 1 1.5 / 2 2.5 / 3 3.5 / sum=6 total=8.0
+program StructArrayStride;
+
+public bundle Main {
+    public namespace App {
+
+        // Sum of fields 12, size 16. The gap between those two numbers IS the test.
+        public struct Cell {
+            public mutable int tag;
+            public mutable double value;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Cell[] cells = new Cell[4]();
+                for (mutable int i = 0; i < 4; i = i + 1) {
+                    cells[i].tag = i;
+                    cells[i].value = cast<double>(i) + 0.5;
+                }
+                // Read back in a SECOND loop, so nothing can be answered from a value still in a
+                // register from the write above.
+                mutable int sum = 0;
+                mutable double total = 0.0;
+                for (mutable int j = 0; j < 4; j = j + 1) {
+                    System.IO.Console.printf("%d %.1f\n", cells[j].tag, cells[j].value);
+                    sum = sum + cells[j].tag;
+                    total = total + cells[j].value;
+                }
+                System.IO.Console.printf("sum=%d total=%.1f\n", sum, total);
+                delete cells;
+                return;
+            }
+        }
+    }
+}

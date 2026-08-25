@@ -1,0 +1,85 @@
+import System.IO.Console;
+
+// A RECEIVER WRITTEN ONCE RUNS ONCE.
+//
+// `implicit_this_receiver.pol` already covers the same three shapes, and it stayed green through
+// the whole defect: its receiver is `return this;`, which says nothing, so calling it twice and
+// keeping the second answer prints exactly what calling it once prints. The census could see it
+// only as a call count -- `calls Holder.table 1->2` -- and a call count is not a wrong answer.
+//
+// This one's receiver SAYS it ran. `calls` is the whole test.
+//
+// Two independent ways the second evaluation got in, both of them a guess made before the object
+// was known and abandoned afterwards:
+//
+//   interrupt binding  every member read asked "is this `w.interrupt`?" by evaluating the object
+//                      and looking at what came back. Almost never yes; always paid for.
+//   swizzle lane       `.x` on something `isVectorExpr` guessed was a vector. The guess reads the
+//                      DECLARED shape -- a call written `<x>.transform(...)` is one of the two
+//                      spellings it accepts -- so a method of that name returning an ordinary
+//                      object fires it, and the fall-through evaluated the object again.
+//
+// `transform` below is not a vector operation. It is named that way because the guess is made from
+// the name, and a test that avoids the name tests nothing.
+//
+// Prints: n=5 twice=10 x=7 calls=3
+program ReceiverOnce;
+
+public bundle main {
+    public namespace app {
+
+        public class Counter {
+            public mutable int calls;
+            public mutable int n;
+            public mutable int x;
+
+            public constructor Counter() {
+                calls = 0;
+                n = 5;
+                x = 7;
+            }
+
+            // The receiver. Every evaluation of it is on the record.
+            public method bump() returns Counter* {
+                calls = calls + 1;
+                return this;
+            }
+
+            public method transform() returns Counter* {
+                calls = calls + 1;
+                return this;
+            }
+
+            public method twice() returns int {
+                return n + n;
+            }
+
+            // a FIELD off a call
+            public method fieldOffCall() returns int {
+                return bump().n;
+            }
+
+            // a METHOD off a call
+            public method methodOffCall() returns int {
+                return bump().twice();
+            }
+
+            // a field whose name is a LANE, off a call whose name makes the lane guess fire
+            public method laneNameOffCall() returns int {
+                return this.transform().x;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter* c = new Counter() on heap;
+                int a = c.fieldOffCall();
+                int b = c.methodOffCall();
+                int d = c.laneNameOffCall();
+                System.IO.Console.printf("n=%d twice=%d x=%d calls=%d\n", a, b, d, c.calls);
+                delete c;
+                return;
+            }
+        }
+    }
+}

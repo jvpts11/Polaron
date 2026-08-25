@@ -363,6 +363,57 @@ private:
 
     // ---- types ----
 
+    // `{ i32 tag, i64 payload }`, created once and reused. See `TypeKind::Variant`.
+    llvm::StructType* variantStruct() {
+        if (variant_ == nullptr) {
+            variant_ = llvm::StructType::create(
+                ctx_, {llvm::Type::getInt32Ty(ctx_), llvm::Type::getInt64Ty(ctx_)},
+                "__polaron_variant");
+        }
+        return variant_;
+    }
+    llvm::StructType* variant_ = nullptr;
+
+    // A PAYLOAD IS WIDENED TO A MACHINE WORD, whatever it was. Every case of a value variant
+    // shares one slot, so the slot has to be the widest thing any of them puts there -- and what
+    // the tag is FOR is knowing how to read it back. Pointers go through the integer, floats
+    // through their bits; nothing is reinterpreted by accident because nothing is read without
+    // first testing the tag.
+    llvm::Value* variantEncode(llvm::Value* v) {
+        llvm::Type* i64 = llvm::Type::getInt64Ty(ctx_);
+        if (v == nullptr) {
+            return llvm::ConstantInt::get(i64, 0);
+        }
+        llvm::Type* ty = v->getType();
+        if (ty->isPointerTy()) {
+            return b_.CreatePtrToInt(v, i64, "var.enc.p");
+        }
+        if (ty->isFloatingPointTy()) {
+            llvm::Value* bits =
+                b_.CreateBitCast(v, b_.getIntNTy(ty->getPrimitiveSizeInBits()), "var.enc.fb");
+            return b_.CreateZExt(bits, i64, "var.enc.f");
+        }
+        return b_.CreateZExtOrTrunc(v, i64, "var.enc.i");
+    }
+
+    llvm::Value* variantDecode(llvm::Value* payload, llvm::Type* ty) {
+        if (ty == nullptr || payload == nullptr) {
+            return payload;
+        }
+        if (ty->isPointerTy()) {
+            return b_.CreateIntToPtr(payload, ty, "var.dec.p");
+        }
+        if (ty->isFloatingPointTy()) {
+            llvm::Value* bits =
+                b_.CreateTrunc(payload, b_.getIntNTy(ty->getPrimitiveSizeInBits()), "var.dec.fb");
+            return b_.CreateBitCast(bits, ty, "var.dec.f");
+        }
+        if (ty->isIntegerTy()) {
+            return b_.CreateZExtOrTrunc(payload, ty, "var.dec.i");
+        }
+        return payload;
+    }
+
     llvm::Type* llty(const Type* t) {
         if (t == nullptr) {
             return llvm::Type::getVoidTy(ctx_);
@@ -457,9 +508,12 @@ private:
                 return llvm::StructType::create(ctx_, parts, llvmNameFor(t));
             }
             case TypeKind::Variant: {
-                std::vector<llvm::Type*> parts{llvm::Type::getInt32Ty(ctx_),
-                                               llvm::Type::getInt64Ty(ctx_)};
-                return llvm::StructType::get(ctx_, parts);
+                // ONE NAMED STRUCT FOR EVERY VALUE VARIANT, and it is named on purpose: a
+                // `Result<int,int>` crosses between code compiled by both back ends, so the shape
+                // has to be the one the other path spells -- `%__polaron_variant = { i32, i64 }`,
+                // a tag and a payload widened to a machine word. An anonymous struct is the same
+                // bytes with a different name, and a differential compares the text.
+                return variantStruct();
             }
             case TypeKind::Fn: {
                 std::vector<llvm::Type*> params;
@@ -1567,6 +1621,28 @@ private:
                         b_.CreateCall(it->second, {obj});
                     }
                 }
+                // §21: THE OBJECT'S STRING FIELDS GO BACK BEFORE ITS BLOCK DOES.
+                //
+                // A String field owns its buffer, so an object that dies owes it -- and this is the
+                // one point between the user's destructor, which may still read the field, and the
+                // free, after which the field's address is not the program's to read. Without it
+                // every object with a String field leaked one buffer per lifetime; `test_string_
+                // ownership`'s field probe is what finally counted them.
+                if (in.aggregate != nullptr) {
+                    llvm::Type* shape = llty(in.aggregate);
+                    llvm::FunctionType* sf = llvm::FunctionType::get(
+                        llvm::Type::getVoidTy(ctx_), {llvm::PointerType::get(ctx_, 0)}, false);
+                    for (const std::string& note : in.extra) {
+                        if (note.rfind("sfree:", 0) != 0) {
+                            continue;
+                        }
+                        const unsigned idx =
+                            static_cast<unsigned>(std::strtoul(note.c_str() + 6, nullptr, 10));
+                        llvm::Value* at = b_.CreateStructGEP(shape, obj, idx, "sfree");
+                        b_.CreateCall(mod_.getOrInsertFunction("__polaron_str_free", sf),
+                                      {b_.CreateLoad(llvm::PointerType::get(ctx_, 0), at)});
+                    }
+                }
                 // ONLY WHAT THE ALLOCATOR GAVE US. `new T()` is a frame slot by default, and handing
                 // a stack address to `free` corrupts the heap -- the destructor runs either way,
                 // which is the half that is always correct.
@@ -1951,7 +2027,26 @@ private:
                     out = b_.CreateCall(malloc, {llvm::ConstantInt::get(i64, bytes)}, in.text);
                     break;
                 }
-                auto* a = b_.CreateAlloca(slot, nullptr, in.text);
+                // IN THE ENTRY BLOCK, ALWAYS -- which is where the trusted backend puts it and is
+                // the difference between a frame slot and a stack that grows.
+                //
+                // `CreateAlloca` at the current insert point puts the allocation wherever the
+                // statement happens to be, and a statement can be inside a loop. `Node n = a[i];`
+                // in a walk over a million nodes is one `alloca` per iteration -- the frame grows
+                // until it runs out. That is presumably why the value-struct copy asked for `heap`
+                // instead: it dodged the growth and paid a `__polaron_malloc` per iteration for it,
+                // never freed. Twenty million allocations and 480 MB leaked on one AP-07 run, and
+                // the walk cost twice what it should.
+                //
+                // Every alloca this language emits is a fixed-size slot whose lifetime is the
+                // enclosing scope, so the entry block is where all of them belong: the storage is
+                // reserved once and reused each time round, which is what the scope means and what
+                // `mem2reg` expects to find. An object built on the stack inside a loop gets the
+                // same slot every iteration, which is exactly the trusted backend's behaviour.
+                llvm::Function* into = b_.GetInsertBlock()->getParent();
+                llvm::BasicBlock& entry = into->getEntryBlock();
+                llvm::IRBuilder<> front(&entry, entry.getFirstInsertionPt());
+                auto* a = front.CreateAlloca(slot, nullptr, in.text);
                 if (in.type != nullptr && in.type->facts.align > 0) {
                     // AT LEAST A WORD FOR AN OBJECT, because that is what every pointer parameter
                     // is told: `this` arrives with `align 8` on it, and an object the frame made
@@ -2432,6 +2527,37 @@ private:
                           /*tagged=*/true, in.loc);
                 break;
             }
+            // §21: THE VALUE FORM OF `Result`/`Option` IS A VALUE, and these three are all it needs.
+            // `imm` carries the case index -- 0 is `Ok`/`Some` -- and the payload rides in one
+            // 64-bit slot the tag says how to read.
+            case Op::VariantMake: {
+                llvm::StructType* vt = variantStruct();
+                llvm::Value* agg = llvm::UndefValue::get(vt);
+                agg = b_.CreateInsertValue(
+                    agg,
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_),
+                                           static_cast<uint64_t>(in.imm)),
+                    {0u}, "var.tag");
+                agg = b_.CreateInsertValue(
+                    agg, variantEncode(in.operands.empty() ? nullptr : operand(in, 0)), {1u},
+                    "var.val");
+                out = agg;
+                break;
+            }
+            case Op::VariantTag: {
+                llvm::Value* v = operand(in, 0);
+                if (v != nullptr && v->getType()->isStructTy()) {
+                    out = b_.CreateExtractValue(v, {0u}, "var.tag");
+                }
+                break;
+            }
+            case Op::VariantPayload: {
+                llvm::Value* v = operand(in, 0);
+                if (v != nullptr && v->getType()->isStructTy()) {
+                    out = variantDecode(b_.CreateExtractValue(v, {1u}, "var.pl"), llty(in.type));
+                }
+                break;
+            }
             case Op::GuardNull: {
                 llvm::Value* p = operand(in, 0);
                 if (p == nullptr || !p->getType()->isPointerTy()) {
@@ -2454,8 +2580,14 @@ private:
                     tail_[b.id] = cont;
                     break;
                 }
-                emitGuard(ok, "null reference", nullptr, nullptr, nullptr, nullptr, 72,
-                          /*tagged=*/true, in.loc);
+                // A DEREFERENCE AND A BROKEN CAST ARE DIFFERENT FAILURES and the other path spells
+                // them differently -- `null reference dereference` at code 70 for reading through
+                // something declared able to be null, `null reference` at 72 for a `cast<T*>` whose
+                // promise did not hold. A differential compares the text.
+                const bool deref =
+                    std::find(in.extra.begin(), in.extra.end(), "dereference") != in.extra.end();
+                emitGuard(ok, deref ? "null reference dereference" : "null reference", nullptr,
+                          nullptr, nullptr, nullptr, deref ? 70 : 72, /*tagged=*/true, in.loc);
                 break;
             }
             case Op::GuardContract: {
@@ -3120,6 +3252,20 @@ private:
                            b_.CreateGlobalStringPtr(aLabel), coerce(aVal, i64),
                            b_.CreateGlobalStringPtr(bLabel), coerce(bVal, i64),
                            llvm::ConstantInt::get(i32, code)});
+        } else if (tagged && !whereLine(where).empty()) {
+            // A GUARD WITH NO VALUES TO REPORT STILL HAS A LINE, and the line is most of what makes
+            // the diagnostic useful: `null reference dereference` alone says what happened and not
+            // where, which on a program with fifty dereferences is a bisect rather than an answer.
+            // `__polaron_panic` takes a headline and adds its own tag, with nowhere to put the
+            // location; `__polaron_fail` prints VERBATIM, so the whole message is built here.
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(ctx_), {ptr, ptr, i64, ptr, i64, i32}, false);
+            llvm::Constant* none = llvm::ConstantPointerNull::get(ptr);
+            b_.CreateCall(guardExit("__polaron_fail", ft),
+                          {b_.CreateGlobalStringPtr(std::string("Polaron panic: ") + headline +
+                                                    "\n" + whereLine(where)),
+                           none, llvm::ConstantInt::get(i64, 0), none,
+                           llvm::ConstantInt::get(i64, 0), llvm::ConstantInt::get(i32, code)});
         } else if (tagged) {
             llvm::FunctionType* ft =
                 llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {ptr}, false);

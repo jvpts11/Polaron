@@ -82,6 +82,7 @@
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 #endif
 
 namespace {
@@ -1821,15 +1822,32 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             std::fputs("pir::shapes: the trusted module could not be re-read for comparison\n",
                        stderr);
         } else {
+            // Promote stack slots on BOTH sides first. Without it the report is unreadable: a census
+            // over all 874 samples gave 9 402 differences and not one program in full agreement,
+            // and a third of that was PIR keeping a value in an `alloca` where the trusted path used
+            // the value -- semantically identical, and reaching `Object.Object`, so every program.
+            // See src/pir/shapediff.h and tests/pir_shape_baseline.md.
+            //
+            // ON A COPY OF THE PIR MODULE, because that one is what gets emitted. Normalising it in
+            // place would make `--compare-ir` change the program it was asked to inspect -- and this
+            // file already says elsewhere that a debugging knob which turns on something the command
+            // line did not ask for is not a debugging knob. The trusted module is a throwaway (it
+            // was parsed from bitcode for this comparison alone), so that one is promoted in place.
+            polaron::pir::normalizeForShapeCompare(**mine);
+            std::unique_ptr<llvm::Module> pirCopy = llvm::CloneModule(*pirModule);
+            polaron::pir::normalizeForShapeCompare(*pirCopy);
             size_t both = 0;
             for (const llvm::Function& f : **mine) {
-                if (!f.isDeclaration() && pirModule->getFunction(f.getName()) != nullptr &&
-                    !pirModule->getFunction(f.getName())->isDeclaration()) {
+                if (f.getName() == "main") {
+                    continue;   // the synthesised entry wrapper: excluded there, so not counted here
+                }
+                if (!f.isDeclaration() && pirCopy->getFunction(f.getName()) != nullptr &&
+                    !pirCopy->getFunction(f.getName())->isDeclaration()) {
                     ++both;
                 }
             }
             const std::vector<polaron::pir::ShapeDiff> diffs =
-                polaron::pir::compareBodies(**mine, *pirModule);
+                polaron::pir::compareBodies(**mine, *pirCopy);
             std::fputs(polaron::pir::renderShapeDiffs(diffs, both).c_str(), stderr);
         }
     }

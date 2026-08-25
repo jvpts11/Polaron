@@ -1,0 +1,71 @@
+import System.IO.Console;
+
+// AN EXCEPTION LEAVING A METHOD STILL LEAVES ITS SCOPES.
+//
+// `exceptions_edge` has a stack object beside a `try`, and its `catch` matches -- so the rethrow
+// edge exists in the IR and no program ever walks it. That is why the corpus called this correct:
+// the trusted path ran `~Guard` twice (the normal return, and `rethrow` with a funclet) and the PIR
+// path ran it once, and both printed the same thing because only one of the two edges is ever taken.
+//
+// This walks the other edge. Two shapes, both leaving the method with a live stack object:
+//
+//   bare()    a `throw` with no `try` around it at all
+//   viaTry()  a `try` whose `catch` does NOT match, so the exception resumes past it
+//
+// Each must print its destructor before the caller's handler prints. A backend that tears down only
+// on the normal path prints the `caught` line with no `dtor` before it.
+program UnwindRaii;
+
+public bundle main {
+    public namespace app {
+
+        public class Fault {
+            public mutable int code;
+            public constructor Fault() { code = 9; }
+        }
+
+        public class Other {
+            public mutable int code;
+            public constructor Other() { code = 0; }
+        }
+
+        public class Guard {
+            public mutable int id;
+            public constructor Guard(int id) { this.id = id; }
+            public destructor ~Guard() returns void {
+                System.IO.Console.printf("dtor %d\n", this.id);
+            }
+        }
+
+        public class Main {
+            private static method bare() returns void {
+                Guard g = new Guard(1) on stack;
+                throw new Fault() on heap;
+            }
+
+            private static method viaTry() returns void {
+                Guard g = new Guard(2) on stack;
+                try {
+                    throw new Fault() on heap;
+                } catch (Other e) {
+                    System.IO.Console.printf("wrong handler ran\n");
+                }
+                return;
+            }
+
+            public static method main(string[] args) returns void {
+                try {
+                    Main.bare();
+                } catch (Fault e) {
+                    System.IO.Console.printf("caught bare %d\n", e.code);
+                }
+                try {
+                    Main.viaTry();
+                } catch (Fault e) {
+                    System.IO.Console.printf("caught viaTry %d\n", e.code);
+                }
+                return;
+            }
+        }
+    }
+}

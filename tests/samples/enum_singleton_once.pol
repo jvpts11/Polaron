@@ -1,0 +1,62 @@
+import System.IO.Console;
+
+// A JAVA-STYLE ENUM CONSTANT IS BUILT ONCE, HOWEVER MANY TIMES IT IS NAMED (spec 12.2).
+//
+// `Planet.EARTH` is a singleton: one object for the whole run, shared by every mention. That is not
+// an optimisation, it is what makes `==` between two constants mean what it says -- and it is what
+// makes a constructor with an effect run once rather than once per reference.
+//
+// The census counted PIR emitting twelve constructor calls against the other path's three, which
+// says nothing on its own: a lazily-built singleton guarded by a flag can be WRITTEN twelve times
+// and still RUN three. Only a constructor that speaks can tell the two apart, so this one speaks.
+//
+// Each constant is named four times below -- in a method call, in a comparison, in interpolation,
+// and through a local. Three constants, twelve mentions, and the build lines must number THREE.
+//
+// Prints: build Mercury / build Venus / build Earth / then the readings, then same=1
+program EnumSingletonOnce;
+
+public bundle Main {
+    public namespace App {
+
+        public enum Planet {
+            MERCURY(3, 1),
+            VENUS(9, 3),
+            EARTH(10, 2);
+
+            private final int mass;
+            private final int radius;
+
+            public constructor Planet(int mass, int radius) {
+                this.mass = mass;
+                this.radius = radius;
+                // THE EFFECT. One line per constant, or the singleton is not one.
+                System.IO.Console.printf("build %d\n", mass);
+            }
+
+            public method density() returns int {
+                return mass / radius;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // mention 1: a method call on each
+                System.IO.Console.printf("d %d %d %d\n", Planet.MERCURY.density(),
+                                         Planet.VENUS.density(), Planet.EARTH.density());
+                // mention 2: through a local
+                Planet a = Planet.EARTH;
+                Planet b = Planet.VENUS;
+                Planet c = Planet.MERCURY;
+                System.IO.Console.printf("l %d %d %d\n", a.density(), b.density(), c.density());
+                // mention 3: identity -- the whole reason a constant is a singleton
+                boolean same = (a == Planet.EARTH);
+                // mention 4: named again, so nothing can fold the mentions into one
+                System.IO.Console.printf("again %d %d %d\n", Planet.MERCURY.density(),
+                                         Planet.VENUS.density(), Planet.EARTH.density());
+                System.IO.Console.printf("same=%d\n", same);
+                return;
+            }
+        }
+    }
+}

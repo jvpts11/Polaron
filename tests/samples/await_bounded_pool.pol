@@ -1,0 +1,60 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+import System.Concurrency.Task;
+
+// AWAIT SUSPENDS. IT DOES NOT BLOCK -- AND THIS IS WHERE THE DIFFERENCE IS VISIBLE.
+//
+// `__polaron_await` registers the running body as the awaited task's continuation and returns, so
+// the worker that was running it goes back to the pool. `__polaron_task_wait` sleeps on a condition
+// variable instead, holding the worker for as long as the awaited task takes.
+//
+// On an unbounded pool the two are indistinguishable: both finish, both print the same numbers, and
+// the blocking one merely uses more threads. That is why 874 samples never showed it. The moment the
+// pool is BOUNDED they part company, and not by a little -- tasks waiting on tasks that themselves
+// need a worker is the classic deadlock, and the program simply stops.
+//
+// The shape below is that, deliberately: `outer` awaits `inner`, and there are many more of them in
+// flight than there are workers. Every `outer` that blocks holds a worker while waiting for an
+// `inner` that cannot start until a worker is free. With suspension, each `outer` releases its
+// worker at the `await` and every `inner` runs.
+//
+// A test that HANGS is the failure here, not a wrong number -- which is why this one is registered
+// with a timeout rather than only an expected output.
+//
+// Prints: done=32 sum=496
+program AwaitBoundedPool;
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+            private static async method inner(int k) returns int {
+                return k;
+            }
+
+            // Awaits another task. Under a blocking `await` this holds its worker the whole time.
+            private static async method outer(int k) returns int {
+                int got = await Main.inner(k);
+                return got;
+            }
+
+            public static method main(string[] args) returns void {
+                // Far more outstanding tasks than any pool has workers, each of them awaiting one
+                // more. Started first, awaited afterwards, so they are all in flight together --
+                // awaiting each one as it is made would serialise them and prove nothing.
+                ArrayList<Task<int>> pending = new ArrayList<Task<int>>() on heap;
+                for (mutable int i = 0; i < 32; i = i + 1) {
+                    pending.add(Main.outer(i));
+                }
+                mutable int done = 0;
+                mutable int sum = 0;
+                for (mutable int j = 0; j < 32; j = j + 1) {
+                    sum = sum + await pending.get(j);
+                    done = done + 1;
+                }
+                System.IO.Console.printf("done=%d sum=%d\n", done, sum);
+                delete pending;
+                return;
+            }
+        }
+    }
+}

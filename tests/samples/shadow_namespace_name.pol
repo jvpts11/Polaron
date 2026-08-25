@@ -1,0 +1,42 @@
+import System.IO.Console;
+
+// A NAMESPACE NAME IS NOT UNIQUE ACROSS BUNDLES, AND WAS NEVER MEANT TO BE.
+//
+// `App` is the obvious name for an application's namespace. The standard library has one too. Type
+// resolution's first rule is "your own namespace wins", and it matched on the namespace NAME alone
+// -- so these two `App`s were the same place, and a program that declared any type the library also
+// has in ITS `App` handed the library the program's version.
+//
+// The failure landed inside the prelude, on a line this file's author never wrote:
+//
+//   error: cannot assign a value of type 'long' to field 'cents' of type 'int'
+//     --> <prelude:App.pol:189>: public constructor Money(long cents) { this.cents = cents; }
+//
+// -- the library's own constructor, typechecked against somebody else's fields. Four errors, none of
+// them in the program, and no way to guess from them that the cause was the word `App`.
+//
+// `Money` is the collision that found it: the library's has a `long cents` and this one an `int
+// cents`, so the two disagree about a field they both have. `Scanner`, which the corpus already
+// shadows, never showed it -- its fields are named differently, so nothing collided.
+//
+// Prints: money=300
+program ShadowNamespaceName;
+
+public bundle Main {
+    public namespace App {
+        public class Money {
+            public mutable int cents;
+            public constructor Money(int c) { cents = c; }
+            public method plus(int more) returns int { return cents + more; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Money* m = new Money(250) on heap;
+                System.IO.Console.printf("money=%d\n", m.plus(50));
+                delete m;
+                return;
+            }
+        }
+    }
+}

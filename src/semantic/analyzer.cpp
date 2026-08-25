@@ -317,8 +317,17 @@ const ClassInfo* SemanticAnalyzer::lookupShared(const std::string& name) const {
     };
     // Your own namespace wins -- the rule the shadowing warning has always stated and that the
     // renaming pass implemented by rewriting. Same answer, no rewriting.
+    //
+    // YOUR OWN NAMESPACE IS YOURS, IN YOUR BUNDLE. A namespace name is not unique across bundles and
+    // was never meant to be: `App` is the obvious name for an application's namespace, and the
+    // standard library has one too. Matching on the name alone made those two the same place, so a
+    // program with `namespace App` declaring any type the library also has in ITS `App` handed the
+    // library the program's version -- and the failure landed inside the prelude, on a line the
+    // author never wrote: declaring `Money` reported `cannot assign a value of type 'long' to field
+    // 'cents' of type 'int'` at `<prelude:App.pol:189>`, which is the library's own constructor
+    // being typechecked against somebody else's fields.
     for (std::uint32_t id : shared->second) {
-        if (types_[id].ns == currentNamespace_) {
+        if (types_[id].ns == currentNamespace_ && types_[id].bundle == currentBundle_) {
             if (const ClassInfo* c = entryFor(types_[id])) {
                 return c;
             }
@@ -5547,6 +5556,7 @@ void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::str
                       "' of type '" + var->type + "'" + sumFormHint(valueType, var->type),
                   loc);
         }
+        warnLossyWidening(valueType, var->type, loc);
         return;
     }
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&target)) {

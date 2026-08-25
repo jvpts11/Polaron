@@ -70,8 +70,20 @@ foreach(f ${samples})
     # program that loops forever takes the whole ratchet with it: the run went from ninety seconds
     # to unbounded and reported nothing at all, which is strictly less information than "this one
     # differs". Ten seconds is far more than any sample here needs.
+    # A SAMPLE THAT READS gets what it reads, when the corpus has it.
+    #
+    # `tic_tac_toe` asks for a move and loops until the game ends. Run with no stdin, `readInt`
+    # fails at EOF, the loop never terminates, and the ten-second timeout cuts it at wherever each
+    # binary happened to be -- so the comparison measured the CLOCK. It reported the two backends
+    # disagreeing on a sample whose 37 lines are identical when the moves are supplied, and it did
+    # so for the first time on a commit that changed nothing but an allocation. A differential that
+    # a speed change can flip is not measuring what it claims to.
+    set(feed "")
+    if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/samples/${tag}.in")
+        set(feed INPUT_FILE "${CMAKE_CURRENT_LIST_DIR}/samples/${tag}.in")
+    endif()
     execute_process(COMMAND "${exe}" OUTPUT_VARIABLE oldOut ERROR_QUIET RESULT_VARIABLE rc
-                    TIMEOUT 10)
+                    ${feed} TIMEOUT 10)
 
     set(ENV{POLARON_VIA_PIR} "1")
     execute_process(COMMAND "${POLC}" "${f}" -o "${ll}" RESULT_VARIABLE rc ERROR_QUIET)
@@ -93,7 +105,7 @@ foreach(f ${samples})
         continue()
     endif()
     execute_process(COMMAND "${exe}" OUTPUT_VARIABLE pirOut ERROR_QUIET RESULT_VARIABLE rc
-                    TIMEOUT 10)
+                    ${feed} TIMEOUT 10)
     if(rc STREQUAL "Process terminated due to timeout")
         # Named, because "it hangs" and "it prints the wrong thing" are different bugs and the
         # count alone cannot tell them apart.
