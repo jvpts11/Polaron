@@ -49,6 +49,7 @@ struct ToLlvmResult {
     int assumes = 0;
     int aliasTags = 0;   // loads and stores carrying `!tbaa`
     int speculated = 0;  // vtable calls given an inline cache
+    int mergedDefinitions = 0;  // `--lib` bodies published as ODR, for the consumer's own copy
 };
 
 ToLlvmResult toLlvm(const Module& pir, llvm::LLVMContext& context, llvm::Module& into);

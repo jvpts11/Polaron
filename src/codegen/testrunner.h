@@ -36,7 +36,7 @@
 #include <string>
 #include <vector>
 
-#include "codegen/codegen.h"
+#include "codegen/cgutil.h"   // `CodegenError`, which is what this reports through
 #include "parser/ast.h"
 
 // `IRBuilder` is included rather than forward-declared: it is a class TEMPLATE, so a bare

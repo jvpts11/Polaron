@@ -181,8 +181,60 @@ private:
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), code.size()));
     }
 
+    // A LIBRARY PUBLISHES ITS METHODS -- that is what a library IS -- but the ones its consumer will
+    // ALSO compile have to be published as ODR, or the linker refuses the pair. `Function::mergeable`
+    // is which; this is the COFF mechanics of saying so.
+    void mergeDuplicableDefinitions() {
+        for (const std::unique_ptr<Function>& f : pir_.functions) {
+            llvm::Function* fn = mod_.getFunction(f->symbol.empty() ? f->key : f->symbol);
+            if (fn == nullptr || fn->isDeclaration() || fn->hasLocalLinkage()) {
+                continue;
+            }
+            if (!f->mergeable) {
+                // PUBLISHED FOR A DYNAMIC CONSUMER TOO, and on Windows that is a second, separate
+                // act. `--use-dynamic` compiles this same bitcode into a DLL at run time and asks
+                // for the method by name with `GetProcAddress`; a COFF image exports only what is
+                // marked `dllexport`, so external linkage alone -- which is all a STATIC link ever
+                // needs -- produced a DLL with an empty export table.
+                //
+                // What that looked like from outside was not a missing symbol. The generated thunk
+                // saw a null from `polaron_bundle_sym`, took its failure path, and threw
+                // `BundleNotLoadedException` into a process with nothing to catch it: the four
+                // `bundle_dynamic_*` tests died at `0xC0000409` with no output at all, having built
+                // and loaded the image perfectly.
+                //
+                // Not for `mergeable` ones: `dllexport` on local linkage is rejected outright by
+                // LLVM, and on a COMDAT it fights the deduplication those exist for.
+                fn->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+                ++r_.mergedDefinitions;
+                continue;
+            }
+            fn->setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+            // A COMDAT KEYED ON THE SYMBOL, or the linkage is a claim nothing acts on. Without one,
+            // `linkonce_odr` lowers on COFF to a per-object `.weak.<name>.default.<tu>` symbol --
+            // which is a DIFFERENT name in each object and therefore collides all over again the
+            // moment two of them are linked. The COMDAT is what makes it a real SELECT_ANY that the
+            // linker deduplicates.
+            fn->setComdat(mod_.getOrInsertComdat(fn->getName()));
+            ++r_.mergedDefinitions;
+        }
+        for (const Global& g : pir_.globals) {
+            if (!g.mergeable) {
+                continue;
+            }
+            llvm::GlobalVariable* gv = mod_.getNamedGlobal(g.name);
+            if (gv == nullptr || gv->isDeclaration() || gv->hasLocalLinkage()) {
+                continue;
+            }
+            gv->setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+            gv->setComdat(mod_.getOrInsertComdat(gv->getName()));
+            ++r_.mergedDefinitions;
+        }
+    }
+
     void internalizeProgram() {
         if (pir_.library) {
+            mergeDuplicableDefinitions();
             return;   // a library publishes its methods; that is what a library IS
         }
         std::set<std::string> keep{"main", "kmain"};

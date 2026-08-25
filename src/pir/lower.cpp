@@ -151,7 +151,60 @@ public:
                 }
             }
         }
+        // THE SLOT NUMBERING, AS AN ORDER. `vtableSlot_` maps a method name to its index; what a
+        // `.polb` carries and a consumer seeds itself with is the list, where POSITION is the slot
+        // and a gap is a number nothing uses. Built here rather than kept as a list all along
+        // because the map is what every lookup wants and the order is wanted once.
+        out_.vtableSlots.assign(vtableSlot_.size(), std::string());
+        for (const auto& [method, at] : vtableSlot_) {
+            if (at >= 0 && static_cast<size_t>(at) < out_.vtableSlots.size()) {
+                out_.vtableSlots[static_cast<size_t>(at)] = method;
+            }
+        }
+        markMergeable();
         return std::move(out_);
+    }
+
+    // WHICH BODIES A CONSUMER WILL COMPILE A SECOND COPY OF -- see `Function::mergeable`.
+    //
+    // In ONE sweep at the end, over the finished module, rather than at each of the twenty-odd
+    // places a function is declared. The rule reads the KEY and one set, both of which are complete
+    // only now, and a rule spread over twenty sites is a rule that drifts: the last one added forgets
+    // it, and what that produces is a link error in a program nobody was working on.
+    // Whether `name` is `<owner>.<member>` for an owner both sides of a bundle boundary compile.
+    bool compiledOnBothSides(const std::string& name) const {
+        const size_t lastDot = name.rfind('.');
+        const std::string owner =
+            lastDot == std::string::npos ? std::string() : name.substr(0, lastDot);
+        // A MONOMORPHIZED INSTANCE, BY ITS `$`. `ArrayList$String` is not a class anyone wrote: it
+        // is what this compilation made of a template, and the consumer will make the same thing of
+        // the same template. The `$` is the only mark it carries, and it is reserved -- no
+        // identifier the language accepts can contain one.
+        //
+        // ...AND THE PRELUDE, for the plainer reason that both sides carry it. `String.length` is
+        // compiled into every Polaron artefact there is.
+        //
+        // `literal.` too: a literal suffix's owner is not a class, so `isPreludeClass` cannot answer
+        // for it, and `64 kilobytes` is resolved by the same prelude code on both sides.
+        return owner.find('$') != std::string::npos || isPreludeClass(owner) ||
+               name.rfind("literal.", 0) == 0;
+    }
+
+    void markMergeable() {
+        for (Global& g : out_.module.globals) {
+            if ((g.linkage == Linkage::Public || g.linkage == Linkage::External) &&
+                compiledOnBothSides(g.name)) {
+                g.mergeable = true;
+            }
+        }
+        for (const std::unique_ptr<Function>& f : out_.module.functions) {
+            if (f->blocks.empty() || f->linkage != Linkage::Public) {
+                continue;   // a declaration defines nothing to collide; a local publishes nothing
+            }
+            if (compiledOnBothSides(f->key)) {
+                f->mergeable = true;
+            }
+        }
     }
 
     // EVERY COMPILE-TIME CONSTANT IN THE PROGRAM, folded before a single declaration is walked.
@@ -2532,10 +2585,56 @@ private:
         return false;
     }
 
+    // CAN A CONSUMER THAT DOES NOT EXIST YET OVERRIDE THIS? Only ever true under `--lib`, and it is
+    // the one question closed-world reasoning cannot answer.
+    //
+    // Devirtualization -- "nothing below this class overrides the method, so call it directly" --
+    // reads the whole program to prove there is a single implementation. For a PROGRAM the whole
+    // program really is in front of it. For a BUNDLE it is not: the consumer is compiled later, from
+    // sources this compilation never sees, and it may extend any public class here and override any
+    // method it can reach. Proving "no override" over the library alone proves nothing about it.
+    //
+    // What that cost was `bundle_inherit_runs` printing `total = 17` where the program prints 57.
+    // `Widget.total` is compiled HERE and calls `this.weight()`; nothing in the library overrides
+    // `weight`, so the call went straight to `Widget.weight` and returned 1. The consumer's
+    // `Button.weight` -- the override, returning 5 -- was never reachable from the library's own
+    // code, and 1*10+7 is exactly the 17 that printed. `weight` and `label`, called from the
+    // CONSUMER's side where the world is closed again, were both right: only the call compiled on
+    // the library side of the boundary was wrong, which is why the number was wrong and nothing
+    // crashed.
+    //
+    // `carriesVtable` already asks this question for the LAYOUT (a public class gets a vtable
+    // pointer even if this compilation never dispatches on it). The layout answer without this one
+    // is the worst of the three states: the table exists, `buildVtable` leaves the slot empty
+    // because nothing "dispatches" the method, and the call is direct anyway.
+    bool overridableFromOutside(const ast::ClassDecl& c, const std::string& method) const {
+        if (!bundles_.library || c.visibility != "public" || c.isFinal || c.isSealed) {
+            return false;
+        }
+        // The method has to be reachable from a subclass AND replaceable by one. `private` is not
+        // inherited, `static` is not dispatched at all, and `final` is the author saying outright
+        // that this one may not be overridden -- which is a promise the compiler may rely on.
+        for (const ast::ClassDecl* at = &c; at != nullptr;) {
+            for (const ast::MemberPtr& m : at->members) {
+                const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+                if (md == nullptr || md->name != method) {
+                    continue;
+                }
+                return !md->isStatic && !md->isFinal && !md->isExtern && md->visibility != "private";
+            }
+            const std::string up = cgutil::baseType(at->superclass);
+            at = up.empty() ? nullptr : findClass(up);
+        }
+        return false;
+    }
+
     bool needsDispatch(const std::string& cls, const std::string& method) {
         const ast::ClassDecl* here = findClass(cls);
         if (here == nullptr || here->isStruct || here->isRecord || here->isUnion) {
             return false;
+        }
+        if (overridableFromOutside(*here, method)) {
+            return true;
         }
         // A METHOD THAT CAN BE REPLACED MUST BE DISPATCHED (§32.8). `Dog.methods.replace("bark",
         // ...)` points a dispatch slot at the replacement, and a method nothing overrides has no
@@ -3378,7 +3477,17 @@ private:
                     key, out_.module.types.fnType(out_.module.types.voidType(), {self}));
                 fn->params = {{"this", cls}};
                 fn->kind = FnKind::Constructor;
-                fn->linkage = Linkage::Internal;
+                // AS VISIBLE AS THE CLASS, because that is what the language says it is. `public
+                // class Square { }` may be constructed by anyone who can name `Square` -- there is
+                // no `constructor` line to carry a visibility of its own, and the one the compiler
+                // synthesises stands in for the one the author did not have to write.
+                //
+                // Left `Internal` it was invisible past the object it was compiled into, which in a
+                // program is exactly right and nobody could tell. In a `--lib` it is the difference
+                // between a usable bundle and `lld-link: error: undefined symbol: Square.Square`:
+                // the consumer writes `new Square()` -- legal, and the analyzer agrees -- and the
+                // library published no such symbol.
+                fn->linkage = c.visibility == "public" ? Linkage::Public : Linkage::Internal;
                 // NO BODY HERE. It IS defined -- and it is lowered like every other constructor,
                 // from an empty block, once the tables exist. Built by hand instead, it wrote the
                 // vtable pointer and NOTHING ELSE: a class with inline field initialisers and no
@@ -6337,8 +6446,20 @@ private:
         //
         // The question it was buying at that price has a cheap exact answer: if no class in the
         // program declares an `interrupt` handler by this name, no receiver can have one either.
-        if (interruptNames_.count(m.member) == 0) {
+        // The second demonstration switch (see `noteStringResult` for the first).
+        //
+        // D14 was fixed in two halves -- ask before evaluating, and hand the evaluated receiver back
+        // so the caller reuses it -- and reintroducing it needs BOTH turned off, which is a fact
+        // worth knowing: with only the first disabled the receiver is still lowered once, because
+        // the cache catches it. `golden_ir_catches_reintroduced_defect` requires the recording of
+        // `Holder.fieldOffCall` to stop matching, and it only does when the call is genuinely
+        // emitted twice. Read only here, and only for that test.
+        const bool demonstrating = std::getenv("POLARON_REINTRODUCE_D14") != nullptr;
+        if (interruptNames_.count(m.member) == 0 && !demonstrating) {
             return kNoValue;
+        }
+        if (demonstrating) {
+            lowered = nullptr;   // ...and the caller lowers it a second time, as it used to
         }
         const ValueId self = lowerExpr(m.object.get());
         if (lowered != nullptr) {
@@ -21964,6 +22085,19 @@ private:
     // was overridden.
     void noteStringResult(const Function* target, ValueId got) {
         if (target == nullptr || got == kNoValue) {
+            return;
+        }
+        // A SWITCH THAT PUTS ONE DEFECT BACK, so a test can prove the instrument bites.
+        //
+        // Wave 2 deletes the trusted path and with it every check that is a COMPARISON. What
+        // replaces them is absolute checks -- numbers a program reports about itself -- and an
+        // absolute check that has never been seen to fail is a claim, not an instrument. So one is
+        // demonstrated: `live_catches_reintroduced_defect` sets this, which restores exactly the
+        // leak D6 had here, and REQUIRES `live_encoding_hex_base64` to fail. It moves 400/17 to
+        // 976/41, and the test is registered `WILL_FAIL`.
+        //
+        // Read only here, and only for that test. Nothing else in the compiler consults it.
+        if (std::getenv("POLARON_REINTRODUCE_D6") != nullptr) {
             return;
         }
         if (auto declared = returnName_.find(target->key);

@@ -120,6 +120,163 @@ if(POLARON_WITH_LLVM)
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_behaviour_test.cmake")
         endforeach()
 
+        # ---- THE ABSOLUTE HALF: what each program still holds when it ends, against a number ----
+        #
+        # Every check above is a COMPARISON, and a comparison stops existing when the second side is
+        # deleted -- which Wave 2 does. Worse, it was never able to see the other thing at all: PIR
+        # was built against the trusted path, so a defect in BOTH never diverges. Five memory defects
+        # reached the census that way, and three of the four found afterwards were wrong answers
+        # rather than divergences.
+        #
+        # These numbers were read off working binaries and written down by somebody who looked. When
+        # one moves, either the program changed or a defect landed; `POLARON_LIVE=2` prints the
+        # breakdown by size class and usually names it -- a 24-byte block is a String object and
+        # almost nothing else.
+        #
+        # `112/5` is what the prelude itself leaves behind, so it is the floor for a program that
+        # holds nothing of its own. The samples that sit above it say why in their own comments.
+        set(LIVE_hello_world           "112/5")
+        set(LIVE_addr_static           "112/5")
+        set(LIVE_entry_wrapper         "112/5")
+        set(LIVE_unwind_raii           "144/7")
+        set(LIVE_bare_object_dispatch  "112/5")
+        set(LIVE_region_field_dtor     "128/6")
+        set(LIVE_receiver_once         "112/5")
+        set(LIVE_generator             "112/5")
+        set(LIVE_struct_array_stride   "112/5")
+        set(LIVE_value_compat          "112/5")
+        set(LIVE_value_try             "112/5")
+        set(LIVE_custom_iterator       "112/5")
+        set(LIVE_enum_singleton_once   "112/5")
+        set(LIVE_value_element_copy    "112/5")
+        set(LIVE_scoped                "112/5")
+        set(LIVE_shadow_namespace_name "112/5")
+        set(LIVE_lossy_widening        "112/5")
+        set(LIVE_encoding_hex_base64   "400/17")
+        set(LIVE_deep_call_chain       "176/7")
+        set(LIVE_random_shuffle        "144/7")
+        set(LIVE_null_cast_checked     "128/6")
+        foreach(sample hello_world addr_static entry_wrapper unwind_raii bare_object_dispatch
+                       region_field_dtor receiver_once generator struct_array_stride value_compat
+                       value_try custom_iterator enum_singleton_once value_element_copy scoped
+                       shadow_namespace_name lossy_widening encoding_hex_base64 deep_call_chain
+                       random_shuffle null_cast_checked)
+            add_test(NAME live_${sample} COMMAND "${CMAKE_COMMAND}"
+                "-DPOLC=$<TARGET_FILE:polc>"
+                "-DCLANG=${POLARON_CLANG}"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${sample}.pol"
+                "-DEXPECT_LIVE=${LIVE_${sample}}"
+                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+                "-DRT=${POLARON_RT_OBJ}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/run_live_test.cmake")
+        endforeach()
+
+        # ---- GOLDEN IR: the exact shape of a few functions, written down ----
+        #
+        # The shape gate is a comparison and stops existing when the second back end does. These
+        # recordings replace it for the handful of functions whose shape IS the rule -- chosen small
+        # enough that a diff is readable, and one line of reasoning each:
+        #
+        #   Main.makeValue      §21's value form. Two returns, no allocation, `%__polaron_variant`
+        #                       built with `insertvalue`. It is the whole of D2 in nine lines, and
+        #                       the shape a regression would break first.
+        #   Holder.fieldOffCall D14. `return table().n;` is ONE call in the source, and this is the
+        #                       function where it was two.
+        #   Snap.Snap           D1. A constructor that nulls its String field, copies the incoming
+        #                       one and releases what was there -- the protocol, in order.
+        #
+        # A recording is updated by running once with POLARON_BLESS_GOLDEN=1 and READING the result,
+        # which is deliberately a thing somebody has to decide to do.
+        foreach(g "value_compat:Main.makeValue" "implicit_this_receiver:Holder.fieldOffCall"
+                  "value_copy_string_field:Snap.Snap")
+            string(FIND "${g}" ":" _at)
+            string(SUBSTRING "${g}" 0 ${_at} _sample)
+            math(EXPR _rest "${_at} + 1")
+            string(SUBSTRING "${g}" ${_rest} -1 _fn)
+            add_test(NAME golden_ir_${_sample} COMMAND "${CMAKE_COMMAND}"
+                "-DPOLC=$<TARGET_FILE:polc>"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${_sample}.pol"
+                "-DFUNCTION=${_fn}"
+                "-DGOLDEN=${CMAKE_CURRENT_SOURCE_DIR}/golden/${_sample}.${_fn}.ll"
+                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/run_golden_ir_test.cmake")
+        endforeach()
+
+        # ...and this one bites too. `POLARON_REINTRODUCE_D14` restores the double evaluation of a
+        # receiver, which makes `Holder.fieldOffCall` call `Holder.table` twice -- so the recording
+        # must stop matching. Registered `WILL_FAIL`: it passes when the check refuses.
+        add_test(NAME golden_ir_catches_reintroduced_defect COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/implicit_this_receiver.pol"
+            "-DFUNCTION=Holder.fieldOffCall"
+            "-DGOLDEN=${CMAKE_CURRENT_SOURCE_DIR}/golden/implicit_this_receiver.Holder.fieldOffCall.ll"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_golden_ir_test.cmake")
+        set_tests_properties(golden_ir_catches_reintroduced_defect PROPERTIES
+            ENVIRONMENT "POLARON_REINTRODUCE_D14=1"
+            WILL_FAIL TRUE)
+
+        # ---- AND WHAT THE MACHINE ACTUALLY GETS, read out of the object ----
+        #
+        # `x86_intrcc` in the IR is a REQUEST. What makes an interrupt handler correct is that its
+        # epilogue is `iretq` and not `retq`: an ordinary return against a stack the CPU laid out for
+        # an interrupt return corrupts the interrupted context, silently, and no IR-level check can
+        # tell the two apart. The differential could not either -- both paths emitted the attribute.
+        #
+        # Two handlers in the sample, so two `iret`. An exact count, because "at least one" would
+        # pass a build that got the second one wrong.
+        find_program(POLARON_OBJDUMP llvm-objdump HINTS "C:/Program Files/LLVM/bin" "/usr/bin" "/usr/local/bin")
+        if(POLARON_OBJDUMP)
+            add_test(NAME object_interrupt_returns_with_iret COMMAND "${CMAKE_COMMAND}"
+                "-DPOLC=$<TARGET_FILE:polc>"
+                "-DCLANG=${POLARON_CLANG}"
+                "-DOBJDUMP=${POLARON_OBJDUMP}"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_entry.pol"
+                "-DPOLARONFLAGS=--target=x86_64-unknown-none"
+                "-DCLANGFLAGS=--target=x86_64-unknown-none -ffreestanding"
+                "-DNEEDLE=iret"
+                "-DCOUNT=2"
+                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/run_object_test.cmake")
+
+            # ...and the same object must not call the allocator. A handler runs at an IRQL where
+            # taking the allocator's lock deadlocks, and on bare metal there is no allocator at all.
+            add_test(NAME object_interrupt_does_not_allocate COMMAND "${CMAKE_COMMAND}"
+                "-DPOLC=$<TARGET_FILE:polc>"
+                "-DCLANG=${POLARON_CLANG}"
+                "-DOBJDUMP=${POLARON_OBJDUMP}"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/interrupt_entry.pol"
+                "-DPOLARONFLAGS=--target=x86_64-unknown-none"
+                "-DCLANGFLAGS=--target=x86_64-unknown-none -ffreestanding"
+                "-DNEEDLE=__polaron_malloc"
+                "-DCOUNT=0"
+                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/run_object_test.cmake")
+        endif()
+
+        # ...AND A CHECK THAT HAS NEVER BEEN SEEN TO FAIL IS A CLAIM, NOT AN INSTRUMENT.
+        #
+        # Wave 2's exit criterion asks for the absolute checks to be "demonstrated to fail on a
+        # reintroduced defect BEFORE the deletion", and this is that demonstration, kept as a test so
+        # it stays true. `POLARON_REINTRODUCE_D6` restores exactly one leak the wave fixed -- a
+        # `String` handed back by a call, not recorded as a temporary -- and the same sample that
+        # passes at 400/17 above must then fail at 976/41.
+        #
+        # `WILL_FAIL` inverts the verdict: this test passes when the check it runs REFUSES. If the
+        # instrument ever stops noticing, this goes red, which is the only way an absent alarm can
+        # announce itself.
+        add_test(NAME live_catches_reintroduced_defect COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/encoding_hex_base64.pol"
+            "-DEXPECT_LIVE=400/17"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DRT=${POLARON_RT_OBJ}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_live_test.cmake")
+        set_tests_properties(live_catches_reintroduced_defect PROPERTIES
+            ENVIRONMENT "POLARON_REINTRODUCE_D6=1"
+            WILL_FAIL TRUE)
+
         # THE NUMBER THAT DECIDES PHASE FOUR. Sixty samples, compiled both ways, run, compared.
         # Ratcheted: it may only go up, and a crash fails outright. When it reaches the sample
         # count, the trusted path can be turned off; until then, this says how far away that is.

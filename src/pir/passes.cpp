@@ -483,8 +483,17 @@ public:
             // correctly, on what it can see -- that they are dead. See `Module::extraRoots`.
             const bool namedRoot = std::find(m_.extraRoots.begin(), m_.extraRoots.end(), f->key) !=
                                    m_.extraRoots.end();
+            // ...AND IN A LIBRARY, THE EXPORTED SURFACE IS THE ENTRY.
+            //
+            // The paragraph above says `public` is not a root in a PROGRAM, and names this as the
+            // other case. It was named and not written, which stayed invisible for as long as the
+            // `.polb` carried the other back end's module: with PIR's, `bundle_calc` failed at link
+            // on `undefined symbol: Calc.square` -- a method whose whole reason to exist is that
+            // somebody outside this compilation calls it, stripped because nobody inside does.
+            const bool exported = m_.library && f->linkage == Linkage::Public;
             if (isEntry || f->linkage == Linkage::External || f->cut ||
-                f->kind == FnKind::Interrupt || machineEnters || isRuntime || namedRoot) {
+                f->kind == FnKind::Interrupt || machineEnters || isRuntime || namedRoot ||
+                exported) {
                 root(f.get());
             }
         }

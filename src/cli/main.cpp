@@ -71,6 +71,7 @@
 #include "pir/shapediff.h"  // ...and the comparison of the two, body by body
 
 #include <llvm/Bitcode/BitcodeReader.h>
+#include <llvm/Bitcode/BitcodeWriter.h>   // the `.polb` carries the module this compilation built
 // Renumbering a dependency's vtables (`--extract-code --remap-slots`) rewrites its module, so this
 // file reads and edits IR directly -- the only place outside codegen/ that does.
 #include <llvm/IR/Constants.h>
@@ -1533,6 +1534,11 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // is written, far below. A context must outlive every module in it, so the two travel together.
     std::unique_ptr<llvm::LLVMContext> pirCtx;
     std::unique_ptr<llvm::Module> pirModule;
+    // THE DISPATCH NUMBERING THIS COMPILATION SETTLED ON, carried out of the lowering's scope
+    // because two things far below want it: `--emit-slots`, and the `.polb` a `--lib` writes so its
+    // consumers seed themselves with the same order. It used to be asked of the other back end,
+    // which is one of the three facts that had to move before that back end could go.
+    std::vector<std::string> pirVtableSlots;
 #endif
 
     // THE TARGET, decided before either backend is handed anything. Both need it and both need the
@@ -1577,6 +1583,17 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         }
         polaron::pir::Lowering lowered =
             polaron::pir::lower(program, sourceLineAt, effectiveTriple, std::move(pirBundles));
+        pirVtableSlots = lowered.vtableSlots;   // out of this scope: see the declaration
+        // WHICH KIND OF ARTEFACT THIS IS, and it is set HERE, before the passes run.
+        //
+        // It used to be set further down, beside the backend that reads it for linkage -- and the
+        // reachability pass reads it too, for the opposite reason: in a program `public` is not a
+        // root, and in a LIBRARY the exported surface is the only entry there is. Running the passes
+        // before the flag was set meant every public method of a `--lib` was unreachable, turned
+        // into a declaration, and shipped in the `.polb` as a symbol with no body. It stayed
+        // invisible while the bundle carried the OTHER back end's module; the first `--lib` built
+        // from PIR's failed at link on `undefined symbol: Calc.square`.
+        lowered.module.library = libraryMode;
         // `-g` is the invocation's, not the program's. See `Module::debugInfo`.
         lowered.module.debugInfo = debugInfo;
         // `--test`: WHAT THE RUNNER WILL CALL, named before the passes can decide it is dead.
@@ -1616,10 +1633,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             // Held in a context that outlives this block so the emitted IR can become the OUTPUT.
             // That is what makes the differential a comparison of BEHAVIOUR rather than of names:
             // compile both ways, link both, run both, require the same output.
-            // WHICH KIND OF ARTEFACT THIS IS, which decides what stays published. The lowering
-            // cannot know it -- `--lib` is the driver's flag, not the program's -- and the backend
-            // must, or a program ships a strong definition of every prelude method it compiled.
-            lowered.module.library = libraryMode;
+            // (`library` is set above, before the passes, because reachability reads it too.)
             // ...AND WHO WRITES `main`. Under `--test` that is the runner, emitted below once every
             // function it calls exists; this backend must not take the name first.
             lowered.module.testRunnerEntry = testMode;
@@ -1795,7 +1809,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             std::fprintf(stderr, "error: cannot write '%s'\n", slotsOut.c_str());
             return 1;
         }
-        for (const std::string& name : codegen.vtableSlotNames()) {
+        for (const std::string& name : pirVtableSlots) {
             sf << name << "\n";   // position IS the slot; an empty line is an unused one
         }
     }
@@ -1869,8 +1883,22 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         }
         bundle.polh = polaron::generatePolh(program);
         bundle.fingerprint = polaron::polbFingerprint(bundle.polh);
-        bundle.code = codegen.toBitcode();
-        bundle.vtableSlots = codegen.vtableSlotNames();  // so consumers seed the same slot layout
+        // THE BUNDLE CARRIES THE MODULE THIS COMPILATION BUILT, which is PIR's. It used to carry the
+        // other back end's, and while both were emitted that was invisible: the two modules agreed,
+        // so a `.polb` built from either linked. With one back end left it is the only module there
+        // is, and a bundle holding something else would be a container for code nobody compiled.
+        if (pirModule == nullptr) {
+            std::fprintf(stderr, "error: no module to put in the bundle\n");
+            return 1;
+        }
+        {
+            std::string bits;
+            llvm::raw_string_ostream bitsOut(bits);
+            llvm::WriteBitcodeToFile(*pirModule, bitsOut);
+            bitsOut.flush();
+            bundle.code = std::move(bits);
+        }
+        bundle.vtableSlots = pirVtableSlots;   // so consumers seed the same slot layout
         bundle.foreignLibs = foreignLibMap;               // ...and can link it without its manifest
         const std::string polbPath = outPath.empty() ? program.name + ".polb" : outPath;
         const std::string polhPath = polhPathFor(polbPath);

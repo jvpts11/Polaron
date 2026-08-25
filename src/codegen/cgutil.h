@@ -22,6 +22,16 @@
 #include "parser/ast.h"
 
 namespace polaron {
+
+// WHAT A BACK END REPORTS WHEN IT CANNOT EMIT SOMETHING. It lived in `codegen.h`, beside the
+// AST-to-LLVM back end that was deleted when PIR became the only one -- and the `--test` runner,
+// which both back ends shared and which outlived that deletion, reports through it. A type used by
+// what remains belongs with what remains.
+struct CodegenError {
+    std::string message;
+    SourceLocation loc;
+};
+
 namespace cgutil {
 
 // ---- Free-variable collection, for a lambda's auto-capture ----

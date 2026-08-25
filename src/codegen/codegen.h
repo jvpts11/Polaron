@@ -9,15 +9,13 @@
 #include <string_view>
 #include <vector>
 
+#include "codegen/cgutil.h"   // `CodegenError`, which moved to the shared side
 #include "lexer/token.h"
 #include "semantic/analyzer.h"
 
 namespace polaron {
 
-struct CodegenError {
-    std::string message;
-    SourceLocation loc;
-};
+// `CodegenError` now lives in `cgutil.h`, with the parts that outlive this back end.
 
 // Emits LLVM IR for the Release 0.1 walking-skeleton subset: the entry point
 // lowered to `i32 @main()`, with System.IO.printf calls lowered to libc

@@ -251,6 +251,16 @@ struct Global {
     std::string name;
     const Type* type = nullptr;
     Linkage linkage = Linkage::Internal;
+    // Both sides of a bundle boundary declare this same variable -- see `Function::mergeable`, which
+    // this is the storage half of. A prelude class's `static` field is compiled into the library and
+    // into its consumer, and `two_bundle_link_runs` died on `duplicate symbol: Signals.INTERRUPT`
+    // once the method bodies stopped colliding and left the data behind them visible.
+    //
+    // Merging is not merely a way to quiet the linker here: it is the RIGHT answer. `Signals.TERMINATE`
+    // is ONE variable in the program's mind, and two copies of it -- which is what the trusted path
+    // produced, by making every static private -- means a library that writes one and a consumer
+    // that reads the other disagree about a value they both call the same name.
+    bool mergeable = false;
     Storage storage = Storage::Static;
     bool isConst = false;
     bool zeroInit = true;
@@ -321,6 +331,22 @@ struct Function {
     // is what lets a caller stop re-checking an object a method just built for it.
     std::string returnTypeName;
     Linkage linkage = Linkage::Internal;
+    // MORE THAN ONE OBJECT MAY DEFINE THIS, AND THE DEFINITIONS ARE THE SAME ONE. Not a visibility
+    // -- it is orthogonal to `linkage`, and the functions it applies to are exactly the `public`
+    // ones -- but the C++ ODR rule: emit it, and let the linker keep a single copy.
+    //
+    // It matters only for a `--lib`, and only because of what a Polaron artefact CONTAINS. Every
+    // program carries its own prelude, and every use of a generic instantiates it where it is used,
+    // so a library and its consumer independently compile byte-identical bodies for
+    // `ArrayList$String.add`, `Some$String.isSome`, `String.length`. A program internalizes all of
+    // them and the question never arises; a library publishes its methods -- that is what a library
+    // IS -- and publishing them strongly made the linker refuse the pair: `two_bundle_link_runs`
+    // died on `duplicate symbol: Some$String.isSome` and a dozen more like it.
+    //
+    // The alternative -- not emitting them in the library and letting the consumer supply them --
+    // is wrong in the other direction: a consumer prunes to what IT reaches, and the library's own
+    // calls into a generic it instantiated would find nothing.
+    bool mergeable = false;
     Conv conv = Conv::Polaron;
     FnKind kind = FnKind::Method;
     Affinity affinity = Affinity::None;

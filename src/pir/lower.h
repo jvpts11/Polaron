@@ -31,6 +31,16 @@ struct Gap {
 struct Lowering {
     Module module;
     std::vector<Gap> gaps;
+    // THE DISPATCH NUMBERING THIS COMPILATION SETTLED ON, in slot order: position IS the slot, and
+    // an empty entry is one nothing uses. `--lib` writes it into the `.polb` and a consumer seeds
+    // itself with it (`BundleContext::vtableSlots`), because a library baked its vtables against
+    // its own numbering and a consumer that renumbers sends every virtual call to whichever method
+    // happens to sit at that index.
+    //
+    // Answered by the lowering because the lowering is what assigns them -- see `slotFor`. It used
+    // to be answered by the other back end, which is why it had to outlive its own deletion by one
+    // commit.
+    std::vector<std::string> vtableSlots;
 };
 
 // ---- what the DRIVER knows about a bundle boundary and the program text does not ----
