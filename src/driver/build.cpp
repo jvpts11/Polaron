@@ -639,7 +639,7 @@ int buildProgram(const Manifest& m, const fs::path& projectDir, const BuildOptio
         // and the two behaving differently side by side is exactly why this went unseen.
         //
         // polc now marks the functions itself whenever the triple names no OS (see
-        // CodeGenerator::applyBareMetalAttrs). That is the only place that can, and it is also the right
+        // `applyBareMetalAttrs`). That is the only place that can, and it is also the right
         // place: whether the code may use the red zone is a fact about the target it is generated for,
         // not about the command line that happens to consume the IR afterwards.
         const fs::path obj = outDir / (entry.stem().string() + ".o");

@@ -94,9 +94,7 @@ struct BundleContext {
 // in the lowering NEEDS it: without it the module is the same module. What it buys is the TEXT of a
 // failing contract clause. §29 says a broken contract stops the program and names the disagreement,
 // and naming it means quoting the line as written -- which the AST does not keep, because a parsed
-// expression is a shape and the spelling is gone by then. The trusted path is handed the same
-// lookup for the same reason (`CodeGenerator::setSourceLookup`), and the differential compares the
-// two reports character for character.
+// expression is a shape and the spelling is gone by then.
 //
 // `triple` is the TARGET, and it answers a question the program cannot: whether anything calls
 // `main`. "Is the program freestanding" is a different question -- it says nothing hands it an
