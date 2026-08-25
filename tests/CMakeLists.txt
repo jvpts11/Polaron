@@ -14,7 +14,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.171")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.172")
 
 # ---- PIR (docs/design/polaron-ir.md) ----
 #
@@ -43,83 +43,40 @@ if(POLARON_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_backend_test.cmake")
     endforeach()
 
-    # Stage 3's ORACLE. Not the flip -- the thing that decides when the flip is safe. Every function
-    # the trusted path defines must exist in the PIR module; a definition that vanished is the
-    # failure that must not be found after the default has been changed.
-    # The ratchet per sample: how many of the old path's definitions the PIR path does not yet have.
-    # It may only go DOWN. What is left is what the front end synthesises rather than what a program
-    # declares -- an implicit constructor, a class-load hook -- and each one lowered is a number
-    # lowered here.
-    set(pir_diff_samples fixed_array collections_basic abstain_raii)
-    # Down to ONE each: the only definition the trusted path has and the lowering does not is
-    # `Test.__onClassLoad`, which the front end synthesises for the test framework.
-    set(pir_diff_allowed 1            1                 1)
-    list(LENGTH pir_diff_samples n)
-    math(EXPR last "${n} - 1")
-    foreach(i RANGE ${last})
-        list(GET pir_diff_samples ${i} sample)
-        list(GET pir_diff_allowed ${i} allowed)
-        add_test(NAME pir_differential_${sample} COMMAND "${CMAKE_COMMAND}"
-            "-DPOLC=$<TARGET_FILE:polc>"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${sample}.pol"
-            "-DOUT_OLD=${CMAKE_CURRENT_BINARY_DIR}/diff_old_${sample}.ll"
-            "-DOUT_NEW=${CMAKE_CURRENT_BINARY_DIR}/diff_new_${sample}.ll"
-            "-DOUT_PIR=${CMAKE_CURRENT_BINARY_DIR}/diff_${sample}.pir"
-            "-DALLOWED=${allowed}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_differential_test.cmake")
-    endforeach()
-
-    # THE BEHAVIOURAL COMPARISON -- what "compare bodies, not names" actually means. The program is
-    # built BOTH ways, linked, run, and required to print the same thing. Comparing names can only
-    # ever say a function exists; this says the program does the same thing, which is the only claim
-    # that justifies turning the trusted path off.
+    # Stage 3's ORACLE STOOD HERE -- `pir_differential_*`, which required every function the trusted
+    # path defined to exist in the PIR module, ratcheted so the count could only go down. It reached
+    # one each (`Test.__onClassLoad`, synthesised for the test framework) and then it reached its
+    # purpose: the flip happened, and the path it compared against is deleted.
     if(POLARON_CLANG)
-        # `addr_static` is here because the corpus could not have found it: not one of the 844
-        # samples stores the address of an object in a static. pico's ring-3 guest does -- two
-        # `atomic<int>` cells on a frame that outlives every thread it spawns -- and through the PIR
-        # path `Guest.lockWord.compareAndSet(...)` read an INVENTED global rather than the pointer,
-        # so the kernel reported a user page fault at CR2=0x8. Eight lines reproduce it.
-        # THE TWO PATHS ALSO HAVE TO AGREE ABOUT MEMORY, and now they do -- exactly, with no waiver.
+        # `pir_behaviour_*` STOOD HERE: nine samples built BOTH ways, linked, run, and required to
+        # print the same thing and to exit holding the same bytes in the same number of blocks.
         #
-        # They did not when this gate was written: PIR did not implement String field ownership
-        # (tests/pir_shape_baseline.md, D1), so the trusted path exited holding two copied Strings
-        # that PIR never made -- 112 bytes in 5 blocks against 16 in 1, on every program in the
-        # corpus. Each registration carried the EXACT pair as a waiver rather than an allowance with
-        # slack, so that any movement in either number would fail and a second memory defect could
-        # not hide inside the first one's shadow.
+        # Every one of the nine is still tested, and none of them lost anything that was about the
+        # PROGRAM. What each pair asserted was `output(A) == output(B)` and `live(A) == live(B)`, and
+        # both halves survive as the absolute form directly below: `live_<sample>` pins the exit
+        # heap against a recorded number, and the sample's own `codegen_<sample>` pins its output.
+        # A comparison of two arms says less than a number, not more -- it cannot tell you that BOTH
+        # arms are wrong, which is what four of Wave 1's defects turned out to be.
         #
-        # D1 is fixed and every pair collapsed. The waivers are gone with it, which is the point of
-        # having written them as pairs: an allowance would still be sitting here, tolerating a range
-        # nothing needs any more.
-        # `entry_wrapper` is here because the shape comparison now SKIPS `main` (609 of the census's
-        # 9 402 difference lines were that one synthesised function, and the two paths structure it
-        # differently on purpose -- tests/pir_shape_baseline.md, class B). Skipping it in a
-        # differential is only honest if something asserts what it must DO, absolutely: argv built
-        # and intact, static class load before the first line of user code, exit 0. This runs that
-        # sample through BOTH paths, so the wrapper is still compared -- by its behaviour, which is
-        # the property that matters, rather than by its shape, which is not.
-        # `unwind_raii` runs through both arms because the defect it guards was invisible to output
-        # on every sample that had it: the rethrow edge existed and nothing walked it.
+        # Why these nine, kept as a list because the reasons are the record of what a corpus cannot
+        # reach on its own:
         #
-        # Each of the four below is a sample written FOR a defect the shape census found, and each
-        # is here rather than only in `codegen_*` because the claim is not "PIR prints this" but
-        # "the two paths print the same thing and leak the same nothing".
-        # `generator` is the one that is here for MEMORY alone. Its output was identical on both
-        # paths from the first day and it exited holding 304 bytes in 12 blocks against 112 in 5:
-        # three `foreach`es over generators, none of them disposed, plus a `delete` through an
-        # interface-typed local that ran the destructor and left the block. Nothing stdout can see.
-        foreach(sample hello_world addr_static entry_wrapper unwind_raii
-                       bare_object_dispatch region_field_dtor receiver_once generator
-                       struct_array_stride)
-            add_test(NAME pir_behaviour_${sample} COMMAND "${CMAKE_COMMAND}"
-                "-DPOLC=$<TARGET_FILE:polc>"
-                "-DCLANG=${POLARON_CLANG}"
-                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${sample}.pol"
-                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-                "-DRT=${POLARON_RT_OBJ}"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_behaviour_test.cmake")
-        endforeach()
-
+        #   addr_static           not one of the 844 samples stored the address of an object in a
+        #                         static. pico's ring-3 guest does -- two `atomic<int>` cells on a
+        #                         frame outliving every thread it spawns -- and PIR read an INVENTED
+        #                         global rather than the pointer, so the kernel reported a user page
+        #                         fault at CR2=0x8. Eight lines reproduce it.
+        #   entry_wrapper         the synthesised `main` was SKIPPED by the shape comparison (609 of
+        #                         the census's 9 402 difference lines were that one function), so
+        #                         something had to assert what it must DO: argv built and intact,
+        #                         static class load before the first line of user code, exit 0.
+        #   unwind_raii           the defect it guards was invisible to output on every sample that
+        #                         had it -- the rethrow edge existed and nothing walked it.
+        #   generator             identical output from the first day, and 304 bytes in 12 blocks
+        #                         against 112 in 5: three `foreach`es over generators, none
+        #                         disposed, plus a `delete` through an interface-typed local that
+        #                         ran the destructor and left the block. Nothing stdout can see.
+        #
         # ---- THE ABSOLUTE HALF: what each program still holds when it ends, against a number ----
         #
         # Every check above is a COMPARISON, and a comparison stops existing when the second side is
@@ -277,61 +234,22 @@ if(POLARON_WITH_LLVM)
             ENVIRONMENT "POLARON_REINTRODUCE_D6=1"
             WILL_FAIL TRUE)
 
-        # THE NUMBER THAT DECIDES PHASE FOUR. Sixty samples, compiled both ways, run, compared.
-        # Ratcheted: it may only go up, and a crash fails outright. When it reaches the sample
-        # count, the trusted path can be turned off; until then, this says how far away that is.
+        # `pir_shape_classified` AND `pir_batch_agreement` STOOD HERE, and both are gone with the
+        # second back end, on 2026-08-25.
         #
-        # THE SIXTY ARE SPREAD ACROSS ALL 844, every fifteenth -- see the harness. They used to be
-        # the first sixty of a sorted list, which is every file beginning with `a` or `b`, and the
-        # difference is not cosmetic: the head read 31 of 47 while a stride over the same corpus
-        # read 19 of 67. `EXPECT_SAME` DROPPED FROM 31 TO 13 ON THAT CHANGE ALONE, and nothing
-        # regressed -- the old number was measuring a corner and reporting it as the whole.
-        # THE SHAPE GATE. `--compare-ir` existed and gated nothing: over all 874 samples it reported
-        # 9 402 differences and not one program in full agreement, so nobody could read it and five
-        # memory defects walked past it. Two classes are now answered inside the comparison itself
-        # (promotion, and skipping the synthesised entry wrapper); the rest are classified in
-        # tests/pir_shape_baseline.md and checked here BY KIND, not by count -- a count lets a new
-        # defect hide on the day an old one is fixed.
-        add_test(NAME pir_shape_classified COMMAND "${CMAKE_COMMAND}"
-            "-DPOLC=$<TARGET_FILE:polc>"
-            "-DSAMPLES=${CMAKE_CURRENT_SOURCE_DIR}/samples"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            "-DLIMIT=120"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_shape_test.cmake")
-        set_tests_properties(pir_shape_classified PROPERTIES TIMEOUT 900)
-
-        add_test(NAME pir_batch_agreement COMMAND "${CMAKE_COMMAND}"
-            "-DPOLC=$<TARGET_FILE:polc>"
-            "-DCLANG=${POLARON_CLANG}"
-            "-DSAMPLES=${CMAKE_CURRENT_SOURCE_DIR}/samples"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            "-DLIMIT=120"
-            # 89 OF 89, AND ZERO DIFFER.
-            #
-            # It read 96 once and that number was not true: when `toLlvm` produced a module LLVM
-            # refused, polc printed one line and then wrote the TRUSTED module to the output -- so
-            # the sample compiled, linked, ran, and printed exactly what the other arm printed,
-            # because it WAS the other arm. Twenty-two samples were counted as agreement on that
-            # basis. Asking for a backend and being handed a different one is now a failure, the
-            # number dropped to 87, and every one of the twenty-two has since been fixed.
-            #
-            # Whole corpus, measured the same way: 693 of 693 comparable at -O0 and 694 of 694 at
-            # -O2. No sample in this corpus is now built differently by the two backends.
-            #
-            # 89 -> 87 ON THE PIR MERGE, AND NOT BECAUSE ANYTHING REGRESSED. The run that reported it
-            # said `87 agree, 0 differ, 0 do not build`: nothing disagrees and nothing fails to
-            # build. The picked set is `every Nth of the directory`, so the twenty-nine samples the
-            # merge added -- twenty-four from the fork, five from the advice work -- re-picked it,
-            # and the number is about different files. The header of `run_pir_batch_test.cmake`
-            # records this same hazard biting once before, when the stride changed and the count fell
-            # from 31 to 13.
-            #
-            # A count with two causes and no way to tell them apart is why that script now fails on
-            # `differ > 0` and `broke > 0` DIRECTLY, naming the samples. Those two checks are
-            # corpus-independent; this number is a floor, and a floor that moves when the floorplan
-            # does is not evidence of subsidence.
-            "-DEXPECT_SAME=87"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_batch_test.cmake")
+        # They were the two largest instruments in this file. `pir_batch_agreement` compiled a
+        # hundred and twenty samples BOTH ways, linked and ran each pair, and required identical
+        # output; `pir_shape_classified` compared the two modules body by body and checked every
+        # remaining difference against a classification in `tests/pir_shape_baseline.md`. Between
+        # them they found most of what Wave 1 fixed.
+        #
+        # Neither can be kept, and neither can be half-kept: a comparison with one arm is not a
+        # weaker comparison, it is a program compiled and run with nothing to check the answer
+        # against. What replaces them is directly above -- `live_*`, `golden_ir_*`, `object_*` --
+        # and the replacement is not like-for-like on purpose. An absolute check is the only kind
+        # that can say a back end is WRONG rather than merely DIFFERENT, which matters because PIR
+        # was built against the trusted path: four of the defects Wave 1 closed had been sitting in
+        # both, agreeing with each other, called correct by every comparison in this file.
     endif()
 endif()
 
@@ -363,7 +281,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 900)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.171")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.172")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"

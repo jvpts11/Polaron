@@ -766,13 +766,14 @@ thirteen more.
 |---|---|---|
 | **0** | `Module`/`Function`/`Block`/`Value`/`Inst`, the type table with its five facts, the text form printing and parsing, and `verify` with the twenty-one rules of §9 | `src/pir/{type,module,print,parse,verify}.cpp` |
 | **1** | The AST lowered to PIR behind `--emit-pir=<path\|->`, beside the real pipeline, with a **counted gap list** for what it does not cover | `src/pir/lower.cpp` |
-| **2** | PIR → LLVM behind `POLARON_VIA_PIR=1`, and §12's hand-off table emitted and **counted** | `src/pir/tollvm.cpp` |
-| **3** | The **oracle**, as a ratchet: every function the trusted path defines must exist in the PIR module, and the number that do not may only go down | `tests/run_pir_differential_test.cmake` |
+| **2** | PIR → LLVM, and §12's hand-off table emitted and **counted** | `src/pir/tollvm.cpp` |
+| **3** | ✅ **Complete, 2026-08-25.** The trusted path is deleted; PIR is the only back end | — |
 | **4** | Guard elimination, immutability propagation and DCE, on the graph | `src/pir/passes.cpp` |
 
-**Stage 3 is the oracle, not the flip.** The default is not changed and must not be until the
-ratchets reach zero and the differential compares bodies rather than names. Flipping it with a
-lowering that still counts its gaps would be declaring victory.
+**Stage 3 was the oracle before it was the deletion.** The default was not changed until the
+ratchets reached zero and the differential compared bodies rather than names — flipping it with a
+lowering that still counted its gaps would have been declaring victory. What follows is the record
+of both halves.
 
 ### The flip, 2026-08-21
 
@@ -815,6 +816,9 @@ with stderr compared.
 **The older path is not going anywhere, and that is deliberate.** The differential IS the
 verification: every sample is built both ways and the outputs compared, and a harness cannot compare
 two things if one of them is gone. What the flip changes is which one a user gets without asking.
+
+*(It went, four days later. See "The deletion" below — and note that the sentence above states
+exactly the debt that deletion had to pay first.)*
 
 **Every arm of every comparison now NAMES the backend it wants** -- and that change was kept, because
 it is right under either default. Leaving the variable unset selects whatever the default is, so a
@@ -871,6 +875,46 @@ What it has already caught, in its first two runs: a `polc` that **segfaulted** 
 `alloca void`, which LLVM asserts on — and an assertion in a Release build is a crash with no
 message. Fixed in both places, and a crash now fails this test by name rather than showing up as a
 difference.
+
+### The deletion, 2026-08-25
+
+Stage 3 completes here. **24 092 lines gone**, eleven files under `src/codegen/` plus the four
+harnesses that existed only to compare the two. `llvm::` in `src/` went from 3 399 mentions to
+1 016, and every remaining one outside `tollvm.cpp` is a shared service rather than a back end:
+`bridges` (what a program with no libc must be given), `testrunner` (`--test`), `optimize` (the
+middle end) and `target` (the data layout).
+
+**The debt was paid before the deletion, not after.** Every check that existed only as a *comparison*
+stops existing at the moment the second side is removed, and seven defects had been found by that
+comparison and by nothing else. So each was first re-expressed as an ABSOLUTE check — a number the
+program reports about itself, held against a recorded expectation:
+
+| the comparison | what replaced it |
+|---|---|
+| "PIR allocates where trusted does not" | `live_*`: `POLARON_LIVE` at exit against a recorded `bytes/blocks` pair, 21 samples |
+| "PIR strides differently" | a sample that reads back what it wrote through an array of a padded struct |
+| "PIR emits no `x86_intrcc`" | `object_*`: the convention and the `iretq`, read out of the emitted object |
+| "the bodies differ in shape" | `golden_ir_*`: the exact IR of three chosen functions, recorded |
+
+Two of them exist only to prove the instrument still has teeth: `live_catches_reintroduced_defect`
+and `golden_ir_catches_reintroduced_defect` each put a real, fixed defect back behind an environment
+variable and **fail if the check does not notice.** Both were green before anything was deleted.
+
+**And the absolute half was never a consolation for losing the differential — it is the half that was
+always missing.** PIR was built against the trusted path, so a defect present in BOTH never diverged
+and was never visible. Wave 1 closed eighteen defects, and **four of them had been sitting in both
+back ends, agreeing with each other, called correct by every comparison in the suite** — three of the
+four were wrong answers rather than leaks.
+
+**What the deletion itself found, in twelve minutes:** twelve diagnostics stopped being emitted, and
+not one of them failed loudly. `polc` accepted each program, emitted IR for it, and exited 0. They
+were the checks the trusted path performed *as it walked the AST* — a `region class` placed `on
+heap`, an `asm` block written for another architecture, `extern syscall` on Windows, `interrupt` on
+AArch64, threads on bare wasm, a static initialiser that would have to allocate before the process
+exists, a `demand` over `sizeof`, a `layout` byte budget, and a `--target` naming an architecture
+LLVM cannot parse. PIR had no error channel at all — only `gaps`, which say "not lowered yet" and
+emit the module anyway. It has one now (`Lowering::errors`), and the distinction is the point: a gap
+is a work queue, an error is a program that must not be built.
 
 ### What is still open, named rather than implied
 

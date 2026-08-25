@@ -3,18 +3,16 @@
 // WHAT OPTIMISING A POLARON PROGRAM MEANS, as one function over one module.
 //
 // `CodeGenerator::optimize` used to be the only way to reach it, which was fine while there was one
-// backend. There are two: the second builds its own `llvm::Module`, and until this existed that
-// module went to the output UNOPTIMISED -- so every program compiled through PIR ran at -O0 however
-// the driver was invoked. In a hosted sample that reads as "a bit slower". In pico it reads as a
-// kernel that spends tens of seconds compositing one frame and misses every wall-clock assertion
-// its own suite makes.
+// back end. Then there were two: the second built its own `llvm::Module`, and until this existed
+// that module went to the output UNOPTIMISED -- so every program compiled through PIR ran at -O0
+// however the driver was invoked. In a hosted sample that reads as "a bit slower". In pico it reads
+// as a kernel that spends tens of seconds compositing one frame and misses every wall-clock
+// assertion its own suite makes.
 //
-// Declared here, and NOT in `codegen.h`, because that header states its own rule at the top: the
-// LLVM types stay behind a PIMPL so it is LLVM-free. This one is not, and says so by living apart.
-//
-// One definition rather than a copy per backend, for the reason this compiler keeps relearning: two
-// copies of a rule drift, and then a program means two different things depending on which half of
-// the compiler built it.
+// There is one back end again, and this still lives apart from it. Optimising a module has never had
+// anything to do with which pass built the module -- that it was ever reachable only through one is
+// the accident, and the accident is what cost pico those frames. What a program MEANS must not
+// depend on which half of the compiler happened to construct it.
 
 #include <llvm/IR/Module.h>
 

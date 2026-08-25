@@ -1,5 +1,18 @@
 # The PIR shape baseline — what the two backends differ about, and why
 
+> **RETIRED 2026-08-25, and kept as the record.** The trusted back end is deleted (`polaron-ir.md`
+> §14, Stage 3), so `--compare-ir`, `run_pir_shape_test.cmake` and the census below no longer exist
+> and cannot be re-run. What replaced them is `tests/run_golden_ir_test.cmake`: the exact recorded IR
+> of a few chosen bodies, held against each build — an ABSOLUTE check, which is the only kind that
+> can say a back end is *wrong* rather than merely *different from another one*.
+>
+> This file stays because the classification is the reasoning, not the tooling. Every defect table
+> below is the history of what the instrument found, and several comments in the compiler and the
+> test suite point here by name. Three entries in particular are worth knowing before touching the
+> lowering again: class B (the synthesised entry wrapper, structured differently on purpose), the
+> `byValueCopy` rule that needs §11.5 escape analysis before it can be tightened, and the three
+> samples where `liveBytes` still disagrees for one measured reason.
+
 `--compare-ir` compares the two backends' bodies shape by shape. It existed before this file and
 **gated nothing**: a census over all 874 samples reported **9 402 differences and zero programs in
 full agreement** — a report nobody can act on. Five memory defects walked past an instrument that was

@@ -230,7 +230,53 @@ Fixing the eleven above and shipping, while Wave 0's output added a twelfth. Wav
 
 ---
 
-# Wave 2 — PIR Stage 3 completes
+# Wave 2 — PIR Stage 3 completes — **DONE**
+
+> **Closed at 1 167 tests green, 2026-08-25.** The trusted path is deleted: **24 092 lines**, eleven
+> files under `src/codegen/` plus the four harnesses that existed only to compare the two back ends.
+> `llvm::` in `src/` went from 3 399 mentions to 1 016, and every one outside `tollvm.cpp` is a
+> shared service — `bridges`, `testrunner`, `optimize`, `target` — rather than a back end.
+>
+> **The exit criterion was met in the order it demands.** The four absolute checks were landed AND
+> demonstrated to fail on a reintroduced defect *before* the deletion, not after:
+> `live_*` (21 samples, `POLARON_LIVE` against a recorded `bytes/blocks` pair), `golden_ir_*` (three
+> recorded function bodies), `object_*` (the interrupt convention and `iretq`, read out of the
+> object), and the padded-struct stride sample. `live_catches_reintroduced_defect` and
+> `golden_ir_catches_reintroduced_defect` are the teeth: each puts a real, fixed defect back behind
+> an environment variable and fails if the check does not notice.
+>
+> **1 181 → 1 167 is the fourteen differential tests, exactly.** `pir_differential_*` (3),
+> `pir_behaviour_*` (9), `pir_shape_classified`, `pir_batch_agreement`. Nothing else left the suite,
+> and all nine `pir_behaviour_*` samples kept both halves of what their pair asserted: `live_<sample>`
+> pins the exit heap, `codegen_<sample>` pins the output.
+>
+> **Two things had to be done first, and neither was in the plan.**
+>
+> **1. The `.polb` still came from the other back end.** Handing the bundle to PIR failed twenty
+> bundle tests at once, for five separate reasons: `module.library` was set *after* the reachability
+> pass rather than before, so every public method of a `--lib` shipped as a symbol with no body;
+> devirtualisation was being applied across a bundle boundary, where proving "nothing overrides this"
+> proves nothing about a consumer compiled later (`bundle_inherit_runs` printed `total = 17` for 57);
+> monomorphized instances and prelude methods are compiled on BOTH sides and collided at link
+> (`duplicate symbol: Some$String.isSome`, then `Signals.INTERRUPT` behind it) — both are ODR with a
+> COMDAT now, which is also more correct than the trusted path's answer of making every static
+> private; the synthesized constructor was `internal`, which a program cannot notice and a library
+> fails to link on; and nothing was `dllexport`, so `--use-dynamic` built and loaded the image
+> perfectly, got a null from `GetProcAddress`, and died at `0xC0000409` with no output at all.
+>
+> **2. PIR had no error channel.** The deletion dropped **twelve diagnostics**, and not one failed
+> loudly — `polc` accepted each program, emitted IR, exited 0. They were the checks the trusted back
+> end performed as it walked the AST: a `region class` placed `on heap`/`on stack`/`into region`,
+> an `asm` block written for another architecture, `extern syscall` off Linux/x86-64, `interrupt`
+> off x86, threads on bare wasm, a static initialiser that cannot be evaluated (cycle, or a value
+> that must be ALLOCATED before the process exists), a `demand` over `sizeof`, a `layout` byte
+> budget, and a `--target` naming an architecture LLVM cannot parse. `Lowering::errors` exists now,
+> and is deliberately not the gap list: a gap says "not lowered yet" and emits the module anyway.
+>
+> The threads gate was written wrong first and the trusted path's own comment said so in advance —
+> asked where `Thread.start()` reaches the runtime, it refused a wasm module that never mentioned a
+> thread, with the caret in a prelude file the author never opened. It is asked at the call site,
+> where the caller is known, exactly as the note said to.
 
 `polaron-ir.md` §14: *"once a release passes with no differences it is deleted — and roughly 3 400
 lines of `llvm::` spread over 11 files collapses into one back end that is the only thing holding an

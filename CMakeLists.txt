@@ -41,7 +41,6 @@ set(POLARON_CORE_SOURCES
     src/pir/verify.cpp   # the twenty-one rules of §9, and nothing that is not one of them
     src/pir/lower.cpp    # Stage 1: the AST lowered to PIR, and a gap list for what it does not cover
     src/pir/passes.cpp   # Stage 4: guard elimination, immutability, DCE -- §11, on the graph
-    src/pir/shapediff.cpp # `--compare-ir`: the two backends' BODIES, shape by shape, not their names
     src/diag/catalog.cpp  # rich-diagnostic catalog: why/fix/prevent per error code
     src/diag/render.cpp   # rich-diagnostic renderer: snippet + caret + sections, or one concise line
     src/bundle/polh.cpp  # public-API header (.polh) generation; AST-only, no LLVM
@@ -57,31 +56,35 @@ if(POLARON_WITH_LLVM)
     find_package(LLVM REQUIRED CONFIG)
     message(STATUS "Using LLVM ${LLVM_PACKAGE_VERSION} (${LLVM_DIR})")
     add_definitions(${LLVM_DEFINITIONS})
-    # The code generator, split. `codegen.cpp` is now only the public facade over `CodeGenerator::Impl`,
-    # which is declared in the private header `codegen_impl.h`; the four files beside it define the
-    # members that were too large to leave inline. Splitting one class across translation units needs
-    # its declaration in a header, which is what that header exists for -- see its own comment.
+    # WHAT IS LEFT OF `src/codegen/` IS WHAT WAS NEVER A BACK END.
+    #
+    # Nine files here used to lower the AST straight to LLVM -- roughly 23 000 lines, the compiler's
+    # single largest thing -- and they are gone (`polaron-ir.md` §14, Stage 3, 2026-08-25). The
+    # directory keeps its name because what remains genuinely is code generation; it is simply
+    # nobody's back end.
     list(APPEND POLARON_CORE_SOURCES
-        src/codegen/codegen.cpp
-        src/codegen/codegen_call.cpp
-        src/codegen/codegen_expr.cpp
-        src/codegen/codegen_stmt.cpp
-        src/codegen/codegen_types.cpp
-        src/codegen/codegen_layout.cpp
-        src/codegen/codegen_emit.cpp
-        src/codegen/codegen_module.cpp
-        src/codegen/codegen_entry.cpp
+        # Shared with nothing now, but SHARED is still why each of these is a separate file: each
+        # answers a question that belongs to the LANGUAGE rather than to whoever emits code, and
+        # having them inside a back end is what let the two disagree.
         src/codegen/cgutil.cpp
-        # `--test`: the synthetic runner over a program's [Test] methods. Beside the backends rather
-        # than inside one, because which entry point `--test` means is the LANGUAGE's rule -- and a
-        # backend that did not know it silently ran the program's own `main` instead.
+        # WHAT A TARGET'S BYTES LOOK LIKE, and WHAT OPTIMISING MEANS. Both of these had their
+        # declarations in a shared header and their bodies inside the back end, which is how
+        # `applyBareMetalAttrs` came to exist in only one of the two and let pico spin for ever in an
+        # eight-byte memcpy -- the rule was shared, its implementation was not. They have their own
+        # files now, which is what let the back end below them be deleted without taking them along.
+        src/codegen/target.cpp
+        src/codegen/optimize.cpp
+        # `--test`: the synthetic runner over a program's [Test] methods. Which entry point `--test`
+        # means is the language's rule -- and the back end that did not know it silently ran the
+        # program's own `main` instead, which is what sent the first flip to PIR back the same
+        # morning it was made.
         src/codegen/testrunner.cpp
         # ...and what a program with NO LIBC has to be given: the String primitives and the visited
-        # set a `cascade` needs. Both are promises of the language, so neither belongs to a backend.
+        # set a `cascade` needs. Both are promises of the language, so neither belongs to a back end.
         src/codegen/bridges.cpp
-        # Stage 2: the SECOND backend, consuming PIR. This is the only file in the PIR directory
-        # that holds an `llvm::` type -- which is the demotion the whole design is about, and it is
-        # also where §12's hand-off table stops being a promise.
+        # §12: PIR to LLVM. The only file under `src/pir/` that holds an `llvm::` type -- which is
+        # the demotion the whole design was about, and now that it is the only back end, the only
+        # place in the compiler where an `llvm::` type is constructed at all.
         src/pir/tollvm.cpp)
 endif()
 

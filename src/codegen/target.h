@@ -31,6 +31,18 @@ std::string dataLayoutFor(const std::string& triple);
 // program built with no `--target` runs on.
 void applyTarget(llvm::Module& module, const std::string& triple);
 
+// Whether LLVM names the architecture in `triple` at all.
+//
+// `sh4-unknown-linux-gnu` is a real target and LLVM answers `UnknownArch` for it: it cannot say how
+// wide that machine's pointers are, so neither can this compiler, and every width-dependent decision
+// downstream would be a guess wearing a target's name. `dataLayoutFor` returning empty is not the
+// same thing -- that means "correct, just not visible to our own passes", and is fine.
+//
+// Asked of the COMMAND LINE, before anything is built, so the refusal names the flag rather than
+// arriving much later as wrong code. A guess is what the `address` rule exists to refuse; this
+// refuses it at the moment the target is chosen.
+bool targetArchIsKnown(const std::string& triple);
+
 // BARE METAL HAS NO RED ZONE. Marks every method in `module` `noredzone` when the target names no
 // operating system. Call it once, after every body has been emitted -- an attribute cannot be put on
 // a function that does not exist yet, which is why this is not folded into `applyTarget`.

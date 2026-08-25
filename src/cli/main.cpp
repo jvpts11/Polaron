@@ -64,11 +64,10 @@
 
 #ifdef POLARON_WITH_LLVM
 #include "bundle/polb.h"
-#include "codegen/codegen.h"
-#include "codegen/optimize.h"   // the one pipeline, for the module the second backend builds
-#include "codegen/testrunner.h"   // `--test`: the runner both backends share
-#include "pir/tollvm.h"     // Stage 2: the second backend
-#include "pir/shapediff.h"  // ...and the comparison of the two, body by body
+#include "codegen/optimize.h"     // the middle end, over the module the back end builds
+#include "codegen/target.h"       // ...and whether `--target` names a machine at all
+#include "codegen/testrunner.h"   // `--test`: the synthetic runner over the [Test] methods
+#include "pir/tollvm.h"           // §12: PIR to LLVM, the only back end
 
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/Bitcode/BitcodeWriter.h>   // the `.polb` carries the module this compilation built
@@ -88,7 +87,7 @@
 
 namespace {
 
-constexpr std::string_view kVersion = "polc 1.0.171";
+constexpr std::string_view kVersion = "polc 1.0.172";
 
 std::optional<std::string> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -1093,10 +1092,8 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::string& foreignLibsOut = "", const std::string& cHeaderOut = "",
             const std::string& slotsOut = "",
             const std::vector<polaron::PolbForeignLib>& foreignLibMap = {},
-            // --emit-pir=<path|->: Stage 1. Runs beside the real pipeline and feeds nothing.
-            const std::string& pirOut = "",
-            // --compare-ir: the two backends' bodies, shape by shape. See where it is used.
-            bool compareIr = false) {
+            // --emit-pir=<path|->: the module in PIR's own text, before it is handed to LLVM.
+            const std::string& pirOut = "") {
     polaron::ast::Program program;
     std::string programName;
     // In check mode a broken file must not hide the others: an editor asks about the whole project and
@@ -1475,16 +1472,30 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // The module is VERIFIED here too, because a lowering that produces a malformed module and is
     // never told so is one nobody can trust. §9's rules are the contract; this is the first place
     // they meet real programs rather than a hand-built module.
-    // WHICH BACKEND BUILDS THE PROGRAM. Since 2026-08-21 that is PIR: the AST is lowered to
-    // Polaron's own IR, the passes of §11 run on it, and §12 hands the result to LLVM.
+    // HOW THE PROGRAM IS BUILT: the AST is lowered to Polaron's own IR, the passes of §11 run on it,
+    // and §12 hands the result to LLVM. There is no second back end and no switch to select one --
+    // `polaron-ir.md` §14 Stage 3, completed 2026-08-25.
     //
-    // `POLARON_VIA_PIR=0` still selects the older path -- AST straight to LLVM, `src/codegen/` --
-    // and it must keep working, because the differential IS the verification: every sample in the
-    // corpus is built both ways and the outputs compared, and a harness cannot compare two things
-    // if one of them is gone. Both arms of every comparison NAME what they want; leaving the
-    // variable unset selects the default, which is no longer the older path.
+    // What is written below is the history of getting here, kept because every line of it is a
+    // lesson about what a second implementation of the same thing costs and buys.
     //
-    // What earned the flip, measured on this commit:
+    // For most of the project there WERE two: `POLARON_VIA_PIR=0` selected the older path, AST
+    // straight to LLVM, `src/codegen/`, and it had to keep working because the differential WAS the
+    // verification -- every sample in the corpus built both ways and the outputs compared. A harness
+    // cannot compare two things if one of them is gone, so the deletion could not happen until every
+    // check that existed only as a comparison had been re-expressed as an ABSOLUTE one: a number the
+    // program reports about itself, held against a recorded expectation. Those are the `live_*`,
+    // `golden_ir_*` and `object_*` tests, and two of them exist only to prove the instrument still
+    // has teeth -- each reintroduces a real defect behind an environment variable and fails if the
+    // check does not catch it. They were landed and demonstrated BEFORE this deletion, not after,
+    // because the alternative is a window with no instrument at all.
+    //
+    // And the comparison was never the whole instrument anyway. PIR was built against the trusted
+    // path, so a defect present in BOTH never diverged and was never visible. That is not a
+    // hypothetical: Wave 1 found four defects the differential had called agreement, three of them
+    // wrong answers rather than leaks.
+    //
+    // What earned the flip to PIR-by-default, measured on that commit:
     //
     //   corpus       693/693 at -O0 and 694/694 at -O2, identical output, no build or link failure
     //   ctest        1010/1010
@@ -1526,9 +1537,8 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // message that named a vtable or a thunk -- one printed `value = 2` where `value = 12` was
     // expected, because an imported class's CONSTRUCTOR was never declared and so never called.
     // Anything the driver knows and only one backend is told is a divergence waiting to be found by
-    // a user instead of by a test.
-    const char* viaPir = std::getenv("POLARON_VIA_PIR");
-    const bool wantViaPir = viaPir == nullptr || viaPir[0] != '0';
+    // a user instead of by a test. With one back end there is nowhere for such a fact to hide, which
+    // is the quiet half of what this deletion buys.
 #ifdef POLARON_WITH_LLVM
     // Declared out here so the module the PIR backend builds survives to the point where the output
     // is written, far below. A context must outlive every module in it, so the two travel together.
@@ -1546,6 +1556,19 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // instead -- "is it freestanding" -- renames `main` to `kmain` for a freestanding program the
     // test suite deliberately links against a real CRT, which then has no entry point. Two
     // questions; see `entryHasCRuntime`.
+    // A TARGET LLVM CANNOT NAME IS REFUSED, not guessed at -- see `targetArchIsKnown`. Here, before
+    // anything is lowered, because everything below this line computes sizes against it.
+#ifdef POLARON_WITH_LLVM
+    if (!polaron::targetArchIsKnown(target)) {
+        std::fprintf(stderr,
+                     "error: '%s' names an architecture LLVM does not know, so its pointer width "
+                     "cannot be established -- and every size this compiler emits would be a guess. "
+                     "Use a target LLVM recognises (x86_64, aarch64, arm, i686, riscv32/64, wasm32, "
+                     "powerpc, mips, m68k, ...)\n",
+                     target.c_str());
+        return 1;
+    }
+#endif
     std::string effectiveTriple = target;
     if (effectiveTriple.empty()) {
 #ifdef _WIN32
@@ -1568,13 +1591,13 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // Verification is not lost. `--emit-pir` still lowers and still verifies, every real build does
     // both, and `run_pir_verify_test.cmake` exists to test the verifier on its own. What is dropped
     // is producing a module for a command that has promised not to produce one.
-    if (!pirOut.empty() || (wantViaPir && !checkOnly)) {
-        // The same source lookup the trusted backend is handed, for the same one reason: a contract
-        // that fails quotes the line it was written on, and the spelling is not in the AST.
+    if (!pirOut.empty() || !checkOnly) {
+        // The source lookup, for one reason: a contract that fails quotes the line it was written
+        // on, and the spelling is not in the AST.
         //
-        // ...AND THE SAME BUNDLE FACTS. `seedVtableSlots` and `addDynamicBundle` below hand these to
-        // the other backend; withholding them here is what made thirteen of the eighteen bundle
-        // tests fail through PIR, none of them with a message that named the cause.
+        // ...AND THE BUNDLE FACTS. These were handed to the OTHER backend alone for most of the
+        // project, and withholding them here is what made thirteen of the eighteen bundle tests fail
+        // through PIR, none of them with a message that named the cause.
         polaron::pir::BundleContext pirBundles;
         pirBundles.vtableSlots = seedSlots;
         pirBundles.library = libraryMode;
@@ -1624,15 +1647,28 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         if (!lowered.gaps.empty()) {
             std::fputs(polaron::pir::renderGaps(lowered.gaps).c_str(), stderr);
         }
+        // WHAT THE LOWERING REFUSED, through the SAME renderer the front end uses.
+        //
+        // A back end's errors used to be printed raw -- no code, no source line, no caret, no
+        // why/fix/prevent, and invisible to `polaron explain` -- so which half of the compiler
+        // noticed a mistake decided how well it was explained. That is not a distinction anybody
+        // writing Polaron can see or should have to. `classify` reads the message the same way it
+        // does for a front-end error that predates its own code.
+        if (!lowered.errors.empty()) {
+            for (const polaron::CodegenError& e : lowered.errors) {
+                const std::string file(e.loc.file);
+                std::fputs(polaron::diag::render("error", file, e.loc.line, e.loc.col, e.message,
+                                                 polaron::diag::classify(e.message),
+                                                 sourceLineAt(e.loc.file, e.loc.line), g_concise)
+                               .c_str(),
+                           stderr);
+            }
+            return 1;
+        }
 #ifdef POLARON_WITH_LLVM
-        if (wantViaPir) {
-            // THE MODULE IS KEPT, not measured and dropped. Until now this backend built an LLVM
-            // module, counted what §12 had put in it, and let it go out of scope -- which proves the
-            // machinery and changes nothing about any program that gets compiled.
-            //
-            // Held in a context that outlives this block so the emitted IR can become the OUTPUT.
-            // That is what makes the differential a comparison of BEHAVIOUR rather than of names:
-            // compile both ways, link both, run both, require the same output.
+        {
+            // Held in a context that outlives this block, because the emitted IR IS the output and
+            // the output is written far below.
             // (`library` is set above, before the passes, because reachability reads it too.)
             // ...AND WHO WRITES `main`. Under `--test` that is the runner, emitted below once every
             // function it calls exists; this backend must not take the name first.
@@ -1764,42 +1800,6 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     }
 
 #ifdef POLARON_WITH_LLVM
-    polaron::CodeGenerator codegen(program, sema.entryPoint(), inputs.front());
-    codegen.setPatchedClasses(sema.patchedClasses());  // spec 32.8: they need a writable vtable
-    codegen.setClassReferences(sema.classReferences());  // emit only what the program can reach
-    codegen.setDemandOwners(sema.demandOwners());        // ...except a build-time assertion
-    // The same source map the rich diagnostics read, so a contract that fails at RUNTIME can quote
-    // the clause the way an error quotes the offending line. The two now say the same kind of thing
-    // in the same shape, which is the point: a contract is a diagnostic that happens later.
-    codegen.setSourceLookup(sourceLineAt);
-    // Always set a triple (and, through it, the data layout) -- with --target for freestanding/cross, or
-    // the host's otherwise -- so ABI alignments are correct and hot loops vectorize. Without this the
-    // module is layout-less and i64 loads emit `align 4`.
-    codegen.setTargetTriple(effectiveTriple);
-    codegen.setLibrary(libraryMode);  // a .polb has no entry point / `main`
-    codegen.setTestMode(testMode);    // --test: synthetic [Test] runner as the entry
-    codegen.setDebugInfo(debugInfo);  // -g: emit DWARF debug metadata
-    codegen.setVerifyStack(verifyStack);  // --verify-stack: each method proves its own stack pointer
-    codegen.seedVtableSlots(seedSlots);  // adopt imported bundles' vtable slot layout
-    for (const auto& [name, path, fp] : dynBundleInfo) {
-        codegen.addDynamicBundle(name, path, fp);  // runtime-resolving thunks for --use-dynamic
-    }
-    if (!codegen.generate()) {
-        // Through the SAME renderer the front end uses. Codegen's errors used to be printed raw --
-        // no code, no source line, no caret, no why/fix/prevent, and invisible to `polaron explain` --
-        // so which half of the compiler noticed a mistake decided how well it was explained. That is
-        // not a distinction anybody writing Polaron can see or should have to. `classify` reads the
-        // message the same way it does for a sema error that predates its own code.
-        for (const polaron::CodegenError& e : codegen.errors()) {
-            const std::string file(e.loc.file);
-            std::fputs(polaron::diag::render("error", file, e.loc.line, e.loc.col, e.message,
-                                          polaron::diag::classify(e.message),
-                                          sourceLineAt(e.loc.file, e.loc.line), g_concise)
-                           .c_str(),
-                       stderr);
-        }
-        return 1;
-    }
     // The merged vtable layout, for `--extract-code --remap-slots` to renumber each dependency into.
     // Written before optimization, since the layout is a fact about the module's shape and not about
     // what the passes do to it.
@@ -1813,60 +1813,18 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             sf << name << "\n";   // position IS the slot; an empty line is an unused one
         }
     }
-#ifdef POLARON_WITH_LLVM
-    // `--compare-ir`: THE TWO MODULES, BODY BY BODY, before either is optimised.
+    // `--compare-ir` STOOD HERE, and it is gone with the thing it compared against.
     //
-    // The differential compares what a program PRINTS, which is the strongest evidence there is and
-    // is blind to two things: what must NOT be in the image, and a method the program never reaches.
-    // This is the other half -- for every function both backends emit, is the body the same SHAPE?
-    // Not the same text: the two paths name their values differently and always will.
+    // It read the two back ends' modules body by body and reported every function whose SHAPE
+    // differed -- the half of the instrument the behavioural differential is blind to, because
+    // running a program cannot see what must NOT be in the image, nor a method the program never
+    // reaches. It found seven defects that nothing else did.
     //
-    // Before `optimize`, because after it the two have been through the same pipeline and a
-    // difference the pipeline erased is a difference that was there. The trusted module comes back
-    // through bitcode rather than through a new accessor: `codegen.h` states that it keeps LLVM
-    // behind the PIMPL, and a round trip once per compile under a flag is cheaper than that rule.
-    if (compareIr && pirModule != nullptr) {
-        const std::string bits = codegen.toBitcode();
-        llvm::SMDiagnostic ignored;
-        auto buffer = llvm::MemoryBuffer::getMemBuffer(bits, "trusted", false);
-        llvm::Expected<std::unique_ptr<llvm::Module>> mine =
-            llvm::parseBitcodeFile(buffer->getMemBufferRef(), *pirCtx);
-        if (!mine) {
-            llvm::consumeError(mine.takeError());
-            std::fputs("pir::shapes: the trusted module could not be re-read for comparison\n",
-                       stderr);
-        } else {
-            // Promote stack slots on BOTH sides first. Without it the report is unreadable: a census
-            // over all 874 samples gave 9 402 differences and not one program in full agreement,
-            // and a third of that was PIR keeping a value in an `alloca` where the trusted path used
-            // the value -- semantically identical, and reaching `Object.Object`, so every program.
-            // See src/pir/shapediff.h and tests/pir_shape_baseline.md.
-            //
-            // ON A COPY OF THE PIR MODULE, because that one is what gets emitted. Normalising it in
-            // place would make `--compare-ir` change the program it was asked to inspect -- and this
-            // file already says elsewhere that a debugging knob which turns on something the command
-            // line did not ask for is not a debugging knob. The trusted module is a throwaway (it
-            // was parsed from bitcode for this comparison alone), so that one is promoted in place.
-            polaron::pir::normalizeForShapeCompare(**mine);
-            std::unique_ptr<llvm::Module> pirCopy = llvm::CloneModule(*pirModule);
-            polaron::pir::normalizeForShapeCompare(*pirCopy);
-            size_t both = 0;
-            for (const llvm::Function& f : **mine) {
-                if (f.getName() == "main") {
-                    continue;   // the synthesised entry wrapper: excluded there, so not counted here
-                }
-                if (!f.isDeclaration() && pirCopy->getFunction(f.getName()) != nullptr &&
-                    !pirCopy->getFunction(f.getName())->isDeclaration()) {
-                    ++both;
-                }
-            }
-            const std::vector<polaron::pir::ShapeDiff> diffs =
-                polaron::pir::compareBodies(**mine, *pirCopy);
-            std::fputs(polaron::pir::renderShapeDiffs(diffs, both).c_str(), stderr);
-        }
-    }
-#endif
-    codegen.optimize(optLevel);  // polc's own optimization pipeline (no-op at -O0)
+    // Its replacement is not another comparison. `golden_ir_*` records the expected shape of a
+    // chosen few bodies and holds each build against THAT -- an absolute check, which is the only
+    // kind that can be wrong about one back end rather than merely different from another. See
+    // `tests/run_golden_ir_test.cmake`, and `golden_ir_catches_reintroduced_defect`, which puts a
+    // real defect back behind an environment variable and fails if the golden does not notice.
 
     if (libraryMode) {
         // Emit a self-describing .polb bundle plus a standalone .polh header. The bundle name is the
@@ -1919,13 +1877,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         return 0;
     }
 
-    // WHOSE IR REACHES THE OUTPUT. With `POLARON_VIA_PIR=1` it is the second backend's, which is
-    // what turns the differential from a comparison of NAMES into a comparison of BEHAVIOUR: the
-    // program is built from PIR, linked and run, and required to print what the trusted path prints.
-    //
-    // The old path still runs above -- it is what fills the vtable layout, the bundle and the
-    // header, and it is the comparison. Turning it off is the last stage, not this one.
-    std::string ir = codegen.toIR();
+    std::string ir;
 #ifdef POLARON_WITH_LLVM
     if (pirModule != nullptr) {
         // ...AND IT IS OPTIMISED, at the level the driver was given. This was missing, and it was
@@ -1949,23 +1901,23 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         pirModule->print(os, nullptr);
         os.flush();
         ir = std::move(viaPirText);
-    } else if (wantViaPir) {
-        // ASKED FOR THIS BACKEND AND DID NOT GET IT IS A FAILURE, not a fallback.
+    } else {
+        // NO MODULE IS A FAILURE, not a fallback -- and there is nothing left to fall back TO.
         //
-        // When `toLlvm` produced a module LLVM refused, this printed one line and then wrote the
-        // TRUSTED module to the output instead. Everything downstream then measured the old backend
-        // against itself: the sample compiled, linked, ran, printed exactly what the other arm
-        // printed, and the differential recorded it as agreement. Twenty-two of the six hundred and
-        // ninety-two samples this corpus called SAME were that -- every `async_*`, every
-        // `unimport`/`reimport`, and four others -- and the number had been read as evidence.
+        // When there were two back ends and `toLlvm` produced a module LLVM refused, this printed
+        // one line and wrote the TRUSTED module to the output instead. Everything downstream then
+        // measured the old backend against itself: the sample compiled, linked, ran, printed exactly
+        // what the other arm printed, and the differential recorded it as agreement. Twenty-two of
+        // the six hundred and ninety-two samples the corpus called SAME were that -- every
+        // `async_*`, every `unimport`/`reimport`, and four others -- and the number had been read as
+        // evidence.
         //
-        // A comparison whose two sides can quietly become the same side is not a comparison. Asking
-        // for a backend and being handed a different one has to stop the compile, so the harness
-        // counts it as the failure it is and the work queue is the true one.
+        // Kept as an explicit failure now that no fallback is possible, because the alternative is
+        // writing an empty `.ll` and letting the link fail on a missing entry point, half a build
+        // system away from the compiler that knew.
         std::fprintf(stderr,
-                     "polc: the PIR backend did not produce a usable module, and emitting the older "
-                     "path's IR in its place would hide that. Compile with POLARON_VIA_PIR=0 to use "
-                     "the AST-to-LLVM path deliberately, and please report this program\n");
+                     "polc: the backend did not produce a usable module for this program, and no IR "
+                     "was written. Please report this program\n");
         return 1;
     }
 #endif
@@ -2169,9 +2121,6 @@ int main(int argc, char** argv) {
     std::string extractFrom;  // --extract-code <dep.polb>: dump the bundle's CODE bitcode to -o
     std::string target;  // --target=<triple>, e.g. x86_64-unknown-none for freestanding/bare metal
     int optLevel = 0;    // -O0..-O3: run polc's own optimization pipeline before emitting IR
-    // `--compare-ir`: report every function the two backends build differently. Off by default: it
-    // costs a bitcode round trip and it answers a question about the COMPILER, not the program.
-    bool compareIr = false;
     bool libraryMode = false;  // --lib: compile a bundle to a .polb (+ .polh), no entry point required
     bool testMode = false;     // --test: emit a synthetic runner over the [Test] methods, not main
     bool debugInfo = false;    // -g: emit DWARF debug metadata (for @@LOW@@UPPLINGB@@@@ / the Forge debugger)
@@ -2230,8 +2179,6 @@ int main(int argc, char** argv) {
             foreignLibMap.push_back(std::move(fl));
         } else if (args[i] == "--test") {
             testMode = true;
-        } else if (args[i] == "--compare-ir") {
-            compareIr = true;   // the two backends' bodies, shape by shape -- see where it is used
         } else if (args[i] == "--use") {
             if (i + 1 >= args.size()) {
                 std::fprintf(stderr, "error: --use requires a .polb file\n");
@@ -2325,5 +2272,5 @@ int main(int argc, char** argv) {
     }
     return compile(inputs, output, target, optLevel, libraryMode, deps, dynDeps, testMode, debugInfo,
                    remoteDeps, /*checkOnly=*/false, regionBinder, verifyStack, foreignLibsOut,
-                   cHeaderOut, slotsOut, foreignLibMap, pirOut, compareIr);
+                   cHeaderOut, slotsOut, foreignLibMap, pirOut);
 }

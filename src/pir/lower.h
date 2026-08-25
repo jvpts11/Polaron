@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "codegen/cgutil.h"   // `CodegenError`: what a back end reports when it refuses a program
 #include "parser/ast.h"
 #include "pir/module.h"
 
@@ -31,6 +32,21 @@ struct Gap {
 struct Lowering {
     Module module;
     std::vector<Gap> gaps;
+    // WHAT THE LOWERING REFUSES, as opposed to what it has not learned yet.
+    //
+    // A `Gap` and an error are not the same report and must not share a list. A gap says "this
+    // construct is not lowered": the module is still emitted, the program may still be correct, and
+    // the list is a work queue. An error says the PROGRAM is wrong -- `new` of a `region class` `on
+    // heap`, an `asm` block written for another architecture, a static initialiser that would have
+    // to allocate before the process exists -- and the compile must stop with a diagnostic.
+    //
+    // There was no such list here for the whole of Stage 1 and 2, because there did not need to be:
+    // the OTHER back end walked the same AST and raised these, and while both ran, every one of them
+    // was raised. Deleting it dropped twelve diagnostics at once, and not one of them failed
+    // loudly -- `polc` accepted the program, emitted IR for it, and exited 0. A compiler that
+    // silently accepts what it used to refuse is worse than one that crashes, because the refusal is
+    // the feature.
+    std::vector<CodegenError> errors;
     // THE DISPATCH NUMBERING THIS COMPILATION SETTLED ON, in slot order: position IS the slot, and
     // an empty entry is one nothing uses. `--lib` writes it into the `.polb` and a consumer seeds
     // itself with it (`BundleContext::vtableSlots`), because a library baked its vtables against

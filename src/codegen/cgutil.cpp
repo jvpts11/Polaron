@@ -325,6 +325,42 @@ std::int64_t parseIntLiteral(const std::string& lexeme) {
     }
 }
 
+std::string archFamily(const std::string& name) {
+    if (name == "x86_64" || name == "amd64" || name == "x64") {
+        return "x86_64";
+    }
+    if (name == "x86" || name == "i386" || name == "i486" || name == "i586" || name == "i686") {
+        return "x86";   // 32-bit x86 is NOT x86_64: the register file and the ABI differ
+    }
+    if (name == "aarch64" || name == "arm64") {
+        return "aarch64";
+    }
+    if (name.rfind("armv", 0) == 0 || name == "arm" || name == "thumb") {
+        return "arm";
+    }
+    if (name.rfind("riscv", 0) == 0) {
+        return "riscv";
+    }
+    if (name.rfind("wasm", 0) == 0) {
+        return "wasm";
+    }
+    if (name.rfind("ppc", 0) == 0 || name.rfind("powerpc", 0) == 0) {
+        return "ppc";
+    }
+    if (name.rfind("mips", 0) == 0) {
+        return "mips";
+    }
+    if (name == "sparc" || name == "sparcv9") {
+        return "sparc";
+    }
+    return "";
+}
+
+std::string archOfTriple(const std::string& triple) {
+    const size_t dash = triple.find('-');
+    return dash == std::string::npos ? triple : triple.substr(0, dash);
+}
+
 // Array types are spelled with a trailing "[]" (e.g. "int[]", "char[]").
 bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;

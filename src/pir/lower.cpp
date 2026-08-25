@@ -20,6 +20,11 @@
 // two ends of a closure come to disagree about what it carries.
 #include "codegen/cgutil.h"
 
+// For `readArrangement` -- what a `layout` asks of the type implementing it, including the byte
+// ceiling. The reading of an `onArrange` block belongs where the layout is declared and validated;
+// this pass is only the one that knows the SIZE to hold it against.
+#include "semantic/layouts.h"
+
 // For the compile-time evaluator. What counts as a constant is a property of the LANGUAGE, decided
 // in one place that both the analyzer and the trusted backend already drive; a second copy written
 // here would answer differently the first time either was changed.
@@ -1328,6 +1333,43 @@ private:
     //
     // A `layout` IS THE EXCEPTION AND SAYS SO. It describes a register block or a wire format,
     // where a hole the compiler inserted is a field at the wrong offset, so `packed` means summed.
+    // A LAYOUT'S BYTE CEILING, CHECKED AGAINST WHAT THE TYPE ACTUALLY MEASURES.
+    //
+    // `implements Tick` where `layout Tick` says `itself.fitWithin(8 bytes)` is a promise about the
+    // target's real arrangement, so only this stage can settle it -- which is also why the analyzer
+    // defers it, and why a blown budget shows up at build time rather than in the editor's live
+    // check. One authority on layout instead of two models that can disagree.
+    //
+    // Reordering by hand is explicitly ruled out in the message because the compiler has already
+    // done it: the fields were laid out widest-first precisely to make the budget fit, so a reader
+    // who has just been told the number needs to know that the obvious next move is not available.
+    void checkLayoutBudget(const ast::ClassDecl& c, uint64_t measured) {
+        if (c.layouts.empty() || measured == 0) {
+            return;
+        }
+        for (const std::string& ln : c.layouts) {
+            const ast::ClassDecl* decl = findClass(ln);
+            if (decl == nullptr || !decl->isLayout) {
+                continue;
+            }
+            Arrangement want;
+            (void)readArrangement(*decl, want);   // malformed is already reported by the analyzer
+            if (want.maxBytes < 0 || static_cast<long long>(measured) <= want.maxBytes) {
+                continue;
+            }
+            std::string msg = "`" + c.name + "` is arranged by `" + ln + "`, which fits it within " +
+                              std::to_string(want.maxBytes) + " bytes -- it measures " +
+                              std::to_string(measured) +
+                              ". The fields were already ordered widest-first to make it fit, so "
+                              "reordering them by hand will not help: something has to be narrower, "
+                              "or leave";
+            if (!want.refuseMessage.empty()) {
+                msg += " (" + want.refuseMessage + ")";
+            }
+            refuse(msg, c.loc);
+        }
+    }
+
     static void measureAggregate(const std::vector<Field>& fields, bool packed, TypeFacts& facts) {
         uint64_t size = 0;
         uint64_t align = 1;
@@ -3072,7 +3114,32 @@ private:
             g.initInt = b->value ? 1 : 0;
             g.zeroInit = false;
         } else if (init != nullptr) {
-            gap("static initialiser is not a literal: " + key, loc);
+            // AN INITIALIZER THAT WAS WRITTEN AND CANNOT BE EVALUATED is the failure this whole
+            // step exists to stop being silent. Zeroing it is never what was meant, and the
+            // resulting program is wrong in a way no test of the program's OUTPUT can localise back
+            // to this line.
+            //
+            // It was a `gap` here, which is the wrong report entirely: a gap says the lowering has
+            // not learned a construct and the program is still emitted. This program is WRONG.
+            // `static int EARLY = Rules.LATER / 4;` beside `static int LATER = Rules.EARLY * 2;` is
+            // a cycle with no value at the bottom of it, and both fields were quietly zeroed.
+            //
+            // The second sentence is for the half that ALLOCATES, and it is a different fault
+            // wearing the same shape: a `String` or a `new T[n]()` is not unevaluable because the
+            // folder is weak, but because a value that must be ALLOCATED cannot exist before the
+            // process does. `static mutable String tag = "hello";` compiled clean and took the
+            // process down with an access violation.
+            const std::string spelled = resolvedTypeName(type);
+            const bool numeric = cgutil::isIntName(spelled) || cgutil::isFloatType(spelled) ||
+                                 spelled == "boolean" || spelled == "char";
+            refuse("the initializer for static field '" + key +
+                       "' cannot be evaluated before the program starts: it is neither a constant "
+                       "nor built from other static fields without a cycle" +
+                       (numeric ? ""
+                                : ". A value that must be ALLOCATED cannot exist before the program "
+                                  "runs -- give it a value in `onClassLoad`, which is where the "
+                                  "standard library builds its own tables"),
+                   loc);
         }
         out_.module.globals.push_back(std::move(g));
     }
@@ -3399,6 +3466,7 @@ private:
         }
         measureAggregate(t->fields, t->packed, facts);
         out_.module.types.setFacts(t, facts);
+        checkLayoutBudget(c, facts.size);
 
         forEachMember<ast::MethodDecl>(c, [&](const ast::MethodDecl& m) {
             // A GENERATOR'S PARKED BODY IS NOT A METHOD AT ALL (§22.6). An earlier pass split
@@ -3717,6 +3785,9 @@ private:
                       : m.visibility == "private"  ? Linkage::Private
                                                    : Linkage::Internal;
         fn->kind = m.isInterrupt ? FnKind::Interrupt : FnKind::Method;
+        if (m.isInterrupt) {
+            requireTargetFeature("interrupt", "`" + owner + "." + m.name + "`", m.loc);
+        }
         // `[Cold]`: THIS PATH IS RARELY TAKEN. The inliner costs a method by its SIZE, which is a
         // poor proxy when the bulk of one runs log(n) times in n -- see the note beside the other
         // backend's copy of this, and `ArrayList.ensureCapacity`, which is what asked for it.
@@ -3792,6 +3863,23 @@ private:
     // something arbitrary.
     void lowerSyscallStub(Function& fn, const ast::MethodDecl& m) {
         TypeTable& tt = out_.module.types;
+        // A SYSCALL IS THE MACHINE'S OWN INSTRUCTION, so there is nothing here to port
+        // automatically: Windows publishes no stable syscall ABI at all, and another architecture
+        // numbers and passes them differently. Refused where the target is named rather than left to
+        // emit an instruction the assembler will reject much later.
+        const std::string& triple = out_.module.triple;
+        const bool linuxX64 = cgutil::archFamily(cgutil::archOfTriple(triple)) == "x86_64" &&
+                              triple.find("linux") != std::string::npos;
+        if (!linuxX64) {
+            refuse("`extern syscall(...)` is available on Linux/x86-64 and this target is " +
+                       triple +
+                       ". A syscall is the machine's own instruction with its own register contract, "
+                       "so there is nothing here to port automatically: Windows publishes no stable "
+                       "syscall ABI at all, and another architecture numbers and passes them "
+                       "differently",
+                   m.loc);
+            return;
+        }
         const int64_t number = std::strtoll(m.externConvention.c_str() + 8, nullptr, 10);
         if (m.params.size() > 6) {
             gap("extern syscall(" + std::to_string(number) + ") takes at most six arguments; '" +
@@ -6672,6 +6760,17 @@ private:
         });
     }
 
+    // WHOSE BODY IS BEING LOWERED, as a class key. A function's key is `<class key>.<member>`, so
+    // the owner is everything before the LAST dot -- the last, because a shared short name is filed
+    // under its full path and reading the first segment would answer `System` for all of them.
+    std::string enclosingClassKey() const {
+        if (fn_ == nullptr) {
+            return {};
+        }
+        const size_t lastDot = fn_->key.rfind('.');
+        return lastDot == std::string::npos ? std::string() : fn_->key.substr(0, lastDot);
+    }
+
     // Whether a class key names something the standard library declared rather than the program.
     bool isPreludeClass(const std::string& key) const {
         const auto found = classesByKey_.find(key);
@@ -8211,6 +8310,65 @@ private:
             Gap{std::move(construct), fn_ != nullptr ? "@" + fn_->key : std::string(), loc});
     }
 
+    // THE PROGRAM IS WRONG, which is a different report from `gap` above -- see `Lowering::errors`.
+    // Lowering continues afterwards: the driver stops on a non-empty list, and reaching the end
+    // means one compile reports every such fault rather than the first one, which is what the front
+    // end already does and what the diagnostics chapter promises.
+    void refuse(std::string message, SourceLocation loc) {
+        out_.errors.push_back(CodegenError{std::move(message), loc});
+    }
+
+    // ONE PLACE THAT ANSWERS "does this machine have that", so a program built for an old or a small
+    // target is told what it cannot have, at the line that asked, instead of finding out at link
+    // time from a symbol nobody wrote -- or, worse, at run time from a module that traps.
+    //
+    // The port's whole premise is that a target may be missing something (see
+    // docs/design/porting-architectures.md): a 1990s machine has no SSE, a bare wasm module has no
+    // threads. Refusing with a sentence is the agreed answer, not a silent lowering to nothing.
+    bool requireTargetFeature(std::string_view feature, const std::string& what, SourceLocation loc) {
+        const std::string& triple = out_.module.triple;
+        const std::string arch = cgutil::archFamily(cgutil::archOfTriple(triple));
+        if (feature == "interrupt" && arch != "x86_64" && arch != "x86") {
+            // AN INTERRUPT HANDLER IS AN X86 CALLING CONVENTION. `interrupt` lowers to `x86_intrcc`,
+            // which LLVM implements for x86 and x86-64 and nowhere else -- the CPU pushes a specific
+            // frame and the handler returns with `iret`, and no other architecture does either.
+            //
+            // Left ungated, the IR was emitted happily and clang's BACKEND died on it:
+            //
+            //     fatal error: error in backend: unsupported calling convention
+            //     PLEASE submit a bug report to https://github.com/llvm/llvm-project/issues/
+            //
+            // No source line, no method name, and an invitation to file a bug against LLVM for
+            // something this compiler chose. That is the exact shape of failure the port's feature
+            // gates exist to replace: AArch64 and RISC-V have interrupt handling, but it is a
+            // different mechanism with a different frame, so this is not a lowering we are missing
+            // -- it is one that does not exist.
+            refuse("`interrupt` is an x86 calling convention and this target is " + triple +
+                       ". A handler declared this way expects the frame an x86 CPU pushes and "
+                       "returns with `iret`; " + what +
+                       " cannot be built for another architecture, which handles interrupts by a "
+                       "different mechanism entirely. Build for x86, or write the handler for this "
+                       "machine as a `naked` method with its own entry sequence",
+                   loc);
+            return false;
+        }
+        if (feature == "threads" && arch == "wasm") {
+            // wasm32-unknown-unknown is a SINGLE-THREADED machine. Threads there need the atomics
+            // and bulk-memory proposals AND a host that hands the module a shared memory and spawns
+            // the workers -- none of which the bare target has. Without this the calls to
+            // `__polaron_thread_spawn` are emitted and the module simply has no such import.
+            refuse("threads are not available on " + triple +
+                       ": a bare WebAssembly module runs on one thread, and spawning needs the "
+                       "atomics and bulk-memory proposals plus a host that provides the shared "
+                       "memory and the workers. " + what +
+                       " has no meaning on this target -- build for a threaded target, or "
+                       "restructure the work to run on the one thread wasm gives you",
+                   loc);
+            return false;
+        }
+        return true;
+    }
+
     // ---- statements ----
 
     void lowerStmt(const ast::Stmt* s) {
@@ -8237,6 +8395,33 @@ private:
         // ...AND SO IS A `comefrom`, which is ordinarily written after a `return` -- that is the
         // whole shape of the forward steal. Dropped as unreachable, its block never got a body and
         // the module failed rule 2 with no terminator.
+        // A `demand` IS SETTLED HERE, AND IT EMITS NOTHING (§28.2).
+        //
+        // The analyzer folds every condition it can and defers exactly the ones mentioning `sizeof`,
+        // because a size is only knowable against the TARGET's layout and this is the one stage that
+        // has it. One authority on layout instead of two models that can disagree; the cost is that
+        // a blown byte budget shows up at build time rather than in the editor's live check, and
+        // that trade is written down in the test that guards it.
+        //
+        // Before the `blockClosed()` return below, deliberately: a demand is not code, so whether
+        // control can REACH it has nothing to do with whether it holds. `sizeof_budget_bad.pol`
+        // makes the same point one level up -- the demand sits in a method nothing calls, and says
+        // so: "an assertion that cannot fire is worse than no assertion, because it reads as
+        // protection."
+        if (const auto* dm = dynamic_cast<const ast::DemandStmt*>(s)) {
+            if (comptime::mentionsSizeof(*dm->condition)) {
+                comptime::Context ctx = comptimeContext();
+                long long v = 0;
+                if (!comptime::evalInt(*dm->condition, v, ctx)) {
+                    refuse("a demand is settled while the program is built, so its condition has to "
+                           "be known then -- this one is not constant",
+                           dm->loc);
+                } else if (v == 0) {
+                    refuse("demand not met: " + dm->message, dm->loc);
+                }
+            }
+            return;
+        }
         const bool startsFlow = dynamic_cast<const ast::LabelMarkStmt*>(s) != nullptr ||
                                 dynamic_cast<const ast::LabeledStmt*>(s) != nullptr ||
                                 dynamic_cast<const ast::ComefromStmt*>(s) != nullptr;
@@ -8454,6 +8639,31 @@ private:
         // `out (lv)` is `=r`, `in (e)` is `r`, `clobber ("rax")` is `~{rax}` -- and the backend's
         // business is the InlineAsm object, not what a Polaron `asm` block means.
         if (auto* as = dynamic_cast<const ast::AsmStmt*>(s)) {
+            // `as->arch` NAMES THE ARCHITECTURE THE BLOCK IS WRITTEN FOR, checked against the one
+            // being built for.
+            //
+            // It used to be an unchecked "intent tag", which meant an x86 block compiled for ARM
+            // travelled all the way to clang's assembler and failed there:
+            //     <inline asm>:1:3: error: too few operands for instruction
+            //             hlt
+            // -- a message about a line of assembly, in a file called `<inline asm>`, with no path
+            // back to the Polaron source that wrote it or the target that made it wrong. A
+            // whole-program port consists mostly of finding these, so the compiler says it itself,
+            // at the right place.
+            if (!as->arch.empty() && as->arch != "arch") {   // "arch" is the docs' placeholder
+                const std::string have = cgutil::archOfTriple(out_.module.triple);
+                const std::string wantFamily = cgutil::archFamily(as->arch);
+                const std::string haveFamily = cgutil::archFamily(have);
+                if (!wantFamily.empty() && !haveFamily.empty() && wantFamily != haveFamily) {
+                    refuse("this `asm` block is written for " + as->arch + ", and the target is " +
+                               have +
+                               ". Assembly cannot be ported by the compiler, and there is as yet no "
+                               "way to carry one block per architecture in a program -- so this "
+                               "block has to be written for " + have + ", or the program built for " +
+                               as->arch,
+                           as->loc);
+                }
+            }
             std::string cons;
             std::vector<ValueId> operands;
             std::vector<const Type*> outTypes;
@@ -16829,6 +17039,19 @@ private:
         }
         if (auto* mv = dynamic_cast<const ast::MoveExpr*>(e)) {
             const ValueId src = lowerExpr(mv->operand.get());
+            // `move x into region R` IS `in region R` SPELLED AS A MOVE, and a region class refuses
+            // it for the same reason and in the same words: it has one arena, and an instance
+            // anywhere else is the one thing the whole feature is built on not existing. A rule that
+            // held at `new` and not here would be a rule with a spelling that gets around it.
+            if (!mv->toRegion.empty()) {
+                const std::string cls = classNameOf(declaredName(src));
+                if (!cls.empty() && livesInClassArena(cls)) {
+                    refuse("`" + cls + "` is a `region class`, so `into region " + mv->toRegion +
+                               "` would move it out of the only region its instances may be in -- "
+                               "the same thing `in region` is refused for at `new`",
+                           mv->loc);
+                }
+            }
             Inst in;
             in.op = Op::Move;
             in.type = src != kNoValue ? fn_->value(src)->type : tt.ptrType();
@@ -20507,6 +20730,20 @@ private:
                 return through.value;
             }
         }
+        // SPAWNING A THREAD IS A THING A TARGET MAY NOT HAVE, and this is the only place the
+        // question can be asked without refusing correct programs.
+        //
+        // The obvious place is where `Thread.start()` reaches the runtime -- a line in the PRELUDE,
+        // lowered for every program whether or not it uses threads. Asked there, a wasm module that
+        // never mentioned a thread was refused, and the caret pointed at a file the author never
+        // opened. A check that refuses something correct is worse than no check; it is the same
+        // failure the `asm` architecture check exists to avoid, and it was made here first too.
+        //
+        // Here the receiver's class and the CALLER are both known, so the refusal lands on the line
+        // that asked for the feature, and the prelude compiling its own `Thread` costs nothing.
+        if (cls == "Thread" && key == "start" && !isPreludeClass(enclosingClassKey())) {
+            requireTargetFeature("threads", "`Thread.start()`", c.loc);
+        }
         if (!cls.empty()) {
             target = resolveKey(cls + "." + key);
         }
@@ -22239,6 +22476,39 @@ private:
         // Asking the CLASS where its instances live is the only reading that cannot be wrong,
         // because for a region class there is exactly one answer and the author never writes it.
         if (t != nullptr && t->kind == TypeKind::Struct && livesInClassArena(className)) {
+            // ...AND A PLACEMENT WRITTEN ANYWAY IS REFUSED, not ignored.
+            //
+            // Accepting `on heap` and quietly allocating from the region is the worst of the three
+            // outcomes: the author wrote a placement, the compiler did something else, and nothing
+            // said so. Obeying it is worse still -- one instance outside the arena ends the totality
+            // that a region class's whole value rests on: O(1) liveness for `unimport`, the linear
+            // walk over every instance, and the eventual 32-bit `A*` that is an OFFSET from the
+            // arena base and is not an offset at all if the object is somewhere else.
+            //
+            // `on stack` has to be asked about separately from `on heap`, because "stack" is what
+            // the DEFAULT parses as: silence and the written word arrive here identical unless the
+            // parser says which it was. That is what `locationWritten` is for, and it is also the
+            // placement that would do the most damage.
+            if (n.location == "heap") {
+                refuse("`" + className +
+                           "` is a `region class`, so `on heap` has nowhere to put this -- every "
+                           "instance comes from the type's own region, and that is the whole "
+                           "guarantee. Write `new " + className + "(...)` with no placement",
+                       n.loc);
+            } else if (n.locationWritten) {
+                refuse("`" + className + "` is a `region class`, so `on " + n.location +
+                           "` has nowhere to put this -- every instance comes from the type's own "
+                           "region, and a region class is worth having precisely because there is "
+                           "nowhere else. Write `new " + className + "(...)` with no placement",
+                       n.loc);
+            } else if (!n.region.empty()) {
+                refuse("`" + className +
+                           "` is a `region class`, so every instance comes from its own region -- "
+                           "`in region " + n.region + "` would put one somewhere else, and the "
+                           "guarantee that makes a region class worth having is that there is "
+                           "nowhere else",
+                       n.loc);
+            }
             const ValueId obj = classArenaAlloc(className, t, n.loc);
             pointee_[obj] = t;
             noteName(obj, className);

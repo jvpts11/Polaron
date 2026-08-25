@@ -96,6 +96,22 @@ constexpr int DECIMAL_SCALE = 18;
 // A decimal literal as its scaled integer text.
 std::string decimalScaledString(const std::string& text);
 
+// ---- Questions about a TARGET's name ----
+//
+// Here, not in `target.h`, for the reason that decides everything in this file: `target.h` includes
+// LLVM, and the lowering that has to ask these questions is the one place in the compiler that must
+// not. Both of these are string in, string out.
+
+// The architecture family `name` belongs to, or empty when it names none this compiler knows.
+// 32-bit x86 is NOT `x86_64`: the register file and the ABI differ, and an `asm` block written for
+// one is wrong on the other.
+std::string archFamily(const std::string& name);
+
+// The architecture component of a target triple -- everything before the first `-`. A triple is
+// `<arch><sub>-<vendor>-<sys>-<abi>`, so this is a split rather than a lookup, which is what lets it
+// answer for architectures no table here lists.
+std::string archOfTriple(const std::string& triple);
+
 // ---- Questions about a type NAME ----
 // These traffic in Polaron's canonical type strings ("int", "Box$int", "int[]", "Node*"), which is why
 // they need no LLVM: the answer is in the name.
