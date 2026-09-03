@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // PIR types, and the table that interns them.
@@ -71,10 +72,21 @@ struct Field {
     uint32_t bitOffset = 0;
     uint32_t bitWidth = 0;            // 0 = not a bitfield
     bool weak = false;                // a non-owning edge: what lets the binder form a forest
+    // A BOUNDARY THIS FIELD MUST START ON, asked for rather than required -- written by a layout's
+    // resolver as `itself.align(f, 64 bytes)` or `itself.isolate(f)`. 0 means the type's own
+    // alignment decides, which is every field nobody said anything about.
+    //
+    // A separate number from the type's alignment because it is a different claim. The type's says
+    // what the machine needs in order to load the value; this says what the AUTHOR needs of where
+    // the value sits -- two counters that must not share a cache line, a register block that has to
+    // begin on a page. The layout must concede `padding` before a resolver may write one, since
+    // putting a field at 64 when its type wants 8 inserts up to 56 bytes nothing asked for.
+    uint32_t alignOverride = 0;
 
     bool sameShape(const Field& o) const {
         return type == o.type && hasOffset == o.hasOffset && offset == o.offset &&
-               bitOffset == o.bitOffset && bitWidth == o.bitWidth && weak == o.weak;
+               bitOffset == o.bitOffset && bitWidth == o.bitWidth && weak == o.weak &&
+               alignOverride == o.alignOverride;
     }
 };
 
@@ -173,6 +185,39 @@ public:
     //
     // `completeStruct` keeps one identity per name, so this map has one answer per name too.
     const Type* structNamed(const std::string& name) const;
+
+    // EVERY NAMED STRUCT, IN A FIXED ORDER, so the text form can declare them.
+    //
+    // The printer needs this and could not have it: a nominal struct is spelled `%Mixer` at every
+    // USE, and the fields live only in the table. Without a declaration to print, a module said
+    // `gep ... of %Mixer imm 1` and gave the reader no way to know what `%Mixer` has in it -- so
+    // reading a module back produced one with the right instructions over empty structs, and the
+    // first `gep` past field zero walked off the end of a type with no fields.
+    //
+    // SORTED, and not because anything reads it in order. `print` must be a function of the module
+    // and nothing else, or the round trip compares two texts that differ by hash iteration and the
+    // failure looks like corruption. `structsByName_` is unordered; this is the seam where that
+    // stops being visible.
+    std::vector<std::pair<std::string, const Type*>> namedStructs() const;
+
+    // EVERY AGGREGATE THE TABLE OWNS, in the order it interned them.
+    //
+    // A struct's size is measured when its class is DECLARED, out of the sizes its fields have at
+    // that moment -- so a record whose field is a record declared LATER measures that field as
+    // zero. One file gets away with it because the declarations happen to be in dependency order;
+    // two do not, and the answer was `Named(String name, Held value)` measured at eight bytes with
+    // a perfectly correct `%class.Named = { ptr, %class.Held }` beside it. Every array of one then
+    // allocated a third of what it needed, and element 1's first field landed on element 0's
+    // second -- so reading `many[0].value` gave `many[1].name`, silently and plausibly.
+    //
+    // This is what lets the lowering measure them all again once every declaration is in, and keep
+    // measuring until nothing moves. See `settleAggregateSizes`.
+    std::vector<const Type*> aggregates() const;
+
+    // ...AND THE INLINE ARRAYS, whose size was multiplied out from their element at the moment they
+    // were interned. An element that grows afterwards leaves that product stale, which is the same
+    // wrong stride reached by another route.
+    void refreshInlineArrays();
 
     // A stable, round-trippable spelling: `i32`, `f64`, `ptr`, `addr32`, `[16 x i32 inline]`,
     // `{i32, ptr}`, `%Point`, `<Pace|i32>`.

@@ -1,5 +1,6 @@
 #include "pir/type.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace polaron::pir {
@@ -201,6 +202,46 @@ const Type* TypeTable::structType(std::string name, std::vector<Field> fields, b
 const Type* TypeTable::structNamed(const std::string& name) const {
     const auto it = structsByName_.find(name);
     return it == structsByName_.end() ? nullptr : it->second;
+}
+
+std::vector<std::pair<std::string, const Type*>> TypeTable::namedStructs() const {
+    std::vector<std::pair<std::string, const Type*>> all;
+    all.reserve(structsByName_.size());
+    for (const auto& [name, type] : structsByName_) {
+        all.emplace_back(name, type);
+    }
+    // BY NAME, because the map is unordered and the text form has to be a function of the module and
+    // nothing else. Two prints of one module differing only in line order are two different files to
+    // anything that compares them -- and the round trip IS such a comparison.
+    std::sort(all.begin(), all.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return all;
+}
+
+std::vector<const Type*> TypeTable::aggregates() const {
+    // INTERNING ORDER, not sorted: the caller measures to a fixed point and repeats, so the order
+    // changes only how many passes it takes, never the answer. Everything the table owns is here,
+    // named or not -- a tuple has no name and is laid out by the same rule.
+    std::vector<const Type*> all;
+    for (const std::unique_ptr<Type>& owned : owned_) {
+        if (owned->kind == TypeKind::Struct) {
+            all.push_back(owned.get());
+        }
+    }
+    return all;
+}
+
+void TypeTable::refreshInlineArrays() {
+    for (const std::unique_ptr<Type>& owned : owned_) {
+        if (owned->kind != TypeKind::Array || owned->storage != ArrayStorage::Inline ||
+            owned->element == nullptr) {
+            continue;
+        }
+        // The same product `arrayType` computed, taken again now the element is measured.
+        owned->facts.size = owned->element->facts.size * owned->extent;
+        owned->facts.align = owned->element->facts.align;
+        owned->facts.owns = owned->element->facts.owns;
+    }
 }
 
 const Type* TypeTable::variantType(std::string name, std::vector<Field> cases) {

@@ -1,4 +1,4 @@
-#include "pir/lower.h"
+﻿#include "pir/lower.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -35,7 +35,7 @@ namespace polaron::pir {
 
 namespace {
 
-// §34: a `Decimal` is a 128-bit mantissa holding the value times 10^18. The width and the scale are
+// Â§34: a `Decimal` is a 128-bit mantissa holding the value times 10^18. The width and the scale are
 // stated once, here and in `cgutil::DECIMAL_SCALE`, because every part of the type reads both: the
 // literal scales by it, `*` and `/` rescale through it, a cast multiplies or divides by it, and the
 // formatter splits on it.
@@ -55,7 +55,7 @@ public:
           sourceLine_(std::move(sourceLine)),
           triple_(std::move(triple)),
           bundles_(std::move(bundles)) {
-        // THE IMPORTED BUNDLES' NUMBERING IS ADOPTED BEFORE ANY SLOT IS HANDED OUT. `slotFor`
+        // THE IMPORTED BUNDLES' NUMBERING IS ADOPTED BEFORE ANY OTHER SLOT IS HANDED OUT. `slotFor`
         // numbers a method the first time it is asked about, so the only place this can happen is
         // before the walk starts -- afterwards the consumer has already given slot 0 to whichever
         // of its own methods it met first, and every dispatch into the library is off by however
@@ -104,6 +104,8 @@ public:
                 declareNamespace(ns, b);
             }
         }
+        // ...AND MEASURED AGAIN NOW THEY ALL ARE. See `settleAggregateSizes`.
+        settleAggregateSizes();
         // THE TABLES ARE BUILT AFTER EVERY CLASS IS DECLARED, because a table has to name the most
         // derived implementation of each slot and a subclass can be declared before its base.
         for (const ast::Bundle& b : ast_.bundles) {
@@ -136,7 +138,7 @@ public:
         settleUnwinding();
         // ...AND AGAIN, NOW THAT THE NUMBERING IS FINAL. See `padVtables`.
         padVtables();
-        emitHeapBridge();   // `heap class X` (§36) -- after every body, so its methods exist
+        emitHeapBridge();   // `heap class X` (Â§36) -- after every body, so its methods exist
         // ...AND THE `--use-dynamic` THUNKS, after `emitHeapBridge` because a thunk that has to
         // raise an exception allocates it, and on a freestanding target that allocation goes
         // through the bridge just installed.
@@ -165,7 +167,19 @@ public:
             if (at >= 0 && static_cast<size_t>(at) < out_.vtableSlots.size()) {
                 out_.vtableSlots[static_cast<size_t>(at)] = method;
             }
+            // ...AND THE SAME THING THE OTHER WAY UP, IN THE MODULE. A pass gets a `Module*` and
+            // nothing else; `out_.vtableSlots` above lives in the lowering's result, which is the
+            // wrong side of that door. A `vtable.load` names its slot as a number, so a pass that
+            // wants to know WHICH METHOD a dispatch is asking for has no way to get there without
+            // this -- and Â§11.8 is entirely a question about a method name.
+            out_.module.slotMethod.emplace(at, method);
         }
+        // WHICH METHOD NAMES MAY BE POINTED SOMEWHERE ELSE AT RUN TIME. `Dog.methods.replace(...)`
+        // writes a new body into the vtable of a live object, so for these names the vtable is not
+        // a constant and no amount of closed-world reasoning about subclasses says anything about
+        // what will answer. Devirtualising one of these would compile the program the replacement
+        // exists to change.
+        out_.module.replaceableMethods = replaceable_;
         markMergeable();
         return std::move(out_);
     }
@@ -228,6 +242,12 @@ public:
     // TO A FIXED POINT, because a constant may be defined in terms of one declared later in the
     // file, and the order a walk happens to visit them in is not the order they depend on.
     void foldConstants() {
+        // The target, as a named constant, before anything folds -- so `comptime if (__target_arch
+        // == 1)` reads the same here as it did in the analyzer. Two stages that disagree about which
+        // arm is the program do not produce a diagnostic, they produce a different program.
+        const std::string family = cgutil::archFamily(cgutil::archOfTriple(out_.module.triple));
+        constInts_[comptime::kTargetArchName] = comptime::archCode(family);
+        constInts_[comptime::kTargetBitsName] = comptime::archBits(family);
         for (const ast::Bundle& b : ast_.bundles) {
             for (const ast::Namespace& ns : b.namespaces) {
                 for (const ast::ClassDecl& c : ns.classes) {
@@ -310,6 +330,44 @@ public:
         return folded;
     }
 
+    // THE SAME STATIC, UNDER THE OTHER NAME THE PROGRAM HAS FOR IT.
+    //
+    // A static's folded value is written into `constInts_` under the class's SIMPLE name, because
+    // that is what a source expression says -- `Framebuffer.Ink` -- and the evaluator resolves it by
+    // exactly the text it reads. `declareStatic` asks under the class's RESOLVED KEY, because that
+    // is what the emitted global is called and two classes may share a simple name.
+    //
+    // Those coincide for every class whose name nothing else in the program uses, which is almost
+    // all of them -- and diverge the moment one collides. Then `static fixed int Ink =
+    // Framebuffer.rgb(32, 96, 208)` folds correctly into `Framebuffer.Ink`, is looked up as
+    // `Horizon.Kernel.Framebuffer.Ink`, and is absent -- so a value the compiler had already
+    // computed is reported as *"neither a constant nor built from other static fields"*, about an
+    // expression that is plainly both. Every `static fixed` on that class fails at once, and the
+    // message points at the arithmetic instead of at the collision.
+    //
+    // Found when the freestanding prelude gained `Machine.Screen.Framebuffer` and Horizon's kernel,
+    // which has had a `Framebuffer` since it could draw anything, stopped compiling. The shadowing
+    // is correct and warned about (0B02, *"yours wins"*); what was wrong is that one table honoured
+    // it and the other did not.
+    //
+    // Bridged HERE, at the ask, and not by writing a second entry when the value is folded: the
+    // fold runs before the class table exists, so at that point there IS no resolved key to file it
+    // under. `keyOfClass` would answer the simple name and the second entry would be the first one
+    // again.
+    // `Main.S.Framebuffer.Ink` -> `Framebuffer.Ink`. The last two components, which is the form the
+    // fold used. Empty when the key has no qualifier, in which case the two are already the same.
+    static std::string simpleStaticKey(const std::string& key) {
+        const std::size_t field = key.rfind('.');
+        if (field == std::string::npos || field == 0) {
+            return {};
+        }
+        const std::size_t cls = key.rfind('.', field - 1);
+        if (cls == std::string::npos) {
+            return {};
+        }
+        return key.substr(cls + 1);
+    }
+
     // WHAT THE COMPILE-TIME EVALUATOR IS ALLOWED TO KNOW. One place, because two callers ask the
     // same question at different times: a namespace `const` (spec 28.1) and a `comptime` local
     // (spec 28.3). Only a stage that knows the layout may answer for `sizeof`, and this one does --
@@ -327,6 +385,13 @@ public:
             out = static_cast<long long>(t->facts.size);
             return true;
         };
+        // WHICH MACHINE THIS BUILD IS FOR, so a `comptime if` can pick the half of `Machine` that
+        // belongs to it. The triple is the only thing that knows, and it is right here.
+        ctx.targetArch = [this](long long& out) {
+            out = static_cast<long long>(
+                comptime::archCode(cgutil::archFamily(cgutil::archOfTriple(out_.module.triple))));
+            return true;
+        };
         ctx.enumCount = [this](const std::string& name, long long& out) {
             auto e = enums_.find(name);
             if (e == enums_.end()) {
@@ -335,7 +400,43 @@ public:
             out = static_cast<long long>(e->second->constants.size());
             return true;
         };
+        // ...AND WHICH NUMBER EACH CONSTANT IS. The analyzer's context has had this since `demand`
+        // learned to read an ordinal; this one had only the count, so the same expression was
+        // constant during the check and not during the lowering. `switch (d) { case Dir.EAST }` is
+        // where that shows: deciding whether a case set is a closed set of integers means asking
+        // what `Dir.EAST` is, and a lowering that cannot ask has to fall back to a compare chain
+        // for the one construct the language recommends for closed sets.
+        ctx.enumOrdinal = [this](const std::string& name, const std::string& member,
+                                 long long& out) {
+            auto e = enums_.find(name);
+            if (e == enums_.end()) {
+                return false;
+            }
+            const std::vector<std::string>& consts = e->second->constants;
+            for (size_t i = 0; i < consts.size(); ++i) {
+                if (consts[i] == member) {
+                    out = static_cast<long long>(i);
+                    return true;
+                }
+            }
+            return false;
+        };
         return ctx;
+    }
+
+    // WHICH ARM OF A `comptime if` IS THE PROGRAM: 1 for the `then`, 0 for the `else`, -1 when the
+    // condition is not a compile-time constant after all.
+    //
+    // -1 is not a fallback, it is the answer to a program the analyzer has already refused. Saying
+    // so rather than guessing is what lets the rest of the compile continue and report everything
+    // else it finds, instead of one diagnostic per rebuild.
+    int comptimeBranch(const ast::IfStmt& s) {
+        comptime::Context ctx = comptimeContext();
+        long long v = 0;
+        if (!comptime::evalInt(*s.cond, v, ctx)) {
+            return -1;
+        }
+        return v != 0 ? 1 : 0;
     }
 
     bool foldOneConstant(const ast::ConstDecl& k, const std::string& owner) {
@@ -428,12 +529,12 @@ private:
     };
 
     // WHAT A `cascade` WALK DOES AT EACH NODE. The walk itself -- the null guard, the visited set,
-    // the owned children, the depth -- is the same for all of them (§37.1 says so in as many words:
+    // the owned children, the depth -- is the same for all of them (Â§37.1 says so in as many words:
     // "they visit each node exactly once"), so it is one helper with the action as a parameter
     // rather than three walkers that would drift apart at the first fix to any of them.
     enum class CascadeAction { Delete, Println, Validate };
 
-    // A BIT FIELD'S STORAGE IS NOT ITS OWN (§11.1): it is a slice of a unit it shares with the
+    // A BIT FIELD'S STORAGE IS NOT ITS OWN (Â§11.1): it is a slice of a unit it shares with the
     // fields declared beside it. All four numbers are needed at once by both the read and the write
     // -- which element, how wide that element is, where in it this field starts and how many bits
     // it takes -- so they travel as one record. Four maps keyed by the same name would be this type
@@ -479,7 +580,7 @@ private:
     struct DeferSite {
         const ast::Block* body = nullptr;
         ValueId ran = kNoValue;
-        // §32.10: `defer within milliseconds(100) { ... }` -- a soft deadline for the cleanup, in
+        // Â§32.10: `defer within milliseconds(100) { ... }` -- a soft deadline for the cleanup, in
         // milliseconds, evaluated where the `defer` is WRITTEN and checked when it runs. kNoValue
         // for the plain form. The spec allows an exception or an alert and Polaron alerts: a
         // soft-real-time cleanup must still finish, and killing a scope exit that may itself be an
@@ -702,7 +803,7 @@ private:
     //
     // A `TypeRef` names a type the analyzer has already resolved; here it is turned into a PIR type
     // entry. The five facts are set from what the declaration says -- a struct is a value, a class
-    // with a destructor owns, a `unique` is unique -- which is the point of §3.3: the facts are
+    // with a destructor owns, a `unique` is unique -- which is the point of Â§3.3: the facts are
     // decided ONCE, here, rather than re-derived by every pass that wants one.
     // TWO FACTS, NOT ONE VALUE. "I handled this" and "the result is nothing" are different answers,
     // and `kNoValue` was being asked to carry both: `Allocator.free` and the two `Raw` writes return
@@ -807,7 +908,7 @@ private:
             }
             return e != enums_.end() && !e->second->isJavaStyle;
         }();
-        // §21: `Result<int,int>` WITHOUT A STAR IS A VALUE -- the star is the only thing that
+        // Â§21: `Result<int,int>` WITHOUT A STAR IS A VALUE -- the star is the only thing that
         // separates the two forms, and `value_compat` writes both a line apart to say so. Read as
         // a reference, every fallible return allocated: `Main.makeValue` called the allocator on
         // each of its two paths where the other back end returns `%__polaron_variant` in registers.
@@ -819,7 +920,7 @@ private:
         const Type* base = reference ? tt.ptrType() : baseTypeOf(named);
         if (t.arrayExtent > 0) {
             // `int[16]`: the extent is IN the type, so it is an inline array -- no header, no
-            // pointer, nothing to release. See §3.2; conflating this with `int[]` is a double-free
+            // pointer, nothing to release. See Â§3.2; conflating this with `int[]` is a double-free
             // or a leak depending on which way round it goes.
             //
             // NESTED, THROUGH THE NAME. The parser folds the FIRST group into the base name, so
@@ -862,7 +963,7 @@ private:
         // that one is decided at the field and not here. Answering four here made every
         // `boolean[]` four times its size and every `ArrayList<boolean>` disagree with the runtime
         // about where its second element is.
-        // §21: THE VALUE FORM OF `Result`/`Option` IS A VALUE, so it is not reached through a
+        // Â§21: THE VALUE FORM OF `Result`/`Option` IS A VALUE, so it is not reached through a
         // pointer. Asked as a class -- which `Result$int$int` is, monomorphised -- the test below
         // answers "reference" and every fallible return went to the allocator: one
         // `__polaron_malloc(16)` per return path, and a vtable per instantiation. `value_compat`
@@ -949,6 +1050,53 @@ private:
     //
     // Answering kNoValue leaves the caller's existing path alone, which is what should happen when
     // the case classes were never instantiated.
+    // A METHOD NEEDS SOMEWHERE TO POINT AT, and a struct that came back from a call is not anywhere.
+    //
+    // `this` is a POINTER, always, including for a value struct: `t.sum()` passes `&t`. Where the
+    // receiver is a variable or a field, lowering it yields the address of its storage and there is
+    // nothing to do. Where it is the RESULT OF A CALL -- `c.tag().sum()`, `p.origin().x` -- lowering
+    // it yields the struct itself, eight or sixteen bytes in registers, and there is no address to
+    // take because the value has never been anywhere.
+    //
+    // Passed on unchanged, those bytes ARE the pointer: `Tag{20, 3}` became `this = 0x300000014` and
+    // the first field read was an access violation. Nothing refused it -- the PIR says
+    // `call i32 @Tag.sum %6` where `%6` is a `%Tag`, and a struct is as good a machine word as any.
+    //
+    // FOUND IN A KERNEL. Horizon's network stack stopped naming a concrete card, and
+    // `NetworkCard.hardwareAddress()` -- the one method of that interface returning a value type --
+    // was called on the way to sending an ARP request. Six other methods of the same interface were
+    // probed through the same live reference and all answered; the machine stopped on this one, with
+    // nothing on the serial line. It has nothing to do with interfaces: any struct-returning call
+    // whose result is used as a receiver had it.
+    ValueId materialiseReceiver(ValueId receiver, SourceLocation loc) {
+        if (receiver == kNoValue || fn_ == nullptr) {
+            return receiver;
+        }
+        const ValueDef* def = fn_->value(receiver);
+        if (def == nullptr || def->type == nullptr) {
+            return receiver;
+        }
+        // ONLY A STRUCT BY VALUE. A pointer is already an address; an integer or a slice receiver is
+        // a primitive whose methods take it by value and is not a `this` at all.
+        if (def->type->kind != TypeKind::Struct) {
+            return receiver;
+        }
+        const ValueId slot = allocaFor(fresh("recv.val"), def->type);
+        Inst put;
+        put.op = Op::Store;
+        put.operands.push_back(receiver);
+        put.operands.push_back(slot);
+        put.loc = loc;
+        emit(std::move(put));
+        // The slot keeps the receiver's NAME so that the method lookup below finds the same class it
+        // would have found on the value -- the address is a different PIR value and nothing else
+        // records what it points at.
+        if (const std::string was = declaredName(receiver); !was.empty()) {
+            noteName(slot, was);
+        }
+        return slot;
+    }
+
     ValueId materialiseVariantCase(ValueId subject, const std::string& sumKey, SourceLocation loc) {
         const bool result = sumKey.rfind("Result", 0) == 0;
         const bool option = sumKey.rfind("Option", 0) == 0;
@@ -1133,7 +1281,7 @@ private:
         return t != nullptr && t->kind == TypeKind::Variant;
     }
 
-    // THE SIGN IS NOT IN THE PIR TYPE, by design: §3.1 puts the width in the type and the sign on
+    // THE SIGN IS NOT IN THE PIR TYPE, by design: Â§3.1 puts the width in the type and the sign on
     // the OPERATION, because that is what the hardware does and what LLVM does. The consequence is
     // that this pass -- the last place that still holds the name the programmer wrote -- is the
     // only place that can decide `rem.u` over `rem.s`. Once the name is gone the choice is gone
@@ -1340,10 +1488,22 @@ private:
     // defers it, and why a blown budget shows up at build time rather than in the editor's live
     // check. One authority on layout instead of two models that can disagree.
     //
-    // Reordering by hand is explicitly ruled out in the message because the compiler has already
-    // done it: the fields were laid out widest-first precisely to make the budget fit, so a reader
-    // who has just been told the number needs to know that the obvious next move is not available.
-    void checkLayoutBudget(const ast::ClassDecl& c, uint64_t measured) {
+    // AND WHEN IT DOES NOT FIT, THE MESSAGE NAMES THE CONCESSION THAT WOULD HAVE MADE IT FIT.
+    //
+    // That sentence is the entire price of the default changing. Under the first design a layout
+    // reordered because it existed, so a blown budget could only ever mean *something has to be
+    // narrower or leave* -- there was no other move, and the message said so. Now there is one, and
+    // a compiler that refused without naming it would be exactly the thing `layout` was written to
+    // avoid: a check that guards against a problem it could have solved.
+    //
+    // It can name it, because it can answer it. The counterfactual is not a guess -- the same
+    // measurement is run a second time over the same fields sorted widest-first, and what comes
+    // back is the number that arrangement really measures on this target. So the reader is told the
+    // word, and told what they would get for it, and can decide. `permits reorder` is a decision
+    // about whether anything outside this program indexes these bytes, and nobody but the author
+    // knows that.
+    void checkLayoutBudget(const ast::ClassDecl& c, uint64_t measured,
+                           const std::vector<Field>& fields, bool packed) {
         if (c.layouts.empty() || measured == 0) {
             return;
         }
@@ -1357,16 +1517,319 @@ private:
             if (want.maxBytes < 0 || static_cast<long long>(measured) <= want.maxBytes) {
                 continue;
             }
-            std::string msg = "`" + c.name + "` is arranged by `" + ln + "`, which fits it within " +
-                              std::to_string(want.maxBytes) + " bytes -- it measures " +
-                              std::to_string(measured) +
-                              ". The fields were already ordered widest-first to make it fit, so "
-                              "reordering them by hand will not help: something has to be narrower, "
-                              "or leave";
+            std::string msg = "`" + c.name + "` is arranged by `" + ln + "`, which arranges it "
+                              "within " + std::to_string(want.maxBytes) + " bytes -- it measures " +
+                              std::to_string(measured);
             if (!want.refuseMessage.empty()) {
                 msg += " (" + want.refuseMessage + ")";
             }
+            if (want.permitsReorder) {
+                msg += ". `" + ln +
+                       "` permits reordering and the fields were already ordered widest-first to "
+                       "make it fit, so reordering them by hand will not help: something has to be "
+                       "narrower, or leave";
+            } else {
+                const uint64_t reordered = measureReordered(fields, packed);
+                msg += ". `" + ln + "` does not permit reordering";
+                if (reordered < measured) {
+                    msg += ", and with `permits reorder` it measures " + std::to_string(reordered);
+                    if (static_cast<long long>(reordered) <= want.maxBytes) {
+                        msg += ", which fits";
+                    } else {
+                        msg += " -- still over, so a field has to be narrower or leave as well";
+                    }
+                } else {
+                    // The honest case, and the one worth saying out loud: the declared order is
+                    // already the tightest one. Offering the concession here would send the reader
+                    // to change a declaration for nothing.
+                    msg += ", and granting it would not help -- the declared order is already as "
+                           "tight as widest-first. Something has to be narrower, or leave";
+                }
+            }
             refuse(msg, c.loc);
+        }
+    }
+
+    // ---- THE TARGET RESOLVES, THE LAYOUT JUDGES (docs/design/layout.md §7, §8) ----
+    //
+    // Rewrites `fields` into the order the type's own resolver asked for, inserting the holes it
+    // asked for. Returns true when a resolver ran, so the caller knows not to apply the built-in
+    // strategy on top of it.
+    //
+    // IT RUNS HERE, at lowering, and the precedent is `demand`: *the analyzer already checked every
+    // condition it could fold, and deferred exactly those mentioning `sizeof` -- a size is only
+    // knowable against the target's layout, which exists here and nowhere earlier.* A resolver reads
+    // `f.sizeof()` and `f.align()`, so it is the same division, with one more client.
+    //
+    // THE AUTHORITY DOES NOT MOVE WITH THE WORK. Everything the resolver does is checked against
+    // what the layout CONCEDED, not against what the target wanted: a `WireRecord` that concedes
+    // nothing must not be reordered even by its own target's resolver, because the format is
+    // dictated by a third party and the target has no vote. And whatever comes out is still measured
+    // and still judged by `fitWithin` afterwards -- a target that arranges itself badly gets a
+    // refusal, not a pass.
+    bool runResolver(const ast::ClassDecl& c, std::vector<Field>& fields) {
+        if (c.layouts.empty() || fields.empty()) {
+            return false;
+        }
+        for (const std::string& ln : c.layouts) {
+            const ast::ClassDecl* decl = findClass(ln);
+            if (decl == nullptr || !decl->isLayout) {
+                continue;
+            }
+            Arrangement want;
+            (void)readArrangement(*decl, want);
+            const ast::MethodDecl* body = findResolver(c, *decl, want.resolvedBy);
+            if (body == nullptr) {
+                continue;   // no resolver, or an obligation the analyser already reported
+            }
+            std::vector<Placement> steps;
+            if (!readResolver(*body, steps)) {
+                return false;   // malformed; the analyser reported it and a guess would compound it
+            }
+            std::vector<Field> arranged;
+            arranged.reserve(fields.size());
+            // WHERE THE NEXT FIELD WOULD LAND, tracked as the arrangement is built.
+            //
+            // A resolver asking for a boundary is not asking for a note on a field, it is asking for
+            // the bytes in front of it -- so `align` and `isolate` MATERIALISE the gap here, as real
+            // padding, exactly the way `pad` does. Recording the boundary and hoping the backend
+            // honours it is the shape that does not work: what the backend emits is a struct type,
+            // and `{ i32, i32 }` puts two counters four bytes apart whatever anybody wrote down
+            // about them. A promise about a distance has to become a distance.
+            uint64_t offset = 0;
+            auto addPadding = [&](uint64_t bytes) {
+                if (bytes == 0) {
+                    return;
+                }
+                Field hole;
+                hole.type = out_.module.types.arrayType(out_.module.types.intType(8), bytes,
+                                                        ArrayStorage::Inline);
+                hole.name = "__pad" + std::to_string(arranged.size());
+                arranged.push_back(hole);
+                offset += bytes;
+            };
+            // COMPLETENESS IS WHAT MAKES A HAND-WRITTEN RESOLVER SAFE: every field placed exactly
+            // once. Without it a resolver with a mis-closed `if` produces a type with a field
+            // silently missing -- which is not a smaller type, it is a different one that still
+            // compiles and still runs.
+            std::map<std::string, int> placedCount;
+            for (const Field& f : fields) {
+                if (f.name != "__persist") {
+                    placedCount[f.name] = 0;
+                }
+            }
+            bool moved = false;
+            size_t nextExpected = 0;
+            for (const Placement& step : steps) {
+                if (step.verb == Placement::Verb::Pad) {
+                    if (!want.permitsPadding) {
+                        refuse("`" + c.name + "` is arranged by `" + ln +
+                                   "`, and this asks for " + std::to_string(step.bytes) +
+                                   " bytes of padding that nothing required. `" + ln +
+                                   "` does not permit padding -- add `permits padding` to the layout "
+                                   "if the hole is meant, or take the line out",
+                               step.loc);
+                        return false;
+                    }
+                    // A DELIBERATE HOLE IS A REAL FIELD, not a gap in the arithmetic: an inline
+                    // array of bytes, so the size falls out of the same measurement everything else
+                    // does and nothing has to remember to add it. It is unnamed as far as the
+                    // language is concerned -- no source can reach `__pad0` -- which is the point:
+                    // the author asked for the bytes, not for somewhere to put something.
+                    addPadding(static_cast<uint64_t>(step.bytes));
+                    // NOT A REORDERING. A hole moves every field after it to a higher offset, but
+                    // it does not change which field comes before which -- and `reorder` is a
+                    // permission about ORDER, `padding` one about BYTES. Counting a `pad` as a
+                    // permutation would make the two concessions inseparable, so a register block
+                    // with a reserved word in the middle -- the commonest reason to write `pad` at
+                    // all -- would have had to concede the one thing its format forbids.
+                    continue;
+                }
+                auto seen = placedCount.find(step.field);
+                if (seen == placedCount.end()) {
+                    refuse("`" + c.name + "` has no field `" + step.field +
+                               "` for its resolver to place. A resolver names the fields of the type "
+                               "it is written on, which is why it lives there and not on the layout",
+                           step.loc);
+                    return false;
+                }
+                if (seen->second != 0) {
+                    refuse("`" + step.field + "` is placed more than once by `" + c.name +
+                               "`'s resolver. Every field goes exactly once: a second placement is "
+                               "either a line that should have named a different field, or one that "
+                               "should not be there at all",
+                           step.loc);
+                    return false;
+                }
+                seen->second = 1;
+                // ALIGNMENT *IS* PADDING (§13.4), so both verbs that produce an offset need the
+                // same concession. Putting a field at a 64-aligned offset when its type wants 8
+                // inserts up to 56 bytes nothing asked for, and the field's own requirement is not
+                // what is doing the work -- the resolver's number is.
+                if (step.verb != Placement::Verb::Place && !want.permitsPadding) {
+                    refuse("`" + c.name + "` is arranged by `" + ln + "`, and `itself." +
+                               (step.verb == Placement::Verb::Isolate ? "isolate" : "align") +
+                               "` inserts bytes beyond what alignment required. `" + ln +
+                               "` does not permit padding -- and alignment IS padding, which is why "
+                               "the two verbs need the same word. Add `permits padding` to the "
+                               "layout, or place the field plainly",
+                           step.loc);
+                    return false;
+                }
+                // Where the field actually is, so the arrangement is built from the real thing --
+                // its type, its width, its bit field -- and not from a copy of its name.
+                size_t at = 0;
+                while (at < fields.size() && fields[at].name != step.field) {
+                    ++at;
+                }
+                if (at != nextExpected) {
+                    moved = true;
+                }
+                ++nextExpected;
+                Field one = fields[at];
+                // `isolate` IS NOT SUGAR FOR `align(f, 64 bytes)`. A cache line is a property of the
+                // machine, and a kernel built for another one does not want 64 written into its
+                // source. *Alone on its line* is the intent; the number is this target's answer to
+                // it, which is why it is read from the target here and not from the program.
+                const uint64_t boundary =
+                    step.verb == Placement::Verb::Isolate  ? cacheLineBytes()
+                    : step.verb == Placement::Verb::Align  ? static_cast<uint64_t>(step.bytes)
+                                                           : 0;
+                if (boundary > 1) {
+                    addPadding((boundary - offset % boundary) % boundary);
+                    // ...AND THE OBJECT ITSELF HAS TO BE THAT ALIGNED, or the offset means nothing.
+                    // A field 64 bytes into an instance that the allocator put on an 8-byte boundary
+                    // is not on a cache line; it is 64 bytes past something that is not one. The
+                    // padding above settles where the field sits WITHIN the object, and this settles
+                    // where the object sits -- two halves of one promise, and `isolate` is worthless
+                    // without both.
+                    one.alignOverride = static_cast<uint32_t>(boundary);
+                }
+                offset += one.type != nullptr ? one.type->facts.size : 0;
+                arranged.push_back(one);
+            }
+            // AND THE TAIL, which is the half that would have made the rest a lie.
+            //
+            // `isolate(hits)` and `isolate(misses)` put the two counters 64 bytes apart inside one
+            // object, and stop there the arrangement measures 68 -- so the SECOND element of an
+            // array of them starts at 68, its `hits` shares a line with the first element's
+            // `misses`, and the false sharing the declaration exists to prevent is back, one
+            // subscript away. The distance was real and the guarantee was not.
+            //
+            // Rounding the whole thing up to the widest boundary any field asked for is what closes
+            // it, and it is materialised as padding for the same reason everything else here is:
+            // what the backend emits is a struct type, and a struct type has no alignment of its
+            // own to carry the intent in.
+            uint64_t widest = 1;
+            for (const Field& f : arranged) {
+                widest = std::max<uint64_t>(widest, f.alignOverride);
+            }
+            if (widest > 1 && offset % widest != 0) {
+                addPadding(widest - offset % widest);
+            }
+            std::string missing;
+            for (const auto& [name, times] : placedCount) {
+                if (times == 0) {
+                    missing = name;
+                    break;
+                }
+            }
+            if (!missing.empty()) {
+                refuse("`" + c.name + "`'s resolver never places `" + missing +
+                           "`. Every field of the instance goes exactly once -- a field left out has "
+                           "no offset, so what comes back is not a smaller type, it is a different "
+                           "one with a member missing",
+                       body->loc);
+                return false;
+            }
+            // AND THE ORDER IS STILL THE LAYOUT'S TO ALLOW. A resolver that permutes without
+            // `permits reorder` has exceeded its concession, and the error names the word it did
+            // not have -- §8's rule, applied to the target rather than to the compiler.
+            if (moved && !want.permitsReorder) {
+                refuse("`" + c.name + "`'s resolver puts the fields in an order other than the one "
+                       "they are declared in, and `" + ln +
+                           "` does not permit reordering. `permits` is the outer authority: a layout "
+                           "that concedes nothing is not reordered even by its own target, because "
+                           "the format is dictated by somebody who is not this program",
+                       body->loc);
+                return false;
+            }
+            // The persist slot goes last, wherever the resolver put everything else -- it is the
+            // compiler's field and not the author's, exactly as a `dynamic` header is (§13.2).
+            for (const Field& f : fields) {
+                if (f.name == "__persist") {
+                    arranged.push_back(f);
+                }
+            }
+            fields = std::move(arranged);
+            return true;
+        }
+        return false;
+    }
+
+    // What this target calls a cache line. One number, in one place, so `isolate` means *alone on
+    // its line* everywhere and the 64 is never written in anybody's source.
+    uint32_t cacheLineBytes() const { return 64; }
+
+    // What the same fields would measure sorted widest-first by alignment -- the arrangement
+    // `permits reorder` grants. Stable, so equal-width fields keep the order they were written in
+    // and the number the diagnostic quotes is the number the author would actually get.
+    static uint64_t measureReordered(const std::vector<Field>& fields, bool packed) {
+        std::vector<Field> sorted = fields;
+        std::stable_sort(sorted.begin(), sorted.end(), [](const Field& a, const Field& b) {
+            const uint32_t la = a.type != nullptr ? a.type->facts.align : 1;
+            const uint32_t lb = b.type != nullptr ? b.type->facts.align : 1;
+            return la > lb;
+        });
+        TypeFacts f;
+        f.size = 0;
+        f.align = 1;
+        measureAggregate(sorted, packed, f);
+        return f.size;
+    }
+
+    // EVERY AGGREGATE MEASURED AGAIN, UNTIL NOTHING MOVES.
+    //
+    // `declareClass` measures a class out of the sizes its fields have AT THAT MOMENT, and a field
+    // whose type is declared later is measured as zero. In one file the declarations happen to come
+    // in dependency order and it never shows; across two files it does, and what it produced was a
+    // record measured at eight bytes with a correct LLVM struct beside it -- so `new Named[3]()`
+    // asked the allocator for 8 + 3*8 and the writes stepped 8 while the fields sat 24 apart.
+    // Element 1's first field landed on element 0's second. Reading `many[0].value` gave
+    // `many[1].name`: not a crash, an answer, and a plausible one.
+    //
+    // A FIXED POINT AND NOT A TOPOLOGICAL SORT. A dependency order would need the graph built and
+    // would still have to decide what a cycle means; re-measuring until the numbers stop changing
+    // needs neither, and settles in as many passes as the deepest nesting -- two or three for real
+    // code. The cap is there so a cycle the front end let through ends the loop instead of the
+    // compiler.
+    //
+    // AN AGGREGATE WITH NO FIELDS KEEPS THE SIZE IT HAS. Those are the opaque forward references,
+    // and the backend gives them a pointer's worth of body; measuring them from an empty field list
+    // would say zero and disagree with it.
+    void settleAggregateSizes() {
+        TypeTable& tt = out_.module.types;
+        for (int pass = 0; pass < 16; ++pass) {
+            bool moved = false;
+            for (const Type* t : tt.aggregates()) {
+                if (t->fields.empty()) {
+                    continue;
+                }
+                TypeFacts facts = t->facts;
+                facts.size = 0;
+                facts.align = 1;
+                measureAggregate(t->fields, t->packed, facts);
+                if (facts.size != t->facts.size || facts.align != t->facts.align) {
+                    tt.setFacts(t, facts);
+                    moved = true;
+                }
+            }
+            // An inline array's size is a product taken when it was interned; an element that grew
+            // in this pass leaves it stale, and a stale product is the same wrong stride.
+            tt.refreshInlineArrays();
+            if (!moved) {
+                return;
+            }
         }
     }
 
@@ -1375,8 +1838,16 @@ private:
         uint64_t align = 1;
         for (const Field& f : fields) {
             const uint64_t width = f.type != nullptr ? f.type->facts.size : 0;
-            const uint64_t want =
+            uint64_t want =
                 packed ? 1 : std::max<uint64_t>(1, f.type != nullptr ? f.type->facts.align : 1);
+            // A BOUNDARY THE AUTHOR ASKED FOR OUTRANKS THE ONE THE MACHINE NEEDS, and never the
+            // other way: `align(f, 64)` on an `int` moves it to 64, while a resolver asking for 2 on
+            // a `double` cannot make it less aligned than the load requires. `max`, not assignment.
+            // `packed` still wins over both -- that is the author overriding the ABI outright, which
+            // is a constraint rather than a request, and it is stated on the layout.
+            if (!packed && f.alignOverride != 0) {
+                want = std::max<uint64_t>(want, f.alignOverride);
+            }
             size = (size + want - 1) / want * want;   // the padding BEFORE this field
             size += width;
             align = std::max(align, want);
@@ -1436,7 +1907,7 @@ private:
         if (name == "short") return tt.intType(16);
         if (name == "int") return tt.intType(32);
         if (name == "long") return tt.intType(64);
-        // `Decimal` IS A 128-BIT MANTISSA SCALED BY 10^18 (§34) -- fixed point, not floating. That
+        // `Decimal` IS A 128-BIT MANTISSA SCALED BY 10^18 (Â§34) -- fixed point, not floating. That
         // is the whole reason the type exists: money that adds up. Unrecognised here it fell to a
         // `double`, which prints the same for `12.34` and is a different NUMBER: the sample that
         // divides five by two printed 2 where the language says 2.5, because the cast that should
@@ -1447,7 +1918,7 @@ private:
         // bytes and takes a remainder then produced a negative number, because the arithmetic was
         // signed and the type that said otherwise had been thrown away.
         //
-        // §3.1: the WIDTH is the type, the SIGN is the operation. So the width is decided here and
+        // Â§3.1: the WIDTH is the type, the SIGN is the operation. So the width is decided here and
         // the sign travels beside the value -- see `unsigned_`.
         if (name == "ubyte" || name == "uint8" || name == "int8") return tt.intType(8);
         if (name == "ushort" || name == "uint16" || name == "int16") return tt.intType(16);
@@ -1469,7 +1940,29 @@ private:
         if (name == "short address" || name == "shortaddress") return tt.addrType(16);
         if (name == "byte address" || name == "byteaddress") return tt.addrType(8);
         if (name == "region") return tt.regionType();
-        // THE SIMD FAMILY (§34.6): N lanes of `float`, in one register. A `mat4` is sixteen of them
+        // A CHECKPOINT IS A CURSOR, and it is sixty-four bits.
+        //
+        // It was not on this list, so a method declared `returns checkpoint` fell through to "an
+        // unknown class" and got an opaque nominal struct -- and the value `mark of region R` produces
+        // is an `i64`, read out of the region header's first word. The two did not match, so the
+        // return lowered to `ret %checkpoint undef`: the cursor was computed correctly and thrown
+        // away at the boundary. Passing one as a PARAMETER lost it the same way.
+        //
+        // WHAT THAT LOOKED LIKE FROM OUTSIDE, because it is worth recording how far a lost 64-bit
+        // value travels before anything notices. Horizon's shell takes a mark before each round of a
+        // loop and rewinds to it after, through two one-line methods -- `lineMark` and `lineRewind` --
+        // and both cross this boundary. `__polaron_region_rollback(block, undef)` then set the
+        // region's cursor to whatever was in the register, so the arena's idea of how full it was
+        // became a random number; the next allocation returned a wild pointer, and the round after
+        // that faulted in ring 3 reading address 0x12 -- a region block pointer of 2. Nothing in the
+        // shell is wrong, nothing in the runtime is wrong, and the trail from the fault back to a
+        // missing line in a type table is four indirections long.
+        //
+        // Everything else on this list was added for exactly this reason and says so: the unsigned
+        // family, the narrow addresses, `Decimal`, `string`. A type name the language accepts and this
+        // function does not recognise does not fail -- it silently becomes a structure nobody declared.
+        if (name == "checkpoint") return tt.intType(64);
+        // THE SIMD FAMILY (Â§34.6): N lanes of `float`, in one register. A `mat4` is sixteen of them
         // in row-major order -- the same shape the trusted path uses, because a `mat4` crossing
         // between code compiled by both paths has to be one thing.
         if (const uint64_t lanes = vectorLanes(name); lanes != 0) {
@@ -1482,7 +1975,7 @@ private:
         // first element it printed.
         if (name == "String" || name == "string") return tt.ptrType();
         // AN ORDINAL ENUM'S VALUE IS FOUR BYTES. Its entry in `named_` is a VARIANT -- the closed
-        // case set §9's rule 18 checks exhaustiveness against -- and that is the type's SHAPE for
+        // case set Â§9's rule 18 checks exhaustiveness against -- and that is the type's SHAPE for
         // the verifier, not what a variable of it holds. Handed out as the value type, a `Quarry`
         // parameter became `{i32, i64}` and every call passed `undef` into it.
         //
@@ -1504,7 +1997,7 @@ private:
         if (e != enums_.end() && !e->second->isJavaStyle) {
             return tt.intType(32);
         }
-        // A TUPLE IS AN ANONYMOUS VALUE STRUCT (§22.5), spelled `(T0,T1,...)`. Nothing declares it,
+        // A TUPLE IS AN ANONYMOUS VALUE STRUCT (Â§22.5), spelled `(T0,T1,...)`. Nothing declares it,
         // so it fell through to the opaque-nominal case and came out with no fields and no size:
         // `(int q, int r) = divmod(17,5)` read both components out of zero bytes. Interned under
         // its own spelling, which is what makes two identical tuples the same type.
@@ -1528,7 +2021,7 @@ private:
             named_[name] = made;
             return made;
         }
-        // THE REFLECTION TOKENS ARE REFERENCES (§31), and nothing declares them: they are blocks of
+        // THE REFLECTION TOKENS ARE REFERENCES (Â§31), and nothing declares them: they are blocks of
         // words the compiler builds and hands out, not classes with a layout anybody wrote. Read as
         // undeclared classes they became opaque nominal structs, so `ArrayList<Field>.add` took its
         // element BY VALUE as an empty aggregate -- `call void @add(ptr %l, %Field undef)` -- and
@@ -1623,7 +2116,7 @@ private:
         }
     }
 
-    // §2.4: A BUNDLE THAT IS LOADED AT RUN TIME IS CALLED THROUGH A THUNK.
+    // Â§2.4: A BUNDLE THAT IS LOADED AT RUN TIME IS CALLED THROUGH A THUNK.
     //
     // `--use-dynamic` means the consumer links against nothing: the `.polb` is opened on first use,
     // its ABI fingerprint checked against the one the consumer was compiled with, and each method
@@ -1967,7 +2460,7 @@ private:
             fn->linkage = Linkage::External;
             fn->conv = Conv::Cdecl;
             // The FOREIGN SYMBOL is the name itself: an `extern printf` binds `printf`, and the
-            // backend must emit that rather than a Polaron key. §6's `symbol`.
+            // backend must emit that rather than a Polaron key. Â§6's `symbol`.
             fn->symbol = x.name;
         }
 
@@ -1978,7 +2471,7 @@ private:
         for (const ast::CatalogDecl& cat : ns.catalogs) {
             catalogs_.insert(cat.name);
         }
-        // `newtype Vector = int;` (§24) IS AN `int` WITH A DIFFERENT NAME -- a distinct entry over
+        // `newtype Vector = int;` (Â§24) IS AN `int` WITH A DIFFERENT NAME -- a distinct entry over
         // the same representation, which is exactly what `TypeTable::newType` is for. Left
         // undeclared it fell through to "an unknown class" and became an opaque nominal struct, so
         // `fixed Vector TimerVector = cast<Vector>(32)` emitted a zeroed aggregate and every
@@ -2175,7 +2668,7 @@ private:
         if (f.isWeak) {
             pf.type = weakSlotType();
         }
-        // A NARROW `A*` FIELD HOLDS A 32-BIT OFFSET INTO A's ARENA. §region: a `region class` puts
+        // A NARROW `A*` FIELD HOLDS A 32-BIT OFFSET INTO A's ARENA. Â§region: a `region class` puts
         // every instance in one reservation, so a pointer between two of them is an offset from a
         // base both already know -- and half the width. The win is entirely about how much of a
         // structure fits in a cache line, which is why it applies to FIELDS and to nothing else: a
@@ -2295,6 +2788,78 @@ private:
         emit(std::move(put));
     }
 
+    // WHICH BODY `super.m()` MEANS: the first class at or above `from` that declares one.
+    //
+    // `implementationOf` answers the same question and cannot be used here, because it starts by
+    // asking whether the class ITSELF has a body -- which for `super` is the one answer that must
+    // not be given. The walk is the same walk; the starting point is what `super` changes.
+    //
+    // Falls back to `from` when nothing on the chain declares it. That is not a silent default: the
+    // analyzer has already refused the program by then, naming the base and the method, so this is
+    // only what gets emitted while the error is being reported.
+    const Function* superImplementation(const std::string& from, const std::string& method) const {
+        for (const ast::ClassDecl* at = findClass(from); at != nullptr;) {
+            bool has = false;
+            forEachMember<ast::MethodDecl>(*at, [&](const ast::MethodDecl& m) {
+                if (m.name == method && !m.isAbstract) {
+                    has = true;
+                }
+            });
+            if (has) {
+                return resolveKey(keyOfClass(*at) + "." + method);
+            }
+            const std::string up = cgutil::baseType(at->superclass);
+            at = up.empty() ? nullptr : findClass(up);
+        }
+        return resolveKey(from + "." + method);
+    }
+
+    // WHERE ONE `asm` OPERAND MUST BE, as LLVM spells it (docs/design/asm-constraints.md Â§3.1).
+    //
+    // The language's vocabulary is the architecture's own register names; LLVM's is a letter code
+    // with braces round the specific ones. The translation is a wrapping and nothing more:
+    //
+    //   nothing said  ->  "r"            any general-purpose register, today's behaviour
+    //   "ax"          ->  "{ax}"         that register
+    //   "edx:eax"     ->  "{edx},{eax}"  ... except this one, which is TWO operands to LLVM
+    //   "memory"      ->  "m"            in memory rather than in a register
+    //   "immediate"   ->  "i"            a constant folded into the instruction
+    //
+    // THE PAIR IS THE CASE THAT IS NOT A WRAPPING, and it is why this returns a string rather than
+    // decorating one. LLVM has no syntax for one value in two registers, so a pair becomes two
+    // constraint entries -- which is exactly what C's `"A"` expands to underneath, arrived at
+    // without an alphabet. `edx:ecx:ebx:eax` works by the same rule and needs no further code, which
+    // is the argument for the list spelling over a special case for two.
+    std::string asmPlace(const ast::AsmStmt& as, const std::vector<std::string>& where,
+                         size_t at) const {
+        const std::string place = at < where.size() ? where[at] : std::string();
+        if (place.empty()) {
+            return "r";
+        }
+        if (place == "memory") {
+            return "m";
+        }
+        if (place == "immediate") {
+            return "i";
+        }
+        std::string out;
+        size_t from = 0;
+        while (from <= place.size()) {
+            const size_t colon = place.find(':', from);
+            const size_t stop = colon == std::string::npos ? place.size() : colon;
+            const std::string one = place.substr(from, stop - from);
+            if (!one.empty()) {
+                out += (out.empty() ? "" : ",") + ("{" + one + "}");
+            }
+            if (colon == std::string::npos) {
+                break;
+            }
+            from = colon + 1;
+        }
+        (void)as;
+        return out.empty() ? std::string("r") : out;
+    }
+
     std::string superclassName() const {
         if (selfClassName_.empty()) {
             return {};
@@ -2324,7 +2889,7 @@ private:
     // `Matrix` beside the standard library's read `this.n` at the offset of the OTHER `Matrix`'s
     // first field, which is the vtable pointer: `matmul_class_interchange` multiplied matrices of
     // size "whatever a function address truncates to".
-    // ---- `weak T*` (§19): a non-owning edge that NULLS ITSELF when its target dies ----
+    // ---- `weak T*` (Â§19): a non-owning edge that NULLS ITSELF when its target dies ----
     //
     // The mechanism is an intrusive singly-linked list and no allocation: a `weak T*` field IS a
     // two-word node `{ptr target, ptr next}`, and every such node pointing at one object is chained
@@ -2675,10 +3240,26 @@ private:
         if (here == nullptr || here->isStruct || here->isRecord || here->isUnion) {
             return false;
         }
+        // A CLASS WITH NO TABLE CANNOT DISPATCH, whatever else is true of the method.
+        //
+        // This is an invariant and not an optimisation, and it was violated the moment `dynamic`
+        // made the header a choice. `class Tag { int id; }` carries no vtable; `t.equals(b)` had no
+        // body on `Tag` to call, so the rule below said *"nothing here answers it: only the object
+        // knows"* and emitted a table lookup. The load of field zero read `id` -- the integer 7 --
+        // and jumped through it.
+        //
+        // Every other clause here answers *should this be looked up at run time*. This one answers
+        // *is there anywhere to look*, and it has to come first, because a "yes" from any of the
+        // others is a yes about a table that does not exist. The right resolution for those methods
+        // is a body on the class (see `synthesizeRootMethods`); this stops the failure from being a
+        // jump through a field while that body is arranged.
+        if (!carriesVtable(*here)) {
+            return false;
+        }
         if (overridableFromOutside(*here, method)) {
             return true;
         }
-        // A METHOD THAT CAN BE REPLACED MUST BE DISPATCHED (§32.8). `Dog.methods.replace("bark",
+        // A METHOD THAT CAN BE REPLACED MUST BE DISPATCHED (Â§32.8). `Dog.methods.replace("bark",
         // ...)` points a dispatch slot at the replacement, and a method nothing overrides has no
         // slot -- it is called directly, which is right for every other method and leaves this one
         // with nowhere for the patch to take effect. Worse than nowhere: the write went to slot
@@ -2725,6 +3306,29 @@ private:
     // Whether ANYTHING a `cls`-typed value could really be has a destructor: the class itself, an
     // ancestor, or any class that extends it. A `delete` through a base pointer has to dispatch
     // whenever the answer is yes, because which one it is, is the object's to say.
+    // WHICH SLOT `delete` DISPATCHES THE DESTRUCTOR THROUGH, or -1 to call it by name.
+    //
+    // `delete base` on an object that is really a `Derived` must run `~Derived`, which is the only
+    // reason a destructor is virtual at all -- so the answer is a slot whenever anything in the
+    // family has one. WHENEVER THERE IS A TABLE TO HOLD IT, which is the clause `dynamic` made
+    // necessary: three sites decided this by asking whether the destructor exists and whether a `~`
+    // slot was ever handed out, and neither question is *does this class have somewhere to look*.
+    //
+    // A class with no vtable has exactly one destructor and no subclass to hide another, so -1 is
+    // not a fallback here -- it is the better answer, a direct call. It is the same invariant
+    // `needsDispatch` states for methods, arriving through the one path that is not a method call:
+    // `delete`, `cascade delete`, and the implicit drop at the end of a scope.
+    int64_t destructorSlotFor(const std::string& cls) {
+        const ast::ClassDecl* decl = cls.empty() ? nullptr : findClass(cls);
+        const bool reference = decl != nullptr && !decl->isStruct && !decl->isRecord &&
+                               !decl->isUnion && !decl->isLayout;
+        if (!reference || !carriesVtable(*decl) || vtableSlot_.count("~") == 0 ||
+            !hierarchyHasDestructor(cls)) {
+            return -1;
+        }
+        return vtableSlot_["~"];
+    }
+
     bool hierarchyHasDestructor(const std::string& cls) {
         const ast::ClassDecl* here = findClass(cls);
         if (here != nullptr && !destructorOf(*here).empty()) {
@@ -2850,7 +3454,7 @@ private:
             if (f.init == nullptr || f.isStatic) {
                 return;   // a static has one storage location and is initialised as a global
             }
-            // A `lazy` FIELD IS BUILT ON FIRST ACCESS, NOT HERE (§28.4). Its storage starts null --
+            // A `lazy` FIELD IS BUILT ON FIRST ACCESS, NOT HERE (Â§28.4). Its storage starts null --
             // which is the sentinel -- and the initialiser runs at the first read. Run in the
             // constructor it printed `constructing` before the line that follows the declaration,
             // which is exactly the ordering the word exists to change.
@@ -2871,7 +3475,7 @@ private:
                 return;
             }
             // A `persistent` FIELD'S INITIALISER IS ITS STARTING VALUE, NOT ITS EVERY-TIME VALUE
-            // (§18.2). Reattaching is the point: running `chassi = 0` in the constructor of every
+            // (Â§18.2). Reattaching is the point: running `chassi = 0` in the constructor of every
             // `Car` puts the counter back to zero on each one, which is exactly what the object
             // being deleted and rebuilt is supposed to survive. The block is zeroed once when it
             // is created, and that IS the initialiser being honoured.
@@ -2882,9 +3486,28 @@ private:
             if (value == kNoValue) {
                 return;
             }
+            // A `String` INITIALISER HAS TO OWN WHAT IT STORES, exactly as an assignment does.
+            //
+            // `private mutable String why = "";` stored the literal's STATIC String object straight
+            // into the field. Nothing was wrong until the object died: the destructor releases what
+            // its String fields hold, so it handed a constant to `__polaron_str_free` -- and the
+            // program came down with STATUS_HEAP_CORRUPTION somewhere else entirely, with no line
+            // and nothing to find at the one that caused it. `this.why = "";` in a constructor body
+            // was always correct, because the assignment path copies; the initialiser was a second
+            // way to write the same thing that did not.
+            //
+            // `ownedString` is the helper the assignment already uses, and its own comment says
+            // this: releasing a constant is not a leak, it is corruption. The field starts null --
+            // `nullStringFields` ran immediately before -- so there is nothing to release first.
+            ValueId held = value;
+            if (const auto declared = fieldTypeName_.find(owner + "." + f.name);
+                declared != fieldTypeName_.end() && declared->second.pointerDepth == 0 &&
+                isStringNamed(declared->second.name)) {
+                held = ownedString(value, f.loc);
+            }
             const ValueId at = fieldAddress(selfLoad(f.loc), f.name, f.loc);
             if (at != kNoValue) {
-                storeInto(at, value, f.loc);
+                storeInto(at, held, f.loc);
             }
         });
     }
@@ -2976,12 +3599,18 @@ private:
     // existed. `generator` ended with 1130-entry tables and a `call *0x2360(%rax)`, which is slot
     // 1132: two slots handed out after the padding, and a virtual call reading two words past the
     // end of the table into whatever followed it. It jumped to zero.
+    //
+    // AND THE TAIL COSTS: padding to `vtableSlot_.size()` sizes every table to the number of
+    // distinct method names in the program AND ITS PRELUDE, so a hello-world comes out with 298
+    // tables of 1151 pointers each, every one of them null. Two narrower rules were tried here and
+    // both were taken out again -- see PLAN.md, Wave 6, for the measurement and for why the width
+    // cannot be decided from this module alone.
     void padVtables() {
-        const size_t slots = vtableSlot_.size();
         for (Global& g : out_.module.globals) {
-            if (!g.initFns.empty() && g.initFns.size() < slots) {
-                g.initFns.resize(slots);
+            if (g.initFns.empty()) {
+                continue;
             }
+            g.initFns.resize(vtableSlot_.size());
         }
     }
 
@@ -3052,8 +3681,8 @@ private:
         g.linkage = Linkage::Internal;
         // A TABLE THAT GETS REWRITTEN CANNOT LIVE IN READ-ONLY MEMORY.
         //
-        // Two things rewrite one. `X.methods.replace("m", fn)` (§32.8) points a slot at a thunk, and
-        // `unimport X` (§30) poisons every slot so a call into a class that is gone reports itself
+        // Two things rewrite one. `X.methods.replace("m", fn)` (Â§32.8) points a slot at a thunk, and
+        // `unimport X` (Â§30) poisons every slot so a call into a class that is gone reports itself
         // instead of jumping into freed code. Emitted `constant`, both of those are stores into
         // `.rdata`: the program segfaulted on `mov %rax, 0x35c4b(%rip)` with nothing printed,
         // because the output it had produced was still in a buffer when the process died.
@@ -3098,10 +3727,21 @@ private:
         // THE FOLDED VALUE FIRST. `foldConstants` has already evaluated every `static fixed` in the
         // program -- including the ones written in terms of each other, which is most of them --
         // so the literal cases below are only what is left: a plain `static` that is not `fixed`.
+        const std::string simple = simpleStaticKey(key);
         if (auto folded = constInts_.find(key); folded != constInts_.end()) {
             g.initInt = folded->second;
             g.zeroInit = false;
         } else if (auto real = constDoubles_.find(key); real != constDoubles_.end()) {
+            g.initFloat = real->second;
+            g.zeroInit = false;
+        } else if (auto folded = constInts_.find(simple);
+                   !simple.empty() && folded != constInts_.end()) {
+            // THE SAME VALUE UNDER THE SIMPLE NAME -- see `simpleStaticKey` for why the two keys
+            // exist and when they diverge.
+            g.initInt = folded->second;
+            g.zeroInit = false;
+        } else if (auto real = constDoubles_.find(simple);
+                   !simple.empty() && real != constDoubles_.end()) {
             g.initFloat = real->second;
             g.zeroInit = false;
         } else if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(init)) {
@@ -3150,7 +3790,7 @@ private:
         // identity uses this: the interned type, the method keys, the field table, the vtable.
         const std::string cls = keyOfClass(c);
         std::vector<Field> fields;
-        std::vector<Field> persisted;   // §18.2: the ones that live outside the object
+        std::vector<Field> persisted;   // Â§18.2: the ones that live outside the object
         // THE VTABLE POINTER IS FIELD ZERO of every reference class, which is where the trusted
         // path puts it and therefore where a `Tagged*` used as a `Particle*` expects to find it.
         // A `struct`, `record` or `union` is a value and gets none.
@@ -3190,7 +3830,7 @@ private:
         // the call resolved to nothing and became an indirect call to address 1 -- which is what a
         // region's size expression evaluated to before every region sample died.
         forEachMember<ast::LiteralDecl>(c, [&](const ast::LiteralDecl& l) {
-            // ONE KEY PER OVERLOAD, and the parameter's type is what distinguishes them (§17.10
+            // ONE KEY PER OVERLOAD, and the parameter's type is what distinguishes them (Â§17.10
             // rule 6). Keyed by name alone, `literal scaled(int)` and `literal scaled(double)`
             // collapsed to one function -- the second declaration was silently dropped, and
             // `Scale.scaled(1.5)` ran the integer body: 2 where the program computes 15.
@@ -3238,7 +3878,7 @@ private:
                 return;
             }
             Field pf = pirField(f);
-            // A `persistent` FIELD IS NOT PART OF THE OBJECT (§18.2). Its lifetime is decoupled
+            // A `persistent` FIELD IS NOT PART OF THE OBJECT (Â§18.2). Its lifetime is decoupled
             // from the object's -- that is the whole of what the word means -- so it cannot live in
             // storage that `delete` frees. It goes into a BLOCK the object points at, and the block
             // outlives the object: create a `Car`, bump `chassi`, delete the car, create another,
@@ -3259,7 +3899,7 @@ private:
             if (f.isTransient) {
                 transientFields_[cls].insert(f.name);
             }
-            // §37.5: `private eternal volatile mutable region aperture;` -- an access to this field
+            // Â§37.5: `private eternal volatile mutable region aperture;` -- an access to this field
             // is an access to hardware, and it must not be moved, merged or deleted.
             if (f.isVolatile) {
                 volatileFields_.insert(cls + "." + f.name);
@@ -3306,13 +3946,42 @@ private:
             // would earn `!noalias` metadata on the loads of it. The class's own discipline is
             // read from `c.isUnique` where the facts are settled.
         });
-        // IMPLEMENTING A `layout` AUTHORISES THE COMPILER TO ORDER THE FIELDS (§11.1), and that is
-        // the point of writing one: a `byte` between two `int`s costs six bytes of padding as
-        // declared and none at all widest-first. `Tick` measured sixteen where the layout fits it
-        // within twelve -- and the trusted path reorders, so the two disagreed on every offset.
+        // `permits reorder` AUTHORISES THE COMPILER TO ORDER THE FIELDS, and where it is written
+        // that is the point of the layout: a `byte` between two `int`s costs six bytes of padding
+        // as declared and none at all widest-first. `Tick` measured sixteen where the layout fits
+        // it within twelve -- and the trusted path reorders, so the two disagreed on every offset.
         // Widest-first by ALIGNMENT, stably, so fields of equal width keep the order they were
         // written in and the arrangement is the same on every run.
-        if (!c.layouts.empty() && fields.size() > 1) {
+        //
+        // WHAT USED TO STAND HERE WAS `if (!c.layouts.empty())`, and that was the defect. Naming a
+        // layout was itself the permission, so the one case the construct is most reached for --
+        // `layout WireRecord`, whose own sample says *both ends index it* -- was reordered by the
+        // act of asking for a size. Two ends written in different field orders both measured 32,
+        // both compiled, and agreed on nothing else.
+        //
+        // EVERY LAYOUT ON THE TYPE HAS TO GRANT IT, not one of them. A type arranged by two layouts
+        // is answerable to both, and the permutation is not something one of them can concede on
+        // the other's behalf: the restrictive one is the one that decided the bytes matter.
+        bool mayReorder = !c.layouts.empty();
+        for (const std::string& ln : c.layouts) {
+            const ast::ClassDecl* decl = findClass(ln);
+            Arrangement grants;
+            if (decl != nullptr && decl->isLayout) {
+                (void)readArrangement(*decl, grants);
+            }
+            if (!grants.permitsReorder) {
+                mayReorder = false;
+                break;
+            }
+        }
+        // ...UNLESS THE TARGET RESOLVES ITSELF, in which case the compiler's strategy does not run
+        // at all. §8's order is: the target's resolver if it has one, else the layout's default,
+        // else the built-in -- and this is the first of the three, so it goes before the sort rather
+        // than instead of it. `runResolver` returns false when nothing claimed the arrangement.
+        if (runResolver(c, fields)) {
+            mayReorder = false;
+        }
+        if (mayReorder && fields.size() > 1) {
             std::stable_sort(fields.begin(), fields.end(), [](const Field& a, const Field& b) {
                 const uint32_t la = a.type != nullptr ? a.type->facts.align : 1;
                 const uint32_t lb = b.type != nullptr ? b.type->facts.align : 1;
@@ -3336,7 +4005,7 @@ private:
         // `comptime literal` members, which are declared a few lines above this: its return type
         // was the empty entry, so `8 kilobytes` had no `bytes` field and `itself.allocate(...)`
         // asked the allocator for `undef` bytes.
-        // CONSECUTIVE BIT FIELDS SHARE ONE STORAGE UNIT (§11.1) -- that is the whole reason to write
+        // CONSECUTIVE BIT FIELDS SHARE ONE STORAGE UNIT (Â§11.1) -- that is the whole reason to write
         // them. `struct TwoNibbles { int a : 4; int b : 4; }` is ONE BYTE; laid out as two `int`s it
         // measured eight, and a `Packed` designed to fit three to a cache line measured 24 where its
         // own `demand` says 20. The unit is the smallest power-of-two byte size that holds the run,
@@ -3388,7 +4057,7 @@ private:
             }
             fields = std::move(packed);
         }
-        // A `union` IS ONE STORAGE ITS FIELDS SHARE (§13), so its shape is the WIDEST field and not
+        // A `union` IS ONE STORAGE ITS FIELDS SHARE (Â§13), so its shape is the WIDEST field and not
         // all of them in sequence. Laid out in sequence, `v.asFloat = 1.5` wrote at offset four and
         // `v.asInt` read offset zero: the sample that exists to state the rule printed `bits = 0`
         // where the reinterpretation is the whole point. The names do not go into the shape at all
@@ -3397,6 +4066,62 @@ private:
         // THIS NAME IS A CLASS, which the backend needs to know to spell its struct the way the
         // other path does -- see `Module::ClassShape`. Recorded for every class, union or not.
         Module::ClassShape& shape = out_.module.classes[cls];
+        // WHO MAY ANSWER FOR THIS CLASS, written down instead of thrown away.
+        //
+        // Every one of these was already known here -- this method holds the `ClassDecl` -- and none
+        // of it reached the module, so Â§11.8 could only ever have been written back on the AST. That
+        // is the arrangement Â§11 exists to undo: the analyses move DOWN onto the graph, and a graph
+        // that cannot answer "what may this pointer point at" cannot carry them.
+        //
+        // `openWorld` is the one that is not a property of the class alone. In a program the set of
+        // subclasses is closed by the compilation; in a `--lib` a public class may be extended by a
+        // consumer compiled later, and only `final` and `sealed` survive that boundary. Wave 2 found
+        // what getting it wrong costs: devirtualising across it made `bundle_inherit_runs` print
+        // `total = 17` where the answer is 57.
+        // EVERY EDGE BY THE KEY THE REST OF THE MODULE IS FILED UNDER. `extends Base`, `implements
+        // Drawable` and `permits Circle` are all written unqualified; the shapes, the vtable globals
+        // and `vtable.load`'s `text` all carry the resolved key. A relation half of whose edges name
+        // something nothing is filed under is a relation that silently has no edges -- and it fails
+        // by devirtualising nothing, which looks exactly like a program that had nothing to remove.
+        shape.base = c.superclass.empty()
+                         ? std::string()
+                         : resolveClassKey(cgutil::baseType(c.superclass));
+        shape.interfaces.clear();
+        shape.interfaces.reserve(c.interfaces.size());
+        for (const std::string& i : c.interfaces) {
+            shape.interfaces.push_back(resolveClassKey(cgutil::baseType(i)));
+        }
+        shape.permits.clear();
+        shape.permits.reserve(c.permits.size());
+        for (const std::string& p : c.permits) {
+            shape.permits.push_back(resolveClassKey(cgutil::baseType(p)));
+        }
+        shape.isAbstract = c.isAbstract;
+        shape.isFinal = c.isFinal;
+        shape.isSealed = c.isSealed;
+        // ...and `openWorld` is the question asked from BOTH sides of a bundle boundary, because
+        // there are two ways for the set of subclasses to be larger than this compilation can see.
+        //
+        // WRITING a library: a public class may be extended by a consumer that does not exist yet.
+        // This half is `overridableFromOutside`'s rule, deliberately in the same spelling, since two
+        // spellings of one rule is how they come apart. Wave 2 paid for getting it wrong --
+        // `bundle_inherit_runs` printed `total = 17` where the answer is 57.
+        //
+        // USING one: an imported class's subclasses are whatever the LIBRARY has, and a `.polh`
+        // names only the public ones. A library with an abstract `Source`, a public `Visible` and a
+        // non-public `Internal` hands out `Internal` through a factory the consumer calls; the
+        // consumer's headers name two of those three, so counting implementations here finds one
+        // and compiles `s.rate()` into `Visible.rate`. It printed 3 where the answer is 9 -- the
+        // SAME defect as Wave 2's, mirrored, and it was in this pass the day it was written.
+        // `devirt_hidden_subclass` is the machine asking it, because I got it wrong by reading.
+        //
+        // `final` and `sealed` are what survive the crossing in either direction: they are in the
+        // `.polh`, and they name the closure instead of leaving it to be discovered.
+        // The two are an OR and not a choice: a `--lib` may itself import another bundle, so a
+        // compilation can be on both sides of a boundary at once.
+        const bool acrossABoundary = (bundles_.library && c.visibility == "public") ||
+                                     bundle.isImported || bundle.isDynamic || bundle.isRemote;
+        shape.openWorld = acrossABoundary && !c.isFinal && !c.isSealed;
         if (c.isUnion && !fields.empty()) {
             // ...AND ITS FIELDS OVERLAP, because after this the shape keeps one field and nothing
             // in it still says the others shared the offset. The backend's alias metadata must
@@ -3414,6 +4139,35 @@ private:
             one.name = "__storage";
             fields.assign(1, one);
         }
+        // AN ENTITY'S COLUMNS, measured once here where the field list is complete and in order.
+        //
+        // What is recorded is how many bytes of EARLIER fields there are -- `x` has 0, `y` has 4,
+        // `vx` has 8 -- because a column's real offset is that number times N, and N is a run-time
+        // value that cannot be folded in here.
+        //
+        // NO PADDING BETWEEN COLUMNS, and that holds for a reason rather than by decision: every
+        // column is homogeneous, so there is no alignment hole to insert between elements of
+        // different types. The holes exist only in the row form, which is the form this construct
+        // exists to stop paying for -- and one nested aggregate kept as a column would put them
+        // back inside the column, where nobody would think to look.
+        if (c.isEntity) {
+            EntityShape ent;
+            ent.stable = c.isStable;
+            for (const Field& f : fields) {
+                const uint64_t width = f.type != nullptr ? f.type->facts.size : 0;
+                ent.columns.push_back(EntityColumn{f.name, ent.rowBytes, width, f.type});
+                ent.rowBytes += width;
+            }
+            for (const EntityColumn& col : ent.columns) {
+                columnNames_.insert(col.name);
+            }
+            forEachMember<ast::MethodDecl>(c, [&](const ast::MethodDecl& m) {
+                if (m.isPass) {
+                    passNames_.insert(m.name);
+                }
+            });
+            entities_[cls] = std::move(ent);
+        }
         const Type* t = nullptr;
         if (auto seen = named_.find(cls);
             seen != named_.end() && seen->second != nullptr &&
@@ -3429,7 +4183,7 @@ private:
         bool hasDestructor = false;
         forEachMember<ast::DestructorDecl>(c, [&](const ast::DestructorDecl&) { hasDestructor = true; });
 
-        // A `layout` STATES AN EXACT ARRANGEMENT OF BYTES (§11.1), which is the whole reason to
+        // A `layout` STATES AN EXACT ARRANGEMENT OF BYTES (Â§11.1), which is the whole reason to
         // write one: it describes a register block or a wire format, and a padding hole the
         // compiler inserted is a field at the wrong offset. Twelve declared bytes measured sixteen.
         if (c.isLayout) {
@@ -3438,7 +4192,7 @@ private:
         TypeFacts facts = t->facts;
         facts.isValue = c.isStruct || c.isRecord || c.isUnion;
         // `owns` -- destroying one does work. Decided HERE, once, from the declaration, because it
-        // is one of the five facts §3.3 puts on the type entry, and because `T.owns()` answering it
+        // is one of the five facts Â§3.3 puts on the type entry, and because `T.owns()` answering it
         // at compile time proves the compiler already knows.
         facts.owns = hasDestructor || facts.owns;
         // `unique` -- AT MOST ONE LIVE REFERENCE (spec 19.9). It is the fact behind `noalias`, the
@@ -3446,7 +4200,7 @@ private:
         //
         // OFF THE CLASS, NOT OFF ITS FIELDS. `unique` is spelled in two places and they say two
         // different things: `unique class FileHandle` is the ownership DISCIPLINE -- "apenas uma
-        // referência viva por vez em todo o programa" -- while `unique Buffer* b` says the FIELD
+        // referÃªncia viva por vez em todo o programa" -- while `unique Buffer* b` says the FIELD
         // holds the only reference to the object on its far end. This read the second and recorded
         // it as the first, so `facts.isUnique` meant "has a unique field", and:
         //
@@ -3466,10 +4220,10 @@ private:
         }
         measureAggregate(t->fields, t->packed, facts);
         out_.module.types.setFacts(t, facts);
-        checkLayoutBudget(c, facts.size);
+        checkLayoutBudget(c, facts.size, t->fields, t->packed);
 
         forEachMember<ast::MethodDecl>(c, [&](const ast::MethodDecl& m) {
-            // A GENERATOR'S PARKED BODY IS NOT A METHOD AT ALL (§22.6). An earlier pass split
+            // A GENERATOR'S PARKED BODY IS NOT A METHOD AT ALL (Â§22.6). An earlier pass split
             // `evens()` into the iterator it returns and a `$body` twin holding the part with the
             // `yield`s in it; `lowerGenerator` turns that twin into the four state-machine
             // functions, and the twin itself never becomes anything. Declared here it got a
@@ -3598,7 +4352,7 @@ private:
         return declareMethodOn(keyOfClass(c), out_.module.types.ptrType(), m);
     }
 
-    // The ABI world an `extern` declaration named, as the enum §6 keeps it in. `syscall:N` is not a
+    // The ABI world an `extern` declaration named, as the enum Â§6 keeps it in. `syscall:N` is not a
     // calling convention at all -- it is the machine's own instruction with N in the number
     // register -- but it arrives spelled like one, so it is recognised here and refused a symbol.
     static Conv externConv(const std::string& world) {
@@ -3705,7 +4459,7 @@ private:
             Field f;
             f.type = typeOf(p.type);
             f.name = p.name;
-            // AT A C BOUNDARY A SMALL STRUCT TRAVELS IN A REGISTER (§26). Win64 puts a struct of
+            // AT A C BOUNDARY A SMALL STRUCT TRAVELS IN A REGISTER (Â§26). Win64 puts a struct of
             // 1, 2, 4 or 8 bytes into one integer register and passes anything larger by address;
             // the declaration has to say so, because a `declare i32 @f(%Point)` and a `declare i32
             // @f(i64)` are two different calling conventions and only one of them is the C one.
@@ -3722,7 +4476,7 @@ private:
         if (out_.module.find(key) != nullptr) {
             return nullptr;   // an overload set collapses to one key at this stage
         }
-        // AN `async` METHOD IS TWO FUNCTIONS (§20.2). The one the program calls RETURNS A TASK and
+        // AN `async` METHOD IS TWO FUNCTIONS (Â§20.2). The one the program calls RETURNS A TASK and
         // returns immediately; the body lives in a `$resume` the scheduler calls with the saved
         // state. Declared as one, the call returned an `int` where a `Task<int>` was expected and
         // `await` read the result out of a number.
@@ -3791,13 +4545,13 @@ private:
         // `[Cold]`: THIS PATH IS RARELY TAKEN. The inliner costs a method by its SIZE, which is a
         // poor proxy when the bulk of one runs log(n) times in n -- see the note beside the other
         // backend's copy of this, and `ArrayList.ensureCapacity`, which is what asked for it.
-        // `Affinity::Cold` already reached LLVM from here (§12 counts it); nothing set it.
+        // `Affinity::Cold` already reached LLVM from here (Â§12 counts it); nothing set it.
         if (cgutil::hasAnnotation(m, "Cold")) {
             fn->affinity = Affinity::Cold;
             fn->inlineNever = true;
         }
         // WHETHER IT CAN UNWIND, from what the declaration says. `nounwind` on the way out is one of
-        // the fifteen rows of §12, and this is where the fact is decided rather than guessed.
+        // the fifteen rows of Â§12, and this is where the fact is decided rather than guessed.
         fn->unwind = m.throwsTypes.empty() ? Unwind::Never : Unwind::May;
         // `syscall(N)` IS NOT A FOREIGN SYMBOL. It arrives spelled like a calling convention and it
         // is the machine's own instruction; this method gets a BODY (see `lowerSyscallStub`), so it
@@ -4072,7 +4826,7 @@ private:
         lowerLifecycleHooks(c, cls);
     }
 
-    // `X.methods.replace("m", fn)` (§32.8): point X's dispatch slot at a thunk that calls `fn`.
+    // `X.methods.replace("m", fn)` (Â§32.8): point X's dispatch slot at a thunk that calls `fn`.
     //
     // TYPE SAFETY IS NOT LOST -- the analyzer has already checked that the replacement has the
     // method's exact signature with the receiver as its first parameter. What is left here is the
@@ -4244,7 +4998,7 @@ private:
         return emit(std::move(b));
     }
 
-    // ---- §22.6, generators ----
+    // ---- Â§22.6, generators ----
     //
     // A GENERATOR IS FOUR FUNCTIONS AND A STATE OBJECT. `Sequences.evens(10)` returns an
     // `Iterator<int>`, and an earlier pass has already rewritten it into a factory that builds one
@@ -4565,7 +5319,7 @@ private:
         br.edges[1] = Edge{chain, {}};
     }
 
-    // ---- §20.2, `async` ----
+    // ---- Â§20.2, `async` ----
     //
     // TWO FUNCTIONS, and the split is the whole feature. The one the program calls builds a task,
     // saves the arguments where the body can find them, hands the pair to the scheduler and RETURNS
@@ -4605,7 +5359,7 @@ private:
             f.name = p.name;
             stateFields.push_back(f);
         }
-        // §20.2: WHERE THE HANDLE OF THE TASK THIS ONE IS WAITING FOR IS KEPT, so the resume can
+        // Â§20.2: WHERE THE HANDLE OF THE TASK THIS ONE IS WAITING FOR IS KEPT, so the resume can
         // read the answer after the suspension. ONE slot, not one per `await`: a body can only be
         // suspended at a single point at a time, and which point that is is what `step` records.
         Field awaited;
@@ -4741,7 +5495,7 @@ private:
                 locals_[p.name] = slot;
                 paramTypes_[p.name] = typeOf(p.type);
             }
-            // AN ESCAPING THROW FAILS THE TASK; IT DOES NOT LEAVE THE THREAD (§21).
+            // AN ESCAPING THROW FAILS THE TASK; IT DOES NOT LEAVE THE THREAD (Â§21).
             //
             // This body runs on a worker. An exception that walks out of it has no handler anywhere
             // above -- the code that cares is whoever awaits the task, in another frame entirely --
@@ -4759,7 +5513,7 @@ private:
             const size_t outerUnwindDefers = unwindDefers_.size();
             handlers_.push_back(Handler{guard, scoped_.size(), deferred_.size()});
 
-            // §20.2: THE BODY IS A STATE MACHINE, and this is where it is entered.
+            // Â§20.2: THE BODY IS A STATE MACHINE, and this is where it is entered.
             //
             // `await` inside an async body must SUSPEND -- register this function as the awaited
             // task's continuation and return, so the worker is freed -- and not block. Blocking is
@@ -5097,7 +5851,7 @@ private:
                      loc);
     }
 
-    // ---- §30, taking a class away while the program runs ----
+    // ---- Â§30, taking a class away while the program runs ----
     //
     // WHICH CLASSES ARE UNIMPORTABLE IS NOT WRITTEN ON THE DECLARATION. A class does not declare
     // itself removable -- it BECOMES removable because somewhere in the program a statement asks
@@ -5107,7 +5861,7 @@ private:
     //
     // The cost of getting this wrong in the cheap direction is a load and a branch on every use of
     // every class in the program, which is why it is a set and not a flag on all of them.
-    // Every method some `X.methods.replace("m", ...)` names (§32.8). Collected from the STATEMENTS,
+    // Every method some `X.methods.replace("m", ...)` names (Â§32.8). Collected from the STATEMENTS,
     // because being replaceable is not written on a declaration -- the same shape `unimport` has,
     // and for the same reason: a class does not say it can be taken away, a statement takes it.
     // WHICH CLASSES CARRY A VTABLE POINTER, which is a question about the LAYOUT and not about
@@ -5350,7 +6104,7 @@ private:
         }
     }
 
-    // The individual types one `unimport` names (§30.1): the target itself, or every type in a
+    // The individual types one `unimport` names (Â§30.1): the target itself, or every type in a
     // namespace (granularity 1) or a bundle (granularity 2).
     std::vector<std::string> unimportTargets(const ast::UnimportStmt& u) const {
         std::vector<std::string> out;
@@ -5359,6 +6113,28 @@ private:
             return out;
         }
         for (const ast::Bundle& b : ast_.bundles) {
+            // THE STANDARD LIBRARY IS NOT THE AUTHOR'S TO TAKE AWAY, and until this line it was.
+            //
+            // A namespace target matched by NAME across every bundle in the program, and the
+            // prelude is a bundle in the program -- so `unimport namespace App` in a user program
+            // also unimported the prelude's own `App`, which exists (`src/prelude/lib/App.pol`).
+            // The author asked for their namespace and got theirs plus a piece of the library:
+            // its vtables poisoned to the trap and, because §30 means it literally, its machine
+            // code overwritten with `int3` while the program ran.
+            //
+            // WHAT IT COST TO SEE IT is the part worth keeping. The symptom was not an error --
+            // it was a process that died at the `unimport` with no output at all, because stdout
+            // was a pipe and the buffered line went with it. On a console the same program printed
+            // the line first and looked like it failed somewhere later. A bug whose evidence
+            // depends on where output is going is one that gets diagnosed at the wrong place.
+            //
+            // Same shape as the ledger's open row *a user program can break the stdlib*, reached
+            // from the other direction: there a user type re-points name resolution INSIDE the
+            // library, here a user statement reaches in and unloads it. Both are one rule missing
+            // -- a name the author writes is about the author's code.
+            if (b.isPrelude) {
+                continue;
+            }
             if (u.granularity == 2 && b.name != u.target) {
                 continue;
             }
@@ -5377,7 +6153,7 @@ private:
         return out;
     }
 
-    // `cascade unimport X` (§37.1): X, every subclass of it, and every monomorphization -- the
+    // `cascade unimport X` (Â§37.1): X, every subclass of it, and every monomorphization -- the
     // things that would still be reachable if only X itself went.
     std::vector<std::string> cascadeUnimportTargets(const std::string& x) const {
         std::vector<std::string> out{x};
@@ -5416,7 +6192,7 @@ private:
         return name;
     }
 
-    // ---- `region class` (§17, region classes) ----
+    // ---- `region class` (Â§17, region classes) ----
     //
     // EVERY INSTANCE OF THE CLASS COMES FROM ONE ARENA and the arena holds nothing else. That
     // totality is the feature: it is what lets `unimport` answer "is any A alive?" by asking the
@@ -5738,6 +6514,30 @@ private:
     // Built by hand rather than from a `throw` in source, because there is no source: the compiler
     // is the one raising it, at a use site the author wrote as an ordinary call.
     void throwUnimported(SourceLocation loc) {
+        // A FREESTANDING PROGRAM HAS NOWHERE TO THROW TO, and the guard that fires here is the one
+        // a kernel is most likely to reach: it is emitted at every USE of a type that may have been
+        // unimported, which in Horizon is every driver call after a module is unloaded.
+        //
+        // There is no unwinder on bare metal -- `hasUnwinder()` says so, and the language refuses
+        // `try`/`throw` in freestanding for the same reason -- so raising here emitted a call to
+        // `__cxa_throw` that nothing defines and nothing could catch. The program compiled cleanly
+        // and failed at LINK, on a symbol from a runtime the target does not have: `undefined
+        // symbol: __cxa_throw`, referenced from a device driver's bring-up.
+        //
+        // So it panics, which is the same message reaching the same place by the route this target
+        // has. The refusal on the OTHER half of the feature -- unimporting a type whose instances
+        // are still alive -- has done exactly this since it was written; this is its counterpart at
+        // the use site, and the two now agree.
+        if (out_.module.freestanding) {
+            TypeTable& tt = out_.module.types;
+            callExternal("__polaron_panic", tt.voidType(), {tt.ptrType()},
+                         {literalText("used a type that was unimported", loc)}, loc);
+            Inst stop;
+            stop.op = Op::Unreachable;
+            stop.loc = loc;
+            emit(std::move(stop));
+            return;
+        }
         const std::string cls = resolveClassKey("UnimportedTypeException");
         const Type* t = baseTypeOf(cls);
         Inst obj;
@@ -5789,7 +6589,7 @@ private:
         emit(std::move(raise));
     }
 
-    // `unimport X;` -- §30. Refuse while anything is alive, run the unload hook while the code is
+    // `unimport X;` -- Â§30. Refuse while anything is alive, run the unload hook while the code is
     // still there to run it, mark the class dead, and poison its dispatch table.
     //
     // THE TABLE IS THE PART THAT IS EASY TO FORGET, and forgetting it is a hole rather than
@@ -5801,7 +6601,7 @@ private:
         // REFUSED WHILE ANYTHING IS STILL ALIVE. This is the precondition the rest rests on: with
         // no live instance there is no object whose vtable, fields or destructor can outlive the
         // code being taken away. It is a run-time question -- how many exist is not something the
-        // compiler can answer -- and the counter that answers it is the same one §32.5 keeps.
+        // compiler can answer -- and the counter that answers it is the same one Â§32.5 keeps.
         if (unimportable_.count(cls) != 0 || unimportable_.count(key) != 0) {
             Inst live;
             live.op = Op::CmpNe;
@@ -5855,7 +6655,7 @@ private:
         physicalCodeOp(cls, key, "__polaron_unload_fn", loc);
     }
 
-    // ---- §30: THE CODE ITSELF, RIPPED FROM MEMORY ----
+    // ---- Â§30: THE CODE ITSELF, RIPPED FROM MEMORY ----
     //
     // `unimport` is not a flag. The class's machine code is overwritten with `int3` in RAM, so a
     // call that reaches it by any route the compiler could not see -- a stale function pointer, a
@@ -5874,6 +6674,31 @@ private:
                         SourceLocation loc) {
         const ast::ClassDecl* decl = findClass(cls);
         if (decl == nullptr) {
+            return;
+        }
+        // YOU CANNOT RIP OUT THE CODE YOU ARE STANDING ON.
+        //
+        // `__polaron_unload_fn` means §30 literally: `memset(fn, 0xCC, len)` over the whole body,
+        // not a flag and not the entry byte. Run that over the method that is executing and the
+        // next instruction the processor fetches is `int3` -- the program dies at the `unimport`,
+        // and it dies without a diagnostic because there is no longer any code to report one.
+        //
+        // It arises from `unimport namespace N` / `unimport bundle B`, where the set is expanded
+        // rather than named, so the class holding the statement can be in it without anybody
+        // writing it down. `unimport_granularity.pol` does exactly this and its comment says so:
+        // *"unimports Dog (and Main, already running)"*.
+        //
+        // THE REST OF THE UNIMPORT STILL HAPPENS for that class -- the alive flag goes to 0, the
+        // vtable is poisoned to the trap, the statics are cleared -- so a later call to it is
+        // refused with the message, which is the whole observable meaning of the word. What is
+        // skipped is the one part that would kill the reporter before it could report.
+        //
+        // WHY IT WENT UNNOTICED: the wipe LENGTH is the gap to the next entry in the code table,
+        // and that table follows module emission order. The enclosing method happened to be
+        // followed by something close enough that the memset covered almost nothing -- so the test
+        // passed while proving the opposite of what it claims, and it started failing the moment an
+        // unrelated change reordered the module. See `polaron_rt.cpp`'s `__polaron_fn_len`.
+        if (key == enclosingClassKey()) {
             return;
         }
         declareCodeTable();
@@ -6034,7 +6859,7 @@ private:
         if (t == nullptr) {
             return v;
         }
-        // §21 + §20.2: A VALUE VARIANT DOES NOT FIT IN A WORD, so crossing one is BOXING it. A task
+        // Â§21 + Â§20.2: A VALUE VARIANT DOES NOT FIT IN A WORD, so crossing one is BOXING it. A task
         // hands its answer over as a single machine word, and `{ tag, payload }` is two -- widened
         // instead of boxed, the tag survived and the payload did not: `async_value_result` printed
         // `0 0` where the program computes `42 -5`. The block is read back and released by the
@@ -6247,7 +7072,7 @@ private:
         emit(std::move(st));
     }
 
-    // ---- §37.3, `lazy` ----
+    // ---- Â§37.3, `lazy` ----
     //
     // The storage and the flag, made where the declaration stands; the initialiser is remembered
     // and emitted at the first READ. What it buys is that an expensive or side-effecting
@@ -6439,7 +7264,7 @@ private:
         declaredAs_[slot] = DeclaredType{declared, v.type.pointerDepth};
     }
 
-    // `expecting { ... return v; }` (§30.18) RUN WHERE IT STANDS, as an expression. The block's
+    // `expecting { ... return v; }` (Â§30.18) RUN WHERE IT STANDS, as an expression. The block's
     // `return` names the value; the block itself is not a method and does not return from one.
     //
     // WHY THE VALUE AT ALL: the two sides of an `unimport`/`reimport` pair are two different
@@ -6451,7 +7276,7 @@ private:
         if (block == nullptr) {
             return constInt(0, 32, loc);
         }
-        // ONE MACHINE WORD, whatever the block produces. The comparison §30.18 asks for is
+        // ONE MACHINE WORD, whatever the block produces. The comparison Â§30.18 asks for is
         // bit-for-bit, and every validation value that fits in a register -- an integer of any
         // width, a boolean, a handle -- compares exactly when its sixty-four bits do. The slot has
         // to exist before the block runs, and what the block returns is not known until it has been
@@ -6494,7 +7319,7 @@ private:
         return loadFrom(slot, loc);
     }
 
-    // ---- §32.5, the four moments in a class's life ----
+    // ---- Â§32.5, the four moments in a class's life ----
     //
     // `onClassLoad` before anything uses the class, `onFirstInstance` when the live count leaves
     // zero, `onLastInstanceDestroyed` when it comes back to zero, `onClassUnload` when `unimport`
@@ -6699,7 +7524,7 @@ private:
         code.loc = loc;
         const ValueId fnv = emit(std::move(code));
         // AN INTERRUPT VECTOR HOLDS A NUMBER. `Signals.answer(int, address)` takes the entry point
-        // as an `address`, which is an integer here and not a pointer -- §3.1 keeps them apart.
+        // as an `address`, which is an integer here and not a pointer -- Â§3.1 keeps them apart.
         Inst asNumber;
         asNumber.op = Op::PtrToAddr;
         asNumber.type = tt.addrType(64);
@@ -6729,7 +7554,7 @@ private:
         return false;
     }
 
-    // §21: A STRING FIELD STARTS NULL, and the constructor is where that becomes true.
+    // Â§21: A STRING FIELD STARTS NULL, and the constructor is where that becomes true.
     //
     // The ownership protocol's release half reads the field before overwriting it, and a field
     // that has never been written holds whatever the storage happened to contain -- `new Snap(...)
@@ -6794,9 +7619,9 @@ private:
             fn->kind = FnKind::Method;
             fn->unwind = Unwind::Never;
             // A LOAD HOOK IS A ROOT, and it is the only thing that keeps it -- and everything its
-            // body reaches -- from being stripped as unreachable. §11.2's reachability already
+            // body reaches -- from being stripped as unreachable. Â§11.2's reachability already
             // walks `init`/`fini`; filling them is what this stage owed it.
-            // ...UNLESS THE CLASS WAS IMPORTED LAZILY (§37.3), in which case the hook runs on its
+            // ...UNLESS THE CLASS WAS IMPORTED LAZILY (Â§37.3), in which case the hook runs on its
             // FIRST INSTANCE and not at boot -- that is the whole of what the word buys, and a
             // program that says `start` before `server loaded` printed them the other way round.
             // The call site in `new` is what keeps it reachable there.
@@ -6874,7 +7699,7 @@ private:
     // The counter's own storage, as an address to load from and store to.
     ValueId counterSlot(const std::string& cls, SourceLocation loc) {
         Inst addr;
-        addr.op = Op::ConstFn;   // §7.1: the address of a named module-level thing
+        addr.op = Op::ConstFn;   // Â§7.1: the address of a named module-level thing
         addr.type = out_.module.types.ptrType();
         addr.text = instanceCounter(cls);
         addr.loc = loc;
@@ -7026,7 +7851,7 @@ private:
                      {copy, original, sizeOfClass(shape, at)}, at);
         pointee_[copy] = shape;
         noteName(copy, cls);
-        // A `transient` FIELD IS NOT PART OF THE VALUE (§18). It is derived or scratch state -- a
+        // A `transient` FIELD IS NOT PART OF THE VALUE (Â§18). It is derived or scratch state -- a
         // cache, a memo, a handle -- and copying it hands the new object the OLD one's answer for
         // a question it has not been asked yet. The memcpy above cannot tell the difference, so
         // the transient fields are put back to zero afterwards, which is what "not canonical"
@@ -7088,7 +7913,7 @@ private:
         TypeTable& tt = out_.module.types;
         for (size_t i = 0; i < shape->fields.size(); ++i) {
             const std::string& fname = shape->fields[i].name;
-            // A `weak` FIELD IS A NON-OWNING EDGE (§19), so a deep copy SHARES what it points at
+            // A `weak` FIELD IS A NON-OWNING EDGE (Â§19), so a deep copy SHARES what it points at
             // rather than duplicating it -- that is the difference the word buys, and it is what
             // keeps copying one node from copying the whole graph back through its parent link.
             if (shape->fields[i].weak) {
@@ -7379,7 +8204,7 @@ private:
         // pointer it is handed and a frame copy would be dead the moment the caller returned. The
         // two are one rule. Making both changes together was tried and it moves the language's
         // value semantics for aggregates: nine samples change behaviour, among them the ones that
-        // deliberately SHARE a class through a collection. It needs the escape analysis of §11.5 to
+        // deliberately SHARE a class through a collection. It needs the escape analysis of Â§11.5 to
         // separate the two cases, and belongs with it rather than here.
         //
         // What it costs meanwhile is measured, not guessed: one leaked copy per call taking an
@@ -7427,7 +8252,7 @@ private:
             pendingRequires_.push_back(r.get());
         }
         // ...AND THE CLAUSES CHECKED ON THE WAY OUT. `ensures` is the method's own promise about the
-        // state it leaves behind, and a class `invariant` is the type's; §29 checks both at every
+        // state it leaves behind, and a class `invariant` is the type's; Â§29 checks both at every
         // exit of every non-static method. Only the `requires` half was being emitted, so a method
         // that deliberately breaks an invariant ran to completion and the program carried on holding
         // an object in the one state its type says it is never in -- `generic_invariant_enforced`
@@ -7455,6 +8280,10 @@ private:
                 }
             }
         }
+        // A `pass` OVER AN ENTITY IS A LOOP, and `lowerBodyOf` is the only place that can open one
+        // around the statements. It is told here, where the member declaration is still in hand.
+        pendingPassOver_ = m.isPass && entities_.count(owner) != 0 ? owner : std::string();
+        pendingPassIndexName_ = pendingPassOver_.empty() ? std::string() : m.indexBinding;
         lowerBodyOf(fn, owner, m.body);
     }
 
@@ -7608,6 +8437,93 @@ private:
     // THE OWNER IS A NAME. It used to be the whole `ClassDecl`, of which exactly one field was
     // read -- and a lambda had to invent an empty declaration to call this at all, while an enum's
     // method has no declaration to invent.
+    // The three blocks a pass's loop needs kept between opening it and closing it. `over` empty
+    // means this body is not a pass and both halves do nothing, which is every other method.
+    struct PassLoop {
+        std::string over;
+        BlockId head = kNoBlock;
+        BlockId step = kNoBlock;
+        BlockId done = kNoBlock;
+    };
+
+    PassLoop openPassLoop(SourceLocation loc) {
+        PassLoop p;
+        if (pendingPassOver_.empty() || fn_ == nullptr || selfSlot_ == kNoValue) {
+            pendingPassOver_.clear();
+            return p;
+        }
+        p.over = pendingPassOver_;
+        pendingPassOver_.clear();
+        TypeTable& tt = out_.module.types;
+        const Type* i32 = tt.intType(32);
+        const ValueId block = loadFrom(selfSlot_, loc);
+
+        // N, off the block's own header. One length for every column, which is what "one
+        // allocation" buys and what parallel arrays can never promise.
+        Inst lenAt;
+        lenAt.op = Op::Gep;
+        lenAt.type = tt.ptrType();
+        lenAt.text = "length";
+        lenAt.operands.push_back(block);
+        lenAt.loc = loc;
+        const ValueId lenAddr = emit(std::move(lenAt));
+        slotType_[lenAddr] = tt.intType(64);
+        Inst small;
+        small.op = Op::Trunc;
+        small.type = i32;
+        small.operands.push_back(loadFrom(lenAddr, loc));
+        small.loc = loc;
+        const ValueId rows = emit(std::move(small));
+
+        const ValueId counter = entryAlloca(i32, "pass.i");
+        slotType_[counter] = i32;
+        storeInto(counter, constInt(0, 32, loc), loc);
+        passIndexSlot_ = counter;
+        // `index i` BINDS THE LOOP'S OWN COUNTER, not a copy of it. The body reads `i` as an
+        // ordinary name, so binding it to the counter's storage is all it takes -- and binding it
+        // to anything else would give the body a number that is right only until the next row.
+        if (!pendingPassIndexName_.empty()) {
+            locals_[pendingPassIndexName_] = counter;
+            noteName(counter, "int");
+            pendingPassIndexName_.clear();
+        }
+        passOver_ = p.over;
+        passBlock_ = block;
+        passSelf_.clear();
+        passSelf_.insert(block);
+
+        p.head = fn_->addBlock(fresh("pass.head"));
+        const BlockId work = fn_->addBlock(fresh("pass.row"));
+        p.step = fn_->addBlock(fresh("pass.step"));
+        p.done = fn_->addBlock(fresh("pass.done"));
+        gotoIfOpen(p.head);
+        here_ = p.head;
+        branchOn(cmp(Op::CmpLtS, loadFrom(counter, loc), rows, loc), work, p.done);
+        here_ = work;
+        return p;
+    }
+
+    void closePassLoop(const PassLoop& p, SourceLocation loc) {
+        if (p.over.empty() || fn_ == nullptr) {
+            return;
+        }
+        gotoIfOpen(p.step);
+        here_ = p.step;
+        Inst bump;
+        bump.op = Op::AddWrap;
+        bump.type = out_.module.types.intType(32);
+        bump.operands.push_back(loadFrom(passIndexSlot_, loc));
+        bump.operands.push_back(constInt(1, 32, loc));
+        bump.loc = loc;
+        storeInto(passIndexSlot_, emit(std::move(bump)), loc);
+        gotoIfOpen(p.head);
+        here_ = p.done;
+        passOver_.clear();
+        passIndexSlot_ = kNoValue;
+        passBlock_ = kNoValue;
+        passSelf_.clear();
+    }
+
     void lowerBodyOf(Function& fn, const std::string& owner, const ast::Block& body) {
         fn_ = &fn;
         here_ = fn.addBlock("entry");
@@ -7675,7 +8591,7 @@ private:
         statics_.clear();
         lazyLocals_.clear();
 
-        // The entry block's parameters ARE the function's -- §4. Declaring them twice would be two
+        // The entry block's parameters ARE the function's -- Â§4. Declaring them twice would be two
         // sources for one fact.
         // A LOCAL HAS STORAGE, and a read of it is a `load`.
         //
@@ -7683,7 +8599,7 @@ private:
         // express `x = x + 1` -- a value is defined once, and assignment is not a definition. So
         // every local and every parameter gets an `alloca`, writes are `store` and reads are `load`.
         // What that costs is a slot per local in the unoptimised IR; what removes it is the
-        // immutability pass of §11.4, which is where that decision belongs -- a lowering that tries
+        // immutability pass of Â§11.4, which is where that decision belongs -- a lowering that tries
         // to be clever about which locals need storage is a lowering that is wrong occasionally.
         uint32_t index = 0;
         std::vector<std::pair<std::string, ValueId>> incoming;
@@ -7758,7 +8674,7 @@ private:
         // `this` are in their slots, before a single statement of the body has run -- because that
         // is the only moment at which the entry-time value is still readable.
         snapshotOldValues();
-        // A CONTRACT IS ALSO A CHECK. The fact above is what §11.3 reads to delete a redundant
+        // A CONTRACT IS ALSO A CHECK. The fact above is what Â§11.3 reads to delete a redundant
         // guard; it is not what stops a program whose precondition is false. Only the fact was
         // emitted, so `requires seats > 0` let a call through with zero and the program carried on
         // -- `contract_report` printed `seats 4` where the trusted path prints `contract violated:
@@ -7786,7 +8702,7 @@ private:
         //
         // As a FACT rather than as a new elision rule, on purpose: there is no new place where a
         // bounds check can be dropped by mistake. LLVM removes a check only where it can prove the
-        // index in range, exactly as it always has; this stops hiding the facts from it. §11.10
+        // index in range, exactly as it always has; this stops hiding the facts from it. Â§11.10
         // turns `fact.invariant` into `llvm.assume` in the backend, after the guard eliminator has
         // had its own use of it.
         for (const ast::Expr* inv : pendingInvariants_) {
@@ -7882,7 +8798,7 @@ private:
         if (fn.kind == FnKind::Constructor && hasVtable_.count(owner) != 0 &&
             selfSlot_ != kNoValue) {
             Inst addr;
-            addr.op = Op::ConstFn;   // §7.1: the address of a named module-level thing
+            addr.op = Op::ConstFn;   // Â§7.1: the address of a named module-level thing
             addr.type = out_.module.types.ptrType();
             addr.text = owner + ".vtable";
             const ValueId table = emit(std::move(addr));
@@ -7895,7 +8811,7 @@ private:
             nullStringFields(owner, loc(body));
             applyFieldInitialisers(owner);
         }
-        // §32.5: the live-instance count moves at the two ends of an object's life, and the edge
+        // Â§32.5: the live-instance count moves at the two ends of an object's life, and the edge
         // hooks run on it. Before the body in both cases -- `onFirstInstance` must have run before
         // the constructor it precedes does anything, and a destructor's body is allowed to be the
         // last thing that observes the object.
@@ -7912,9 +8828,22 @@ private:
         // down -- which is the ordinary shape of the construct, since a `goto` that leaves nothing
         // has no cleanup to owe.
         blockScopes_.push_back({&body, scoped_.size(), deferred_.size()});
+        // A `pass` IS THE LOOP, and the body is lowered INSIDE it.
+        //
+        // The alternative -- a method compiled once and called per row -- would be simpler and would
+        // give the numbers back, because the whole claim is that a pass over `x` walks a run of
+        // consecutive floats and that a call per element is what stops a vectoriser. So the loop is
+        // opened here, before the statements, and `this` inside means (this block, this index): the
+        // body's `x = x + vx * dt` becomes three column addresses that differ by a constant stride.
+        //
+        // The `this` parameter holds the BLOCK, and the row count comes off its header rather than
+        // being passed -- there is exactly one length for all the columns, by construction, which is
+        // the fact four parallel arrays cannot state and the reason advice `0B40` exists.
+        PassLoop pass = openPassLoop(loc(body));
         for (size_t at = firstStatement; at < body.statements.size(); ++at) {
             lowerStmt(body.statements[at].get());
         }
+        closePassLoop(pass, loc(body));
         // A DESTRUCTOR ENDS BY DESTROYING THE BASE. `~Derived` runs its own body and then the
         // base's, which the language guarantees and which nothing here was doing -- `virtual_dtor`
         // printed one line where the program prints two. Emitted after the body, before the
@@ -7981,7 +8910,7 @@ private:
             std::find(in.extra.begin(), in.extra.end(), "heap") == in.extra.end()) {
             return entryAlloca(in.type, in.text);
         }
-        // §37.5: AN ACCESS TO VOLATILE STORAGE IS NEVER MOVED, MERGED OR DELETED.
+        // Â§37.5: AN ACCESS TO VOLATILE STORAGE IS NEVER MOVED, MERGED OR DELETED.
         //
         // `Inst::isVolatile` existed and the backend honoured it; nothing ever set it. At -O0 that
         // costs nothing -- an unoptimised module executes every load and store as written -- and it
@@ -8006,7 +8935,7 @@ private:
         // type void. Emitting one made the second backend map an LLVM void CallInst as a usable
         // value, and the first use of it was a segmentation fault with no stack worth reading.
         const bool voidResult = in.type != nullptr && in.type->kind == TypeKind::Void;
-        // AN ALLOCATION'S TYPE IS WHAT IT MAKES; ITS RESULT IS A POINTER TO THAT. §7.4 says so and
+        // AN ALLOCATION'S TYPE IS WHAT IT MAKES; ITS RESULT IS A POINTER TO THAT. Â§7.4 says so and
         // `allocaFor` has always done it by hand, but `new T()` came through here and took its
         // result type from `in.type` -- so an object value was typed as the CLASS rather than as a
         // pointer to it. The store then put a pointer into a slot declared to hold the whole
@@ -8020,7 +8949,7 @@ private:
                                    static_cast<uint32_t>(b->insts.size()), "");
             in.result = result;
         }
-        // §37.5: VOLATILITY TRAVELS WITH THE ADDRESS. `px[i]` is a `gep` off `px`, and
+        // Â§37.5: VOLATILITY TRAVELS WITH THE ADDRESS. `px[i]` is a `gep` off `px`, and
         // `rawOffset` goes through a `ptrtoint`, an add and an `inttoptr` -- three instructions,
         // each of which has to hand the fact on or the store at the end of the chain is an
         // ordinary store. So any instruction that PRODUCES an address from one keeps it.
@@ -8053,7 +8982,7 @@ private:
     //
     // The entry block dominates every block by construction, so a slot placed there is available
     // everywhere -- which is also why every real lowering does this and why the immutability pass
-    // (§11.4) is the right place to decide which slots deserve to exist at all.
+    // (Â§11.4) is the right place to decide which slots deserve to exist at all.
     ValueId allocaFor(const std::string& name, const Type* type) {
         auto it = locals_.find(name);
         // THE SAME NAME IN TWO SCOPES IS TWO VARIABLES, and they need not agree on width. `locals_`
@@ -8280,6 +9209,15 @@ private:
         // `selfLoad` and as an ordinary identifier -- and only one of them was recording the class,
         // so `this.data` resolved its field and `data` (implicit this) did not. Recording it HERE,
         // where every load goes through, is the one place it cannot be forgotten.
+        // INSIDE A PASS, `this` IS THE BLOCK, and every reload of it is another name for the same
+        // block. Recorded as a set rather than as one value because the body reloads it at every
+        // use -- `x = x + vx * dt` is five of them -- and a field access has to be recognised as
+        // the pass's own whichever load it came through. Recorded HERE and not in `selfLoad` for
+        // exactly the reason the note above gives: `this` reaches this function two ways, and the
+        // version that watched only `selfLoad` saw none of the reads a bare field name makes.
+        if (slot == selfSlot_ && !passOver_.empty()) {
+            passSelf_.insert(got);
+        }
         if (slot == selfSlot_ && selfClass_ != nullptr) {
             pointee_[got] = selfClass_;
         } else if (auto it = pointeeOfSlot_.find(slot); it != pointeeOfSlot_.end()) {
@@ -8290,7 +9228,7 @@ private:
         // `rem.s`; reading a `String` local must too, or the `.length()` beside it binds to
         // whichever class in the module declares that name first.
         noteName(got, declaredName(slot), pointerDepthOf(slot));
-        // §37.5: ...AND THAT WHAT IT HOLDS POINTS AT HARDWARE. `volatile int* px` puts the fact on
+        // Â§37.5: ...AND THAT WHAT IT HOLDS POINTS AT HARDWARE. `volatile int* px` puts the fact on
         // the POINTER, so it is handed over here -- where the pointer comes out of its slot -- and
         // travels from there through every `gep` the accesses are built from.
         if (volatilePointerSlots_.count(slot) != 0) {
@@ -8395,7 +9333,7 @@ private:
         // ...AND SO IS A `comefrom`, which is ordinarily written after a `return` -- that is the
         // whole shape of the forward steal. Dropped as unreachable, its block never got a body and
         // the module failed rule 2 with no terminator.
-        // A `demand` IS SETTLED HERE, AND IT EMITS NOTHING (§28.2).
+        // A `demand` IS SETTLED HERE, AND IT EMITS NOTHING (Â§28.2).
         //
         // The analyzer folds every condition it can and defers exactly the ones mentioning `sizeof`,
         // because a size is only knowable against the TARGET's layout and this is the one stage that
@@ -8429,7 +9367,7 @@ private:
             return;
         }
         if (auto* r = dynamic_cast<const ast::ReturnStmt*>(s)) {
-            // INSIDE AN `expecting { ... }` BLOCK A `return` DOES NOT RETURN (§30.18). The block is
+            // INSIDE AN `expecting { ... }` BLOCK A `return` DOES NOT RETURN (Â§30.18). The block is
             // an expression the compiler runs where it stands, and its `return` names the
             // validation value: leaving the method there would abandon the `unimport` the block
             // exists to precede. The value goes into the slot and control joins the continuation.
@@ -8451,7 +9389,7 @@ private:
                 emit(std::move(go));
                 return;
             }
-            // INSIDE AN ASYNC BODY A `return` COMPLETES THE TASK (§20.2) and then returns nothing:
+            // INSIDE AN ASYNC BODY A `return` COMPLETES THE TASK (Â§20.2) and then returns nothing:
             // the resume function answers to the scheduler, not to whoever called the async
             // method -- that call came back long ago holding a Task.
             if (asyncTask_ != kNoValue) {
@@ -8479,7 +9417,7 @@ private:
                 returningNew_ = dynamic_cast<const ast::NewExpr*>(r->value.get()) != nullptr;
                 ValueId v = lowerExpr(r->value.get());
                 returningNew_ = wasReturning;
-                // §21: RETURNING A STRING COPIES IT. The scope end runs a moment from here and
+                // Â§21: RETURNING A STRING COPIES IT. The scope end runs a moment from here and
                 // releases every String local, so returning one by name without a copy hands the
                 // caller a buffer that is freed before it can be read. `ownedString` CLAIMS a fresh
                 // one instead of copying, so the common `return a + b` costs nothing extra.
@@ -8566,7 +9504,7 @@ private:
             // returned value has already been computed and converted, so binding it costs nothing;
             // cleared straight after, because a sibling `return` binds its own.
             resultValue_ = in.operands.empty() ? kNoValue : in.operands[0];
-            emitExitChecks(r->loc);   // `ensures` and the class invariant, §29: this is an exit
+            emitExitChecks(r->loc);   // `ensures` and the class invariant, Â§29: this is an exit
             resultValue_ = kNoValue;
             // EVERY `defer` RUNS BEFORE THE RETURN, innermost first -- that is the guarantee the
             // keyword makes, and it was making none: the body was recorded as a gap and simply
@@ -8579,7 +9517,7 @@ private:
         // `defer { ... }` IS NOT RUN WHERE IT IS WRITTEN. It is remembered, and emitted at every
         // exit from the scope -- which is why it is a statement that produces no code at its own
         // position and why lowering it as one produced nothing at all.
-        // `cascade println(x)` and `cascade validate(x)` (§37.1): the same owned-graph walk a
+        // `cascade println(x)` and `cascade validate(x)` (Â§37.1): the same owned-graph walk a
         // `cascade delete` performs, with a different thing done at each node. Not lowered at all,
         // the statements vanished -- `cascade_ops` printed `done` and neither of the two lines the
         // walk exists to produce. `cascade unimport` is decided before any code is emitted (see
@@ -8605,7 +9543,7 @@ private:
                 lowerCascadeClone(*cs);
                 return;
             }
-            // `cascade unimport X` TAKES THE FAMILY, not the one class (§37). A subclass's code is
+            // `cascade unimport X` TAKES THE FAMILY, not the one class (Â§37). A subclass's code is
             // reached through the base's dispatch table, so leaving `Dog` alive while `Animal` goes
             // is a table full of traps with a live class still pointing into it.
             //
@@ -8667,18 +9605,18 @@ private:
             std::string cons;
             std::vector<ValueId> operands;
             std::vector<const Type*> outTypes;
-            for (const auto& o : as->outputs) {
-                outTypes.push_back(shapeOfLValue(o.get()));
-                cons += cons.empty() ? "=r" : ",=r";
+            for (size_t k = 0; k < as->outputs.size(); ++k) {
+                outTypes.push_back(shapeOfLValue(as->outputs[k].get()));
+                cons += (cons.empty() ? "" : ",") + ("=" + asmPlace(*as, as->outputWhere, k));
             }
-            for (const auto& i : as->inputs) {
-                const ValueId v = lowerExpr(i.get());
+            for (size_t k = 0; k < as->inputs.size(); ++k) {
+                const ValueId v = lowerExpr(as->inputs[k].get());
                 if (v == kNoValue) {
                     gap("AsmStmt(an input did not lower)", s->loc);
                     return;
                 }
                 operands.push_back(v);
-                cons += cons.empty() ? "r" : ",r";
+                cons += (cons.empty() ? "" : ",") + asmPlace(*as, as->inputWhere, k);
             }
             const int64_t inputCount = static_cast<int64_t>(operands.size());
             for (const auto& o : as->outputs) {
@@ -8751,7 +9689,7 @@ private:
             return;
         }
         if (auto* v = dynamic_cast<const ast::VarDeclStmt*>(s)) {
-            // §28.3: A `comptime` LOCAL IS COMPUTED DURING COMPILATION AND EMBEDDED.
+            // Â§28.3: A `comptime` LOCAL IS COMPUTED DURING COMPILATION AND EMBEDDED.
             //
             // The prefix was parsed, carried on the declaration, and read by nobody here, so
             // `comptime int x = Main.fib(10)` emitted a real `call @Main.fib(i32 10)`. It printed
@@ -8801,7 +9739,7 @@ private:
                 // lowering rather than failing: the analyzer is what reports one that must be
                 // constant and is not, and reporting it twice in two voices helps nobody.
             }
-            // A `persistent` LOCAL DOES NOT LIVE IN THE FRAME (§18). Its storage is a global keyed
+            // A `persistent` LOCAL DOES NOT LIVE IN THE FRAME (Â§18). Its storage is a global keyed
             // by the method and the name, seeded once with the initialiser -- and the initialiser
             // is NEVER RE-RUN on entry. That omission is the whole feature: the variable reattaches
             // to what it held rather than starting again, which is why three calls to a counter
@@ -8823,7 +9761,7 @@ private:
                 lowerPersistentLocal(*v);
                 return;
             }
-            // A `lazy` LOCAL RUNS ITS INITIALISER ON THE FIRST READ, not here (§37.3). The storage
+            // A `lazy` LOCAL RUNS ITS INITIALISER ON THE FIRST READ, not here (Â§37.3). The storage
             // and a "done" flag are made now; the expression is kept and emitted at the first use.
             // Run eagerly it printed `constructing 1 / constructing 2` before the line that says
             // `after decl` -- which is the one thing the word promises will not happen, and the
@@ -8834,7 +9772,7 @@ private:
                 return;
             }
             // ...AND SO IS THE NAME AN OBJECT WITH PERSISTENT FIELDS IS ABOUT TO BE BOUND TO
-            // (§18.2). The identity a persistent block reattaches to is the VARIABLE, and `new Car()`
+            // (Â§18.2). The identity a persistent block reattaches to is the VARIABLE, and `new Car()`
             // has no idea what it is being assigned to -- so the name is handed down the same way
             // the region shape is, and cleared by whoever uses it.
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(v->init.get())) {
@@ -8853,7 +9791,7 @@ private:
             if (const auto* ri = dynamic_cast<const ast::RegionInitExpr*>(v->init.get())) {
                 pendingRegion_.parent = ri->inRegion;
                 // A MULTI-RANGE REGION IS RECORDED BEFORE ITS INITIALISER RUNS, because there is
-                // nothing for the initialiser to do: §17.4's region has no block, only ranges and
+                // nothing for the initialiser to do: Â§17.4's region has no block, only ranges and
                 // one cursor each, and `new T in region r` routes among them at compile time.
                 if (!ri->ranges.empty() &&
                     ast::mangleGeneric(v->type.name, v->type.typeArgs) == "region") {
@@ -8959,7 +9897,7 @@ private:
                 }
             }
             const ValueId slot = allocaFor(v->name, t);
-            // §37.5: `volatile` ON A LOCAL. Two different declarations wear the same word and they
+            // Â§37.5: `volatile` ON A LOCAL. Two different declarations wear the same word and they
             // mean different things, so both are recorded:
             //
             //   `volatile int flag;`    -- the VARIABLE is volatile: reading `flag` reads memory.
@@ -9041,7 +9979,7 @@ private:
                     init = copyValueStruct(init, cls, v->loc, /*heap=*/false);
                 }
             }
-            // §21: A STRING LOCAL OWNS WHAT IT HOLDS, and the scope end gives it back. `ownedString`
+            // Â§21: A STRING LOCAL OWNS WHAT IT HOLDS, and the scope end gives it back. `ownedString`
             // is copy-on-store at this one of its points; the slot then joins `scoped_` with the
             // objects, so both are released in one order at one exit.
             //
@@ -9096,7 +10034,7 @@ private:
             // the pixels of a surface it was only drawing into. The surface then held a null buffer
             // at its old size, which is the one shape its own `invariant` forbids, and the next
             // frame stopped the machine.
-            // §17.7: A REGION LOCAL GIVES ITS BLOCK BACK AT THE CLOSING BRACE. `region pen =
+            // Â§17.7: A REGION LOCAL GIVES ITS BLOCK BACK AT THE CLOSING BRACE. `region pen =
             // itself.allocate(1 kilobytes);` with no explicit `release` is the ordinary way to
             // write one -- `region_raii` is the sample that says so, and its comment reads `pen
             // freed here by RAII`. This path emitted no release at all: the block was acquired and
@@ -9148,7 +10086,7 @@ private:
             }
             return;
         }
-        // `(int q, int r) = divmod(17, 5);` -- §22.5. ONE evaluation of the tuple, then one local
+        // `(int q, int r) = divmod(17, 5);` -- Â§22.5. ONE evaluation of the tuple, then one local
         // per component. Not lowered at all, so the whole statement did nothing and both names read
         // whatever their slots happened to hold.
         if (auto* td = dynamic_cast<const ast::TupleDeclStmt*>(s)) {
@@ -9196,7 +10134,7 @@ private:
             return;
         }
         if (auto* a = dynamic_cast<const ast::AssignStmt*>(s)) {
-            // `arr[i] = new T()` FOR A T WITH PERSISTENT FIELDS KEYS THE BLOCK BY THE SLOT (§18.5),
+            // `arr[i] = new T()` FOR A T WITH PERSISTENT FIELDS KEYS THE BLOCK BY THE SLOT (Â§18.5),
             // not by a name -- the array has one name and as many identities as it has elements.
             // Index 0 counts 0, 1, 2 across delete-and-recreate while index 1 starts fresh, and
             // that is only expressible if the key carries the index. Which slot is a RUN-TIME
@@ -9243,7 +10181,7 @@ private:
             return;
         }
         if (auto* i = dynamic_cast<const ast::IncDecStmt*>(s)) {
-            // `counter++` ON AN `atomic<T>` IS ONE INSTRUCTION (§20.6), not a read, an add and a
+            // `counter++` ON AN `atomic<T>` IS ONE INSTRUCTION (Â§20.6), not a read, an add and a
             // write -- which is the whole reason the type exists. Through the ordinary path it was
             // three, and two threads doing it lost updates exactly as an unguarded counter does.
             if (const ValueId target = namesAtomic(i->target.get()) ? lowerExpr(i->target.get())
@@ -9270,7 +10208,7 @@ private:
             lowerIncDec(*i);
             return;
         }
-        // §30: `unimport X;` takes a class away while the program runs, `reimport X;` gives it
+        // Â§30: `unimport X;` takes a class away while the program runs, `reimport X;` gives it
         // back. A namespace or bundle target expands to every type it holds -- the statement names
         // the granularity, and the set was already worked out before anything was lowered.
         if (auto* um = dynamic_cast<const ast::UnimportStmt*>(s)) {
@@ -9283,7 +10221,7 @@ private:
             }
             return;
         }
-        // `import X expecting <value> { ... } onFailure { ... };` (§30.18). The class comes back,
+        // `import X expecting <value> { ... } onFailure { ... };` (Â§30.18). The class comes back,
         // the block runs IN THE NEW CODE, and its value is compared bit-for-bit with the one the
         // matching `unimport expecting` produced in the old. A mismatch is not an error the
         // compiler can report -- it is the program finding out that the class it got back does not
@@ -9326,7 +10264,7 @@ private:
             here_ = ok;
             return;
         }
-        // `using (T r = ...) { ... }` (§23.1): the resource is disposed at EVERY exit of the block
+        // `using (T r = ...) { ... }` (Â§23.1): the resource is disposed at EVERY exit of the block
         // -- fall-through, `return`, `break` and an exception unwind alike. Not lowered at all, so
         // the whole statement including its BODY did nothing: `scoped` printed neither `inside
         // using` nor `closing 3`.
@@ -9366,7 +10304,7 @@ private:
             locals_.erase(us->varName);
             return;
         }
-        // `synchronized (m) using T& x { ... }` (§20.5): hold the mutex for the block and bind the
+        // `synchronized (m) using T& x { ... }` (Â§20.5): hold the mutex for the block and bind the
         // name to the protected value ITSELF -- the local's storage is the field's address, so a
         // read or a write of the binding reaches the field with no copy in between. The release is
         // a scope cleanup rather than a statement at the end, so a `throw` out of the body does not
@@ -9401,7 +10339,7 @@ private:
             return;
         }
         if (auto* rel = dynamic_cast<const ast::ReleaseStmt*>(s)) {
-            // `release persistent obj.field` (§18.15). In an in-process persistent model this
+            // `release persistent obj.field` (Â§18.15). In an in-process persistent model this
             // DISCARDS the accumulated state: a later reattach starts from zero, exactly as the
             // first attach of the run did. The block itself cannot be freed -- it is a global, and
             // the stable address across reattach is the whole point of a named persistent -- so
@@ -9434,7 +10372,7 @@ private:
                 }
                 return;
             }
-            // `release region R` IS AN INSTRUCTION (§7.6), which is the whole reason a region is a
+            // `release region R` IS AN INSTRUCTION (Â§7.6), which is the whole reason a region is a
             // first-class handle rather than a runtime call: the binder can then ask "does this
             // pointer outlive its region" as a dataflow question, and verifier rule 13 checks it.
             if (!rel->region.empty()) {
@@ -9490,7 +10428,7 @@ private:
                     return;
                 }
             }
-            // `release persistent obj.field` -- the storage class is on the global (§5), so what
+            // `release persistent obj.field` -- the storage class is on the global (Â§5), so what
             // this releases is the object the field holds.
             if (rel->target != nullptr) {
                 const ValueId v = lowerExpr(rel->target.get());
@@ -9523,10 +10461,12 @@ private:
             return;
         }
         if (auto* rb = dynamic_cast<const ast::RollbackStmt*>(s)) {
-            auto it = locals_.find(rb->region);
+            // The other half of the pair `mark of region` opens, and it had the same hole: only a
+            // LOCAL region could be rewound, so a `rollback` naming a field silently did nothing.
+            const ValueId block = regionBlockFor(rb->region, rb->loc);
             const ValueId mark = rb->checkpoint != nullptr ? lowerExpr(rb->checkpoint.get())
                                                            : constLong(0, rb->loc);
-            if (it != locals_.end() && mark != kNoValue) {
+            if (block != kNoValue && mark != kNoValue) {
                 // THE RUNTIME DOES BOTH HALVES: destructors newest-first for everything allocated
                 // after the checkpoint, then the cursor rewind. Rewinding without the destructors
                 // would leak whatever those objects held, and running them here would need the
@@ -9534,7 +10474,7 @@ private:
                 TypeTable& tt = out_.module.types;
                 callExternal("__polaron_region_rollback", tt.voidType(),
                              {tt.ptrType(), tt.intType(64)},
-                             {loadFrom(it->second, rb->loc), widenToLong(mark, rb->loc)}, rb->loc);
+                             {block, widenToLong(mark, rb->loc)}, rb->loc);
                 return;
             }
             gap("RollbackStmt(region or mark not in scope)", rb->loc);
@@ -9556,7 +10496,7 @@ private:
             // invented external is a legal declaration, and the failure arrived at link time with
             // no line number on it. How a throw is actually started is a TARGET question
             // (`_CxxThrowException` here, `__cxa_throw` elsewhere), which is precisely the kind of
-            // question §7 leaves to the backend rather than answering once, wrongly, up here.
+            // question Â§7 leaves to the backend rather than answering once, wrongly, up here.
             const ValueId obj = lowerExpr(th->value.get());
             Inst raise;
             raise.op = Op::Raise;
@@ -9624,7 +10564,7 @@ private:
             }
             return;
         }
-        // THE CHAOS TETRAD IS CONTROL FLOW, so it is edges on the block and nothing else. §7.9: the
+        // THE CHAOS TETRAD IS CONTROL FLOW, so it is edges on the block and nothing else. Â§7.9: the
         // CFG becomes literally what the program says, with nothing to infer -- which is the whole
         // reason these are not a runtime mechanism.
         if (auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(s)) {
@@ -9639,7 +10579,7 @@ private:
             if (abstained_.count(lm->name) != 0) {
                 guardAbstainedLabel(lm->name, s->loc);
             }
-            // `comefrom L` STEALS CONTROL AT `label L` (§7.9). Reaching the label does not fall
+            // `comefrom L` STEALS CONTROL AT `label L` (Â§7.9). Reaching the label does not fall
             // through -- it goes to wherever the `comefrom` is written, and the statements between
             // never run. This was recorded as a field on the block that nothing reads, so the
             // construct did nothing at all and `comefrom` printed the line it exists to skip.
@@ -9691,7 +10631,7 @@ private:
             return;
         }
         if (auto* g = dynamic_cast<const ast::GotoStmt*>(s)) {
-            // A `goto` OUT OF A SCOPE STILL LEAVES IT (§7.9). Everything declared between here and
+            // A `goto` OUT OF A SCOPE STILL LEAVES IT (Â§7.9). Everything declared between here and
             // the label's own block is torn down first -- `defer` bodies innermost-first, then the
             // stack objects in reverse -- or the jump leaks: `goto out` from inside a loop inside an
             // `if` skipped a defer and two destructors and printed `start` then `after`.
@@ -9949,7 +10889,7 @@ private:
         return slot;
     }
 
-    // WHICH OVERLOAD OF A LITERAL SUFFIX (§17.10 rule 6): an exact match on the argument's spelled
+    // WHICH OVERLOAD OF A LITERAL SUFFIX (Â§17.10 rule 6): an exact match on the argument's spelled
     // type, and the first declared otherwise. Decided from the SPELLING rather than from the
     // lowered value, because `1.5` and `1` intern to different widths but `1` and `1u` do not --
     // and the declaration says which of those the author meant.
@@ -10020,7 +10960,7 @@ private:
         return std::string();
     }
 
-    // The write half of §8.4. A property whose declaration wrote a `set { }` carries the setter's
+    // The write half of Â§8.4. A property whose declaration wrote a `set { }` carries the setter's
     // name; one that did not is read-only and is not this. Returns false when the member is an
     // ordinary field, which is the overwhelming majority and must cost nothing.
     bool assignThroughSetter(const ast::MemberExpr& target, const ast::AssignStmt& s) {
@@ -10068,7 +11008,7 @@ private:
         return n.rfind("function<", 0) == 0;
     }
 
-    // ---- §20.4, `Channel.select()` ----
+    // ---- Â§20.4, `Channel.select()` ----
     //
     // One arm of the chain: a channel and its handler, or a deadline and its handler.
     struct SelectArm {
@@ -10267,7 +11207,7 @@ private:
     // A channel slot back as the element type it was sent as -- the inverse of `asWord`.
     ValueId fromWord(ValueId word, const std::string& elem, SourceLocation loc) {
         TypeTable& tt = out_.module.types;
-        // §21: A VALUE VARIANT CROSSED AS A BOX -- see `asWord` -- so it comes back through the
+        // Â§21: A VALUE VARIANT CROSSED AS A BOX -- see `asWord` -- so it comes back through the
         // pointer and the block is released here. The awaiter is the only thing that ever holds
         // this address, which is what makes freeing it at the read safe rather than a guess.
         if (const Type* asValue = valueVariantType(elem); asValue != nullptr) {
@@ -10437,12 +11377,12 @@ private:
         const std::string subject = classNameOf(declaredName(result));
         // `Ok` for a `Result$int$int` is `Ok$int$int`: the instantiation travels with the case, the
         // same suffix rule a `match` arm follows.
-        // AN `Option`'s SUCCESS SIDE IS `Some`, NOT `Ok` (§21.2). Both spellings reach `try?` --
+        // AN `Option`'s SUCCESS SIDE IS `Some`, NOT `Ok` (Â§21.2). Both spellings reach `try?` --
         // the whole point is that it propagates either -- and this asked for `Ok` on both, so an
         // Option compared against a table that does not exist for it: `try?` on a `Some` took the
         // propagate branch and returned the Option where its payload was expected.
         const std::string good = subject.rfind("Option", 0) == 0 ? "Some" : "Ok";
-        // §21: ON A VALUE VARIANT THE TEST IS THE TAG. There is no table and no object: reading a
+        // Â§21: ON A VALUE VARIANT THE TEST IS THE TAG. There is no table and no object: reading a
         // vtable pointer out of one loads the first eight bytes of `{ tag, payload }` and compares
         // them against a table's address, which is an access violation on the first `try?` that
         // succeeds. The two halves are otherwise identical -- propagate on the error side, unwrap
@@ -10606,7 +11546,7 @@ private:
             emit(std::move(br));
             here_ = run;
         }
-        // §32.10: `defer within <duration>` TIMES THE CLEANUP and alerts if it overran. The clock
+        // Â§32.10: `defer within <duration>` TIMES THE CLEANUP and alerts if it overran. The clock
         // is read either side of the body; nothing is killed, because a scope exit that may itself
         // be an unwind has to finish.
         TypeTable& tt = out_.module.types;
@@ -10689,7 +11629,7 @@ private:
             blockScopes_.resize(depth);
         }
         if (!blockClosed()) {
-            // §21: THE STRINGS THIS BLOCK BUILT GO BACK AT ITS CLOSING BRACE.
+            // Â§21: THE STRINGS THIS BLOCK BUILT GO BACK AT ITS CLOSING BRACE.
             //
             // Temporaries are released at the top of the NEXT statement, and a statement inside a
             // block whose next statement is OUTSIDE it never gets one: `releaseStringTemps` matches
@@ -10798,7 +11738,7 @@ private:
         }
     }
 
-    // §17.7: WHAT A REGION GIVES BACK, and in which order. Its objects' destructors first when it
+    // Â§17.7: WHAT A REGION GIVES BACK, and in which order. Its objects' destructors first when it
     // keeps a registry -- freeing the block alone reclaims the memory and skips every destructor in
     // it -- then the block itself.
     //
@@ -10842,7 +11782,7 @@ private:
         callExternal("__polaron_region_release", tt.voidType(), {tt.ptrType()}, {block}, loc);
     }
 
-    // §21: AN OBJECT'S STRING FIELDS GO BACK WHEN THE OBJECT DOES.
+    // Â§21: AN OBJECT'S STRING FIELDS GO BACK WHEN THE OBJECT DOES.
     //
     // A String field owns its buffer -- that is what makes storing one a copy -- so destroying the
     // object has to release it, or every object with a String field leaks one buffer per lifetime.
@@ -10883,9 +11823,7 @@ private:
         const ast::ClassDecl* decl = cls.empty() ? nullptr : findClass(cls);
         const bool reference = decl != nullptr && !decl->isStruct && !decl->isRecord &&
                                !decl->isUnion && !decl->isLayout;
-        drop.imm = reference && vtableSlot_.count("~") != 0 && hierarchyHasDestructor(cls)
-                       ? vtableSlot_["~"]
-                       : -1;
+        drop.imm = destructorSlotFor(cls);
         noteStringFields(drop, cls);
         if (!livesInClassArena(cls)) {
             drop.extra.push_back("heap");
@@ -10935,7 +11873,7 @@ private:
                 continue;
             }
             // HOW THIS CAME TO BE RIGHT, because two attempts at it were wrong and the reason is
-            // worth keeping. A String owns its buffer (§21), and releasing every local is safe only
+            // worth keeping. A String owns its buffer (Â§21), and releasing every local is safe only
             // because of COPY-ON-STORE -- the language copies at every point a String crosses into
             // something outliving the expression, so no two names ever share one buffer.
             //
@@ -11587,7 +12525,7 @@ private:
         TypeTable& tt = out_.module.types;
         const Type* i64 = tt.intType(64);
         const Type* ptr = tt.ptrType();
-        // `itself.atMultiple({...})` (§17.4) HAS NO BLOCK. It is a region over memory somebody else
+        // `itself.atMultiple({...})` (Â§17.4) HAS NO BLOCK. It is a region over memory somebody else
         // owns, several fixed ranges of it, each constrained by type -- so there is nothing to
         // acquire and nothing to release, and the whole of it is the per-range cursors recorded by
         // the declaration. `regionAlloc` routes there instead of coming here.
@@ -11617,7 +12555,7 @@ private:
             }
         }
 
-        // A SUB-REGION TAKES ITS BLOCK FROM ITS PARENT (§17). Everything else about it is
+        // A SUB-REGION TAKES ITS BLOCK FROM ITS PARENT (Â§17). Everything else about it is
         // identical -- the same header, the same init, the same allocation for objects inside it --
         // so the only difference is where the bytes come from, which is exactly what `in region
         // outer` says. That buys a per-phase arena inside a per-world one at no second allocation,
@@ -11675,7 +12613,7 @@ private:
         return block;
     }
 
-    // `itself.atMultiple({ a0 accepts {Dog}, a1 accepts {Cat} })` (§17.4): a region over SEVERAL
+    // `itself.atMultiple({ a0 accepts {Dog}, a1 accepts {Cat} })` (Â§17.4): a region over SEVERAL
     // fixed address ranges, each constrained by type. There is no block and nothing to release --
     // the memory belongs to whoever gave the addresses -- so all a declaration leaves behind is one
     // bump cursor per range, and `new T in region r` picks the range at COMPILE time from the type.
@@ -11705,7 +12643,7 @@ private:
 
     // Whether `cls` IS a `want`, by the declaration chain: the type itself, anything it extends, or
     // any interface it or an ancestor implements. Compile-time and by name, which is all a range
-    // constraint needs -- §17.4 routes at compile time and there is no object yet to ask.
+    // constraint needs -- Â§17.4 routes at compile time and there is no object yet to ask.
     bool classIsSubtypeOf(const std::string& cls, const std::string& want) const {
         if (cls == want) {
             return true;
@@ -11801,7 +12739,7 @@ private:
         return emit(std::move(toPtr));
     }
 
-    // ---- SIMD (§34.6) ----
+    // ---- SIMD (Â§34.6) ----
     //
     // Every one of these is short because the TYPE carries the lane count. That is the whole return
     // on making `Vector` a kind: there is no pattern to recognise, no struct to take apart, and the
@@ -12136,20 +13074,89 @@ private:
     // constructs: a `sealed enum` exists to be matched, and matching is how the language spells
     // what other languages spell with a chain of casts.
     //
-    // A `switch` is a chain of equality tests. Written as a chain rather than as `Op::Switch`
-    // because a case value need not be an integer -- `switch` over a `String` compares content --
-    // and one shape that always works beats two that each work sometimes.
+    // WHETHER THIS `switch` IS A CLOSED SET OF INTEGERS, and if so, what each case selects.
+    //
+    // Answered from the SOURCE rather than from lowered values, and that is not a stylistic choice:
+    // deciding it from a lowered value means lowering each case expression, discovering it is not a
+    // constant, and lowering it a second time in the chain. That is the shape that made a program
+    // with an `entity` hang -- speculative lowering down a call chain is exponential -- and it is
+    // avoided here by asking a question that emits nothing. `comptime::evalInt` is the same
+    // evaluator `demand` and `static_assert` use, so "constant" means one thing in the language.
+    bool switchArmValues(const ast::SwitchStmt& s, ValueId subject, std::vector<int64_t>& out) {
+        // A `String` SUBJECT IS NOT THIS. `switch` over text compares content, through a call, and
+        // a call is not a case value however constant the string beside it is.
+        const std::string subjectClass = classNameOf(declaredName(subject));
+        if (subjectClass == "String" || subjectClass == "string") {
+            return false;
+        }
+        // ...AND NEITHER IS A JAVA-STYLE ENUM, which is the trap in asking the evaluator. Its value
+        // is a singleton OBJECT and the arms compare identity -- but `Planet.MARS` still answers an
+        // ordinal when asked for one, so every arm would become a case value and the switch would
+        // compare a pointer against 0, 1, 2. It matched nothing and every program that used one
+        // took its default.
+        if (auto decl = enums_.find(subjectClass);
+            decl != enums_.end() && decl->second->isJavaStyle) {
+            return false;
+        }
+        // The subject has to BE an integer at this point, whatever it is called. An enum lowers to
+        // an ordinal and passes; a class does not.
+        const ValueDef* def = fn_->value(subject);
+        if (def == nullptr || def->type == nullptr || def->type->kind != TypeKind::Int) {
+            return false;
+        }
+        comptime::Context ctx = comptimeContext();
+        std::vector<int64_t> values;
+        for (const ast::SwitchCase& c : s.cases) {
+            long long v = 0;
+            if (c.value == nullptr || !comptime::evalInt(*c.value, v, ctx)) {
+                return false;
+            }
+            // TWO ARMS THAT SELECT THE SAME VALUE ARE NOT A SWITCH. A chain answers the first and
+            // walks past the second, which is what the language says fall-through means; a machine
+            // switch with a repeated case is not a program the backend will accept at all. Rare,
+            // and this is not the place to diagnose it -- the chain still lowers it correctly.
+            for (int64_t seen : values) {
+                if (seen == v) {
+                    return false;
+                }
+            }
+            values.push_back(static_cast<int64_t>(v));
+        }
+        // A `switch` with no cases at all is its default, and one edge is not a table.
+        if (values.empty()) {
+            return false;
+        }
+        out = std::move(values);
+        return true;
+    }
+
+    // A `switch` over a closed set of integers is ONE terminator; anything else is a chain of
+    // equality tests. Both shapes are kept because a case value need not be an integer -- `switch`
+    // over a `String` compares content -- and the chain is what makes that work at all.
+    //
+    // The chain was the only shape for a while, on the reasoning that one shape that always works
+    // beats two that each work sometimes. What that reasoning missed is that the two are not
+    // alternatives at the same level: the chain is N blocks, N compares and N conditional branches
+    // in the IR that every later pass then walks, and the closed-integer case -- which is what
+    // `switch` is FOR -- collapses to a single instruction that says the whole thing. The optimiser
+    // recovers a jump table from the chain at -O2 and cannot below it, so the chain also made the
+    // construct's cost depend on a flag.
     void lowerSwitch(const ast::SwitchStmt& s) {
         const ValueId subject = lowerExpr(s.subject.get());
         if (subject == kNoValue) {
             gap("SwitchStmt(subject did not lower)", s.loc);
             return;
         }
+        std::vector<int64_t> armValues;
+        if (switchArmValues(s, subject, armValues)) {
+            lowerSwitchTable(s, subject, armValues);
+            return;
+        }
         const BlockId done = fn_->addBlock(fresh("switchend"));
         // `break` inside a case leaves the switch, which is the same target `done` serves.
         loops_.push_back(LoopTargets{done, done, std::string(), scoped_.size(), deferred_.size()});
 
-        // A CASE THAT DOES NOT `break` FALLS INTO THE NEXT (§7.3), and that is why the tests and
+        // A CASE THAT DOES NOT `break` FALLS INTO THE NEXT (Â§7.3), and that is why the tests and
         // the bodies are emitted as two passes rather than one. Interleaved, each body's only exit
         // was the end of the switch -- so `case 0` without a `break` printed `zero` and left,
         // where the language says it goes on to print `one` as well. The tests come first, as a
@@ -12184,6 +13191,52 @@ private:
         for (size_t i = 0; i < bodies.size(); ++i) {
             here_ = bodies[i];
             lowerScope(taken[i]->body);
+            gotoIfOpen(i + 1 < bodies.size() ? bodies[i + 1] : fallback);
+        }
+        if (s.defaultBody != nullptr) {
+            here_ = fallback;
+            lowerScope(*s.defaultBody);
+            gotoIfOpen(done);
+        }
+        loops_.pop_back();
+        here_ = done;
+    }
+
+    // The closed-integer `switch`: one terminator, N arms, and the default as edge zero.
+    //
+    // FALL-THROUGH SURVIVES UNCHANGED, and it is the part that looks like it should not. A case
+    // that does not `break` goes on into the next case's body (§7.3), and here as in the chain the
+    // bodies are laid down in source order with each falling into its successor -- the difference
+    // is only in how a body is REACHED, which the terminator now does in one step instead of after
+    // walking every arm before it. The last body falls into the default, which is what falling
+    // through the last case means and is why the default's block is made before any body is.
+    void lowerSwitchTable(const ast::SwitchStmt& s, ValueId subject,
+                          const std::vector<int64_t>& armValues) {
+        const BlockId done = fn_->addBlock(fresh("switchend"));
+        // `break` inside a case leaves the switch, which is the same target `done` serves.
+        loops_.push_back(LoopTargets{done, done, std::string(), scoped_.size(), deferred_.size()});
+
+        std::vector<BlockId> bodies;
+        bodies.reserve(s.cases.size());
+        for (size_t i = 0; i < s.cases.size(); ++i) {
+            bodies.push_back(fn_->addBlock(fresh("case")));
+        }
+        const BlockId fallback =
+            s.defaultBody != nullptr ? fn_->addBlock(fresh("switchdefault")) : done;
+
+        Inst sw;
+        sw.op = Op::Switch;
+        sw.operands.push_back(subject);
+        sw.edges.push_back(Edge{fallback, {}, 0});
+        for (size_t i = 0; i < bodies.size(); ++i) {
+            sw.edges.push_back(Edge{bodies[i], {}, armValues[i]});
+        }
+        sw.loc = s.loc;
+        emit(std::move(sw));
+
+        for (size_t i = 0; i < bodies.size(); ++i) {
+            here_ = bodies[i];
+            lowerScope(s.cases[i].body);
             gotoIfOpen(i + 1 < bodies.size() ? bodies[i + 1] : fallback);
         }
         if (s.defaultBody != nullptr) {
@@ -12270,7 +13323,7 @@ private:
     ValueId caseTest(ValueId subject, const ast::Expr* subjectExpr, const ast::MatchCase& c,
                      SourceLocation loc) {
         TypeTable& tt = out_.module.types;
-        // §21: A VALUE VARIANT IS MATCHED BY ITS TAG. There is no object to read a table out of --
+        // Â§21: A VALUE VARIANT IS MATCHED BY ITS TAG. There is no object to read a table out of --
         // the subject is two registers -- so the class branch below would load a vtable pointer
         // from the first four bytes of the tag and compare it against a table's address.
         if (isVariantValue(subject)) {
@@ -12375,7 +13428,7 @@ private:
         if (c.bindings.empty()) {
             return;
         }
-        // §21: A VALUE VARIANT'S PAYLOAD IS ITS SECOND WORD, read back as the binding's declared
+        // Â§21: A VALUE VARIANT'S PAYLOAD IS ITS SECOND WORD, read back as the binding's declared
         // type. One binding, because one slot: a case that carries more than a single value keeps
         // the boxed form, which is the rule `cgutil::isValueVariant` states.
         if (isVariantValue(subject)) {
@@ -12432,7 +13485,7 @@ private:
     }
 
     // The EXPRESSION form: every arm produces a value and the join block takes it as a parameter.
-    // That is what §1.2 chose block arguments for -- no phi to keep in step with a predecessor list,
+    // That is what Â§1.2 chose block arguments for -- no phi to keep in step with a predecessor list,
     // and the arms need not know about each other.
     ValueId lowerMatchExpr(const ast::MatchExpr& m) {
         const ValueId subject = lowerExpr(m.subject.get());
@@ -12571,8 +13624,14 @@ private:
             if (namesAQualifier(m) && flatten(m, &qualified) && globalExists(qualified)) {
                 return globalSlot(qualified, e->loc);
             }
+            // `swarm[i].x = 0.0f` WRITES THE COLUMN and materialises nothing. Asked before the
+            // object is lowered, because lowering it would collapse the array and the index into
+            // one row pointer -- and a row is exactly what an entity does not have.
+            if (const ValueId col = entityColumnAddress(*m, e->loc); col != kNoValue) {
+                return col;
+            }
             const ValueId obj = lowerExpr(m->object.get());
-            guardReceiver(obj, e->loc);   // §3.7: assigning through a nullable receiver derefs it
+            guardReceiver(obj, e->loc);   // Â§3.7: assigning through a nullable receiver derefs it
             return fieldAddress(obj, m->member, e->loc);
         }
         if (auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
@@ -12581,7 +13640,7 @@ private:
         return kNoValue;
     }
 
-    // §3.7: DEREFERENCING A NULLABLE RECEIVER IS CHECKED.
+    // Â§3.7: DEREFERENCING A NULLABLE RECEIVER IS CHECKED.
     //
     // The check is what turns the failure into a diagnostic naming the line, instead of a segfault
     // -- and on a target with no MMU, instead of nothing at all, which is where the no-UB rule
@@ -12679,10 +13738,231 @@ private:
         return addr;
     }
 
+    // ENTITIES, and what their arrays look like from the inside. One entry per `entity` declaration,
+    // built in `declareClass` where the field list is decided, so the two can never disagree about
+    // the order -- and declared HERE, above the two methods that take one, because a member type
+    // used in a signature has to precede it even inside a class.
+    struct EntityColumn {
+        std::string name;
+        uint64_t bytesBefore;   // the width of every earlier field; the column starts at this * N
+        uint64_t width;         // one element of this column
+        const Type* type = nullptr;
+    };
+    struct EntityShape {
+        std::vector<EntityColumn> columns;
+        uint64_t rowBytes = 0;  // the sum of the widths: one row's cost, and the block is N of them
+        bool stable = false;    // rows never move, so a deleted one leaves a hole
+    };
+
+    // `swarm[i].x` -- WHERE THAT ONE FLOAT ACTUALLY IS, in a block whose columns run end to end.
+    //
+    //     block + 8 + (bytes of every earlier field) * N + i * sizeof(x)
+    //
+    // The eight is the length header every `T[]` carries; N is read out of it. This is the whole of
+    // AP-06's answer: a loop over `x` walks a run of consecutive floats, so it touches N*4/64 cache
+    // lines where the row form touches N -- and the type `Particle` is still in the program, which
+    // is the half that every hand-rolled structure-of-arrays gives up.
+    //
+    // Returns kNoValue for anything that is not a field of an entity's array, so the ordinary path
+    // runs unchanged for every other program: this is asked first and answers "not mine" cheaply.
+    //
+    // NO BOUNDS CHECK IS SKIPPED. `elementAddress` emits one for `swarm[i]` and this emits the same
+    // one, because the reason it exists does not change with the arrangement -- an index past the
+    // end of a column lands inside the NEXT column, which is a worse failure than running off the
+    // block: it reads a live, valid, correctly-typed float belonging to another field.
+    ValueId entityColumnAddress(const ast::MemberExpr& m, SourceLocation loc) {
+        const auto* ix = dynamic_cast<const ast::IndexExpr*>(m.object.get());
+        if (ix == nullptr) {
+            return kNoValue;
+        }
+        // THE NAME FIRST, for the reason `lowerPassCall` gives at length: answering properly means
+        // lowering the array, and an array lowered here and then rejected is lowered again by the
+        // path that follows. `columnNames_` holds every field name of every entity, so a program
+        // without one never reaches the second line.
+        if (columnNames_.count(m.member) == 0) {
+            return kNoValue;
+        }
+        const ValueId arr = lowerExpr(ix->array.get());
+        if (arr == kNoValue) {
+            return kNoValue;
+        }
+        const DeclaredType elem = elementDeclOf(declaredName(arr));
+        if (elem.name.empty() || elem.pointerDepth > 0) {
+            return kNoValue;
+        }
+        auto ent = entities_.find(resolveClassKey(classNameOf(elem.name)));
+        if (ent == entities_.end()) {
+            return kNoValue;
+        }
+        const EntityColumn* col = nullptr;
+        for (const EntityColumn& c : ent->second.columns) {
+            if (c.name == m.member) {
+                col = &c;
+                break;
+            }
+        }
+        if (col == nullptr || col->width == 0) {
+            return kNoValue;   // not a column -- a method, `length`, or a field of unknown width
+        }
+        const ValueId idx = lowerExpr(ix->index.get());
+        if (idx == kNoValue) {
+            return kNoValue;
+        }
+        if (!ix->unchecked) {
+            Inst g;
+            g.op = Op::GuardBounds;
+            g.operands.push_back(idx);
+            g.operands.push_back(arr);
+            g.aggregate = shapeOf(arr);
+            g.loc = stmtLoc_.line > 0 ? stmtLoc_ : ix->loc;
+            emit(std::move(g));
+        }
+        return columnSlot(arr, idx, *col, resolveClassKey(classNameOf(elem.name)), loc);
+    }
+
+    // THE ARITHMETIC ITSELF, in one place because both readers of it must agree exactly: `swarm[i].x`
+    // written by hand and `x` written inside a `pass`. Two copies of an offset rule is how the two
+    // spellings of the same access would come to disagree about which column they meant.
+    ValueId columnSlot(ValueId block, ValueId index, const EntityColumn& col,
+                       const std::string& entity, SourceLocation loc) {
+        TypeTable& tt = out_.module.types;
+        const Type* i64 = tt.intType(64);
+        Inst lenAt;
+        lenAt.op = Op::Gep;
+        lenAt.type = tt.ptrType();
+        lenAt.text = "length";
+        lenAt.operands.push_back(block);
+        lenAt.loc = loc;
+        const ValueId lenAddr = emit(std::move(lenAt));
+        slotType_[lenAddr] = i64;
+        const ValueId rows = loadFrom(lenAddr, loc);
+
+        // (bytesBefore * N) + (i * width) + header
+        Inst colBase;
+        colBase.op = Op::MulWrap;
+        colBase.type = i64;
+        colBase.operands.push_back(rows);
+        colBase.operands.push_back(constInt(static_cast<int64_t>(col.bytesBefore), 64, loc));
+        colBase.loc = loc;
+        const ValueId base = emit(std::move(colBase));
+
+        Inst wideIdx;
+        wideIdx.op = Op::ExtendS;
+        wideIdx.type = i64;
+        wideIdx.operands.push_back(index);
+        wideIdx.loc = loc;
+        const ValueId i = emit(std::move(wideIdx));
+
+        Inst step;
+        step.op = Op::MulWrap;
+        step.type = i64;
+        step.operands.push_back(i);
+        step.operands.push_back(constInt(static_cast<int64_t>(col.width), 64, loc));
+        step.loc = loc;
+        const ValueId within = emit(std::move(step));
+
+        Inst sum;
+        sum.op = Op::AddWrap;
+        sum.type = i64;
+        sum.operands.push_back(base);
+        sum.operands.push_back(within);
+        sum.loc = loc;
+        const ValueId inBlock = emit(std::move(sum));
+
+        Inst past;
+        past.op = Op::AddWrap;
+        past.type = i64;
+        past.operands.push_back(inBlock);
+        past.operands.push_back(constInt(static_cast<int64_t>(kArrayHeaderBytes), 64, loc));
+        past.loc = loc;
+        const ValueId offset = emit(std::move(past));
+
+        const ValueId at = rawOffset(block, offset, loc);
+        slotType_[at] = col.type;
+        if (auto n = fieldTypeName_.find(entity + "." + col.name); n != fieldTypeName_.end()) {
+            noteName(at, n->second.name, n->second.pointerDepth);
+        }
+        return at;
+    }
+
+    // `x` INSIDE A PASS IS THIS ROW'S x, and this row is (the block, the loop's index). The body is
+    // written for one row and reads exactly as a method's does -- `x = x + vx * dt`, no subscripts
+    // anywhere -- which is the whole reason `pass` is a word rather than a static method taking an
+    // array. What it costs is this: the receiver is not an object, so a field of it is not at an
+    // offset from a pointer, and the ordinary path would read one from the block's first bytes.
+    ValueId passColumnAddress(ValueId object, const std::string& field, SourceLocation loc) {
+        if (passOver_.empty() || passIndexSlot_ == kNoValue ||
+            (object != passBlock_ && passSelf_.count(object) == 0)) {
+            return kNoValue;
+        }
+        auto ent = entities_.find(passOver_);
+        if (ent == entities_.end()) {
+            return kNoValue;
+        }
+        for (const EntityColumn& c : ent->second.columns) {
+            if (c.name == field && c.width != 0) {
+                return columnSlot(object, loadFrom(passIndexSlot_, loc), c, passOver_, loc);
+            }
+        }
+        return kNoValue;
+    }
+
+    // `Particle p = swarm[i];` -- MATERIALISE: copy one value out of each column into a local.
+    //
+    // The design calls this the second of the two representations, and it is not a second STORAGE:
+    // a lone entity is a struct and is laid out as one, so what comes out here is an ordinary value
+    // of that struct type and everything downstream treats it as one. Refusing it while permitting
+    // `swarm[i].x` would refuse one spelling of a value the language already makes.
+    //
+    // A COPY, so writing to `p.x` afterwards does not touch the block. That is what value semantics
+    // mean and it is the whole difference between this and `swarm[i].x = ...`, which writes the
+    // column directly. Both spellings are in the language on purpose.
+    ValueId materialiseRow(const ast::IndexExpr& ix, const std::string& entity, ValueId arr,
+                           ValueId idx, SourceLocation loc) {
+        auto ent = entities_.find(entity);
+        if (ent == entities_.end()) {
+            return kNoValue;
+        }
+        const Type* shape = storageTypeOf(entity);
+        if (shape == nullptr || shape->kind != TypeKind::Struct) {
+            return kNoValue;
+        }
+        const ValueId room = entryAlloca(shape, "row");
+        pointee_[room] = shape;
+        // AND THE SLOT'S TYPE, which is the fact that makes this a VALUE. `loadFrom` reads it to
+        // decide that a value struct's slot IS the object -- without it the alloca was loaded as
+        // whatever its first field happens to be and the result used as a pointer, so binding a row
+        // to a name read an `i32`, widened it to an address, and copied eight bytes from there.
+        slotType_[room] = shape;
+        noteName(room, entity);
+        for (const EntityColumn& col : ent->second.columns) {
+            if (col.width == 0) {
+                continue;
+            }
+            const ValueId from = columnSlot(arr, idx, col, entity, loc);
+            const ValueId at = fieldAddress(room, col.name, loc);
+            if (from == kNoValue || at == kNoValue) {
+                continue;
+            }
+            storeInto(at, loadFrom(from, loc), loc);
+        }
+        (void)ix;
+        return room;
+    }
+
     ValueId fieldAddress(ValueId object, const std::string& field, SourceLocation loc) {
         if (object == kNoValue) {
             return kNoValue;
         }
+        if (const ValueId col = passColumnAddress(object, field, loc); col != kNoValue) {
+            return col;
+        }
+        // A FIELD OF A STRUCT THAT CAME BACK FROM A CALL. `p.origin().x` -- the `gep` below needs an
+        // ADDRESS to index from, and a returned struct is a value with no address at all. Emitted
+        // against the value, the instruction reads the struct's own bytes as the base pointer, which
+        // is the same fault `materialiseReceiver` exists for one line further down the same
+        // expression. Both halves of `x.f().g` and `x.f().h` were wrong, and this is the second.
+        object = materialiseReceiver(object, loc);
         // THE OWNER FIRST, because it is what says WHERE the field is. This used to emit the `gep`
         // and then look the owner up afterwards, so the instruction went out with no aggregate and
         // no index -- and the backend, having only a byte offset of zero, put every field of every
@@ -12691,7 +13971,7 @@ private:
         // read back as 0, and `while (n < count + extra) { n = n * 2; }` never left zero. A sample
         // that had merely failed to link now hung, which is how it was found.
         const Type* owner = ownerOf(object);
-        // A `persistent` FIELD IS ONE INDIRECTION FURTHER OUT (§18.2). It is not in the object at
+        // A `persistent` FIELD IS ONE INDIRECTION FURTHER OUT (Â§18.2). It is not in the object at
         // all: the object holds a pointer to a block, and the field is in the block. Both `this.f`
         // and `var.f` come through here, so saying it once here is what makes both work.
         if (owner != nullptr && owner->kind == TypeKind::Struct) {
@@ -12808,7 +14088,7 @@ private:
                 }
             }
         }
-        // §37.5: A `volatile` FIELD IS VOLATILE STORAGE. The console's cell buffer, a device's
+        // Â§37.5: A `volatile` FIELD IS VOLATILE STORAGE. The console's cell buffer, a device's
         // shadow register, the framebuffer's base -- reading one twice must read it twice.
         if (owner != nullptr && volatileFields_.count(owner->name + "." + field) != 0) {
             volatilePointee_.insert(addr);
@@ -12869,7 +14149,7 @@ private:
     // first -- the standard library's `ByteSize` -- so `HashSet<int>.add` handed an `int` to a
     // method expecting a pointer and the program died on its first insert. Every hashed collection
     // over a primitive key was affected; none of them said so.
-    // ---- §20.3 and §20.6 ----
+    // ---- Â§20.3 and Â§20.6 ----
     //
     // `atomic<T>` holds one field and the operations on it are INSTRUCTIONS: an atomic load, an
     // atomic store, an add that answers the new value, and a compare-and-set. `Channel<T>` holds a
@@ -13005,7 +14285,20 @@ private:
             return nothing();
         }
 
-        if (rt->kind == TypeKind::Int || rt->kind == TypeKind::Bool) {
+        // AN `address` ANSWERS THESE THE WAY AN INTEGER DOES, and it was answering none of them.
+        //
+        // It is an integer by REPRESENTATION and not by rule -- crossing between one and a number
+        // is a `cast` the author wrote, and that distinction is the whole reason the kind exists.
+        // But "what does this print as" is not a crossing: it is the same question with the same
+        // answer, and refusing to give it here did not produce a diagnostic. The receiver fell
+        // through to the lookup by bare name, which found `StringBuilder.toString`, handed it a
+        // machine address as a `StringBuilder*`, and read a length out of whatever was there.
+        //
+        // `address a = ...; a.toString()` SEGFAULTED, in any program, with nothing said at compile
+        // time. Found while measuring the distance between two columns of an entity -- which is a
+        // subtraction of two addresses and then this -- so the construct that found it is unrelated
+        // to the defect, which has been reachable by four keystrokes since `address` existed.
+        if (rt->kind == TypeKind::Int || rt->kind == TypeKind::Bool || rt->kind == TypeKind::Addr) {
             if (key == "hash") {
                 return done(widen(receiver, 64, loc));
             }
@@ -13238,7 +14531,31 @@ private:
         if (arr == kNoValue || idx == kNoValue) {
             return kNoValue;
         }
-        // THE BOUNDS CHECK IS AN INSTRUCTION, not a branch. That is what lets §11.3 delete a
+        // AN ENTITY HAS NO ROWS TO POINT AT. Everything below computes `base + i * sizeof(element)`,
+        // which for a transposed block is an address inside whichever column happens to be there --
+        // a live, valid, correctly-aligned value belonging to another field, which is the worst
+        // shape a wrong answer can take. `swarm[i].x` never arrives here (it is answered a layer
+        // up, by the column address), so what does arrive is a row wanted AS A VALUE: bind it to a
+        // name, pass it, return it. That is a copy out of the columns, and it is what §15.4 decides.
+        if (!entities_.empty()) {
+            if (const DeclaredType elem = elementDeclOf(declaredName(arr));
+                !elem.name.empty() && elem.pointerDepth == 0) {
+                const std::string entity = resolveClassKey(classNameOf(elem.name));
+                if (entities_.count(entity) != 0) {
+                    if (!ix.unchecked) {
+                        Inst g;
+                        g.op = Op::GuardBounds;
+                        g.operands.push_back(idx);
+                        g.operands.push_back(arr);
+                        g.aggregate = shapeOf(arr);
+                        g.loc = stmtLoc_.line > 0 ? stmtLoc_ : ix.loc;
+                        emit(std::move(g));
+                    }
+                    return materialiseRow(ix, entity, arr, idx, ix.loc);
+                }
+            }
+        }
+        // THE BOUNDS CHECK IS AN INSTRUCTION, not a branch. That is what lets Â§11.3 delete a
         // redundant one and what unblocks the hoisting the open-coded form prevents -- and
         // `unchecked` is a fact on the index expression rather than a flag threaded through an
         // emitter.
@@ -13322,7 +14639,7 @@ private:
         callExternal("__polaron_ptrset_free", tt.voidType(), {tt.ptrType()}, {seen}, loc);
     }
 
-    // `cascade clone X into Y` (§37.1): a DEEP copy of X's owned graph, with the sharing kept.
+    // `cascade clone X into Y` (Â§37.1): a DEEP copy of X's owned graph, with the sharing kept.
     //
     // The map from original to clone is what makes that true: a node reached twice is cloned once
     // and both edges point at the one clone, so a shared or cyclic graph comes out the same shape
@@ -13602,16 +14919,29 @@ private:
         return fn;
     }
 
-    // WHERE A CLASS KEEPS ITS WEAK-LIST HEAD, in bytes from the object's start. Right behind the
-    // vtable for every class that carries one, so a `weak Base*` holding a `Derived` finds it where
-    // `Base` says it is.
-    static constexpr int64_t kWeakHeadOffset = 8;
+    // WHERE A CLASS KEEPS ITS WEAK-LIST HEAD, in bytes from the object's start.
+    //
+    // Right behind the vtable for a class that carries one, and at ZERO for a class that does not --
+    // which is exactly the order `declareClass` pushes the two fields in. It was the constant 8 for
+    // everybody, and that was true for as long as every hosted class had a vtable. `dynamic` ended
+    // that: a class of one `int` has its field at offset 0 and the head there too, and writing the
+    // list head at 8 put a pointer four bytes past the end of a four-byte object.
+    //
+    // ASKED OF THE FIELD'S DECLARED TYPE, not of the object's. A `weak Base*` holding a `Derived`
+    // must find the head where `Base` says it is, and since a subclass begins with its base the two
+    // agree by construction -- `carriesVtable` is true for anything with a superclass, so a family
+    // cannot be split down the middle by this.
+    int64_t weakHeadOffset(const std::string& cls) const {
+        const ast::ClassDecl* decl = findClass(cls);
+        return decl != nullptr && carriesVtable(*decl) ? 8 : 0;
+    }
 
     // Unlink the node from wherever it was, then link it to the new target unless that is null.
     void weakRelink(ValueId slot, const std::string& targetClass, ValueId value,
                     SourceLocation loc) {
         TypeTable& tt = out_.module.types;
-        emitCall(weakUnlinkFn(), {slot, constLong(kWeakHeadOffset, loc)}, loc);
+        const int64_t headOff = weakHeadOffset(targetClass);
+        emitCall(weakUnlinkFn(), {slot, constLong(headOff, loc)}, loc);
         if (value == kNoValue) {
             return;
         }
@@ -13621,8 +14951,7 @@ private:
         here_ = link;
         // The head's offset is known here and not inside the helper, because it is a fact about the
         // FIELD'S DECLARED TYPE -- the one thing the helper cannot see.
-        (void)targetClass;
-        emitCall(weakLinkFn(), {slot, value, constLong(kWeakHeadOffset, loc)}, loc);
+        emitCall(weakLinkFn(), {slot, value, constLong(headOff, loc)}, loc);
         gotoIfOpen(after);
         here_ = after;
         (void)tt;
@@ -13634,7 +14963,7 @@ private:
         if (obj == kNoValue || !carriesWeakHead(cls)) {
             return;
         }
-        const ValueId head = rawOffset(obj, constLong(kWeakHeadOffset, loc), loc);
+        const ValueId head = rawOffset(obj, constLong(weakHeadOffset(cls), loc), loc);
         slotType_[head] = out_.module.types.ptrType();
         emitCall(weakNullifyFn(), {head}, loc);
     }
@@ -13776,7 +15105,7 @@ private:
             });
     }
 
-    // ---- `heap class X` (§36): the bridge between generated code and the program's own allocator ----
+    // ---- `heap class X` (Â§36): the bridge between generated code and the program's own allocator ----
     //
     // BARE METAL HAS NO LIBC, so a freestanding program NOMINATES a class to be its heap and the
     // compiler's own allocation calls land there. Every `new ... on heap`, every dynamic array and
@@ -14038,7 +15367,7 @@ private:
                 lowerDeleteObject(obj, cls, {});
                 break;
             case CascadeAction::Println:
-                // `describe()` is what §37.1 says a node answers with; the analyzer has already
+                // `describe()` is what Â§37.1 says a node answers with; the analyzer has already
                 // refused a class that does not have one, so a missing method here is nothing to
                 // report a second time.
                 if (const Function* say = resolveKey(cls + ".describe")) {
@@ -14068,7 +15397,7 @@ private:
                 selfClass_ = named_.count(cls) != 0 ? named_[cls] : nullptr;
                 selfClassName_ = cls;
                 // ITS OWN CLAUSES AND ITS ANCESTORS'. A subclass is bound by the contracts of the
-                // classes it is built on (§29), so the chain is walked upward and every clause on
+                // classes it is built on (Â§29), so the chain is walked upward and every clause on
                 // the way checked against this node.
                 for (const ast::ClassDecl* at = findClass(cls); at != nullptr;) {
                     for (const auto& inv : at->invariants) {
@@ -14175,9 +15504,7 @@ private:
         const ast::ClassDecl* decl = cls.empty() ? nullptr : findClass(cls);
         const bool reference = decl != nullptr && !decl->isStruct && !decl->isRecord &&
                                !decl->isUnion && !decl->isLayout;
-        drop.imm = reference && vtableSlot_.count("~") != 0 && hierarchyHasDestructor(cls)
-                       ? vtableSlot_["~"]
-                       : -1;
+        drop.imm = destructorSlotFor(cls);
         drop.extra.push_back("heap");   // a cascade walks heap objects; that is what it deletes
         drop.loc = loc;
         emit(std::move(drop));
@@ -14337,9 +15664,8 @@ private:
         const ast::ClassDecl* deleted = drop.text.empty() ? nullptr : findClass(drop.text);
         const bool reference = deleted != nullptr && !deleted->isStruct && !deleted->isRecord &&
                                !deleted->isUnion && !deleted->isLayout;
-        const bool dispatchable =
-            reference && vtableSlot_.count("~") != 0 && hierarchyHasDestructor(drop.text);
-        drop.imm = dispatchable ? vtableSlot_["~"] : -1;
+        drop.imm = destructorSlotFor(drop.text);
+        const bool dispatchable = drop.imm >= 0;
         // AND WHETHER THERE IS ANYTHING TO FREE.
         //
         // This asked "is the target in the set of things this method watched come out of an
@@ -14380,14 +15706,14 @@ private:
         // other path's 112 in 5, on identical output.
         //
         // AN INTERFACE, AND NOT MERELY AN ABSTRACT CLASS. `sealed abstract class Result<T,E>` HAS a
-        // value form -- that is what §21's variant is -- and for it the star really is the only
+        // value form -- that is what Â§21's variant is -- and for it the star really is the only
         // difference: `delete` of the unstarred one is a no-op by design. Reading `abstract` as
         // "boxed" freed a value Result and `value_compat` printed `v=0` where the program says 7.
         const std::string deletedName = classNameOf(declaredName(target));
         const ast::ClassDecl* asWritten =
             deletedName.empty() ? nullptr : findClass(deletedName);
         // ...AND A `T[]` IS ALWAYS THE ALLOCATOR'S. `new T[n]()` is a heap block with a length
-        // header -- §3.2 says so, there is no other way to make one -- so `delete` of an array
+        // header -- Â§3.2 says so, there is no other way to make one -- so `delete` of an array
         // releases whatever this pass happened to learn about where it came from. Asked only about
         // storage it had WATCHED, an array handed back by a call was `Unknown`: `random_shuffle`
         // wrote `delete check` on an `Arrays.copyOf` result and the block stayed.
@@ -14589,7 +15915,7 @@ private:
                 gap("AssignStmt(element)", s.loc);
                 return;
             }
-            // §21: STORING A STRING INTO AN ELEMENT COPIES IT. An array owns its elements, so a
+            // Â§21: STORING A STRING INTO AN ELEMENT COPIES IT. An array owns its elements, so a
             // slot that shares the caller's buffer is a slot that outlives what it points at.
             //
             // `ArrayList.add` is where this shows: `this.data[this.count] = item`, with `item`
@@ -14622,7 +15948,15 @@ private:
         // then read its free-lists out of the user's data.
         if (const auto* target = dynamic_cast<const ast::MemberExpr*>(s.target.get())) {
             pendingRegion_ = regionShapeOf(target->member);
-            // `t.fahrenheit = 212` IS A CALL, NOT A STORE (§8.4). A property with a custom `set`
+            // `swarm[i].x = v` NEVER GOES THROUGH A SETTER, and asking whether it does means
+            // lowering `swarm[i]` -- which materialises a whole row, into a temporary the store
+            // below then does not use. The answer is knowable from the name: a column is a field of
+            // a value type and a value type has no properties.
+            if (columnNames_.count(target->member) != 0 &&
+                dynamic_cast<const ast::IndexExpr*>(target->object.get()) != nullptr) {
+                pendingRegion_ = RegionShape{};
+            } else
+            // `t.fahrenheit = 212` IS A CALL, NOT A STORE (Â§8.4). A property with a custom `set`
             // desugars to a method `fahrenheit$set(value)`, and the whole point is that the write
             // goes through it -- the backing field is private and may not even be the one named.
             // Written as a field store it found no field, fell back to offset zero, and the setter
@@ -14633,7 +15967,7 @@ private:
             }
         }
         // `counter = counter + n` ON AN `atomic<T>` IS AN ATOMIC ADD, and `counter = v` an atomic
-        // STORE (§20.6). Binding the atomic OBJECT itself -- `a = b` between two atomics, or a
+        // STORE (Â§20.6). Binding the atomic OBJECT itself -- `a = b` between two atomics, or a
         // field taking a fresh one -- is an ordinary reference store and must not come here, which
         // is what the second half of the test says.
         if (const ValueId slot = atomicValueSlot(s); slot != kNoValue) {
@@ -14685,7 +16019,7 @@ private:
         // Doing it here means the conversion is a `trunc`/`extend` in the IR -- something the passes
         // can see and fold -- rather than a width mismatch nobody records.
         //
-        // §21: ASSIGNING A STRING TO A LOCAL COPIES IT, AND RELEASES WHAT WAS THERE. Both halves
+        // Â§21: ASSIGNING A STRING TO A LOCAL COPIES IT, AND RELEASES WHAT WAS THERE. Both halves
         // matter and they fail differently: without the copy the target shares the source's buffer
         // and whichever is released first leaves the other holding freed memory; without the
         // release the buffer the target used to own is lost, and `s = "a"; s = "b";` in a loop
@@ -14843,7 +16177,7 @@ private:
     }
 
     // `for (T x in xs)` is the indexed loop it desugars to, written out here rather than left to the
-    // backend: the index, the bound, the element load and the bounds guard are all things §11's
+    // backend: the index, the bound, the element load and the bounds guard are all things Â§11's
     // passes want to see as ordinary instructions. A loop shape the optimiser has to recognise is a
     // loop shape it will sometimes fail to recognise.
     // `for (x in it)` OVER AN ITERATOR: ask, take, repeat. No snapshot and no index -- which is
@@ -15543,7 +16877,7 @@ private:
         here_ = done;
     }
 
-    // ---- §7.10: `try` / `catch` / `finally`, with the unwind edges ----
+    // ---- Â§7.10: `try` / `catch` / `finally`, with the unwind edges ----
     //
     // A call inside a `try` becomes `call.unwind`: two successors, the normal one and a LANDING
     // block. The landing block starts with `landing`, which yields the exception, and then the
@@ -15756,7 +17090,7 @@ private:
             for (const auto& inner : handler.body.statements) {
                 lowerStmt(inner.get());
             }
-            // §21: AND THE HANDLER'S OWN STRINGS GO BACK. A `try` walks its statements directly
+            // Â§21: AND THE HANDLER'S OWN STRINGS GO BACK. A `try` walks its statements directly
             // rather than through `lowerScope` -- its cleanup is not a scope's -- so the closing
             // brace that releases temporaries everywhere else does not run here. The last line of
             // a `catch` is the commonest place to build one: `printf("caught: %s", e.message())`.
@@ -15811,6 +17145,32 @@ private:
     }
 
     void lowerIf(const ast::IfStmt& s) {
+        // `comptime if` -- THE UNTAKEN BRANCH IS NOT EMITTED, and not even walked.
+        //
+        // *"A `comptime` statement is EVALUATED at build time. Whatever RUNTIME code its body
+        // contains is emitted, once per evaluation."* For an `if` that means one branch is the
+        // program and the other never existed -- which is what makes one `Machine` library
+        // partitionable by target (`freestanding-prelude.md` §6). The dead branch may name `Console`
+        // in a freestanding build, or an aarch64 register inside an x86 block, and that is the point
+        // rather than a loophole: it is the price of `#if`, and it is what makes `#if` useful.
+        //
+        // It used to lower BOTH arms and leave a branch on a constant for LLVM to fold. That folds
+        // the CODE and not the NAMES: an arm mentioning something the target does not have still had
+        // to lower, so `comptime if` could select behaviour and never select availability.
+        if (s.isComptime) {
+            if (const int picked = comptimeBranch(s); picked >= 0) {
+                if (picked == 1) {
+                    lowerScope(s.thenBlock);
+                } else if (s.elseBlock != nullptr) {
+                    lowerScope(*s.elseBlock);
+                }
+                return;
+            }
+            // Not constant after all -- the analyzer has already refused the program, so this is
+            // only what gets emitted while the error is reported. Lowering it as an ordinary `if`
+            // keeps the module well-formed, which is what lets the rest of the diagnostics come out
+            // in the same run instead of one per rebuild.
+        }
         const ValueId cond = lowerExpr(s.cond.get());
         const BlockId thenB = fn_->addBlock(fresh("then"));
         const BlockId elseB = fn_->addBlock(fresh("else"));
@@ -15922,6 +17282,37 @@ private:
         if (e == nullptr) {
             return kNoValue;
         }
+        // ALREADY LOWERED, SPECULATIVELY, AND NOT USED YET.
+        //
+        // Some paths above have to lower a subexpression in order to find out whether they are the
+        // right path for it -- `d.toString()` is a `Decimal` only if the receiver turns out to be
+        // one, and the only way this lowering can ask is to produce the value and look at its type.
+        // When the answer is no, the instructions are already emitted, and the ordinary path that
+        // takes over then lowers the same expression a SECOND time.
+        //
+        // For a getter that is invisible. For anything that changes something it is a silent double
+        // execution: `"count " + c.bump().toString()` incremented twice, so every number a program
+        // printed through a concatenation was wrong, and a driver whose bring-up was reported that
+        // way ran its whole conversation with the hardware twice. That is how it was found -- a
+        // network card that had been reset, configured and enabled, twice, and stopped.
+        //
+        // Consumed ONCE, IN THE SAME BLOCK, and erased either way. Both halves are the safety.
+        //
+        // A value is only reusable where its definition dominates the use, and the only place that
+        // is guaranteed here is the instruction immediately after the speculative lowering -- which
+        // is exactly where the second lowering happens. Recording the block and checking it is what
+        // makes that a fact rather than an assumption: the same AST node can be lowered again in
+        // another block or another function entirely (a loop body walked twice, a generic
+        // instantiated twice), and a memo that survived would hand it a value from somewhere it
+        // cannot see. The entry is dropped whether or not it was used, so a stale one cannot
+        // accumulate.
+        if (auto memo = speculative_.find(e); memo != speculative_.end()) {
+            const auto [already, where] = memo->second;
+            speculative_.erase(memo);
+            if (where == here_) {
+                return already;
+            }
+        }
         TypeTable& tt = out_.module.types;
 
         if (auto* n = dynamic_cast<const ast::IntLiteralExpr*>(e)) {
@@ -16024,7 +17415,38 @@ private:
             emit(std::move(br));
 
             here_ = thenB;
-            const ValueId a = lowerExpr(t->thenExpr.get());
+            // A VALUE AGGREGATE HAS NO VALUE PATH, ONLY AN ADDRESS ONE. `placed[i]` where the
+            // element is a `record` lowers to nothing at all as an expression -- a record is used
+            // through its address everywhere else, so nothing ever needed one -- and an arm that
+            // lowers to nothing was quietly replaced by `undef` below. Every turn of
+            // `i == 0 ? new Placement(a, b) : placed[i]` therefore took the first arm: a compound
+            // file's directory came out with the root entry's start and size in all sixteen of its
+            // records, and the same `undef` reaching a parameter corrupted the heap, which surfaced
+            // two frames away inside `ArrayList.get` with an index that was not out of bounds.
+            //
+            // Asking for the address is what the other arm already produces -- `new Placement(...)`
+            // is a pointer to a temporary -- so the two agree, and the join carries what a record
+            // is carried by everywhere else in this compiler.
+            auto asAddress = [&](ValueId v, const ast::Expr* from) {
+                if (v == kNoValue) {
+                    return addressOf(from);
+                }
+                const Type* held = fn_->value(v)->type;
+                // A LOADED AGGREGATE IS NOT SOMETHING A BLOCK PARAMETER CAN CARRY. Reading a
+                // record out of an array gives back its whole shape -- a `Slice` for the element
+                // view, a `Struct` where the load materialises -- and the other arm of a ternary
+                // over records is a POINTER to a temporary. The two never matched, so the arm was
+                // dropped for `undef`. Both are addresses of the same declared type, so ask for the
+                // address and the join carries a record the way everything else in this compiler
+                // carries one.
+                if (held != nullptr &&
+                    (held->kind == TypeKind::Struct || held->kind == TypeKind::Slice)) {
+                    const ValueId at = addressOf(from);
+                    return at == kNoValue ? v : at;
+                }
+                return v;
+            };
+            ValueId a = asAddress(lowerExpr(t->thenExpr.get()), t->thenExpr.get());
             const Type* rt = a != kNoValue ? fn_->value(a)->type : tt.intType(32);
             // The join's parameter is typed from the arm, and both edges are supplied AFTER it
             // exists -- verifier rule 3 checks exactly that agreement.
@@ -16039,7 +17461,7 @@ private:
             emit(std::move(goA));
 
             here_ = elseB;
-            ValueId bv = lowerExpr(t->elseExpr.get());
+            ValueId bv = asAddress(lowerExpr(t->elseExpr.get()), t->elseExpr.get());
             // THE TWO ARMS ARE CONVERTED TO ONE TYPE, NOT DISCARDED FOR NOT ALREADY BEING IT.
             //
             // This required the else arm's type to match the then arm's EXACTLY and substituted
@@ -16069,11 +17491,49 @@ private:
                 numeric(rt) && numeric(fn_->value(bv)->type)) {
                 bv = lowerConversion(bv, fn_->value(bv)->type, rt, e->loc);
             }
+            // A VALUE AGGREGATE IS A POINTER ON BOTH ARMS, and the two spellings need not be the
+            // same `Type*`.
+            //
+            // `i == 0 ? new Placement(a, b) : placed[i]` -- a record built here, or one read out of
+            // an array -- came out as `phi ptr [ %tmp, %then ], [ undef, %else ]`. The else arm WAS
+            // lowered; its type simply was not identical to the then arm's, so it was dropped for
+            // `undef` and every turn of the loop took the then arm's value. No diagnostic: a
+            // compound file's directory came out with the root entry's start and size written into
+            // all sixteen of its records, and the same `undef` in a parameter position corrupted
+            // the heap, which surfaced two frames away inside `ArrayList.get`.
+            //
+            // Both arms of a record-valued ternary are a pointer to storage of the same declared
+            // type; the type table just hands out two spellings of that. Comparing the KIND is what
+            // the join actually needs -- the machine shape agrees, which is all a block parameter
+            // carries.
+            const Type* bt = bv != kNoValue ? fn_->value(bv)->type : nullptr;
+            const bool bothPointers = bt != nullptr && rt != nullptr &&
+                                      bt->kind == TypeKind::Ptr && rt->kind == TypeKind::Ptr;
             Inst goB;
             goB.op = Op::Br;
             Edge eb{join, {}};
-            eb.args.push_back(bv != kNoValue && fn_->value(bv)->type == rt ? bv
-                                                                          : undefOf(rt, e->loc));
+            // AN ARM THAT DOES NOT FIT IS REFUSED, NOT REPLACED. Substituting `undef` here is how a
+            // ternary over two `record`s -- `i == 0 ? new Placement(a, b) : placed[i]` -- came out
+            // as the FIRST arm on every pass: a record read from an array lowers to the element
+            // view and a freshly built one to a pointer, the two do not match, and the else edge
+            // silently carried a value the optimiser may make anything of. A compound file's
+            // directory was written with the root entry's start and size in all sixteen of its
+            // records, and the same `undef` in a parameter position corrupted the heap and surfaced
+            // two frames away inside `ArrayList.get` with an index that was not out of bounds.
+            //
+            // The two shapes ought to meet -- a record is a record -- and until they do, the honest
+            // answer is to say so at the line that wrote it. A wrong program that builds is worth
+            // less than one that does not.
+            if (bv != kNoValue && !(bt == rt || bothPointers)) {
+                refuse("the two arms of `? :` are shapes this compiler cannot join yet -- one is a "
+                       "value read out of storage and the other a value built here. Give the "
+                       "result a name on each side (an `if`/`else` writing to one variable) and "
+                       "the join disappears.",
+                       e->loc);
+            }
+            eb.args.push_back(bv != kNoValue && (bt == rt || bothPointers)
+                                  ? bv
+                                  : undefOf(rt, e->loc));
             goB.edges.push_back(eb);
             emit(std::move(goB));
 
@@ -16160,11 +17620,11 @@ private:
         if (auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
             auto it = locals_.find(id->name);
             if (it != locals_.end()) {
-                // §37.3: A `lazy` NAME BUILDS ITSELF THE FIRST TIME IT IS READ.
+                // Â§37.3: A `lazy` NAME BUILDS ITSELF THE FIRST TIME IT IS READ.
                 ensureLazy(id->name, e->loc);
                 return loadFrom(it->second, e->loc);
             }
-            // `result` INSIDE AN `ensures` CLAUSE IS THE VALUE THE RETURN HANDS BACK (§29).
+            // `result` INSIDE AN `ensures` CLAUSE IS THE VALUE THE RETURN HANDS BACK (Â§29).
             //
             // Nothing here bound it, so the name fell through to the implicit-`this` rule below and
             // was read as a FIELD of the receiver -- whatever happened to be at that offset. pico's
@@ -16176,7 +17636,15 @@ private:
             if (id->name == "result" && resultValue_ != kNoValue) {
                 return resultValue_;
             }
-            // INSIDE AN ENUM'S OWN METHOD, A BARE NAME MAY BE ONE OF ITS CONSTANTS. §12.4 lets
+            // A FOLDED CONSTANT NAMED BARE. `__target_arch` is the one that arrives this way -- a
+            // fact the compiler supplies rather than a declaration anybody wrote -- and a `comptime`
+            // method whose body reads it still gets LOWERED, because the lowering emits every
+            // declared method and lets Sec11.9 strip what nothing calls. Without this the body was
+            // `undef` and the gap report carried three entries about a name that has a value.
+            if (auto folded = constInts_.find(id->name); folded != constInts_.end()) {
+                return constInt(folded->second, e->loc);
+            }
+            // INSIDE AN ENUM'S OWN METHOD, A BARE NAME MAY BE ONE OF ITS CONSTANTS. Â§12.4 lets
             // `Item.cheap` be written unqualified in a body that belongs to `Item`, and the enum's
             // constants include the ones its `byCatalog` block adopts -- so `if (this == cheap)`
             // and `if (this == Item.cheap)` are the same test. Read as a field of `this` instead --
@@ -16224,8 +17692,15 @@ private:
             return emit(std::move(u));
         }
         if (auto* m = dynamic_cast<const ast::MemberExpr*>(e)) {
+            // `swarm[i].x` READS THE COLUMN, and reads nothing else -- no row is assembled to be
+            // thrown away one field later. Asked first for the same reason the assignment path asks
+            // it first: lowering the object would collapse the array and the index into a row
+            // pointer, and an entity has no rows to point at.
+            if (const ValueId col = entityColumnAddress(*m, e->loc); col != kNoValue) {
+                return loadFrom(col, e->loc);
+            }
             // `w.interrupt` NAMES AN ENTRY POINT, not a field. Binding a handler and taking its
-            // address are ONE act (§ interrupts): a vector holds an address and nothing else, so
+            // address are ONE act (Â§ interrupts): a vector holds an address and nothing else, so
             // there is no way to get the address without saying whose handler it is. What crosses
             // is a trampoline of the vector's own shape -- `void(int)`, no receiver -- which reads
             // the bound object out of a global and calls the real method. Read as a field, it
@@ -16239,7 +17714,7 @@ private:
                 entry != kNoValue) {
                 return entry;
             }
-            // `v.x` NAMES A LANE (§34.6's swizzle names), not a field. Decided from the object's
+            // `v.x` NAMES A LANE (Â§34.6's swizzle names), not a field. Decided from the object's
             // declared type BEFORE it is lowered, so the ordinary member path is left untouched for
             // everything that merely happens to have a one-letter field called `x`.
             //
@@ -16276,7 +17751,7 @@ private:
                         dot == std::string::npos ? chain : chain.substr(dot + 1);
                     if (auto it = enumOrdinal_.find(owner + "." + m->member);
                         it != enumOrdinal_.end()) {
-                        // AN ENUM CAN BE UNIMPORTED TOO (§30.4), and reading one of its constants
+                        // AN ENUM CAN BE UNIMPORTED TOO (Â§30.4), and reading one of its constants
                         // is the only way to use it -- there is no `new` and no method call to hang
                         // the check on. Without it `unimport enum Color` took the type away and
                         // `Color.GREEN` on the next line still answered: `unimport_granularity`
@@ -16319,7 +17794,7 @@ private:
             if (namesAQualifier(m) && flatten(m, &qualified) && globalExists(qualified)) {
                 return loadFrom(globalSlot(qualified, e->loc), e->loc);
             }
-            // A METHOD NAMED WITHOUT PARENTHESES IS ITS ADDRESS (§22.3).
+            // A METHOD NAMED WITHOUT PARENTHESES IS ITS ADDRESS (Â§22.3).
             //
             // `cast<address>(ApBoot.apMain)` is how pico tells the second processor's trampoline
             // where to jump, and how its ring-3 guest seeds a new thread's stack with an entry
@@ -16343,7 +17818,7 @@ private:
             }
             const ValueId obj =
                 receiverOnce != kNoValue ? receiverOnce : lowerExpr(m->object.get());
-            // ...and reading a member THROUGH it is a dereference (§3.7). Not for `obj?.member`,
+            // ...and reading a member THROUGH it is a dereference (Â§3.7). Not for `obj?.member`,
             // which exists precisely to yield null instead of reading through one.
             if (!m->safe) {
                 guardReceiver(obj, e->loc);
@@ -16365,7 +17840,7 @@ private:
                 gap("MemberExpr(untranslatable object)", e->loc);
                 return kNoValue;
             }
-            // §28.4: a `lazy` field builds itself the first time it is read. NULL IS THE SENTINEL,
+            // Â§28.4: a `lazy` field builds itself the first time it is read. NULL IS THE SENTINEL,
             // which is why the constructor writes one there and why this needs no extra flag.
             if (!lazyFieldInit_.empty()) {
                 ensureLazyField(obj, classNameOf(declaredName(obj)), m->member, addr, e->loc);
@@ -16418,7 +17893,7 @@ private:
             if (v == kNoValue) {
                 return kNoValue;
             }
-            // `-a` ON A CLASS IS ITS `operator -` (§13). A class has no arithmetic of its own, so
+            // `-a` ON A CLASS IS ITS `operator -` (Â§13). A class has no arithmetic of its own, so
             // negating one emitted `neg.checked` on a POINTER -- which the backend answers with the
             // operand unchanged, and `-a` on a `Vec2(3,4)` printed 3 and 4. The overload is a method
             // on the class taking nothing but its receiver.
@@ -16442,7 +17917,7 @@ private:
             // printed as `1.0` and everything computed from it followed.
             // `!x` IS `x == 0`, NOT `~x`. The two coincide on one bit and on nothing wider, and a
             // `boolean` is not one bit here: a method answering `boolean` returns a 32-bit word
-            // (§3.1 -- it is four bytes in the ABI, measured), and so does every runtime predicate
+            // (Â§3.1 -- it is four bytes in the ABI, measured), and so does every runtime predicate
             // the compiler binds. `~1` is -2, which is true, so `if (!File.exists(p))` took the
             // absent branch for a file that was RIGHT THERE -- and `Files.copy` returned false
             // without copying anything, silently, on a path where the file it was told to read
@@ -16463,7 +17938,7 @@ private:
             if (v == kNoValue) {
                 return kNoValue;
             }
-            // §37.5: `cast<volatile int*>(base)` NAMES HARDWARE. An MMIO pointer with no variable
+            // Â§37.5: `cast<volatile int*>(base)` NAMES HARDWARE. An MMIO pointer with no variable
             // behind it -- the framebuffer aperture, a device register, video memory -- and every
             // access through it must survive the optimiser exactly as written.
             if (cast->targetVolatile) {
@@ -16471,7 +17946,7 @@ private:
             }
             const Type* from = fn_->value(v)->type;
             const Type* to = baseTypeOf(cast->targetType);
-            // `cast<int>(someObject)` READS THE BOXED VALUE (§3.4), and it has to be asked before
+            // `cast<int>(someObject)` READS THE BOXED VALUE (Â§3.4), and it has to be asked before
             // the pointer-to-integer reinterpret below -- that one would hand back the BOX's own
             // address, which is a large number that changes between runs. `Field.get` answers with
             // an Object, so this is the one way a reflective read ever becomes an `int`.
@@ -16480,7 +17955,7 @@ private:
                 from != nullptr && from->kind == TypeKind::Ptr) {
                 return unboxWord(v, to, cast->loc);
             }
-            // `cast<int>` OF A JAVA-STYLE ENUM IS ITS ORDINAL, NOT ITS ADDRESS (§12.2).
+            // `cast<int>` OF A JAVA-STYLE ENUM IS ITS ORDINAL, NOT ITS ADDRESS (Â§12.2).
             //
             // A java-style enum's constant is a singleton OBJECT -- that is what gives it fields and
             // methods -- so the value in hand is a pointer, and the generic pointer-to-integer rule
@@ -16504,7 +17979,7 @@ private:
                     return javaEnumOrdinal(*found->second, v, cast->loc);
                 }
             }
-            // §34: A CAST TO OR FROM `Decimal` MOVES THE SCALE. `cast<Decimal>(5)` is not the
+            // Â§34: A CAST TO OR FROM `Decimal` MOVES THE SCALE. `cast<Decimal>(5)` is not the
             // number five in a wider register -- it is five times 10^18, and without the multiply
             // `cast<Decimal>(5) / cast<Decimal>(2)` is integer division and answers 2. The other
             // direction divides it back out, which is what makes `cast<int>(price)` the whole
@@ -16516,7 +17991,7 @@ private:
                     return scaled;
                 }
             }
-            // `x is T` AND `x as? T` ARE NOT CASTS (§6.4), though they parse as one. The first
+            // `x is T` AND `x as? T` ARE NOT CASTS (Â§6.4), though they parse as one. The first
             // ASKS -- it answers a boolean and converts nothing; the second answers the value or
             // null. Both fell through to the plain reinterpret, so `a is Dog` was the pointer's
             // bits read as a boolean (always true) and `c as? Dog` handed back the Cat.
@@ -16557,7 +18032,7 @@ private:
                 noteName(answer, want, 1);
                 return answer;
             }
-            // A CLASS MAY DEFINE THE CONVERSION ITSELF (§13.3). `operator explicit cast<Fahrenheit>()`
+            // A CLASS MAY DEFINE THE CONVERSION ITSELF (Â§13.3). `operator explicit cast<Fahrenheit>()`
             // parses as a method named `operator cast$Fahrenheit`, and `cast<Fahrenheit>(c)` means
             // CALL IT -- not reinterpret the pointer, which is what happened: the Celsius came back
             // as a Fahrenheit reading the same field, so 100C printed as 100F.
@@ -16708,7 +18183,7 @@ private:
         if (auto* n = dynamic_cast<const ast::NewExpr*>(e)) {
             return lowerNew(*n);
         }
-        // `(a, b)` -- a tuple literal (§22.5). Built in STORAGE like every other value struct here,
+        // `(a, b)` -- a tuple literal (Â§22.5). Built in STORAGE like every other value struct here,
         // so it needs no `insertvalue` the backend has no case for and so its components are
         // addressed exactly as a struct's fields are.
         if (auto* tup = dynamic_cast<const ast::TupleExpr*>(e)) {
@@ -16759,9 +18234,9 @@ private:
             }
             return obj;
         }
-        // `await t` -- §20.2. Outside an async body it BLOCKS until the task completes and reads
+        // `await t` -- Â§20.2. Outside an async body it BLOCKS until the task completes and reads
         // its result; `await` on something that is not a Task is a pass-through, because the
-        // operand already produces its value by blocking (a channel receive, §20.7).
+        // operand already produces its value by blocking (a channel receive, Â§20.7).
         if (auto* aw = dynamic_cast<const ast::AwaitExpr*>(e)) {
             const ValueId task = lowerExpr(aw->operand.get());
             if (task == kNoValue) {
@@ -16778,7 +18253,7 @@ private:
             }
             TypeTable& tt = out_.module.types;
             const ValueId handle = loadFrom(slot, aw->loc);
-            // §20.2: INSIDE AN ASYNC BODY, `await` SUSPENDS -- it does not block.
+            // Â§20.2: INSIDE AN ASYNC BODY, `await` SUSPENDS -- it does not block.
             //
             // `__polaron_await` registers this function as the awaited task's continuation and
             // answers whether it parked; if it did, returning frees the worker. `__polaron_task_wait`
@@ -16791,7 +18266,7 @@ private:
                 storeInto(asyncAwaitedSlot_, handle, aw->loc);
                 storeInto(asyncStepSlot_, constInt(static_cast<int64_t>(k), 32, aw->loc), aw->loc);
                 Inst where;
-                where.op = Op::ConstFn;   // §7.1: the address of a named module-level thing
+                where.op = Op::ConstFn;   // Â§7.1: the address of a named module-level thing
                 where.type = tt.ptrType();
                 where.text = asyncResumeKey_;
                 where.loc = aw->loc;
@@ -16828,13 +18303,13 @@ private:
             }
             const ValueId got = callExternal("__polaron_task_wait", tt.intType(64),
                                              {tt.intType(64)}, {handle}, aw->loc);
-            // A TASK THAT FAILED RE-THROWS HERE (§21), in the awaiter's frame. Letting the
+            // A TASK THAT FAILED RE-THROWS HERE (Â§21), in the awaiter's frame. Letting the
             // exception escape the worker thread instead would take the process down with no
             // handler anywhere near the code that asked for the result.
             rethrowFailedTask(handle, aw->loc);
             return fromWord(got, cls.substr(5), aw->loc);
         }
-        // `unimport X expecting { ... }` IN EXPRESSION POSITION (§30.18): the block runs first, in
+        // `unimport X expecting { ... }` IN EXPRESSION POSITION (Â§30.18): the block runs first, in
         // the code that is about to be taken away, and its value is what the expression yields.
         // The order is the whole point -- run it after the unimport and there is nothing left to
         // run it in.
@@ -16922,13 +18397,80 @@ private:
         // not lowered at all, so the `checkpoint` it produced was nothing and the `rollback` that
         // used it recorded a gap and emitted no code -- `region_stack` then pushed a hundred
         // thousand objects through a region with room for a few hundred.
+        // `capacity of region R` / `used of region R` / `room of region R` (Â§17). The cursor and the
+        // capacity are the header's first two words -- mirrored into the full descriptor precisely so
+        // that reading them never needs to know which kind of header a region has. Two loads and a
+        // subtract, no call: an admission check costs what reading two fields costs, which is what
+        // makes it something a caller will actually put in front of every allocation.
+        if (auto* sp = dynamic_cast<const ast::RegionSpaceExpr*>(e)) {
+            // THROUGH `regionBlockFor`, WHICH IS THE ONE PLACE THAT KNOWS WHERE A REGION LIVES: a
+            // local's slot, a field of `this`, or another class's static arena. Reading only
+            // `locals_` meant a region FIELD -- which is how the standard library's containers hold
+            // theirs, and how Horizon's glyph cache holds its pool -- was never found, so
+            // `used of region this.store` lowered to nothing at all and the method that asks how
+            // full the cache is answered with an uninitialised value.
+            const ValueId block = regionBlockFor(sp->region, e->loc);
+            if (block == kNoValue) {
+                gap("RegionSpaceExpr(region not in scope: " + sp->region + ")", e->loc);
+                return kNoValue;
+            }
+            auto wordAt = [&](std::int64_t off) {
+                Inst g;
+                g.op = Op::Gep;
+                g.type = tt.ptrType();
+                g.operands.push_back(block);
+                g.imm = off;
+                g.loc = e->loc;
+                const ValueId p = emit(std::move(g));
+                slotType_[p] = tt.intType(64);
+                return loadFrom(p, e->loc);
+            };
+            const ValueId used = wordAt(0);
+            if (sp->ask == ast::RegionSpaceExpr::Ask::Used) {
+                return used;
+            }
+            const ValueId cap = wordAt(8);
+            if (sp->ask == ast::RegionSpaceExpr::Ask::Capacity) {
+                return cap;
+            }
+            // ROOM NEVER GOES NEGATIVE. A growable region's cursor runs past the first block's
+            // capacity as it chains, so `cap - used` there is negative -- and as an unsigned byte
+            // count that is astronomically positive, which would tell an admission check that
+            // everything fits. The clamp is the difference between a guard and a trapdoor.
+            Inst sub;
+            sub.op = Op::SubWrap;
+            sub.type = tt.intType(64);
+            sub.operands.push_back(cap);
+            sub.operands.push_back(used);
+            sub.loc = e->loc;
+            const ValueId left = emit(std::move(sub));
+            Inst lt;
+            lt.op = Op::CmpLtU;
+            lt.type = tt.boolType();
+            lt.operands.push_back(cap);
+            lt.operands.push_back(used);
+            lt.loc = e->loc;
+            const ValueId over = emit(std::move(lt));
+            Inst pick;
+            pick.op = Op::Select;
+            pick.type = tt.intType(64);
+            pick.operands.push_back(over);
+            pick.operands.push_back(constInt(0, 64, e->loc));
+            pick.operands.push_back(left);
+            pick.loc = e->loc;
+            return emit(std::move(pick));
+        }
         if (auto* mk = dynamic_cast<const ast::MarkExpr*>(e)) {
-            auto it = locals_.find(mk->region);
-            if (it == locals_.end()) {
+            // A REGION FIELD CAN BE MARKED, and reading only `locals_` said otherwise. The analyzer
+            // has always accepted `mark of region this.scratch` and left the check to codegen ("a
+            // `this.field` region is validated at codegen"); codegen then found nothing and lowered
+            // the whole checkpoint to a gap -- so the `rollback` that pairs with it rewound nothing
+            // and a scratch arena grew for the life of the program with no diagnostic anywhere.
+            const ValueId block = regionBlockFor(mk->region, e->loc);
+            if (block == kNoValue) {
                 gap("MarkExpr(region not in scope: " + mk->region + ")", e->loc);
                 return kNoValue;
             }
-            const ValueId block = loadFrom(it->second, e->loc);
             Inst at;
             at.op = Op::Gep;
             at.type = tt.ptrType();
@@ -16939,7 +18481,7 @@ private:
             slotType_[cursor] = tt.intType(64);
             return loadFrom(cursor, e->loc);
         }
-        // `extract X from region R` (§17): RELOCATE the object out of the region onto the heap and
+        // `extract X from region R` (Â§17): RELOCATE the object out of the region onto the heap and
         // hand back the owning pointer. It is a MOVE of the bytes -- so an owned String or array
         // field travels with it, its pointer being among those bytes -- and the source is not
         // destructed, only forgotten: the vacated slot goes back to the region and the handle is
@@ -17001,7 +18543,7 @@ private:
             noteName(heap, cls);
             return heap;
         }
-        // A RANGE IS A VALUE (§7.5), not only a loop header. `0..10 step 2` stored in a variable is
+        // A RANGE IS A VALUE (Â§7.5), not only a loop header. `0..10 step 2` stored in a variable is
         // a `Range` object that answers `size()` and `contains(n)` and can be iterated later --
         // which is why the prelude declares the class. Lowered only where a `foreach` consumes it
         // directly, `var r = 0..10 step 2;` produced nothing at all and the first `r.size()` read
@@ -17087,7 +18629,7 @@ private:
             return emit(std::move(in));
         }
         if (from->kind == TypeKind::Int && to->kind == TypeKind::Int) {
-            // CROSSING A NEWTYPE IS NOT AN EXTEND, and this is where §9's rule 8 is obeyed rather
+            // CROSSING A NEWTYPE IS NOT AN EXTEND, and this is where Â§9's rule 8 is obeyed rather
             // than merely enforced. `newtype Batch = uint` and `uint` are the same width and the
             // same bits; only the nominal identity differs -- so there is nothing to widen and
             // nothing to narrow, and emitting `extend` for it is exactly the implicit conversion
@@ -17140,7 +18682,7 @@ private:
             in.op = to->bits < from->bits ? Op::AddrNarrow : Op::AddrWiden;
         } else if (from->kind == TypeKind::Int && to->kind == TypeKind::Addr) {
             // A NUMBER BECOMING AN ADDRESS CHANGES WIDTH, and this fell through to "nothing to
-            // emit". §3.1 keeps the two kinds apart on purpose, so the case has to be written out --
+            // emit". Â§3.1 keeps the two kinds apart on purpose, so the case has to be written out --
             // and left out, `address idtr = 0x402800;` stored the literal's THIRTY-TWO bits into a
             // sixty-four-bit slot and left the top half holding whatever the frame did. pico wrote
             // its interrupt descriptor table to 0x6000402800 and triple-faulted before printing its
@@ -17187,7 +18729,7 @@ private:
         return false;
     }
 
-    // A LAMBDA IS A TOP-LEVEL FUNCTION PLUS A CAPTURE SET (§7.8). Lowered as one here rather than
+    // A LAMBDA IS A TOP-LEVEL FUNCTION PLUS A CAPTURE SET (Â§7.8). Lowered as one here rather than
     // left to the backend because the capture set is what escape analysis reads: a closure that
     // does not escape can have its environment on the stack, and a backend that had to work out
     // what was captured would have to do it once per backend.
@@ -17349,7 +18891,7 @@ private:
             g.initFns = {key, std::string()};   // { code, env = null }
             out_.module.globals.push_back(std::move(g));
             Inst at;
-            at.op = Op::ConstFn;   // §7.1: the address of a named module-level thing
+            at.op = Op::ConstFn;   // Â§7.1: the address of a named module-level thing
             at.type = ptr;
             at.text = held;
             at.loc = lam.loc;
@@ -17689,6 +19231,25 @@ private:
             up.operands.push_back(ch);
             up.loc = loc;
             return emit(std::move(up));
+        }
+        // `toString` ON A STRING IS THE STRING, and leaving it out was not harmless.
+        //
+        // Every other type's `toString` is a real conversion, so the name is written generically --
+        // `"x=" + value.toString()` -- and a String reaching that code path is the ordinary case, not
+        // an odd one. The prelude does it itself: `Datagram.toString` builds its line that way, and
+        // Horizon's kernel build reported `String.toString(no builtin)` twice on every single build
+        // because of it.
+        //
+        // A GAP IS NOT A NO-OP. `lowerStringCall` answering nothing makes the caller record a gap and
+        // emit no value at all, so the expression that wanted the string got one that was never
+        // computed -- the same shape as the `checkpoint` that returned `undef` across a method
+        // boundary, and found the same way: by a line in the build output that had been there long
+        // enough to be read as furniture.
+        //
+        // The identity is the whole implementation. `s` is already the three-word object every String
+        // is, and handing it back is what `toString` means for the type that is already one.
+        if (member == "toString") {
+            return s;
         }
         if (member == "equals" && other != kNoValue) {
             return callExternal("__polaron_str_eq", i32, {ptr, ptr}, {s, other}, loc);
@@ -18221,7 +19782,7 @@ private:
     // `T.typeName()`, `T.isValue()`, `T.owns()`, `T.isMovable()`, `T.isUnique()`, `T.align()` and
     // an enum's `T.length()` -- a TYPE ANSWERING ABOUT ITSELF, at compile time.
     //
-    // These are the five facts of §3.3 plus two, and this pass is the one place that already holds
+    // These are the five facts of Â§3.3 plus two, and this pass is the one place that already holds
     // all of them: the type table decided them once when the entry was made, which is the whole
     // reason the facts live on the entry rather than being re-derived by whoever asks. Unanswered,
     // each one was resolved as a qualified name, declared as an external, and failed to link on
@@ -18505,7 +20066,7 @@ private:
             out_.module.globals.push_back(std::move(g));
         }
         Inst where;
-        where.op = Op::ConstFn;   // §7.1: the address of a named module-level thing
+        where.op = Op::ConstFn;   // Â§7.1: the address of a named module-level thing
         where.type = ptr;
         where.text = held;
         where.loc = loc;
@@ -19351,7 +20912,7 @@ private:
         const ValueId at = loadFrom(iSlot, loc);
         const ValueId tok =
             callExternal("__polaron_malloc", ptr, {i64}, {constLong(words * 8, loc)}, loc);
-        // The token's words come straight off the type's parallel arrays, in the order §31 puts
+        // The token's words come straight off the type's parallel arrays, in the order Â§31 puts
         // them in: name first for all three, then whatever that kind of token carries.
         for (size_t r = 0; r < rows.size(); ++r) {
             // Only slot 4 of a Field token and slot 2 of a Method token are counts; the rest are
@@ -19773,7 +21334,7 @@ private:
         emit(std::move(none));
 
         const BlockId join = fn_->addBlock("invoke.cont");
-        // The tags §31 defines, each with the return shape it names. `0` is void and `5` is a
+        // The tags Â§31 defines, each with the return shape it names. `0` is void and `5` is a
         // reference, and neither is boxed -- the first has nothing to box and the second is
         // already an Object.
         //
@@ -19898,7 +21459,7 @@ private:
                     std::vector<ValueId> args{obj};
                     if (carries) {
                         // WHAT A `Some` CARRIES IS THE VALUE, and for a java-style enum the value
-                        // is the SINGLETON, not the ordinal (§12.5 says so in as many words). The
+                        // is the SINGLETON, not the ordinal (Â§12.5 says so in as many words). The
                         // ordinal went in as the payload, so `case Some(Planet p) -> p.density()`
                         // called a method on address 1 and the program died where it should have
                         // printed 10. An int-style enum IS its ordinal and passes it unchanged.
@@ -19989,7 +21550,7 @@ private:
             }
             return done(makeArray(tt.intType(32), ordinals, c.loc));
         }
-        // `Color.parse("Blue")` -- §12.5. A QUESTION ABOUT THE CONSTANT LIST, so it is answered
+        // `Color.parse("Blue")` -- Â§12.5. A QUESTION ABOUT THE CONSTANT LIST, so it is answered
         // here where the list is: the text is compared against each name in turn, and the answer is
         // the Option the language says it is -- `Some(constant)` or `None`. As an ordinary call it
         // linked against `Color.parse`, a method nobody wrote.
@@ -20112,13 +21673,69 @@ private:
             out_.module.globals.push_back(std::move(g));
         }
         Inst at;
-        at.op = Op::ConstFn;   // §7.1: the address of a named module-level thing
+        at.op = Op::ConstFn;   // Â§7.1: the address of a named module-level thing
         at.type = out_.module.types.ptrType();
         at.text = name;
         at.loc = c.loc;
         const ValueId block = emit(std::move(at));
         noteName(block, "byte[]");
         return block;
+    }
+
+    // The receiver is an entity's ARRAY and the name is a `pass` declared on the element, or this
+    // answers nothing and the ordinary resolution runs. Kept apart from `lowerCall` because it is
+    // the one place in the language where a member of T is reached through a T[].
+    bool lowerPassCall(const ast::MemberExpr& callee, const ast::CallExpr& c, ValueId& out) {
+        // THE NAME DECIDES WHETHER TO LOOK, and it has to, because looking means LOWERING THE
+        // RECEIVER -- and a receiver lowered here and then rejected is lowered again by the ordinary
+        // path. That is not a small waste: `a.b().c().d()` doubles at every level, so a chain of
+        // twelve is four thousand copies of the innermost expression. The prelude's `Sha512` has
+        // chains like that, and the compiler stopped responding on any program containing an
+        // `entity` -- including ones with no `pass` in them at all.
+        //
+        // The set is every pass name declared anywhere, so a program with no entity never gets past
+        // this line and one with an entity pays only on a call whose name really is a pass's.
+        if (passNames_.count(callee.member) == 0) {
+            return false;
+        }
+        const ValueId rows = lowerExpr(callee.object.get());
+        if (rows == kNoValue) {
+            return false;
+        }
+        const DeclaredType elem = elementDeclOf(declaredName(rows));
+        if (elem.name.empty() || elem.pointerDepth > 0) {
+            return false;
+        }
+        const std::string entity = resolveClassKey(classNameOf(elem.name));
+        if (entities_.count(entity) == 0) {
+            return false;
+        }
+        const ast::ClassDecl* decl = findClass(classNameOf(elem.name));
+        bool declaredAsPass = false;
+        if (decl != nullptr) {
+            forEachMember<ast::MethodDecl>(*decl, [&](const ast::MethodDecl& m) {
+                if (m.name == callee.member && m.isPass) {
+                    declaredAsPass = true;
+                }
+            });
+        }
+        if (!declaredAsPass) {
+            return false;
+        }
+        const Function* target = resolveKey(entity + "." + callee.member);
+        if (target == nullptr) {
+            return false;
+        }
+        std::vector<ValueId> args{rows};
+        for (const ast::ExprPtr& a : c.args) {
+            const ValueId v = lowerExpr(a.get());
+            if (v == kNoValue) {
+                return false;
+            }
+            args.push_back(v);
+        }
+        out = emitCall(target, std::move(args), c.loc);
+        return true;
     }
 
     ValueId lowerCall(const ast::CallExpr& c) {
@@ -20138,7 +21755,7 @@ private:
             return v;
         }
 
-        // `embed("path")` (§36) IS NOT A CALL EITHER: it reads a file AT COMPILE TIME and puts its
+        // `embed("path")` (Â§36) IS NOT A CALL EITHER: it reads a file AT COMPILE TIME and puts its
         // bytes in the image as a `byte[]` constant. That is how a freestanding program carries
         // data it must not load from a filesystem it does not have -- a guest binary, a font, a
         // firmware blob -- without dropping to an assembly file to write `.incbin`.
@@ -20151,7 +21768,7 @@ private:
             id != nullptr && id->name == "embed" && c.args.size() == 1) {
             return lowerEmbed(c);
         }
-        // §34: `d.toString()` ON A `Decimal` IS NOT A METHOD CALL EITHER -- there is no class to
+        // Â§34: `d.toString()` ON A `Decimal` IS NOT A METHOD CALL EITHER -- there is no class to
         // find it on. The mantissa becomes text the same way the interpolation does, and the result
         // is a `String` object rather than a bare buffer because that is what the caller then
         // concatenates. Without this the receiver fell through to the ordinary lookup, which found
@@ -20169,8 +21786,34 @@ private:
                 noteName(str, "String");
                 return str;
             }
+            // NOT A `Decimal` -- AND THE RECEIVER IS ALREADY LOWERED. Handing it to the path that
+            // takes over is the whole of what stops it being lowered again; see the note at the top
+            // of `lowerExpr`. Before this, `c.bump().toString()` called `bump` twice.
+            if (subject != kNoValue) {
+                speculative_[dm->object.get()] = {subject, here_};
+            }
         }
-        // `Dog.methods.replace("bark", fn)` (§32.8): REWRITE A CLASS'S DISPATCH SLOT. The
+        // `swarm.advance(dt)` -- A PASS RUN OVER THE POPULATION.
+        //
+        // The receiver is the ARRAY and the member is declared on the ELEMENT, which is a shape
+        // nothing else in the language has: `swarm` is a `Particle[]` and `advance` is written on
+        // `Particle`. That is deliberate and is the second thing `pass` buys. Without it, "advance
+        // every particle" has to be `static method advance(Particle[] ps)` -- a free function in a
+        // hat, which this repository has written by accident twice and recorded as a lesson.
+        //
+        // The call is ordinary; the loop is inside the callee, where the body was lowered into it.
+        if (const auto* pm = dynamic_cast<const ast::MemberExpr*>(c.callee.get()); pm != nullptr) {
+            // ANSWERED BY A BOOLEAN, not by the value. A pass returns nothing -- it answers with the
+            // population it changed -- so `emitCall` hands back `kNoValue` for a successful one,
+            // which is the same word "I did not handle this" is spelled with. Read as the latter,
+            // the call was emitted here and then emitted AGAIN by the path below: `swarm.advance(2)`
+            // ran twice, and the sample's `x1` came out 24 where the program says 12.
+            ValueId ran = kNoValue;
+            if (lowerPassCall(*pm, c, ran)) {
+                return ran;
+            }
+        }
+        // `Dog.methods.replace("bark", fn)` (Â§32.8): REWRITE A CLASS'S DISPATCH SLOT. The
         // replacement takes over the slot, so every instance -- the ones already alive and the ones
         // not yet born -- picks up the new behaviour, which is the whole of what the feature is
         // for. Lowered as an ordinary call it linked against `Dog.methods.replace`, a method nobody
@@ -20190,7 +21833,7 @@ private:
                 }
             }
         }
-        // `vec3(1.0, 2.0, 3.0)` AND `mat4(...16 floats...)` (§34.6) look like calls and are not:
+        // `vec3(1.0, 2.0, 3.0)` AND `mat4(...16 floats...)` (Â§34.6) look like calls and are not:
         // there is no method anywhere named `vec3`, and lowering them as one linked against a
         // symbol nobody wrote. Each is a vector built from its arguments, in the order written.
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(c.callee.get())) {
@@ -20214,7 +21857,7 @@ private:
         // ...and the three that ARE spelled as methods on those types. `mat4.identity()` is a
         // factory, `a.multiply(b)` and `m.transform(v)` are the two products a 4x4 matrix has. The
         // arithmetic is written out here rather than left to a runtime call because it is the
-        // language's (§34.6), and because sixteen extracts and inserts over a value the optimiser
+        // language's (Â§34.6), and because sixteen extracts and inserts over a value the optimiser
         // can see fold to constants when the matrix is one.
         if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(c.callee.get())) {
             if (const auto* on = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
@@ -20222,7 +21865,7 @@ private:
                 c.args.empty()) {
                 return mat4Identity(c.loc);
             }
-            // The GLSL-style vector methods (§34.6): `dot`, `length`, `normalize`, `cross`. All of
+            // The GLSL-style vector methods (Â§34.6): `dot`, `length`, `normalize`, `cross`. All of
             // them are element-wise arithmetic over a value the optimiser can see, so they are
             // written out here rather than called into a runtime -- which is also what lets a
             // constant vector's length fold at compile time.
@@ -20282,7 +21925,7 @@ private:
             }
         }
         // `itself(...)` INSIDE A LAMBDA IS THAT LAMBDA. The pronoun means "the entity being
-        // declared" everywhere (§ the keyword reference), and a lambda body is the one place the
+        // declared" everywhere (Â§ the keyword reference), and a lambda body is the one place the
         // sema rewrite deliberately does not reach -- inside one, the entity being declared IS the
         // lambda. Called DIRECTLY rather than through the closure value, because the closure does
         // not exist yet: the body is lowered while the value that will hold it is still being
@@ -20305,7 +21948,7 @@ private:
             return emitCall(resolveKey(lambdaSelfKey_), std::move(all), c.loc);
         }
 
-        // `Channel.select().receive(ch, f).timeout(ms, g).run()` -- §20.4. A COMPILE-TIME chain,
+        // `Channel.select().receive(ch, f).timeout(ms, g).run()` -- Â§20.4. A COMPILE-TIME chain,
         // not a runtime builder: the arms are known here, so it lowers to a poll loop over the
         // channels with an optional deadline. As an ordinary call chain it linked against
         // `Channel.select`, a method nobody wrote and nobody could write.
@@ -20455,7 +22098,17 @@ private:
                 }
                 // NAMED, not dispatched: `super.m()` means the base's body even when this class
                 // overrides it, which is the whole reason the word exists.
-                return emitCall(resolveKey(base + "." + sm->member), std::move(args), c.loc);
+                //
+                // ...AND THE BASE'S OWN CHAIN IS WALKED, because the immediate superclass need not
+                // be the class that has the body. `Shadow extends Border extends Base`, with `name`
+                // declared on `Base` and not overridden by `Border`: this named `Border.name`, and
+                // `Border.name` does not exist. **A `call` naming a key nothing defines emits
+                // NOTHING** -- the backend looks it up, finds no function and breaks out of the
+                // case, so the value the program was about to use is quietly undef. It read as an
+                // access violation with no diagnostic anywhere, which is precisely the failure mode
+                // Â§11.8 refuses a devirtualisation over, arriving here through the one construct
+                // whose entire job is to name a body rather than look one up.
+                return emitCall(superImplementation(base, sm->member), std::move(args), c.loc);
             }
         }
 
@@ -20469,7 +22122,7 @@ private:
         }
         if (auto* m = dynamic_cast<const ast::MemberExpr*>(c.callee.get())) {
             receiver = lowerExpr(m->object.get());
-            // §21: A METHOD ON THE VALUE FORM NEEDS AN OBJECT, and the tag says which one to build.
+            // Â§21: A METHOD ON THE VALUE FORM NEEDS AN OBJECT, and the tag says which one to build.
             if (isVariantValue(receiver)) {
                 std::string sum = classNameOf(declaredName(receiver));
                 // The value may be named by its CASE -- a freshly built `Ok(x)` is -- and the case
@@ -20490,7 +22143,11 @@ private:
                     receiver = built;
                 }
             }
-            // §3.7: CALLING A METHOD ON A NULLABLE RECEIVER DEREFERENCES IT -- the table is read
+            // ...AND A PLAIN STRUCT THAT CAME BACK FROM A CALL NEEDS THE SAME THING, for the same
+            // reason the variant above does: `this` is a pointer and a returned value has no
+            // address. See `materialiseReceiver`.
+            receiver = materialiseReceiver(receiver, c.loc);
+            // Â§3.7: CALLING A METHOD ON A NULLABLE RECEIVER DEREFERENCES IT -- the table is read
             // out of the object. `m?.call()` opts out, which is what the question mark buys.
             if (!m->safe) {
                 guardReceiver(receiver, c.loc);
@@ -20583,13 +22240,13 @@ private:
             }
         }
         if (receiver != kNoValue) {
-            // §30: CALLING INTO A CLASS THAT IS GONE THROWS. Asked of the receiver's STATIC type,
+            // Â§30: CALLING INTO A CLASS THAT IS GONE THROWS. Asked of the receiver's STATIC type,
             // which is all a call site has; a call through a base-typed handle is caught by the
             // poisoned table instead, which is why both exist.
             guardAlive(classNameOf(declaredName(receiver)), c.loc);
             args.push_back(receiver);
         }
-        // §20.2: AN EARLIER ARGUMENT OUTLIVES A SUSPENSION IN A LATER ONE. `f(x, await t)`
+        // Â§20.2: AN EARLIER ARGUMENT OUTLIVES A SUSPENSION IN A LATER ONE. `f(x, await t)`
         // evaluates `x`, suspends, and then wants `x` again in a block the resume reaches from
         // elsewhere. Each one is put away only when something after it actually awaits, so an
         // ordinary call in an async body pays nothing.
@@ -20671,7 +22328,7 @@ private:
                 g.type = tt.ptrType();
                 g.operands.push_back(receiver);
                 g.imm = 0;
-                // NAMED, because the guard eliminator recognises the bound by this word (§11.3).
+                // NAMED, because the guard eliminator recognises the bound by this word (Â§11.3).
                 // `foreach` has always named it; `for (i = 0; i < a.length(); i++)` did not, and so
                 // the one loop shape everybody writes kept a bounds check the compiler could prove
                 // redundant. The whole corpus measured `guards-removed=0`, and this is why.
@@ -20700,7 +22357,7 @@ private:
         // module declares, so the by-suffix fallback below took the first `.hash` it could find --
         // `ByteSize.hash`, in the standard library -- and passed the integer to it as a POINTER.
         // Every hashed collection over a primitive key crashed on its first insert.
-        // §20.3/20.6: `atomic<T>` and `Channel<T>` are classes with a field and no methods -- what
+        // Â§20.3/20.6: `atomic<T>` and `Channel<T>` are classes with a field and no methods -- what
         // they can be asked is a set of OPERATIONS the compiler emits, not bodies anybody wrote.
         // Resolved as ordinary calls they linked against `atomic$int.increment`, which nothing
         // defines, and the whole concurrency corner of the corpus failed at the linker.
@@ -21089,13 +22746,13 @@ private:
     //
     // The result letters say how the answer comes back:
     //   v  nothing        i  an int32       l  an int64      I  an int64 truncated to int
-    //   s  (…, long* outLen) -> char*: the callee is handed a slot for the length and answers with
+    //   s  (â€¦, long* outLen) -> char*: the callee is handed a slot for the length and answers with
     //      a buffer; both become an owned String here.
     //   t  a NUL-terminated char* the caller now OWNS, whose length is `strlen`.
     //   b  the same, BORROWED: the bytes stay the runtime's and are copied on the way in.
     //
     // THE DIFFERENCE BETWEEN `t` AND `b` IS NOT COSMETIC, and writing both as `t` is what made it
-    // look so. A String owns its buffer (§21) -- that is what lets a temporary be released -- and
+    // look so. A String owns its buffer (Â§21) -- that is what lets a temporary be released -- and
     // `Net.udpPeerHost` answers with `g_udp_peer_host`, a static of the runtime's. Wrapped as
     // owned, releasing that String called `free` on a global: `udp_socket` exited 0xc0000374.
     // `Env.executablePath` beside it really does `__polaron_malloc` its answer. One letter each,
@@ -21675,7 +23332,7 @@ private:
         std::vector<ValueId> values;
     };
 
-    // §34: a `Decimal` as text, in a fresh buffer, ready for `%s`.
+    // Â§34: a `Decimal` as text, in a fresh buffer, ready for `%s`.
     //
     // The 128-bit work is done HERE -- sign, whole part, eighteen-digit fraction -- and the runtime
     // helper only assembles the digits and trims the trailing zeros of the fraction, so that
@@ -21727,7 +23384,7 @@ private:
         return buf;
     }
 
-    // §34: a cast that crosses the `Decimal` boundary, or kNoValue when it does not cross one (two
+    // Â§34: a cast that crosses the `Decimal` boundary, or kNoValue when it does not cross one (two
     // Decimals, or a `Decimal` reaching here through a path this does not own).
     //
     // Into a Decimal, an integer is multiplied by the scale and a float is multiplied before it is
@@ -21811,7 +23468,7 @@ private:
             const std::string declared = classNameOf(declaredName(v));
             const SourceLocation loc = is.exprs[i]->loc;
 
-            // `$"pi = {pi:0.00}"` -- THE FORMAT SPECIFIER (§4.1), which this pass was dropping.
+            // `$"pi = {pi:0.00}"` -- THE FORMAT SPECIFIER (Â§4.1), which this pass was dropping.
             // The digits after the dot fix the decimal places; a specifier with no dot is a minimum
             // field width. Without it `{f:0.0}` printed `212` where the program asks for `212.0`,
             // and a program that formats a number is a program that cares which.
@@ -21836,13 +23493,37 @@ private:
                     continue;
                 }
             }
+            // A TYPE THAT CAN SAY WHAT IT IS SHOULD BE ASKED, and this pass never asked.
+            //
+            // `$"{k}"` on a sealed enum printed `1`. The enum's own `toString()` -- written, public,
+            // and returning "TWO" -- was reached by `k.toString()`, by `"" + k`, and by the
+            // `toString` the compiler generates for a record holding one, because all three go
+            // through a call. Interpolation went through none of them: it read the value's MACHINE
+            // type, found an integer, and printed the ordinal. The same value said two different
+            // things depending on which of two spellings asked, and the shorter, more obvious one
+            // gave the answer nobody wants.
+            //
+            // Only an enum can reach this today: `Polaron-0702` refuses a class value in an
+            // interpolation outright, and a `String` and a `Decimal` are handled above. It is
+            // written generally anyway, and `callMethodOn` rather than a direct call, so that the
+            // day 0702 admits a class the answer is already the overriding one.
+            const Function* say =
+                (declared.empty() || declared == "String" || declared == "string" ||
+                 declared == "Decimal")
+                    ? nullptr
+                    : resolveKey(declared + ".toString");
             if (declared == "Decimal") {
-                // §34: NOT `%d` AND NOT `%g`. A Decimal is a 128-bit mantissa and printf has no
+                // Â§34: NOT `%d` AND NOT `%g`. A Decimal is a 128-bit mantissa and printf has no
                 // conversion for one; printed as an integer it shows the mantissa, and printed as a
                 // double it shows a number the type exists to avoid. `decimalText` does the 128-bit
                 // split here and the runtime assembles the digits.
                 out.format += "%s";
                 out.values.push_back(decimalText(v, loc));
+            } else if (say != nullptr) {
+                out.format += "%s";
+                out.values.push_back(
+                    strField(callMethodOn(v, declared, "toString", say, loc), kStrData,
+                             tt.ptrType(), loc));
             } else if (vt != nullptr && vt->kind == TypeKind::Float) {
                 out.format += "%g";
                 out.values.push_back(lowerConversion(v, vt, tt.floatType(64), loc));
@@ -21878,7 +23559,7 @@ private:
     }
 
     // One of two texts, chosen at run time. PIR has no `select`, and it does not need one: a branch
-    // into a block that takes the answer as a PARAMETER is the shape §1.2 chose block arguments for.
+    // into a block that takes the answer as a PARAMETER is the shape Â§1.2 chose block arguments for.
     // The same choice, but yielding the String OBJECT rather than its bytes -- what a method
     // declared `returns String` has to hand back, and what `println` of the result reads a length
     // from. Handing over the bytes alone made the object header whatever followed the literal.
@@ -21971,14 +23652,29 @@ private:
         Interp built = buildInterp(is);
         const ValueId fmt = literalText(built.format, loc);
 
-        std::vector<ValueId> measure{constInt(0, 64, loc), constInt(0, 64, loc), fmt};
+        // `size_t`, AND IT IS NOT ALWAYS SIXTY-FOUR BITS. This read `i64` on every target, which is
+        // right on x86-64 and fatal on i686 -- fatal in a way nothing anywhere reports.
+        //
+        // The size is a FIXED parameter of a VARIADIC function. On a 32-bit machine every argument
+        // travels on the stack and the callee reads each one at the width it was declared with, so a
+        // caller pushing eight bytes where `snprintf` reads four leaves the FORMAT POINTER and every
+        // value after it four bytes out of place. A correct line of Polaron crashed with
+        // STATUS_STACK_BUFFER_OVERRUN before printing a character.
+        //
+        // ONLY THE VARIADIC CALLS ARE AFFECTED, which is why the fix is here and not spread across
+        // the ninety sites that pass an `i64` size to a C function. An ordinary `cdecl` call with an
+        // over-wide argument survives by accident: the callee reads the low half, which is the
+        // value, and the CALLER cleans the stack. That is exactly why `__polaron_malloc(i64)` and
+        // `memcpy(..., i64)` work on i686 and this did not.
+        const Type* sz = tt.intType(cgutil::pointerBits(out_.module.triple));
+        std::vector<ValueId> measure{constInt(0, 64, loc), constInt(0, sz->bits, loc), fmt};
         // The destination is a null POINTER for the measuring pass; `snprintf(nullptr, 0, ...)`
         // returns the length it would have written.
         measure[0] = nullPointer(loc);
         for (ValueId v : built.values) {
             measure.push_back(v);
         }
-        Function* sn = declareExternalTyped("snprintf", i32, {ptr, i64, ptr});
+        Function* sn = declareExternalTyped("snprintf", i32, {ptr, sz, ptr});
         sn->variadic = true;
         const ValueId shortLen = emitVariadic(sn, measure, i32, loc);
 
@@ -21991,7 +23687,10 @@ private:
         const ValueId cap = addLong(len, 1, loc);
         const ValueId buf = callExternal("__polaron_malloc", ptr, {i64}, {cap}, loc);
 
-        std::vector<ValueId> format{buf, cap, fmt};
+        // ...and the same width for the real pass. `cap` is computed as an `i64` because the length
+        // arithmetic is, so on a 32-bit target it is narrowed to what the callee will read.
+        const ValueId room = sz->bits == 64 ? cap : narrow(cap, sz->bits, loc);
+        std::vector<ValueId> format{buf, room, fmt};
         for (ValueId v : built.values) {
             format.push_back(v);
         }
@@ -22168,7 +23867,7 @@ private:
                     n == "String" || n == "string") {
                     a = strField(a, kStrData, out_.module.types.ptrType(), loc);
                 }
-                // ...AND A CAPTURE-FREE LAMBDA IS A RAW FUNCTION POINTER (§26). A closure here is
+                // ...AND A CAPTURE-FREE LAMBDA IS A RAW FUNCTION POINTER (Â§26). A closure here is
                 // `{code, env}` and the C side knows nothing of an environment: it calls what it is
                 // given with the arguments it was told about. A lambda that captures nothing needs
                 // no environment, so what crosses is the code -- and it has to be a body written
@@ -22204,7 +23903,7 @@ private:
                 // what the instruction steps over -- and testing for `Ptr` alone let it through
                 // unloaded: `h.cap - cs[0]` went out as `call %Coord @Coord.operator-(ptr, %Coord
                 // undef)` and subtracted four words of nothing.
-                // A SMALL STRUCT AT A C BOUNDARY IS ITS BYTES IN A REGISTER (§26). The parameter
+                // A SMALL STRUCT AT A C BOUNDARY IS ITS BYTES IN A REGISTER (Â§26). The parameter
                 // was rewritten to an integer at the declaration, so what has to travel is the
                 // struct's bytes READ AS THAT INTEGER -- one load of the right width from the
                 // storage, which is what the trusted path emits as `%ffi.byval`.
@@ -22299,7 +23998,7 @@ private:
                 }
             }
         }
-        // §21: A `String` HANDED BACK BY A CALL BELONGS TO THE CALLER.
+        // Â§21: A `String` HANDED BACK BY A CALL BELONGS TO THE CALLER.
         //
         // A `return` copies (or claims) on the way out, so what arrives here is always a fresh
         // object nothing else names -- which makes it a temporary of THIS statement, exactly like
@@ -22393,7 +24092,7 @@ private:
             return;
         }
         if (carriesWeakHead(className)) {
-            const ValueId head = rawOffset(obj, constLong(kWeakHeadOffset, loc), loc);
+            const ValueId head = rawOffset(obj, constLong(weakHeadOffset(className), loc), loc);
             slotType_[head] = out_.module.types.ptrType();
             storePtr(head, nullPointer(loc), loc);
         }
@@ -22419,7 +24118,7 @@ private:
                 args.push_back(v);
             }
         }
-        // §21: `Ok(x)` IN VALUE FORM IS A VALUE. No allocation, no class, no vtable, nothing to
+        // Â§21: `Ok(x)` IN VALUE FORM IS A VALUE. No allocation, no class, no vtable, nothing to
         // delete -- a tag and a payload in two registers. The analyser has already decided which
         // form this is and says so in `location`; this read that word and sent it to the allocator
         // anyway, so every fallible return cost a `__polaron_malloc(16)` and every instantiation
@@ -22459,10 +24158,10 @@ private:
         // did, or the call finds nothing, the object is left uninitialised, and the reachability
         // pass then turns the constructor nobody calls back into a declaration.
         const std::string className = resolveClassKey(ast::mangleGeneric(n.className, n.typeArgs));
-        // §30: BUILDING ONE OF SOMETHING THAT IS GONE THROWS. Checked before the storage is taken,
+        // Â§30: BUILDING ONE OF SOMETHING THAT IS GONE THROWS. Checked before the storage is taken,
         // so a refused construction leaves nothing half-made behind.
         guardAlive(ast::mangleGeneric(n.className, n.typeArgs), n.loc);
-        // §37.3: A LAZILY IMPORTED CLASS LOADS ON ITS FIRST INSTANCE. Its `onClassLoad` is not in
+        // Â§37.3: A LAZILY IMPORTED CLASS LOADS ON ITS FIRST INSTANCE. Its `onClassLoad` is not in
         // the module's init list, so this is the only thing that ever runs it -- once, guarded by a
         // flag, which is what "on its first instance" means.
         loadLazyImport(className, n.loc);
@@ -22525,18 +24224,18 @@ private:
             return obj;
         }
         // WHERE IT LIVES IS PART OF THE INSTRUCTION. `on stack`, `on heap` and `in region R` are
-        // three different allocations, and escape analysis (§11.5) rewrites the second into the
+        // three different allocations, and escape analysis (Â§11.5) rewrites the second into the
         // first when it can prove nothing escapes -- which it can only do if the site says which
         // one it was.
         if (!n.region.empty()) {
             // `new T in region R` IS A CURSOR BUMP, written out. `RegionAlloc` reached the backend
             // as an opcode nothing translated, so the object had no storage at all -- which is why
             // every region sample read back whatever the block happened to contain. Emitted here
-            // rather than left to the backend because the arithmetic is the language's (§17), not
+            // rather than left to the backend because the arithmetic is the language's (Â§17), not
             // the target's: one header layout, one alignment rule, one place.
             // A MULTI-RANGE REGION HAS NO BLOCK TO LOOK UP. Its memory is somebody else's, at
             // addresses the declaration named, and which one this object goes to is decided from
-            // its TYPE -- so the routing happens before anything is loaded (§17.4).
+            // its TYPE -- so the routing happens before anything is loaded (Â§17.4).
             const bool multi = multiRegions_.count(n.region) != 0;
             const ValueId region = multi ? kNoValue : regionBlockFor(n.region, n.loc);
             if ((multi || region != kNoValue) && t != nullptr && t->kind == TypeKind::Struct) {
@@ -22552,7 +24251,7 @@ private:
                 // registering it for scope-exit teardown as well destroyed it twice: `region_stack`
                 // counted 200000 destructions of 100000 objects.
                 regionOwned_.insert(obj);
-                // §37.5: AN OBJECT IN A `volatile` REGION IS A DEVICE. Marking the object is
+                // Â§37.5: AN OBJECT IN A `volatile` REGION IS A DEVICE. Marking the object is
                 // enough: every field address is a `gep` off it, and `emit` hands the fact down
                 // the chain -- so `window.control = 1` writes a register rather than a variable
                 // the optimiser is free to keep in a machine register.
@@ -22594,13 +24293,13 @@ private:
             if (region != kNoValue) {
                 in.operands.push_back(region);
             }
-        // A VALUE `Option`/`Result` (§21) IS STILL AN OBJECT HERE. The trusted path packs it into a
+        // A VALUE `Option`/`Result` (Â§21) IS STILL AN OBJECT HERE. The trusted path packs it into a
         // `{tag, payload}` register pair; this lowering has no aggregate-by-value shape, so it
         // builds the ordinary `Some$int`/`None$int` object -- which every reader of one already
         // handles: `match` compares tables, `try?` reads the table, and the methods dispatch. What
         // it must NOT be is a FRAME slot: `return Some(x)` from a method hands back the address of
         // a frame that has gone, and `find` answered whatever the caller's stack held next.
-        // A BOUND TARGET IS STORAGE THE PROCEDURE HANDS BACK (§ transformers): `procedure
+        // A BOUND TARGET IS STORAGE THE PROCEDURE HANDS BACK (Â§ transformers): `procedure
         // into<Fahrenheit f>` fills `f` and returns it, so a frame slot is dead the instant the
         // procedure returns. The declaration says "stack" because that is the default nobody wrote,
         // and taking that at its word made the FIRST conversion work by luck -- nothing had
@@ -22630,7 +24329,7 @@ private:
                    asyncStatePtr_ == kNoValue) {
             in.op = Op::Alloca;
         } else if (isValueClass(className) && n.location != "heap") {
-            // §20.2: INSIDE AN ASYNC BODY A VALUE AGGREGATE GOES TO THE HEAP. Its frame home
+            // Â§20.2: INSIDE AN ASYNC BODY A VALUE AGGREGATE GOES TO THE HEAP. Its frame home
             // belongs to one resume invocation and is gone by the next, so a state field holding
             // its address would point at a dead frame after the first suspension. Promoted for
             // every such `new` in the body rather than only the ones that demonstrably cross a
@@ -22653,7 +24352,7 @@ private:
             in.op = Op::Alloca;
         }
         // WHAT IT ALLOCATES IS THE CLASS, not a pointer. `Alloca`'s type is the thing being made --
-        // that is what §7.4 says and what the backend reads -- and this said `ptr`, so EVERY object
+        // that is what Â§7.4 says and what the backend reads -- and this said `ptr`, so EVERY object
         // in every program got eight bytes however many fields it had. A `StringBuilder` has three;
         // its constructor wrote the third one past the end of its own storage, and the corruption
         // surfaced as a loop that would not terminate three methods away.
@@ -22711,7 +24410,7 @@ private:
         // constructor for the same reason the persistent block is: the constructor may already
         // assign a weak field, and the assignment unlinks whatever the slot says it holds.
         initWeakSlots(obj, className, t, n.loc);
-        // §18.2: THE BLOCK IS ATTACHED BEFORE THE CONSTRUCTOR RUNS, because the constructor may
+        // Â§18.2: THE BLOCK IS ATTACHED BEFORE THE CONSTRUCTOR RUNS, because the constructor may
         // read a persistent field -- that is what reattaching is for -- and because an inline
         // initialiser on one would otherwise write through a wild pointer.
         attachPersistBlock(obj, className, n.loc);
@@ -22728,7 +24427,7 @@ private:
         const std::string ctorKey = className + "." + className;
         if (const Function* ctor = n.blank ? nullptr : resolveKey(ctorKey)) {
             std::vector<ValueId> all{obj};
-            // A PARTIAL CONSTRUCTOR (§18.9): fewer arguments than parameters, and the ones left out
+            // A PARTIAL CONSTRUCTOR (Â§18.9): fewer arguments than parameters, and the ones left out
             // are the parameters NAMED LIKE A PERSISTENT FIELD -- they take the reattached value
             // instead of one the caller passes. `new Car(7)` on `Car(int serial, int motor)` means
             // motor = 7 and serial = whatever the last Car left behind. Filled positionally, the 7
@@ -22871,7 +24570,7 @@ private:
         // SHORT CIRCUIT IS CONTROL FLOW, so it is blocks. `a && b` does not evaluate `b` when `a`
         // is false, and an IR that lowered it to a bitwise `and` would evaluate both -- which is
         // wrong whenever the right side faults, allocates, or has an effect. Block arguments carry
-        // the result out, which is what §1.2 chose them for.
+        // the result out, which is what Â§1.2 chose them for.
         if (b.op == "&&" || b.op == "||") {
             const bool isAnd = b.op == "&&";
             const ValueId l = lowerExpr(b.lhs.get());
@@ -22918,7 +24617,7 @@ private:
         }
 
         ValueId l = lowerExpr(b.lhs.get());
-        // §20.2: THE LEFT SIDE OUTLIVES A SUSPENSION ON THE RIGHT. `out = base + await val(5)`
+        // Â§20.2: THE LEFT SIDE OUTLIVES A SUSPENSION ON THE RIGHT. `out = base + await val(5)`
         // loads `base`, suspends, and adds -- and the loaded value belongs to a block the resume
         // does not come from, so the module does not verify. Put away before, read back after.
         const int64_t parked = asyncStateObj_ != kNoValue && containsAwait(b.rhs.get())
@@ -22995,7 +24694,7 @@ private:
             }
         }
 
-        // §34: TWO DECIMALS. `+` and `-` are the mantissas added; `*` and `/` have to move the
+        // Â§34: TWO DECIMALS. `+` and `-` are the mantissas added; `*` and `/` have to move the
         // scale, and they do it through a 256-bit intermediate so the product of two mantissas
         // cannot overflow on the way. Everything else -- the comparisons -- is the integers as they
         // are. Handled before the ordinary integer path, which would divide 5.0 by 2.0 as
@@ -23059,7 +24758,7 @@ private:
             return emit(std::move(wide));
         }
 
-        // A JAVA-STYLE ENUM ORDERS BY ORDINAL (§12.2), which is its DECLARATION INDEX and not its
+        // A JAVA-STYLE ENUM ORDERS BY ORDINAL (Â§12.2), which is its DECLARATION INDEX and not its
         // fields and not its address. `LOW < HIGH` is the same question Java's compareTo answers,
         // and each constant is one singleton object here -- so the comparison is over the ordinals
         // recovered from those identities, never over the pointers. Compared as pointers, `HIGH >
@@ -23163,7 +24862,7 @@ private:
             }
         }
 
-        // THE SIGN IS ON THE OPERATION (§3.1), and an OVERFLOW CHECK is an operation. `7u - 16u`
+        // THE SIGN IS ON THE OPERATION (Â§3.1), and an OVERFLOW CHECK is an operation. `7u - 16u`
         // does not overflow signed -- -9 fits an `int` -- and does underflow unsigned, so
         // `checked()` over unsigned arithmetic wrapped to 4294967289 and trapped on nothing.
         if (b.op == "+") { in.op = ck ? Op::AddChecked : Op::AddWrap; in.type = lt; in.unsignedOp = uns; }
@@ -23351,6 +25050,33 @@ private:
     // them.
     std::unordered_map<std::string, DeclaredType> fieldTypeName_;
     std::unordered_set<std::string> unions_;   // classes whose fields all sit at offset zero
+    std::unordered_map<std::string, EntityShape> entities_;
+    // The pass being lowered, and the two values its body's field accesses are relative to. Empty
+    // between passes, which is every other method in the program.
+    std::string pendingPassOver_;   // set by `lowerBody`, consumed by `openPassLoop`
+    std::string pendingPassIndexName_;  // `index i`: the name to bind the counter's storage to
+    std::string passOver_;          // the entity whose columns `this` names, while the loop is open
+    ValueId passBlock_ = kNoValue;  // the block, loaded once at the top
+    ValueId passIndexSlot_ = kNoValue;  // the loop counter's storage
+    std::unordered_set<ValueId> passSelf_;  // every reload of `this` while a pass loop is open
+    // The two name sets that let a program WITHOUT an entity pay nothing, and one with an entity pay
+    // only where the name could possibly be an entity's. Both questions -- "is this a column" and
+    // "is this a pass" -- can only be answered properly by lowering the receiver, and a receiver
+    // lowered speculatively is lowered twice, which is exponential down a call chain.
+    std::unordered_set<std::string> columnNames_;
+    std::unordered_set<std::string> passNames_;
+    // ...AND THE OTHER ANSWER TO THE SAME PROBLEM, for the case where a name set cannot decide.
+    //
+    // Whether `x.toString()` is a `Decimal`'s is a question about the receiver's TYPE, which this
+    // lowering can only learn by lowering it -- there is no name to pre-filter on, because every
+    // type in the language spells that method the same way. So the receiver is lowered, and when
+    // the answer is no, the value is left HERE for the path that takes over to pick up instead of
+    // lowering the expression a second time.
+    //
+    // Keyed by the AST node and consumed exactly once. See the note at the top of `lowerExpr` for
+    // what the second lowering cost: every side-effecting call inside a string concatenation ran
+    // twice, silently, in every program.
+    std::unordered_map<const ast::Expr*, std::pair<ValueId, BlockId>> speculative_;
     // `<class>.<field>` -> where in its shared unit that field's bits are. A bit field is not a
     // TYPE -- `int species : 5` is an `int` everywhere in the program -- it is a PLACEMENT, so what
     // is recorded is where the bits live and not what they are.
@@ -23405,7 +25131,7 @@ private:
     // it is decided by whether anything in the program asks for the class to be taken away -- so it
     // is collected from the statements rather than read off a flag that does not exist.
     std::unordered_set<std::string> unimportable_;
-    // §18.2: a class's persistent fields, in order, the block they live in, and which field of the
+    // Â§18.2: a class's persistent fields, in order, the block they live in, and which field of the
     // object points at it. Three maps rather than three fields on one entry only because the class
     // table here is the interned type, and the interned type is keyed by SHAPE -- a name is not
     // shape, and these are all keyed by name.
@@ -23413,10 +25139,10 @@ private:
     std::unordered_map<std::string, const Type*> persistBlock_;
     std::unordered_map<std::string, int64_t> persistIndex_;
     std::string pendingPersistKey_;
-    // §20.2: the task the body being lowered completes, or nothing when the body is an ordinary
+    // Â§20.2: the task the body being lowered completes, or nothing when the body is an ordinary
     // method. It is what tells a `return` which of the two things it means.
     ValueId asyncTask_ = kNoValue;
-    // §20.2's state machine, while an async body is being lowered. `asyncStatePtr_` is the state
+    // Â§20.2's state machine, while an async body is being lowered. `asyncStatePtr_` is the state
     // object this invocation was handed; `asyncStepSlot_` and `asyncAwaitedSlot_` are where it
     // records how far it got and what it is waiting on; `asyncSuspend_` is the block that returns
     // to the scheduler; `asyncSteps_` is the block each `await` resumes at, in order.
@@ -23434,7 +25160,7 @@ private:
     // True while the operand of a `return` is being lowered, so a `new` inside it takes heap
     // storage rather than a frame slot the caller would read after the frame is gone.
     bool returningNew_ = false;
-    // §7.9: the block each label sits in, and the scopes currently open, so a `goto` can tear down
+    // Â§7.9: the block each label sits in, and the scopes currently open, so a `goto` can tear down
     // exactly the ones it leaves. A vector rather than a count because the label names a BLOCK.
     struct OpenScope {
         const ast::Block* block = nullptr;
@@ -23443,17 +25169,17 @@ private:
     };
     std::vector<OpenScope> blockScopes_;
     std::unordered_map<std::string, const ast::Block*> labelBlock_;
-    // §7.9: the labels some `comefrom` steals, and the block each one lands in.
+    // Â§7.9: the labels some `comefrom` steals, and the block each one lands in.
     std::unordered_set<std::string> comefromNames_;
     std::unordered_map<std::string, BlockId> comefromBlock_;
     std::unordered_map<std::string, const ast::Block*> comefromOwner_;
     // The plain `static` fields still waiting to fold, with the class that declares each. Held on
     // the pass rather than passed around because the fixed point runs over both kinds at once.
     std::vector<std::pair<const ast::FieldDecl*, std::string>> staticFields_;
-    // §37.3: the lazy locals of the body being lowered, by name. Cleared with the rest of the
+    // Â§37.3: the lazy locals of the body being lowered, by name. Cleared with the rest of the
     // per-body state, since a slot from another function answers wrongly for both.
     std::unordered_map<std::string, LazySite> lazyLocals_;
-    // §28.4: `Class.field` -> the initialiser that runs on its first read. Module-wide, not
+    // Â§28.4: `Class.field` -> the initialiser that runs on its first read. Module-wide, not
     // per-body: the field is read from wherever, and the expression belongs to the declaration.
     std::unordered_map<std::string, const ast::Expr*> lazyFieldInit_;
     // Which lazy field's initialiser is being lowered right now, so one that mentions its own field
@@ -23461,9 +25187,9 @@ private:
     std::unordered_set<std::string> buildingLazy_;
     // Which SLOT, when the identity is `arr[i]` rather than a name. Empty for every other shape.
     ValueId pendingPersistIndex_ = kNoValue;
-    // §18: derived state, excluded from a copy and from serialization.
+    // Â§18: derived state, excluded from a copy and from serialization.
     std::unordered_map<std::string, std::unordered_set<std::string>> transientFields_;
-    // §37.5: `<class key>.<field>` for every field declared `volatile`. Read by `fieldAddress`,
+    // Â§37.5: `<class key>.<field>` for every field declared `volatile`. Read by `fieldAddress`,
     // which is the one place a field's address is made, so an access through any path -- `this.x`,
     // `obj.x`, a chain -- is marked the same way.
     std::unordered_set<std::string> volatileFields_;
@@ -23483,7 +25209,7 @@ private:
     std::unordered_map<std::string, RegionShape> regionShape_;
     std::unordered_map<std::string, MultiRange> multiRegions_;
     std::string lambdaSelfKey_;   // what `itself(...)` calls inside the lambda being lowered
-    // §22.6: the generator body being lowered, if any. `genState_` is the state object's type,
+    // Â§22.6: the generator body being lowered, if any. `genState_` is the state object's type,
     // `genStatePtr_` the pointer to this invocation's, `genSteps_` the block each `yield` resumes
     // at -- the step number IS the index into it, which is why they are one vector and not a map.
     const Type* genState_ = nullptr;
@@ -23493,8 +25219,8 @@ private:
     std::vector<BlockId> genSteps_;
     BlockId genDone_ = kNoBlock;
     ValueId resumeAt_ = kNoValue;   // the step this invocation was resumed at
-    int patchSites_ = 0;            // §32.8: one global and one thunk per `methods.replace`
-    // §32.8: the methods some `methods.replace` names. They keep a dispatch slot whether or not
+    int patchSites_ = 0;            // Â§32.8: one global and one thunk per `methods.replace`
+    // Â§32.8: the methods some `methods.replace` names. They keep a dispatch slot whether or not
     // anything overrides them -- see `needsDispatch`.
     std::unordered_set<std::string> replaceable_;
     // Every class named as a superclass or an interface anywhere in the program: the ones that
@@ -23552,7 +25278,7 @@ private:
     }
     bool onFrame(ValueId v) const { return storageOf(v) == Storage::Frame; }
     bool fromAllocator(ValueId v) const { return storageOf(v) == Storage::Heap; }
-    // §37.5: THE VALUES THAT POINT AT VOLATILE STORAGE -- a `volatile` local's slot, a `volatile`
+    // Â§37.5: THE VALUES THAT POINT AT VOLATILE STORAGE -- a `volatile` local's slot, a `volatile`
     // field's address, the result of `cast<volatile T*>`, and everything derived from one by
     // stepping. `emit` reads it to mark the load or store; nothing else needs to know.
     //
@@ -23570,7 +25296,7 @@ private:
     // WHERE THE PROGRAM IS, statement by statement -- what a runtime guard names when it fires.
     // See `lowerStmt`, and `whereLine` in the backend for what it is printed as.
     SourceLocation stmtLoc_;
-    // §21: A `String` OWNS ITS BUFFER. Two lifetimes, two lists:
+    // Â§21: A `String` OWNS ITS BUFFER. Two lifetimes, two lists:
     //
     //   a TEMPORARY -- what `a + b` or `s.substring(...)` builds -- belongs to the STATEMENT that
     //                  built it. Nothing names it, so nothing else could ever free it.
