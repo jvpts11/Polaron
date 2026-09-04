@@ -7949,6 +7949,36 @@ private:
                 owned = callExternal("__polaron_str_copy", tt.ptrType(), {tt.ptrType()},
                                      {readField(original).second}, at);
             } else if (isCopyableClass(ftype)) {
+                // A VALUE FIELD IS ALREADY IN THE COPY -- THE MEMCPY PUT IT THERE.
+                //
+                // Two shapes reach this branch and only one of them is a pointer. A field whose
+                // type is a REFERENCE class holds an address, so a deep copy allocates a fresh
+                // object and stores the new address into the field. A field whose type is a RECORD
+                // or a struct holds the aggregate ITSELF, inline: `%class.Format = { i32,
+                // %class.Unit }`, sixteen of those twenty-four bytes BEING the Unit.
+                //
+                // Treating the second as the first stored eight bytes of ADDRESS over the first
+                // eight bytes of the sub-object -- `store ptr %Unit.copy, ptr %unit4` -- and the
+                // load beside it read the sub-object's first word as a pointer. So a record two
+                // deep whose inner record holds a `String` faulted the moment anything read that
+                // string: the field held half an address where a count belongs, and the string
+                // pointer at offset eight was whatever the allocator had left there.
+                //
+                // IT TAKES THREE LEVELS TO SHOW, which is why it stood: a record directly inside
+                // another has no inner field left to misread, so `Outer{ Inner{ int, String } }`
+                // prints correctly and `Thing{ Format{ Unit{ int, String } } }` faults before
+                // main's first line.
+                //
+                // What an inline field actually needs is the same treatment one level down, IN
+                // PLACE: the bytes are already there, and it is the sub-object's OWN owned fields
+                // -- its strings, its arrays, its own inline records -- that still have to be
+                // duplicated. `copyChain_` stops a type that contains itself, as before.
+                const Type* ft = shape->fields[i].type;
+                if (ft != nullptr && ft->kind == TypeKind::Struct) {
+                    deepenFields(readField(copy).first, readField(original).first, ft,
+                                 resolveClassKey(ftype), at);
+                    continue;
+                }
                 owned = copyValueStruct(readField(original).second, ftype, at);
             }
             if (owned == kNoValue) {

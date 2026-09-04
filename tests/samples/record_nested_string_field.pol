@@ -1,0 +1,68 @@
+// A RECORD INSIDE A RECORD INSIDE A RECORD, with a `String` at the bottom.
+//
+// The deep copy every assignment of a value type performs treated a field whose type is a RECORD
+// the way it treats a field whose type is a reference CLASS: allocate a fresh sub-object and store
+// its address into the field. That is right for a pointer and wrong for an aggregate held inline --
+// `%class.Format = { i32, %class.Unit }` -- where it wrote eight bytes of address over the first
+// eight bytes of the sub-object. The read beside it then took the sub-object's first word as a
+// pointer, so the `String` two levels down came out of whatever the allocator had left there.
+//
+// IT TAKES THREE LEVELS TO SHOW, which is why it stood: a record directly inside another has no
+// inner field left to misread, so two levels print correctly and three fault before main's first
+// line. Four levels here, because the fix is a recursion and a recursion that stops one short
+// passes the three-level case.
+//
+// Found in a reader of Crystal Reports files, where a field's number format holds the unit printed
+// beside the number -- `4,00mm` -- and every report in an eighty-file estate died with an access
+// violation before printing a line.
+//
+// Prints:
+//   200 things, 0 wrong
+//   Thing7 fmt7 mm7 deep7
+import System.IO.Console;
+import System.Collections.ArrayList;
+
+program RecordNestedStringField;
+
+public bundle Main {
+    public namespace App {
+        public record Deep(String note) { }
+
+        public record Unit(int shows, int side, String symbol,
+                           String thousandSymbol, String decimalSymbol, Deep deep) { }
+
+        public record Format(boolean given, int decimals, Unit unit, String called) { }
+
+        public record Thing(int left, int top, Format format, String said, String name) { }
+
+        public class Main {
+            public static method main(string[] given) returns void {
+                ArrayList<Thing>* all = new ArrayList<Thing>() on heap;
+                for (mutable int i = 0; i < 200; i++) {
+                    Unit unit = new Unit(2, 2, "mm" + $"{i}", " ", ",",
+                                         new Deep("deep" + $"{i}"));
+                    Format format = new Format(true, 2, unit, "fmt" + $"{i}");
+                    all.add(new Thing(i, i * 2, format, "words " + $"{i}", "Thing" + $"{i}"));
+                }
+                // EVERY STRING AT EVERY DEPTH, and each one different: a copy that shares storage
+                // rather than duplicating it shows up as the LAST value on every row, which one
+                // constant string could not tell apart from a copy that works.
+                mutable int wrong = 0;
+                for (mutable int i = 0; i < all.size(); i++) {
+                    Thing got = all.get(i);
+                    if (got.format.unit.symbol != "mm" + $"{i}") { wrong = wrong + 1; }
+                    if (got.format.unit.deep.note != "deep" + $"{i}") { wrong = wrong + 1; }
+                    if (got.format.called != "fmt" + $"{i}") { wrong = wrong + 1; }
+                    if (got.name != "Thing" + $"{i}") { wrong = wrong + 1; }
+                    if (got.format.unit.thousandSymbol != " ") { wrong = wrong + 1; }
+                }
+                System.IO.Console.println($"{all.size()} things, {wrong} wrong");
+                Thing one = all.get(7);
+                System.IO.Console.println(one.name + " " + one.format.called + " "
+                    + one.format.unit.symbol + " " + one.format.unit.deep.note);
+                delete all;
+                return;
+            }
+        }
+    }
+}
