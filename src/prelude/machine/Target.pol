@@ -1,0 +1,50 @@
+    // ---- Machine.Target: which machine this build is for ----
+    //
+    // `Machine.Port` is x86: `in` and `out` are instructions aarch64 does not have, and an `asm`
+    // block declaring one architecture inside a build for another is a compile error -- correctly,
+    // because assembly cannot be ported by the compiler. So one library serving every target has to
+    // be able to say which arm of itself is the program.
+    //
+    // That is `comptime if` over the target (freestanding-prelude.md S6), and it works because of
+    // the rule that half of `comptime` rests on: **the untaken branch parses and is not analysed**.
+    // The aarch64 arm may name registers x86 does not have, and vice versa -- which is exactly the
+    // case `layout.md` S10.1a names as the motivation for the rule. This is that case.
+    //
+    // `Current` READS A FACT THE COMPILER SUPPLIES, the same way `T.sizeof()` does: `__target_arch`
+    // is not a value any program declares, it is what the triple already knows, and the leading
+    // underscores say nobody should be writing it. This class is where it gets a name people use.
+    //
+    // THE NUMBERS ARE ALSO IN THE COMPILER, in `comptime::TargetArch`. Two places have to agree
+    // about what 1 means and there is no way to make it one place, so both say so and each points
+    // at the other.
+    public namespace Target {
+
+        public class Arch {
+            public fixed int Other   = 0;
+            // x86_64 AND i686 are both `X86`, deliberately. The register file and the ABI differ --
+            // which is why the compiler's `archFamily` keeps them apart -- but the I/O address
+            // space and the `in`/`out` instructions are the same on both, and that is what
+            // `Machine.Port` is about. A library partitioned finer than the hardware differs would
+            // be partitioned for the compiler's convenience.
+            public fixed int X86     = 1;
+            public fixed int Arm64   = 2;
+            public fixed int Arm32   = 3;
+            public fixed int Wasm    = 4;
+            public fixed int Riscv   = 5;
+            public fixed int M68k    = 6;
+            public fixed int PowerPc = 7;
+
+            // The one this build is for. `comptime`, so it may stand in a `comptime if` -- which is
+            // the only place it is meant to appear.
+            public static comptime method current() returns int {
+                return __target_arch;
+            }
+
+            public static comptime method isX86() returns boolean {
+                return __target_arch == 1;
+            }
+            public static comptime method isArm64() returns boolean {
+                return __target_arch == 2;
+            }
+        }
+    }

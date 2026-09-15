@@ -1,0 +1,263 @@
+program PolaronRegionBacking freestanding;
+
+/* WHERE A REGION'S BYTES COME FROM ON BARE METAL (§17).
+
+   A region's block comes from a STATIC ARENA, not from the project's `heap class`. That is the whole
+   point: regions exist so nobody writes an arena by hand, and while their backing came from
+   `__polaron_malloc` every freestanding program that wanted a region had to write one anyway to
+   satisfy it. A bare-metal program with regions and no heap class links because of this file.
+
+   Release is LIFO: a block returns to the arena only when it is the most recent one still out.
+   Regions nest -- that is what a scope IS -- so the common case reclaims exactly; an out-of-order
+   release keeps its bytes until the ones after it go. Stated rather than hidden, and it is the same
+   bargain a stack makes.
+
+   EVERY SIGNATURE HERE IS THE ONE CODEGEN EMITS, and none of it is a choice: `__polaron_arena_alloc`
+   is `(ptr, i64) -> i64` because that is what `callExternal` in the lowering says. The pointers are
+   pointer types and not `address` -- `address` means sixty-four bits, and this has to be right on a
+   32-bit machine too. */
+
+public bundle Runtime {
+    public namespace Regions {
+        /** A bump arena over storage that is part of the image, reclaiming last-in-first-out. */
+        public struct BumpArena {
+            public mutable byte* bytes;
+            public mutable long capacity;
+            public mutable long used;
+
+            // Sixteen, because a region slot's payload is 16-aligned and the header before it is
+            // sixteen bytes: an arena that handed out anything narrower would put every slot in the
+            // chain half a header out of true.
+            public fixed long Grain = 16;
+
+            public static method rounded(long n) returns long {
+                return (n + BumpArena.Grain - 1) / BumpArena.Grain * BumpArena.Grain;
+            }
+
+            /* ADDRESSES AND NOT INDEXES, in this method and the three below it.
+
+               `&this.bytes[i]` is a bounds-checked index, and the bound it is checked against is the
+               ARRAY's, which here is a raw pointer into an arena and has no length to speak of. So
+               the check compares against something meaningless and costs a guard -- and a guard has
+               to go somewhere on every target. On UEFI it went to `__cxa_throw`, which no firmware
+               image has: `__polaron_region_release` stopped linking, on a target that had nothing to
+               do with the change. The bound that means something is `capacity`, and `take` is where
+               it is checked, once. */
+            public method isTop(byte* p, long bytes) returns boolean {
+                return this.at(this.used - BumpArena.rounded(bytes)) == cast<address>(p);
+            }
+
+            private method at(long offset) returns address {
+                return cast<address>(this.bytes) + cast<address>(offset);
+            }
+
+            /* OUT OF ROOM, SO TAKE MORE FROM THE MACHINE. Reached only on the path that was about to
+               panic, so a program that never seeded anything behaves exactly as it did: the array
+               runs out and says so.
+
+               Blocks already handed out stay exactly where they are. The old block is not reused and
+               nothing moves -- what changes is only where the NEXT allocation comes from. That is
+               what makes this safe with live regions already standing, which on a kernel it always
+               is: the input ring and the bus scanners run long before there is a memory map to read.
+
+               What is abandoned is the tail of the old block, which is at most what would not have
+               fitted anyway. Growing generously rather than by exactly what was asked keeps that to
+               one occurrence instead of one per allocation. */
+            public method growFromSeed(long need) returns boolean {
+                mutable long want = need * 2;
+                if (want < this.capacity) { want = this.capacity; }
+                mutable address more = RegionPools.take(cast<address>(want));
+                if (more == 0) {
+                    more = RegionPools.take(cast<address>(need));
+                    want = need;
+                }
+                if (more == 0) { return false; }
+                this.bytes = cast<byte*>(more);
+                this.capacity = want;
+                this.used = 0;
+                return true;
+            }
+
+            /* Panics rather than answering nothing: every caller here would have nothing to do with
+               an empty answer but panic, and a kernel wants the reason rather than the pointer. */
+            /* `surveyed` for the panic, which is read and is the same one the failure reporter and
+               the unload vault answer for: it writes the bytes and halts, and keeps nothing.
+
+               AND THE MESSAGE ARRIVES AS AN `address`, which is the binder's own suggested way of
+               saying that a lifetime is outside the language -- and here it is TRUE rather than a
+               concession: these are string literals in the image, and they outlive everything.
+               Written `byte*` the word `surveyed` made every caller answer for a pointer that the
+               callee was said to keep, and `take` is called from four places. */
+            public surveyed method take(long bytes, address whenFull) returns byte* {
+                long need = BumpArena.rounded(bytes);
+                if (this.used + need > this.capacity && !this.growFromSeed(need)) {
+                    RegionPools.panic(cast<byte*>(whenFull));
+                }
+                byte* p = cast<byte*>(this.at(this.used));
+                this.used = this.used + need;
+                return p;
+            }
+
+            // Give a block back. Only the most recent one actually returns its bytes; anything else
+            // keeps them until the blocks after it go.
+            public method giveBack(byte* p, long bytes) returns void {
+                if (this.isTop(p, bytes)) {
+                    this.used = this.used - BumpArena.rounded(bytes);
+                }
+                return;
+            }
+
+            // Resize a block: the top one grows where it stands, anything else is copied into a
+            // fresh block (its old bytes come back when the blocks above it go).
+            public method resize(nullable byte* p, long oldBytes, long newBytes, address whenFull)
+                returns byte* {
+                if (p == null) { return this.take(newBytes, whenFull); }
+                byte* from = cast<byte*>(p);
+                if (this.isTop(from, oldBytes)) {
+                    this.used = this.used - BumpArena.rounded(oldBytes);
+                    return this.take(newBytes, whenFull);   // the same address, more of it
+                }
+                byte* q = this.take(newBytes, whenFull);
+                mutable long i = 0;
+                while (i < oldBytes) {
+                    q[i] = from[i];
+                    i = i + 1;
+                }
+                return q;
+            }
+        }
+
+        public class RegionPools {
+            public extern cdecl static method panic(byte* message) returns void
+                symbol("__polaron_panic");
+            /* The machine's own memory, handed over once by whoever read the memory map. An arena
+               that fills asks for more instead of stopping; a program that seeded nothing gets
+               exactly the old behaviour, because the take answers nothing and the panic follows. */
+            public extern cdecl static method take(address bytes) returns address
+                symbol("__polaron_region_take");
+
+            public fixed int Pool = 262144;
+            public fixed int Meta = 32768;
+            // Each block carries its own size just below the pointer handed out, so release can tell
+            // whether it is the top one without the caller passing a length back.
+            public fixed long Header = 16;
+
+            private static mutable byte[] poolBytes = new byte[RegionPools.Pool]() on static;
+            private static mutable byte[] metaBytes = new byte[RegionPools.Meta]() on static;
+            private static mutable BumpArena blocks;
+            private static mutable BumpArena registry;
+            private static mutable boolean armed;
+
+            /* THE ARENAS POINT AT THEIR STORAGE ON FIRST USE, because a static field's initialiser
+               has to be a constant and the address of an element is not one the folder computes.
+               It is a branch on a boolean in front of every region allocation, which is what a
+               constexpr constructor bought in C++ and is not worth a language feature here. */
+            private static method arm() returns void {
+                if (RegionPools.armed) { return; }
+                RegionPools.blocks.bytes = &RegionPools.poolBytes[0];
+                RegionPools.blocks.capacity = cast<long>(RegionPools.Pool);
+                RegionPools.registry.bytes = &RegionPools.metaBytes[0];
+                RegionPools.registry.capacity = cast<long>(RegionPools.Meta);
+                RegionPools.armed = true;
+                return;
+            }
+
+            public unknown c static method __polaron_region_acquire(long total) returns byte* {
+                RegionPools.arm();
+                byte* header = RegionPools.blocks.take(total + RegionPools.Header,
+                    cast<address>(b"region pool exhausted -- this program has not called __polaron_region_seed to hand the region allocator its own memory, so regions are still coming out of the bootstrap array"));
+                long* size = cast<long*>(header);
+                size[0] = total;
+                return cast<byte*>(cast<address>(header) + cast<address>(RegionPools.Header));
+            }
+
+            public unknown c static method __polaron_region_release(nullable byte* block)
+                returns void {
+                address at = cast<address>(block);
+                if (at == 0) { return; }   // never allocated, or already released
+                RegionPools.arm();
+                address headerAt = at - cast<address>(RegionPools.Header);
+                long* size = cast<long*>(headerAt);
+                RegionPools.blocks.giveBack(cast<byte*>(headerAt),
+                                            size[0] + RegionPools.Header);
+                return;
+            }
+
+            /* THE DESTRUCTOR REGISTRY'S OWN ARENA. It is off the region's arena on purpose: a
+               region's declared capacity is entirely the user's, and only objects that HAVE a
+               destructor are ever recorded. These two are what the shared region core calls its
+               `metaAlloc` and `metaFree`. */
+            public unknown c static method __polaron_region_meta_resize(nullable byte* p,
+                long oldBytes, long newBytes) returns byte* {
+                RegionPools.arm();
+                return RegionPools.registry.resize(p, oldBytes, newBytes,
+                    cast<address>(b"region destructor registry exhausted (raise RegionPools.Meta)"));
+            }
+
+            public unknown c static method __polaron_region_meta_free(nullable byte* p, long bytes)
+                returns void {
+                if (p == null) { return; }
+                RegionPools.arm();
+                RegionPools.registry.giveBack(p, bytes);
+                return;
+            }
+        }
+
+        /* ONE ARENA PER REGION-CLASS FAMILY (§17), and the storage is static, so `release region
+           <Root>` RESETS one rather than freeing it. The gate that lets that run is the same
+           live-instance proof the hosted side uses, so there is nothing left pointing at it. */
+        public class ClassArenas {
+            public fixed int Families = 2;
+            public fixed int Room = 65536;
+            /* `used` IS ALSO `taken`, which is what keeps this one table instead of two indexed by
+               the same number. Zero means the slot is free; a reserved arena starts at Grain,
+               because offset zero has to stay unused so that zero can go on meaning null. */
+            private static mutable byte[] bytes =
+                new byte[ClassArenas.Families * ClassArenas.Room]() on static;
+            private static mutable long[] used = new long[ClassArenas.Families]() on static;
+
+            private static method slotOf(byte* arena) returns int {
+                address base = cast<address>(&ClassArenas.bytes[0]);
+                return cast<int>(cast<long>(cast<address>(arena) - base) / cast<long>(ClassArenas.Room));
+            }
+
+            public unknown c static surveyed method __polaron_arena_reserve() returns nullable byte* {
+                mutable int i = 0;
+                while (i < ClassArenas.Families) {
+                    if (ClassArenas.used[i] == 0) {
+                        ClassArenas.used[i] = BumpArena.Grain;
+                        return &ClassArenas.bytes[i * ClassArenas.Room];
+                    }
+                    i = i + 1;
+                }
+                RegionPools.panic(
+                    b"too many region-class families for this build: raise ClassArenas.Families");
+                return null;
+            }
+
+            public unknown c static surveyed method __polaron_arena_alloc(byte* arena, long bytes)
+                returns long {
+                int slot = ClassArenas.slotOf(arena);
+                long off = BumpArena.rounded(ClassArenas.used[slot]);
+                if (off + bytes > cast<long>(ClassArenas.Room)) {
+                    RegionPools.panic(
+                        b"region class arena exhausted: raise ClassArenas.Room");
+                }
+                ClassArenas.used[slot] = off + bytes;
+                return off;
+            }
+
+            // The handle and the storage are the same address here, and `__polaron_arena_base`
+            // exists so that they do not have to be.
+            public unknown c static method __polaron_arena_base(byte* arena) returns byte* {
+                return arena;
+            }
+
+            public unknown c static method __polaron_arena_free(nullable byte* arena) returns void {
+                if (arena == null) { return; }
+                ClassArenas.used[ClassArenas.slotOf(arena)] = 0;
+                return;
+            }
+        }
+    }
+}

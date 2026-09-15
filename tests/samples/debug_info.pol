@@ -20,13 +20,52 @@ public bundle main {
             }
         }
 
+        // WHAT A DEBUGGER STOPPED IN A METHOD IS SUPPOSED TO BE ABLE TO PRINT, and could not.
+        //
+        // Every local was declared to DWARF as a 32-bit signed `int`, whatever it held. The name was
+        // right and the value was a misreading of the correct bytes: a `double` printed as its low
+        // half, a pointer as a small negative number, and an OBJECT as whatever four bytes sat at
+        // its address. That is worse than no debug info, because it looks like an answer.
+        //
+        // These two exist so the metadata has something to be wrong about: a value struct whose
+        // fields have three different widths, and a class holding one.
+        public struct Point {
+            public mutable int x;
+            public mutable double y;
+            public mutable boolean visible;
+        }
+
+        public class Shape {
+            public mutable Point where;
+            public mutable long tag;
+            public constructor Shape(int px, double py, long t) {
+                this.where = new Point() on stack;
+                this.where.x = px;
+                this.where.y = py;
+                this.where.visible = true;
+                this.tag = t;
+            }
+            public method describe() returns int { return this.where.x + cast<int>(this.tag); }
+        }
+
         public class Main {
             public static method main(string[] args) returns void {
                 int x = 10;
                 int y = 32;
                 int r = Calc.addTwo(x, y);
                 int t = Calc.sumTo(5);
+                // The locals whose types the metadata has to carry. `here` is a struct by value,
+                // `body` is a class, `ratio` is a double: three shapes that all used to be `int`.
+                Point here = new Point() on stack;
+                here.x = 3;
+                here.y = 0.5;
+                here.visible = false;
+                double ratio = here.y * 2.0;
+                Shape body = new Shape(7, 1.5, cast<long>(5)) on heap;
                 System.IO.Console.printf("r=%d t=%d\n", r, t);
+                System.IO.Console.printf("p=%d d=%d\n", here.x + body.describe(),
+                                         cast<int>(ratio));
+                delete body;
             }
         }
     }

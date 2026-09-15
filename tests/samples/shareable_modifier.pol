@@ -1,0 +1,92 @@
+﻿import System.IO.Console;
+import System.Concurrency.atomic;
+program ShareableModifier;
+
+// `shareable` â€” SAFE TO REACH FROM SEVERAL THREADS, AS A MODIFIER AND AS A CHECK.
+//
+// It began as `implements Shared`, a marker interface, and `ownership.md` Â§20.4 moved it. Three
+// reasons, and the third is what forces it:
+//
+//   1. it is an adjective, not a contract with methods â€” a marker interface is an interface used as
+//      an adjective, which is a workaround for languages that have no adjectives;
+//   2. `implements Shared` reads as *dispatches something*, and it dispatches nothing;
+//   3. **under `dynamic` it would buy a dispatch pointer.** A class that implements an interface
+//      carries a header, so a value type declaring itself shareable would acquire eight bytes and an
+//      indirection for a property that generates no calls â€” the exact cost AP-02 is about, arriving
+//      through a word chosen for convenience, and invisible at the declaration.
+//
+// AND IT IS CHECKED, NOT TRUSTED (Â§14). A bare permission would be a one-word hole in the no-UB
+// principle: write it over a type with a plain mutable `int` and you have the race the compiler
+// currently refuses â€” and that refusal is what makes AP-33 invert, so trading it for a password
+// would be handing the objection back after winning it. The rule is local and decidable from the
+// declaration, which is why it needs no whole-program knowledge and travels in a `.polh`:
+//
+//   > legal when every mutable field is `atomic<T>`, or is itself `shareable` â€” or when the type is
+//   > entirely immutable.
+//
+// That is the house pattern: you declare the intent and the compiler confirms it, beside `override`
+// declaring and the hierarchy checking, and `layout` stating and the arrangement refusing.
+//
+// Prints: counted=3 frozen=7 nested=9 size=4
+
+public bundle Main {
+    public namespace App {
+
+        // EVERY MUTABLE FIELD IS `atomic`. The type carries its own synchronisation, so two threads
+        // reaching it cannot disagree about anything.
+        public shareable class Counter {
+            // `on heap`, because `atomic<T>` is a CLASS -- it has to have one address that every
+            // thread's instruction targets, and a copy of an atomic is two atomics.
+            public mutable atomic<int> hits;
+            public constructor Counter() { this.hits = new atomic<int>(0) on heap; }
+            public destructor ~Counter() returns void { delete this.hits; }
+            public method bump() returns void { this.hits.add(1); return; }
+            public method count() returns int { return this.hits.get(); }
+        }
+
+        // ...OR THE TYPE IS ENTIRELY IMMUTABLE. Nothing writes it after construction, so there is
+        // nothing for two threads to disagree about â€” no atomics needed and none paid for.
+        public shareable class Frozen {
+            public int v;
+            public constructor Frozen(int v) { this.v = v; }
+            public method get() returns int { return this.v; }
+        }
+
+        // ...OR THE MUTABLE FIELD IS ITSELF SHAREABLE, recursively, and it was checked when IT was
+        // declared. That is what makes the rule local: no whole-program walk, one level of asking.
+        public shareable class Pair {
+            public mutable Counter left;
+            public int base;
+            public constructor Pair(int base) {
+                this.left = new Counter() on heap;
+                this.base = base;
+            }
+            public method total() returns int { return this.base + this.left.count(); }
+        }
+
+        // AND A SHAREABLE VALUE TYPE COSTS NOTHING FOR SAYING SO. This is the point of item 3: as a
+        // marker interface it would be eight bytes wider than the int it holds.
+        public shareable struct Ticket {
+            public int id;
+            public constructor Ticket(int id) { this.id = id; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter c = new Counter() on heap;
+                c.bump(); c.bump(); c.bump();
+
+                Frozen f = new Frozen(7) on stack;
+
+                Pair p = new Pair(9) on heap;
+
+                System.IO.Console.printf("counted=%d frozen=%d nested=%d size=%d\n",
+                                         c.count(), f.get(), p.total(), Ticket.sizeof());
+                delete p;
+                delete c;
+                return;
+            }
+        }
+    }
+}
+

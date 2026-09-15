@@ -1,0 +1,53 @@
+import System.IO.Console;
+program DeleteWhatACarrierHanded;
+
+// A VALUE THAT CARRIES AN OBJECT OUT OF A CALL, and the caller deleting what it carried.
+//
+// `Made` is a result: an object or the reason there is none. It has no destructor and frees nothing,
+// so what `file()` hands back is not storage it owns -- it is the object the maker handed over, and
+// the caller is its only owner. `delete_a_borrow_bad.pol` is refused because `~Owner` frees `inner`
+// a second time; nothing here frees `made` a second time, and refusing the cleanup made the one
+// correct way to write an open-or-fail call a compile error.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int n;
+            public constructor Box(int n) { this.n = n; }
+            public destructor ~Box() returns void { System.IO.Console.printf("~Box %d ", this.n); }
+        }
+
+        public struct Made {
+            private mutable int why;
+            private mutable nullable Box* made;
+            public constructor Made(int why, nullable Box* made) {
+                this.why = why;
+                this.made = made;
+            }
+            public method error() returns int { return this.why; }
+            public method file() returns nullable Box* { return this.made; }
+        }
+
+        public class Maker {
+            public static method make(int n) returns Made {
+                if (n < 0) { return new Made(22, null); }
+                return new Made(0, new Box(n) on heap);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Made got = Maker.make(7);
+                nullable Box* file = got.file();
+                if (file == null) {
+                    System.IO.Console.printf("refused %d\n", got.error());
+                    return;
+                }
+                System.IO.Console.printf("made %d ", file.n);
+                delete file;
+                Made none = Maker.make(0 - 1);
+                System.IO.Console.printf("refused %d\n", none.error());
+                return;
+            }
+        }
+    }
+}

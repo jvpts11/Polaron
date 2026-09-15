@@ -173,11 +173,15 @@ already the closed case.
 ### 6.3 `abstract` and interfaces
 
 - An **abstract method** has no body, so dispatch is the only way it can ever be called. It has no
-  non-dynamic reading. **Open (§10.1):** whether `dynamic` is written on it anyway for consistency,
+  non-dynamic reading. **Decided (§10.1):** `dynamic` may be written on it anyway and is never
+  required — a redundant word carrying non-redundant emphasis, since an abstract method's overriders
+  are elsewhere. What was under consideration was whether it is written on it for consistency,
   or whether that is noise.
 - An **interface member** is dispatch by definition. A class that `implements` an interface therefore
   carries a dispatch pointer.
-  **Open (§10.2):** an interface used purely as a *constraint on a type parameter* dispatches
+  **Decided (§10.2): they stay interfaces**, and the word for *no dispatch* is `final` — which
+  §11.8 now honours, so an interface with one implementer compiles to a direct call. What raised the
+  question: an interface used purely as a *constraint on a type parameter* dispatches
   nothing after monomorphisation — `Hashable<T>` and `Comparable<T>` in `Collections.pol` are used
   exactly this way, with the call `this.keys[i].equalsKey(key)` over a `K[]` resolving statically on
   the concrete `K`. Constraints of that kind arguably belong to the `transformer`/`satisfies`
@@ -294,15 +298,88 @@ one coherent story about binding time, and a class with no `dynamic method` devi
 analysis. Four tests reach that missing optimisation from four directions (AP-01, AP-03, AP-04,
 AP-05).
 
-## 10. Still to design
+## 10. Decided (Wave 4.5)
 
-| | |
-|---|---|
-| 10.1 | is `dynamic` written on an `abstract method`, which can have no other reading (§6.3)? |
-| 10.2 | constraint-only interfaces (§6.3). `Hashable<T>`/`Comparable<T>` dispatch nothing after monomorphisation; should they be `transformer`/`satisfies` instead, so that `implements` can mean dispatch without qualification? |
-| 10.3 | the erasure boundary (§7.1) — recommended (a), not decided |
-| 10.4 | the four root methods. `equals`, `hashCode`, `toString`, `equalsKey` on a class with no identity resolve statically — confirm no site reaches them through the root |
-| 10.5 | freestanding already emits headerless classes (`assignObjectRoot` skips it), so the representation is built and tested. Confirm the hosted path can reuse it per class rather than per program |
+### 10.1 `dynamic` on an `abstract method` is optional and redundant — permitted, never required
+
+**Decided: not required, and accepted where written.**
+
+An abstract method has no body; dispatch is the only way it can be reached, so `abstract` already
+implies it. Requiring the word would be requiring a restatement, and the compiler would be refusing
+programs for failing to repeat something it just read.
+
+**Why permit it rather than refuse it as noise**, which was the other reading. Because of what a
+reader is doing when they write it: an abstract method's overriders are elsewhere, and `dynamic
+abstract method draw()` on the base is the author saying *and every override of this is dispatched
+too* — which is true, and which is not visible at any override. It is a redundant word that carries
+non-redundant emphasis, and refusing it would be the compiler correcting documentation.
+
+**And there is a cost to refusing it that only shows up later.** If the codebase-wide answer to *"is
+this call dispatched"* is grep for `dynamic`, then a construct that is dispatched and forbidden from
+saying so is a hole in the one tool everybody will use.
+
+### 10.2 A constraint-only interface stays an `interface`; the word for *no dispatch* is `final`
+
+**Decided.** `Hashable<T>` and `Comparable<T>` remain interfaces. They are not moved to
+`transformer`/`satisfies`.
+
+The observation behind the question is right: after monomorphisation `this.keys[i].equalsKey(key)`
+over a `K[]` resolves statically on the concrete `K`, so the interface dispatched nothing. But that
+is a fact about **that use**, not about the interface. `Comparable<T>` is genuinely implemented by
+classes that are compared through a base pointer as well as through a type parameter, and the same
+declaration has to serve both.
+
+**So the split is not the right one.** `transformer`/`satisfies` is structural — it asks whether a
+type has a shape — and `interface` is nominal: a class says which contracts it signed. Moving
+`Comparable` there would mean any class with a method named `compareTo` is comparable, which is a
+much larger change to the type system, arriving as a side effect of an optimisation question.
+
+**What actually resolves the concern is `final`,** and §11.8 now honours it. A `final` method on the
+implementing class is never dispatched, whatever it implements; §11.8's descent walk then finds one
+candidate and emits a direct call even through the interface. The concern was *interfaces impose
+dispatch*, and the answer is that they do not any more — the machinery landed in Wave 3, and it is
+measured (`pir_devirt_collapses_sole_interface`) rather than argued.
+
+### 10.3 The erasure boundary — see §7.1, and it was already decided there
+
+**(a), refuse.** Recorded here only because §10 listed it as open when §7.1's heading already read
+**DECIDED**. Nothing further is owed; the diagnostic in §7.1 is the design.
+
+### 10.4 The four root methods resolve statically, and a test says so
+
+**Decided: no site reaches `equals`, `hashCode`, `toString` or `equalsKey` through the root, and that
+is asserted rather than believed.**
+
+The four exist on `Object`, which a non-`dynamic` class no longer extends. Each call to one of them
+on a concrete class is a call to that class's own — the ordinary static resolution every other method
+gets — and where the class defines none, the compiler's generated body is still a body **on that
+class**, not an inherited one.
+
+The one place that could reach through the root is a collection storing `Object*`, and by §7.1 such a
+collection can only hold `dynamic` classes, which do carry the header. So the invariant holds by
+construction.
+
+**But "confirm no site reaches them" is a claim about the whole prelude**, which is where this kind of
+statement is usually wrong. It becomes a test: compile a program using a non-`dynamic` class in a
+hash map and an interpolation, and assert the emitted IR contains **no** `vtable.load` for those four
+slots. That is the `run_pir_contains_test` shape from Wave 3, and it is the difference between having
+decided this and having asserted it.
+
+### 10.5 The headerless representation is reused per class, not per program
+
+**Decided.** The hosted path reuses freestanding's headerless layout **per class**, keyed by whether
+the class is `dynamic` — not per program and not behind a flag.
+
+`assignObjectRoot` already skips the root in freestanding, so the representation is built, emitted and
+tested; what changes is the **condition**, from *is this program freestanding* to *is this class
+dynamic*. That is one predicate moving from a program-wide question to a per-declaration one, which
+is the entire content of this design.
+
+**Per program would be the wrong shape twice over.** It would make the eight bytes a build setting
+rather than a property of the type — so the same class would have two layouts depending on how it was
+compiled, and a `.polb` built one way could not be linked against a consumer built the other. §6.1's
+whole claim is that the cost is attached to a word in the declaration; a program-wide switch would
+put it back on the command line, which is where C++ leaves it and the reason AP-02 was worth writing.
 
 ## 11. What this adds
 

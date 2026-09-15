@@ -1,0 +1,25 @@
+program NarrowInTernaryBad;
+
+// The arm the condition does NOT clear stays nullable: `b == null ? weigh(b) : 0` calls `weigh`
+// exactly when `b` is null, and is refused.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            private mutable int held;
+            public constructor Box(int held) { this.held = held; }
+            public method value() returns int { return this.held; }
+        }
+        public class Main {
+            public static method weigh(Box* b) returns int { return b.value(); }
+            public static method pick(int n) returns nullable Box* {
+                if (n == 0) { return null; }
+                return new Box(n) on heap;
+            }
+            public static method main(string[] args) returns void {
+                nullable Box* b = Main.pick(0);
+                int wrong = b == null ? Main.weigh(b) : 0;
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,49 @@
+import System.IO.Console;
+program AddressOwnerIsTheFix;
+
+// `0B3C` USED TO FIRE ON THE SHAPE ITS OWN FIX RECOMMENDS.
+//
+// The rule is "this keeps a raw address in a field", and its advice is: *wrap the address in a type
+// that owns it and frees it through the same foreign interface that produced it, so the lifetime has
+// one place that knows about it*. That wrapper is a class with an address in a field -- so an author
+// who took the advice got the same warning about the type they had written to answer it.
+//
+// Advice that refuses its own remedy is worse than a missing rule: the reader tries it, gets the
+// warning back, and the next thing they doubt is the rule.
+//
+// A DESTRUCTOR IS HOW A TYPE SAYS IT OWNS SOMETHING. It is the one place that runs when the object
+// dies, it is what a wrapper is FOR, and it cannot be written by accident -- so `Mapped` is silent
+// and `Borrowed`, which merely keeps the number, is still reported. Both are in one file because the
+// rule has to make the distinction, and a test with only the silent half would pass on a rule that
+// had been switched off.
+//
+// Prints:
+//   mapped 4096 borrowed 8192
+public bundle Main {
+    public namespace Advice {
+        // The shape the fix recommends: it takes the address, it is the only thing that knows how to
+        // give it back, and its destructor is where that happens.
+        public class Mapped {
+            private mutable address at;
+            public constructor Mapped(address given) { this.at = given; }
+            public destructor ~Mapped() returns void { this.at = cast<address>(0); }
+            public method base() returns address { return this.at; }
+        }
+
+        // ...and one that merely keeps it. Nothing here says when the far side frees the memory, so
+        // the field is a lifetime with no proof behind it -- which is what the rule is about.
+        public class Borrowed {
+            public mutable address at;
+            public constructor Borrowed(address given) { this.at = given; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Mapped m = new Mapped(cast<address>(4096)) on stack;
+                Borrowed b = new Borrowed(cast<address>(8192)) on stack;
+                System.IO.Console.println("mapped " + cast<int>(m.base()).toString()
+                                          + " borrowed " + cast<int>(b.at).toString());
+            }
+        }
+    }
+}

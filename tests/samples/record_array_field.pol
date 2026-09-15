@@ -1,0 +1,38 @@
+import System.IO.Console;
+program RecordArrayField;
+
+// A RECORD HOLDING AN ARRAY, which could not be declared at all.
+//
+// A record describes itself by asking each field to, and an array cannot: `byte[]` answers
+// `length()` and nothing else. So the generated `toString` called a method that does not exist, the
+// error landed on the `public record` line instead of on the field that could not answer, and
+// writing a `toString` by hand was refused as a duplicate name. Between the two there was no way to
+// have the type -- which is how a directory slot ended up spelled as three parallel lists.
+//
+// The key generation already knew this. `equalsKey`, `hash` and `compareTo` leave arrays out,
+// because two arrays holding the same bytes are different arrays; this is the same fact arriving at
+// the other generated method, and it renders what an array can honestly say about itself.
+//
+// It is also the reading a caller wants: a record carrying an embedded picture must not print four
+// megabytes because somebody interpolated it into a line of output.
+//
+// Prints:
+//   Slot(/Contents, byte[128], byte[9482])
+//   9482
+public bundle Main {
+    public namespace App {
+        [Allow(code: "Polaron-0B50", why: "identity is the path; the bytes are what it holds")]
+        public record Slot(String path, byte[] stored, byte[] content) { }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                byte[] stored = new byte[128]();
+                byte[] content = new byte[9482]();
+                Slot s = new Slot("/Contents", stored, content);
+                System.IO.Console.println(s.toString());
+                System.IO.Console.println($"{s.content.length()}");
+                return;
+            }
+        }
+    }
+}

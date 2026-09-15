@@ -1,0 +1,33 @@
+import System.IO.Console;
+program BorrowTakenInOneBranchBad;
+
+// A BORROW TAKEN ON ONE PATH AND READ ON ALL OF THEM.
+//
+// Where a borrow came from used to be joined as KNOWLEDGE -- kept only where both arms of an `if`
+// agreed -- so an arm that took no borrow "disagreed" with the arm that did, and the join threw the
+// fact away. One `if` was enough to walk out of the rule.
+//
+// A borrow is an OBLIGATION, like `moved`, `deleted` and `freed` beside it: taken on any path, it
+// exists on that path, and reading it after its source is freed is unsafe on that path. Pessimistic
+// about what you know, pessimistic about what you owe.
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Owner {
+        public mutable Leaf* leaf;
+        public constructor Owner() { this.leaf = new Leaf(3) on heap; }
+        public destructor ~Owner() returns void { delete this.leaf; return; }
+        public method borrow() returns Leaf* { return this.leaf; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Owner* o = new Owner() on heap;
+            mutable nullable Leaf* p = null;
+            if (args.length() >= 0) { p = o.borrow(); }   // empréstimo só num ramo
+            delete o;
+            System.IO.Console.println($"{cast<Leaf*>(p).n}");
+            return;
+        }
+    }
+} }

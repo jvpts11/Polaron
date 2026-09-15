@@ -1,0 +1,98 @@
+import Machine.Serial.Uart;
+import Machine.Format.Digits;
+import Machine.Screen.Text;
+import Machine.Raw.Bytes;
+import Machine.Raw.Extent;
+program MachinePrelude freestanding;
+
+// `Machine` -- A STANDARD LIBRARY FOR BARE METAL (docs/design/freestanding-prelude.md).
+//
+// The freestanding mode worked by REFUSAL. Half a dozen checks asked which file a declaration came
+// from and told a bare-metal program what it may not have; nothing was offered in its place. So a
+// kernel hand-wrote text output, port I/O, memory operations and serial -- every time -- and
+// Horizon has written a great deal of it that nobody else could use.
+//
+// The tiering was already there and was being done wrongly: `Result` and `Option` are on the wrong
+// side of that gate for no reason anybody chose, because they happen to live in a file it rejects.
+// Naming the tiers does not introduce a boundary -- it names the one already being enforced, and
+// turns the refusal into an offer.
+//
+// A BUNDLE OF ITS OWN, `Machine`, and not a namespace under `System`: the distinction is the point
+// and a namespace would blur it. `import Machine.Serial.Uart;`, never `System.*`.
+//
+// TWO THINGS MAKE IT A LIBRARY RATHER THAN A SUBSET (S5): no heap and no `String`. Text takes a
+// `byte*` or a `byte[]`; formatting writes into a caller's buffer and returns how many bytes it
+// wrote; nothing returns an object it allocated. And most of it is `reentrant`, so a serial write
+// or a formatter called from an interrupt handler is a declaration the compiler checks rather than
+// a convention -- and, being viral, it checks the whole library at once.
+//
+// This program compiling freestanding IS the assertion. Before `Machine` existed the four imports
+// above did not resolve, and every line of what they name was written by hand, per kernel.
+
+public bundle Main {
+    public namespace App {
+        // A freestanding program IS the system, so it provides its own allocator (spec 36). A bump
+        // is the smallest honest one: it hands out addresses and never takes them back.
+        public heap class Bump {
+            public static fixed address Arena = 0x200000;
+            public static mutable address next;
+            public static method allocate(address size) returns address {
+                if (Bump.next == cast<address>(0)) { Bump.next = Bump.Arena; }
+                address at = Bump.next;
+                Bump.next = Bump.next + size;
+                return at;
+            }
+            public static method release(address block) returns void { return; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // The UART, which is how a kernel says anything before video works -- including
+                // that the descriptor tables it just loaded were wrong.
+                Uart.open();
+                Uart.puts(b"machine: serial up\r\n");
+
+                // The formatter: the one entry of the first cut that had to be WRITTEN rather than
+                // lifted, and also the one every kernel re-writes as a digit loop by hand. Not a
+                // coincidence -- what nobody could share is what nobody had.
+                //
+                // THE BUFFER IS ON THE FRAME, AND THAT MATTERS MORE THAN IT LOOKS. This read
+                // `new byte[64]()` -- an allocation, in a demonstration of the tier whose two stated
+                // premises are NO HEAP and no `String`. It compiled because this sample happens to
+                // run in a program that has an allocator, and it hid the fact that `Machine.Format`
+                // could not be called from one that does not: a `byte[]` here is a pointer to a heap
+                // block with a length header, and an inline `byte[64]` -- which is what a kernel has
+                // -- is bare storage that does not convert to it, correctly.
+                //
+                // A library exercised only by programs with a heap has not been exercised in the tier
+                // it exists for. The sixty-four bytes below are on this method's own frame, the
+                // `Extent` is two words carrying where they are and how many, and nothing here calls
+                // an allocator at all -- which is the claim the whole file is supposed to be making.
+                byte[64] storage;
+                Extent line = new Extent(cast<address>(&storage[0]), 64) on stack;
+                mutable int n = Digits.text(line, 0, b"vga at ");
+                n = n + Digits.hex(line, n, Text.Buffer, 8);
+                n = n + Digits.text(line, n, b", page ");
+                n = n + Digits.unsigned(line, n, Bytes.PageSize, 10, 0);
+                n = n + Digits.text(line, n, b" bytes\r\n");
+                Uart.put(line, n);
+
+                // The text buffer, with a type on it rather than a cast to `short*` written out
+                // again -- which S1 names as the shape of the whole problem.
+                Text.clear(Text.Plain);
+                Text.write(0, 0, b"Machine", Text.Plain);
+                Text.cursor(0, 7);
+
+                // ...and the byte primitives, which talk about ADDRESSES rather than about a heap.
+                // A page count is arithmetic a kernel does constantly and had no name for.
+                byte[32] tailStorage;
+                Extent tail = new Extent(cast<address>(&tailStorage[0]), 32) on stack;
+                mutable int t = Digits.text(tail, 0, b"pages(9000)=");
+                t = t + Digits.unsigned(tail, t, Bytes.pages(cast<address>(9000)), 10, 0);
+                t = t + Digits.text(tail, t, b"\r\n");
+                Uart.put(tail, t);
+                return;
+            }
+        }
+    }
+}

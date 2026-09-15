@@ -197,14 +197,15 @@ POLARON_RT_API void __polaron_fail(const char* headline, const char* aLabel, lon
     exit(code);
 }
 
-// The region layout and the size-class scheme it shares with the heap pool. THE one definition: the
-// same header is compiled bare-metal by `polaron build`, so a hosted program and a kernel cannot end up
-// disagreeing about where a region's data starts. __polaron_panic is already defined above, so the
-// header's declaration of it (which bare metal needs) would clash with its dllexport -- suppress it.
-#define POLARON_PANIC_DECLARED
-#include "polaron_region_core.hpp"
 // The heap block's constants only -- the allocator itself comes further down, once the backend it
-// calls exists. See the note at the top of that header for why it is included twice.
+// calls exists. See the note at the top of that header for why it is included twice. It also carries
+// what a REGION slot's header looks like, which this runtime needs in order to refuse one: the region
+// core moved to Polaron and cannot be included here, so the layout the two allocators share is stated
+// once, in the C++ half that still needs to recognise both.
+//
+// `__polaron_panic` is already defined above, with its export attribute, so the header's declaration
+// of it -- which bare metal needs -- would contradict that. Suppressed.
+#define POLARON_PANIC_DECLARED
 #include "polaron_alloc_core.hpp"
 
 // -------- allocation profiler (env POLARON_MEMPROF=1) â€” diagnostic only, one branch when off --------
@@ -674,37 +675,39 @@ void __polaron_region_release(void* block) {
     __polaron_free(block);
 }
 
-// ---- Flavored regions (spec 17): the shared core, backed by this runtime's allocator ----
-// The implementation lives in polaron_region_core.hpp because `polaron build` compiles that same file for
-// bare metal. Only the backing differs, and it differs here, in this one class. Including it in THIS
-// translation unit (rather than linking a separate object) keeps every call site visible to the
-// optimizer exactly as it was when these bodies sat inline in this file.
-class PolaronHostedRegionBacking {
-  public:
-    static void* blockAlloc(unsigned long long bytes) {
-        return __polaron_malloc(static_cast<size_t>(bytes));
+// ---- Flavored regions (spec 17): what this runtime lends the core, and nothing more ----
+//
+// THE CORE ITSELF IS NOT HERE ANY MORE. It was `polaron_region_core.hpp`, included into this
+// translation unit for the hosted world and written out again by `polaron build` for the bare-metal
+// one -- one text, two compilers, because the language could not read its own allocator. It is
+// `runtime/polaron_region_core.pol` now, and polc appends it to every program it builds, so it lands
+// in the module that CALLS it rather than in this library. That is what the include was buying here
+// (every call site visible to the optimizer), and the program's own module is a better place to buy
+// it: bare metal gets it too, which the include never could.
+//
+// What is left is the backing -- where a block's bytes come from -- as the four C symbols the core
+// calls. `__polaron_region_acquire` and `__polaron_region_release` are above; these are the other
+// two, and they are the registry's arena. The registry must not come out of the region itself, and
+// libc's realloc already grows it in place when it can, so the old size is not needed.
+POLARON_RT_API void* __polaron_region_meta_resize(void* p, unsigned long long, unsigned long long newBytes) {
+    return std::realloc(p, static_cast<size_t>(newBytes));
+}
+POLARON_RT_API void __polaron_region_meta_free(void* p, unsigned long long) { std::free(p); }
+
+// The allocation profiler's two hooks, on the same terms. Both are empty in a production build --
+// `g_prof_on` is a compile-time `false` without -DPOLARON_PROFILING -- and the bare-metal side
+// answers them with two empty Polaron methods, so a kernel pays nothing for a profiler it has no
+// environment to switch on.
+POLARON_RT_API void __polaron_profile_alloc() {
+    if (g_prof_on) {
+        prof_add(&g_prof_total_alloc, 1);
     }
-    static void blockFree(void* p) { __polaron_free(p); }
-    // The registry arrays are small metadata that must not come out of the region itself, and libc's
-    // realloc already grows them in place when it can -- so the old size is not needed here.
-    static void* metaAlloc(void* p, unsigned long long, unsigned long long newBytes) {
-        return std::realloc(p, static_cast<size_t>(newBytes));
+}
+POLARON_RT_API void __polaron_profile_free() {
+    if (g_prof_on) {
+        prof_add(&g_prof_total_free, 1);
     }
-    static void metaFree(void* p, unsigned long long) { std::free(p); }
-    static void profileAlloc() {
-        if (g_prof_on) {
-            prof_add(&g_prof_total_alloc, 1);
-        }
-    }
-    static void profileFree() {
-        if (g_prof_on) {
-            prof_add(&g_prof_total_free, 1);
-        }
-    }
-};
-#define POLARON_REGION_BACKEND PolaronHostedRegionBacking
-#define POLARON_REGION_CORE_IMPL
-#include "polaron_region_core.hpp"
+}
 
 POLARON_RT_API void* __polaron_realloc(void* ptr, size_t size) {
     if (ptr == nullptr) {
@@ -1116,18 +1119,47 @@ void __polaron_ptrmap_put(polaron_ptrmap* m, void* key, void* val) {
     m->count++;
 }
 
-// OS threads (spec 20.1 Thread). A function value is a pointer to a closure {code, env};
-// the trampoline loads code/env and calls code(env) (env is the first argument).
+/* OS threads (spec 20.1 Thread). The caller hands over TWO words -- a code address and the object
+   that code is about -- and the trampoline calls `code(object)`.
+
+   It used to be one word: a `function<void>` value, which was a pointer to a `{code, env}` pair the
+   compiler built. `function<>` is gone from the language, and what `Thread` now holds is a
+   `command` -- an ordinary object with a method. So `Thread.start` passes `Thread.enter`, which is
+   an ordinary static method's address (a `methodptr<void, address>`, the language's own word for a
+   code address), and the command itself; `enter` casts it back and calls it. The dispatch is
+   Polaron's, in Polaron, where it can be read.
+
+   The pair still has to be one allocation, because that is what both operating systems' spawn calls
+   carry: ONE argument to the new thread. So it is built here instead of by the compiler, and freed
+   by the trampoline that consumes it -- which is where a two-word scratch belongs, next to the code
+   that knows it is scratch. */
+namespace {
+struct PolaronThreadStart {
+    void (*code)(void*);
+    void* object;
+};
+}  // namespace
+
 #ifdef _WIN32
-static DWORD WINAPI __polaron_thread_trampoline(LPVOID closure) {
-    void** c = static_cast<void**>(closure);
-    void (*code)(void*) = (void (*)(void*))c[0];
-    code(c[1]);
+static DWORD WINAPI __polaron_thread_trampoline(LPVOID start) {
+    PolaronThreadStart s = *static_cast<PolaronThreadStart*>(start);
+    std::free(start);
+    s.code(s.object);
     return 0;
 }
 
-long long __polaron_thread_spawn(void* closure) {
-    HANDLE h = CreateThread(nullptr, 0, __polaron_thread_trampoline, closure, 0, nullptr);
+long long __polaron_thread_spawn(void* code, void* object) {
+    auto* s = static_cast<PolaronThreadStart*>(std::malloc(sizeof(PolaronThreadStart)));
+    if (s == nullptr) {
+        return 0;
+    }
+    s->code = (void (*)(void*))code;
+    s->object = object;
+    HANDLE h = CreateThread(nullptr, 0, __polaron_thread_trampoline, s, 0, nullptr);
+    if (h == nullptr) {
+        std::free(s);
+        return 0;
+    }
     return reinterpret_cast<long long>(h);
 }
 
@@ -1136,18 +1168,25 @@ void __polaron_thread_join(long long handle) {
     CloseHandle(reinterpret_cast<HANDLE>(handle));
 }
 #else
-static void* __polaron_thread_trampoline(void* closure) {
-    void** c = static_cast<void**>(closure);
-    void (*code)(void*) = (void (*)(void*))c[0];
-    code(c[1]);
+static void* __polaron_thread_trampoline(void* start) {
+    PolaronThreadStart s = *static_cast<PolaronThreadStart*>(start);
+    std::free(start);
+    s.code(s.object);
     return nullptr;
 }
 
 // The handle is a heap pthread_t (opaque and possibly wider than a register on some libcs).
-long long __polaron_thread_spawn(void* closure) {
+long long __polaron_thread_spawn(void* code, void* object) {
+    auto* s = static_cast<PolaronThreadStart*>(std::malloc(sizeof(PolaronThreadStart)));
+    if (s == nullptr) {
+        return 0;
+    }
+    s->code = (void (*)(void*))code;
+    s->object = object;
     pthread_t* t = static_cast<pthread_t*>(std::malloc(sizeof(pthread_t)));
-    if (t == nullptr || pthread_create(t, nullptr, __polaron_thread_trampoline, closure) != 0) {
+    if (t == nullptr || pthread_create(t, nullptr, __polaron_thread_trampoline, s) != 0) {
         std::free(t);
+        std::free(s);
         return 0;
     }
     return static_cast<long long>(reinterpret_cast<std::intptr_t>(t));

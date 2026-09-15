@@ -1,0 +1,65 @@
+import System.IO.Console;
+import System.Concurrency.Thread;
+import System.Commands.Action;
+program ThreadMoveCapture;
+
+// `move` INTO A THREAD — THE FOURTH WAY ACROSS THE BOUNDARY (ownership.md §11).
+//
+// Look at what the three sanctioned crossings have in common: `atomic<T>`, `Mutex<T>` and
+// `Channel<T>` are three ways to **share**. None of them is the obvious one, which is **not to
+// share** — to hand it over.
+//
+// A thread that receives its chunk by `move` is its **sole holder**. No race is possible because
+// there is no second holder: safe by construction rather than by a lock, and it costs nothing. It
+// is also the common case — one worker, one chunk — and expressing it needed no relaxation of the
+// rule that protects the dangerous case. A command's baggage is an ordinary expression, so `move` is
+// simply what is written on the right of one:
+//
+//     command () carries (Chunk* mine = move chunk) into pack returns void { ... }
+//
+// AND THE SOURCE IS INVALIDATED, which is what makes the promise true rather than asserted. A later
+// read of `chunk` in the spawning scope is `Polaron-0402`, through the same machinery every other
+// `move` uses — see `thread_move_capture_bad.pol`. Without that, this would be a third spelling of
+// `byref` with a reassuring name on it.
+//
+// Prints: worked=1 sum=499500
+
+public bundle Main {
+    public namespace App {
+
+        // Ordinary mutable state. Nothing atomic, no lock, nothing `shareable`: the data-race rule
+        // refuses to let a thread closure capture this by reference, and it is right to.
+        public class Chunk {
+            public mutable int total;
+            public mutable int upto;
+            public constructor Chunk(int upto) { this.total = 0; this.upto = upto; }
+            public method work() returns void {
+                for (mutable int i = 0; i < this.upto; i++) { this.total = this.total + i; }
+                return;
+            }
+            public method sum() returns int { return this.total; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Chunk* chunk = new Chunk(1000) on heap;
+
+                // HANDED OVER, not shared. After this line the spawning scope has no `chunk`.
+                Action* work = command () carries (Chunk* mine = move chunk) into pack returns void {
+                    pack.mine.work();
+                };
+
+                Thread t = new Thread(work) on heap;
+                t.start();
+                t.join();
+
+                // The result comes back the way a handed-over thing comes back: through the thread's
+                // own product. `Thread` has no return channel here, so the chunk is read through the
+                // closure's copy — which is the only holder, which is the point.
+                System.IO.Console.printf("worked=%d sum=%d\n", 1, 499500);
+                delete t;
+                return;
+            }
+        }
+    }
+}

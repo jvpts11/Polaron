@@ -2,6 +2,7 @@ import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.Channel;
 import System.Concurrency.atomic;
+import System.Commands.Action;
 
 program Concurrency;
 
@@ -15,8 +16,9 @@ program Concurrency;
 //               which is also how it stops a fast producer from eating all the memory.
 //   Mutex       for when the thing being protected is bigger than one variable.
 //
-// A lambda captures what it needs explicitly -- `[captures: byvalue counter]` -- so what crosses into
-// another thread is written down at the place it crosses.
+// A command DECLARES what it carries -- `carries (atomic<int> cell = counter) into pack` -- so what
+// crosses into another thread is written down at the place it crosses, and the compiler reads that
+// list to decide whether the crossing is safe. There is no way to leave it out.
 //
 //   polaron run examples/concurrency.pol
 //
@@ -27,12 +29,14 @@ public bundle Examples {
     public namespace Concurrent {
 
         public class Main {
+            [Allow(code: "Polaron-0B29", why: "the three threads here are three different demonstrations -- two counting into one atomic, one producing into a channel -- and not a collection. A pool would put them in one home and make the file read as if the point were where they live, which is the one thing this example is not about")]
             public static method main(string[] args) returns void {
                 // --- lock-free: two threads, one counter, no mutex ---
                 atomic<int> counter = new atomic<int>(0) on heap;
-                function<void> work = lambda[captures: byvalue counter]() returns void {
+                Action* work = command () carries (atomic<int>* cell = counter) into pack
+                    returns void {
                     for (mutable int i = 0; i < 100000; i++) {
-                        counter.increment();
+                        pack.cell.increment();
                     }
                 };
                 Thread first = new Thread(work) on heap;
@@ -45,9 +49,10 @@ public bundle Examples {
 
                 // --- handing values over instead of sharing them ---
                 Channel<int> line = new Channel<int>(4) on heap;
-                function<void> producer = lambda[captures: byvalue line]() returns void {
+                Action* producer = command () carries (Channel<int>* out = line) into pack
+                    returns void {
                     for (mutable int i = 1; i <= 5; i++) {
-                        line.send(i);
+                        pack.out.send(i);
                     }
                 };
                 Thread worker = new Thread(producer) on heap;

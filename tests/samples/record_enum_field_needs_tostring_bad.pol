@@ -1,0 +1,32 @@
+import System.IO.Console;
+program RecordEnumFieldNeedsToStringBad;
+
+// THE ERROR HAS TO SAY WHICH OF THE TWO FILES TO EDIT.
+//
+// A record generates a `toString` that asks every field to describe itself. An enum that writes no
+// `toString` has none to be asked -- and that is deliberate, not an oversight: an enum's ordinal is
+// what it is, and printing a name the author never wrote would be inventing one (see
+// `interp_enum_tostring.pol`, which is the other half of this claim).
+//
+// So the two rules meet, and what was reported was "class 'Kind' has no method 'toString'", at the
+// RECORD's own line: a method the author never wrote, about a field the message does not name, with
+// nothing to say the edit belongs on the enum. Stone Reports hit this and wrote the match out by
+// hand -- and left a comment saying the error points a long way from the fix.
+//
+// The rule stands; the sentence changed. Refused with Polaron-0103, saying what generated the call
+// and what to write.
+public bundle Main {
+    public namespace App {
+        public enum Kind { storage, stream }
+
+        public record Entry(String name, Kind sort) { }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Entry a = new Entry("Contents", Kind.storage);
+                System.IO.Console.println(a.name);
+                return;
+            }
+        }
+    }
+}

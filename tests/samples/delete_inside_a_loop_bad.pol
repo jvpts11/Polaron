@@ -1,0 +1,26 @@
+import System.IO.Console;
+program DeleteInsideALoopBad;
+
+// A `delete` INSIDE A LOOP, AND A READ AFTER IT.
+//
+// Not a borrow-rule gap -- the PLAIN use-after-free rule, and it had been open the whole time. A
+// loop analysed its body and then restored the flow state from before it, so everything the body
+// established was thrown away, obligations included. One `for` was enough to walk out of the rule.
+//
+// A loop may run zero times, so a PROOF made inside it does not hold afterwards and the entry's is
+// the right answer. An OBLIGATION is the other way round: the body can run, so what it owes is
+// owed. `if (c) { delete x; } x.read()` is refused on exactly these grounds, and a loop is a branch
+// that may repeat.
+//
+// Refused with Polaron-0402.
+public bundle Main { public namespace App {
+    public class Box { public mutable int n; public constructor Box(int n) { this.n = n; } }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Box* b = new Box(7) on heap;
+            for (mutable int i = 0; i < 1; i++) { delete b; }
+            System.IO.Console.println($"{b.n}");        // use-after-free simples, via ciclo
+            return;
+        }
+    }
+} }

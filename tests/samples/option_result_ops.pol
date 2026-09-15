@@ -37,9 +37,9 @@ public bundle Main {
                 // want -- which otherwise takes a match and an if.
                 System.IO.Console.printf("some=%d none=%d big=%d small=%d missing=%d\n",
                                          some.valueOr(-1), none.valueOr(-1),
-                                         some.present(lambda(int v) returns boolean { return v > 5; }) ? 1 : 0,
-                                         some.present(lambda(int v) returns boolean { return v < 5; }) ? 1 : 0,
-                                         none.present(lambda(int v) returns boolean { return true; }) ? 1 : 0);
+                                         some.present(command (int v) returns boolean { return v > 5; }) ? 1 : 0,
+                                         some.present(command (int v) returns boolean { return v < 5; }) ? 1 : 0,
+                                         none.present(command (int v) returns boolean { return true; }) ? 1 : 0);
 
                 // ...and `match` still does what it always did, on the same objects.
                 match (ok) {

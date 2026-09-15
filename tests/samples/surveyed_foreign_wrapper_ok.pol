@@ -1,0 +1,37 @@
+// O caso que motivou tudo: um invólucro para a fronteira estrangeira.
+import System.IO.Console;
+program SurveyedForeignWrapperOk;
+
+// THE SAME CALL AS `surveyed_foreign_call_bad.pol`, INSIDE A `surveyed` WRAPPER -- and the two files
+// differ by exactly one word. This one compiles AND runs.
+//
+// The guess did not disappear; it moved, from the compiler to a name and a line, and every caller of
+// `same` now pays for it at the boundary. The foreign frontier has a file and a line number.
+//
+// Prints:
+//   ok
+public bundle Main { public namespace App {
+    public class Native {
+        // `n` is a `long` because that is what C's size_t is on the targets these tests run: a
+        // 32-bit count in a 64-bit register slot leaves the top half to whatever was there, and
+        // memcmp would read a length nobody wrote.
+        public extern cdecl static method memcmp(byte* a, byte* b, long n) returns int;
+
+        // Two pointers into Polaron buffers cross into C. Nothing in this program can say what
+        // happens to them there -- so the marker says who is answering for it.
+        public static surveyed method same(byte[] a, byte[] b, long n) returns boolean {
+            return Native.memcmp(&a[0], &b[0], n) == 0;
+        }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            byte[] one = new byte[4]();
+            byte[] two = new byte[4]();
+            one[2] = cast<byte>(7); two[2] = cast<byte>(7);
+            System.IO.Console.println(Native.same(one, two, 4) ? "ok" : "no");
+            delete one;
+            delete two;
+            return;
+        }
+    }
+} }

@@ -1,0 +1,54 @@
+import System.IO.Console;
+program BorrowedFieldIsNotASecondOwnerOk;
+
+// THE CONTROL FOR `two_owners_for_one_object.pol`, and the reason that rule is about OWNERSHIP
+// rather than about assignment.
+//
+// `this.seen = other.buf` is the same line, from the same place, into the same shape of field. What
+// differs is that `Viewer`'s destructor frees nothing: it is a borrower, and this is the ordinary
+// way to write one -- a view over somebody else's storage. Nothing here may be reported, and if it
+// were, the rule would refuse every view in the language.
+//
+// The distinction is not a heuristic and not a keyword: the author wrote it themselves, in the
+// destructor, which is where this analysis reads ownership from everywhere else too.
+//
+// Prints:
+//   4
+public bundle Main {
+    public namespace App {
+        public class Buf {
+            public mutable int n;
+            public constructor Buf() { this.n = 1; }
+        }
+
+        public class Holder {
+            public mutable Buf* buf;
+            public constructor Holder() { this.buf = new Buf() on heap; }
+            public destructor ~Holder() returns void { delete this.buf; }
+        }
+
+        public class Viewer {
+            private mutable Buf* seen;
+            public constructor Viewer(Buf* at) { this.seen = at; }
+            // No destructor: nothing here is freed, so nothing here is owned.
+            public method watch(Holder* other) returns void {
+                this.seen = other.buf;
+                return;
+            }
+            public method value() returns int { return this.seen.n; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Holder* h = new Holder() on heap;
+                h.buf.n = 4;
+                Viewer* v = new Viewer(h.buf) on heap;
+                v.watch(h);
+                System.IO.Console.println($"{v.value()}");
+                delete v;
+                delete h;
+                return;
+            }
+        }
+    }
+}

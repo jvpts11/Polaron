@@ -1,0 +1,72 @@
+import System.IO.Console;
+program TransformerAppliedStringField;
+
+// A TRANSFORMER THAT BRINGS A `String`, not an `int`.
+//
+// `transformer_applied_field.pol` proved the initializer on a field a transformer brings, with an
+// `int hits = 0`. A String is the same declaration and not the same object: it owns storage, so an
+// initializer that is not run leaves the field holding whatever the allocation held, and the first
+// assignment to it releases that. The program does not fault where the field is read -- it faults
+// later, somewhere else, with STATUS_HEAP_CORRUPTION and no line.
+//
+// Which is how it was found: three classes in a reader of compound files applied a transformer that
+// carried their refusal message, and every command that opened a file died before printing anything.
+//
+// Prints:
+//   first: not opened
+//   then: no allocation table
+//   cleared: ''
+public bundle Main {
+    public namespace App {
+        public transformer TExplainer {
+            private mutable String why = "";
+
+            public procedure reason() returns String { return itself.why; }
+
+            procedure refuse(String cause) returns boolean {
+                itself.why = cause;
+                return false;
+            }
+
+            procedure clear() returns void {
+                itself.why = "";
+                return;
+            }
+        }
+
+        public class Reader applies TExplainer {
+            public mutable int steps;
+
+            // ASSIGNED FROM THE CONSTRUCTOR, through the transformer's own procedure. Nothing here
+            // mentions the field, and nothing has to -- but the initializer has to have run before
+            // this line, or the assignment releases storage nobody allocated.
+            public constructor Reader() {
+                this.steps = 0;
+                this.refuse("not opened");
+            }
+
+            public method open() returns boolean {
+                this.steps = this.steps + 1;
+                return this.refuse("no allocation table");
+            }
+
+            public method forget() returns void {
+                this.clear();
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Reader* r = new Reader() on heap;
+                System.IO.Console.println($"first: {r.reason()}");
+                boolean ok = r.open();
+                System.IO.Console.println($"then: {r.reason()}");
+                r.forget();
+                System.IO.Console.println($"cleared: '{r.reason()}'");
+                delete r;
+                return;
+            }
+        }
+    }
+}

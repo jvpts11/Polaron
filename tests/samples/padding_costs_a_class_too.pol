@@ -1,0 +1,51 @@
+import System.IO.Console;
+program PaddingCostsAClassToo;
+
+// `0B45` WAS SILENT ON THE TEXTBOOK CASE, because it skipped classes.
+//
+// The rule is "the declared field order costs bytes that a layout would recover", and it was guarded
+// by *only an inline aggregate has a layout the author's order decides* -- which confuses WHERE the
+// bytes live with WHETHER the order costs. A class's fields are laid out in the order written
+// exactly as a struct's are.
+//
+// And the class case is the MORE expensive of the two, not the less. A struct's holes cost a few
+// bytes of stack per call; a class with a million live instances carries a million copies of them.
+//
+// THE TWO DECLARATIONS BELOW ARE IDENTICAL except for the word. The struct was reported and the
+// class was accepted, which is the whole finding: one word changed the answer to a question the word
+// has nothing to do with. Both are here so the rule has to give the same answer twice.
+//
+// Prints:
+//   wide 7 8
+public bundle Main {
+    public namespace Advice {
+        // A byte, a wide field, a byte -- the shape every book uses to explain padding.
+        public struct WastefulValue {
+            public mutable boolean first;
+            public mutable long wide;
+            public mutable boolean second;
+        }
+
+        public class WastefulObject {
+            public mutable boolean first;
+            public mutable long wide;
+            public mutable boolean second;
+            public constructor WastefulObject() {
+                this.first = false;
+                this.wide = 0;
+                this.second = false;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                WastefulValue v = new WastefulValue() on stack;
+                v.wide = 7;
+                WastefulObject o = new WastefulObject() on heap;
+                o.wide = 8;
+                System.IO.Console.println("wide " + v.wide.toString() + " " + o.wide.toString());
+                delete o;
+            }
+        }
+    }
+}

@@ -1,0 +1,39 @@
+import System.IO.Console;
+program CommandComposition;
+
+// COMMANDS THAT CARRY COMMANDS -- composition, which is what "closures" were mostly used for.
+//
+// This was `closures.pol`, and its subject was automatic free-variable capture: `makeAdder(int n)`
+// returned a lambda mentioning `n`, and the capture happened because the body mentioned it. That is
+// the thing the construct abolishes. `addBy` carries `n` because its declaration says so, and
+// `composed` carries the two commands it runs for the same reason -- so what each value holds is
+// readable from its first line rather than from its body.
+//
+// Prints: add5=15 dbl=20 composed=30
+
+public bundle Main {
+    public namespace App {
+        public command IntMap(int x) returns int;
+
+        public class Fns {
+            public command addBy(int x) carries (int n) into pack returns int { return x + pack.n; }
+            public command times(int x) carries (int by) into pack returns int { return x * pack.by; }
+
+            // Two commands in the baggage: `composed(f, g)` runs `f(g(x))`.
+            public command composed(int x) carries (IntMap* f, IntMap* g) into pack returns int {
+                return pack.f(pack.g(x));
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                IntMap* add5 = Fns.addBy(5);
+                IntMap* dbl = Fns.times(2);
+                IntMap* add5thenDbl = Fns.composed(dbl, add5);   // dbl(add5(x))
+                System.IO.Console.printf("add5=%d dbl=%d composed=%d\n",
+                                         add5(10), dbl(10), add5thenDbl(10));
+                return;
+            }
+        }
+    }
+}

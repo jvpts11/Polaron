@@ -331,7 +331,7 @@ thereafter. The chapters build on one another:
 11. **Systems Programming** — freestanding mode, raw pointers, the low-level `Memory` API, and FFI.
 12. **Keyword Reference** — every reserved word, its status, and a short example.
 13. **Diagnostics** — how to read a Polaron error, its structure, and `polaron explain`.
-14. **Functions & Lambdas** — `lambda`, `function<...>` types, and method references.
+14. **Commands** — `command` and its `carries` list, command types as roles, method references.
 15. **Toolchain** — how to build, run, package, and test Polaron programs.
 
 Six **Standard Library** chapters follow the guide: concurrency & core, collections, data

@@ -231,6 +231,12 @@ ordinary, expected outcomes: parsing might not succeed, a lookup might find
 nothing. For those, Polaron gives you two sum types in the prelude that make the
 failure part of the value itself, so the type system forces you to deal with it.
 
+Both are declared **`mustuse`**, so a statement that drops one is warned about (`Polaron-0B19`): a
+`Result` whose answer is thrown away is an error nobody handled, which is the one failure the type
+exists to make impossible to have by accident. Any type of your own may carry the same word, and so
+may a single method. Where dropping the answer is what you mean, say it at the line —
+`discard theCall();`.
+
 `Result<T, E>` holds either a success value of type `T` (an `Ok`) or an error value
 of type `E` (an `Err`). `Option<T>` holds either a present value (a `Some`) or
 nothing (a `None`). Both are sealed types — the set of cases is fixed — which is
@@ -359,6 +365,11 @@ enforcing — and they read as part of the method's signature, before the body.
 - **`ensures`** states a *postcondition*: something the method guarantees on exit.
 - **`invariant`** states a *class invariant*: something that must hold for every
   instance across its observable lifetime.
+
+A contract should call a method only if that method is **`readonly`** — declared to write nothing,
+and checked through the whole call graph. The reason is the one a reader would guess: a check that
+could change state would make the checking part of the program's behaviour, so the same program
+would mean different things depending on whether contracts were compiled in.
 
 Here is an `Account` that spells out all three:
 

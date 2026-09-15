@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Collections.ArrayList;
+import System.Commands.Action1;
 program GenericEvent;
 
 // Nested generics (spec 15.1): a generic Event<T> whose field is ArrayList<Handler<T>> -- a generic
@@ -9,14 +10,14 @@ program GenericEvent;
 public bundle main {
     public namespace app {
         public class Handler<T> {
-            private mutable function<void, T> fn;
-            public constructor Handler(function<void, T> f) { this.fn = f; }
+            private mutable Action1<T>* fn;
+            public constructor Handler(Action1<T>* f) { this.fn = f; }
             public method invoke(T arg) returns void { this.fn(arg); return; }
         }
         public class Event<T> {
             private mutable ArrayList<Handler<T>> handlers;
             public constructor Event() { this.handlers = new ArrayList<Handler<T>>() on heap; }
-            public method subscribe(function<void, T> h) returns void {
+            public method subscribe(Action1<T>* h) returns void {
                 this.handlers.add(new Handler<T>(h) on heap);
                 return;
             }
@@ -38,8 +39,12 @@ public bundle main {
             public static method main(string[] args) returns void {
                 mutable Box bx = new Box() on heap;
                 mutable Event<int> onTick = new Event<int>() on heap;
-                onTick.subscribe(lambda[captures: byvalue bx](int x) returns void { bx.add(x); });
-                onTick.subscribe(lambda(int x) returns void { System.IO.Console.printf("tick %d\n", x); });
+                onTick.subscribe(command (int x) carries (Box* tally = bx) into pack returns void {
+                    pack.tally.add(x);
+                });
+                onTick.subscribe(command (int x) returns void {
+                    System.IO.Console.printf("tick %d\n", x);
+                });
                 onTick.emit(5);
                 onTick.emit(10);
                 System.IO.Console.printf("total=%d nsub=%d\n", bx.get(), onTick.count());

@@ -15,7 +15,13 @@ constexpr char kMagic[4] = {'P', 'O', 'L', 'B'};
 // rather than read, because from the inserted field onward its bytes no longer mean what they meant.
 //   3  adds the foreign-library section: what this bundle needs on the link line, and what each of its
 //      logical names means per platform, so a bundle installed without its manifest still links
-constexpr std::uint16_t kFormatVersion = 3;
+//   4  adds the `pir` section: the bundle's own module in PIR's text form, so a consumer can INLINE
+//      ACROSS THE BOUNDARY and still reason about what it inlined. `polh` lets it skip parsing and
+//      analysis, `code` lets it skip emission; neither skips the part between them, which is where
+//      the work now is. An EMPTY section is not an error and means *do not inline through me* --
+//      but the CONTAINER version still moves, because every field after the insertion point would
+//      otherwise be read at the wrong offset. Additive in meaning, not in bytes.
+constexpr std::uint16_t kFormatVersion = 4;
 
 // A self-contained SHA-256 (FIPS 180-4). The .polb container has no LLVM dependency, so the format
 // library links into both the compiler and the (LLVM-free) runtime loader. Verified by a
@@ -170,6 +176,7 @@ std::string writePolb(const PolbBundle& bundle) {
     putStr16(out, bundle.producer);
     putStr32(out, bundle.polh);
     putStr32(out, bundle.code);
+    putStr32(out, bundle.pir);   // may be empty: a bundle that says "do not inline through me"
     putU16(out, static_cast<std::uint16_t>(bundle.deps.size()));
     for (const PolbDep& d : bundle.deps) {
         putStr16(out, d.name);
@@ -213,6 +220,7 @@ bool readPolb(std::string_view bytes, PolbBundle& out) {
     out.producer = r.str(r.u16());
     out.polh = r.str(r.u32());
     out.code = r.str(r.u32());
+    out.pir = r.str(r.u32());
     const std::uint16_t depCount = r.u16();
     for (std::uint16_t i = 0; i < depCount && r.ok; ++i) {
         PolbDep d;

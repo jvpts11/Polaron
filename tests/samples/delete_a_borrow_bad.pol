@@ -1,0 +1,50 @@
+program DeleteABorrowBad;
+
+// FREEING SOMETHING YOU BORROWED, which is the mirror of the rule that was already here and the
+// harder half to see in the source.
+//
+// The analysis has known where a value came from for a while: `b` is what `o.borrow()` handed back,
+// and reading `b` after `delete o` is refused because `o` owns it. This is the same fact used the
+// other way round -- `delete b` frees storage `o` still owns, and `o`'s destructor will free it
+// again. A double free, written as ordinary cleanup.
+//
+// WHY IT IS HARDER TO SEE THAN THE READ. The read-after-free has a `delete o` sitting above it for
+// the author to notice. This one has nothing above it: the second free happens inside a destructor,
+// in another file, possibly next year, on a path this method never mentions.
+//
+// WHAT IT DOES NOT REFUSE, which is most of what `borrowsFrom_` records:
+//   * an ALIAS -- `RsaPublicKey* rsa = cast<RsaPublicKey*>(key);` -- a second name for what this
+//     frame owns, where deleting through either name is right;
+//   * a FIELD PATH -- `K[] oldK = this.keys;` then `this.keys = new K[...]` then `delete oldK` --
+//     grow-and-replace, where the object handed ownership over in between.
+// Both are in the standard library, fourteen times between them, and both are correct. The case
+// left is the one with no such idiom: a value another object HANDED us, that we never owned.
+//
+// Refused with Polaron-1724.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int n;
+            public constructor Box() { this.n = 1; }
+        }
+
+        public class Owner {
+            private mutable Box* inner;
+            public constructor Owner() { this.inner = new Box() on heap; }
+            public destructor ~Owner() returns void { delete this.inner; }
+            // The commonest method a class has, and what makes the borrow: the value handed back is
+            // the object's own storage, not a copy of it.
+            public method borrow() returns Box* { return this.inner; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Owner* o = new Owner() on heap;
+                Box* b = o.borrow();
+                delete b;      // <- frees what `o` owns; `~Owner` frees it again
+                delete o;
+                return;
+            }
+        }
+    }
+}

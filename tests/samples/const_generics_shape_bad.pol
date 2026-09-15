@@ -1,0 +1,40 @@
+import System.IO.Console;
+program ConstGenericsShapeBad;
+
+// THE CLAIM A.3 IS FOR, HELD: a 4x3 times a 7x9 does not compile.
+//
+// The standard library's own `Math.Matrix` carries its dimensions as runtime FIELDS, so
+// `multiply(Matrix o)` accepts any matrix at all and the mismatch is discovered while somebody is
+// using the program -- a failure of text, dying in the user's hands, which is the shape this
+// language exists to refuse.
+//
+// With the dimensions in the TYPE, the signature discriminates. `timesShape<fixed int N>` takes a
+// `Grid<T, C, N>`: the `C` is this grid's own column count, so the argument's ROW count has to be
+// the same number for the call to typecheck at all. Nothing is asserted at run time and nothing is
+// checked twice -- the shapes either unify or the build stops.
+//
+// Refused with Polaron-0304, naming both shapes: `Grid$int$7$9` where `Grid$int$3$9&` was wanted.
+
+public bundle Main {
+    public namespace App {
+        public struct Grid<fixed T, fixed int R, fixed int C> {
+            private mutable T[R * C] cells;
+            public constructor Grid() {
+                for (mutable int i = 0; i < R * C; i++) { this.cells[i] = cast<T>(0); }
+            }
+            public readonly method timesShape<fixed int N>(Grid<T, C, N>& other) returns int {
+                return R * 100 + N;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Grid<int, 4, 3> a = new Grid<int, 4, 3>();
+                mutable Grid<int, 7, 9> b = new Grid<int, 7, 9>();
+                int r = a.timesShape<9>(b);   // 4x3 times 7x9: 3 and 7 are not the same number
+                System.IO.Console.printf("%d\n", r);
+                return;
+            }
+        }
+    }
+}

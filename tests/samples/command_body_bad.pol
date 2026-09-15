@@ -1,0 +1,36 @@
+import System.IO.Console;
+program CommandBodyBad;
+
+// A COMMAND'S BODY IS TYPE-CHECKED LIKE ANY OTHER BODY.
+//
+// This was written when the construct was a lambda, and `typeOf` on one built the signature string
+// and returned without visiting the body -- a blind spot the size of every callback in the language.
+// Anything at all could be written inside one, including a name that does not exist, and the front
+// end handed it to codegen, which assumes a valid AST.
+//
+// A command cannot have that blind spot by construction: it becomes an ordinary method on an
+// ordinary class before the analyzer runs, so the body is checked by the same walk that checks every
+// other method, and it would take a deliberate exemption to stop it. The test stays because "the
+// body is checked" is a promise worth holding a program against, however it is currently kept.
+//
+// Refused with Polaron-0101: `notDeclaredAnywhere` is not a name, inside a command or anywhere else.
+
+public bundle Main {
+    public namespace App {
+        public command IntMap(int x) returns int;
+
+        public class Broken {
+            public command shift(int x) carries (int seed) into pack returns int {
+                return notDeclaredAnywhere + x + pack.seed;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                IntMap* f = Broken.shift(3);
+                System.IO.Console.println($"{f(1)}");
+                return;
+            }
+        }
+    }
+}

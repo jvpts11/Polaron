@@ -1,0 +1,25 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+program ForeachMutatingCallBoundBad;
+
+// THE SAME MUTATION, BOUND TO A NAME. `xs.add(v);` was caught and `boolean gone = xs.remove(v);`
+// was not, because the rule read only bare statement calls -- so whether a walk was checked came
+// down to whether the author happened to want the answer.
+//
+// Refused with Polaron-1721.
+public bundle Main { public namespace App {
+    public class Main {
+        public static method main(string[] args) returns void {
+            ArrayList<int>* xs = new ArrayList<int>() on heap;
+            for (mutable int i = 0; i < 4; i++) { xs.add(i); }
+            mutable int n = 0;
+            foreach (int v in xs) {
+                boolean gone = xs.remove(v);      // MUDA a colecção; resultado ligado a um nome
+                n = n + (gone ? 1 : 0);
+            }
+            System.IO.Console.println($"{n}");
+            delete xs;
+            return;
+        }
+    }
+} }

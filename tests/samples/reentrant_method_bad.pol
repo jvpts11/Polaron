@@ -1,0 +1,47 @@
+program ReentrantMethodBad;
+
+// THE CHECK, AND THE HALF OF IT `interrupt` COULD NOT DO.
+//
+// `refill` allocates. It is not a handler, so the `interrupt` rule never looked at it — and the
+// method that reaches it is not a handler either. What connects them is one word on `pump`, and the
+// obligation is **viral**: it travels along the call graph, so the diagnostic names the path.
+//
+//     a `reentrant` method must not allocate on the heap (reached via refill)
+//
+// That path is the whole point. *"Ring.refill allocates on the heap"* is a fact about Ring, and a
+// fact about Ring is not a bug. *"pump is reentrant and reaches it, via refill"* is the bug, and it
+// is the sentence that says which of the two to change.
+
+public bundle Main {
+    public namespace App {
+        public class Ring {
+            private int[] slots;
+
+            public constructor Ring() { this.slots = new int[4](); }
+
+            // Ordinary. Nothing wrong with it, and nothing marks it: it allocates scratch and drops
+            // it, which is exactly what an ordinary method may do.
+            public method refill(int n) returns void {
+                int[] scratch = new int[n]();
+                for (mutable int i = 0; i < n; i++) { scratch[i] = i; }
+                delete scratch;
+                return;
+            }
+
+            // ...and the one word that makes the call above a defect.
+            public reentrant method pump(int n) returns void {
+                this.refill(n);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Ring r = new Ring() on heap;
+                r.pump(8);
+                delete r;
+                return;
+            }
+        }
+    }
+}

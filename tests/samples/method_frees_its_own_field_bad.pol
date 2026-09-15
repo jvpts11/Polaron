@@ -1,0 +1,35 @@
+import System.IO.Console;
+program MethodFreesItsOwnFieldBad;
+
+// A METHOD THAT FREES ITS OWN FIELD AND PUTS A FRESH ONE THERE.
+//
+// `reset()` deletes `this.leaf` and allocates another. Nothing about the object is wrong afterwards,
+// and everybody who took a reference out of it beforehand is holding the old one. The rule that
+// catches `clear()` was written for a method that frees a field's CONTENTS; freeing the field itself
+// is the same news for a borrower and was not in it.
+//
+// Destructors are excluded: a destructor freeing its fields is the object ending, which `delete`
+// already reports at the caller. Counting it here would say that every class with a destructor
+// invalidates borrows on every call to it.
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Holder {
+        public mutable Leaf* leaf;
+        public constructor Holder() { this.leaf = new Leaf(1) on heap; }
+        public destructor ~Holder() returns void { delete this.leaf; return; }
+        public method get() returns Leaf* { return this.leaf; }
+        public method reset() returns void { delete this.leaf; this.leaf = new Leaf(2) on heap; return; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Holder* h = new Holder() on heap;
+            Leaf* p = h.get();
+            h.reset();                                 // liberta o que p aponta
+            System.IO.Console.println($"{p.n}");
+            delete h;
+            return;
+        }
+    }
+} }

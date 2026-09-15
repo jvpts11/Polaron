@@ -1,0 +1,31 @@
+import System.IO.Console;
+program DeleteThisThenReadBad;
+
+// AN OBJECT THAT FREES ITSELF AND GOES ON READING ITSELF.
+//
+// `delete this` is a legitimate thing for a method to do -- as the last thing it does. What follows
+// it reads storage that is gone, and every existing check missed it for the same reason: the
+// use-after-free rule follows local NAMES, and `this` is not a local. An object could free itself
+// and keep working with nothing said at all.
+//
+// Refused with Polaron-0402, the same code any other use-after-free gets, because it is the same
+// mistake -- only the name is different.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int n;
+            public constructor Box(int n) { this.n = n; }
+            public method vanish() returns int {
+                delete this;
+                return this.n;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box* b = new Box(4) on heap;
+                System.IO.Console.println($"{b.vanish()}");
+                return;
+            }
+        }
+    }
+}

@@ -32,9 +32,9 @@ Recovered from the parser, not from the documentation.
 | 3 | `[vis] extern <conv> [static] method name(params) returns T;` | class member |
 | 4 | `unknown <world>` as a method modifier (no `extern`) — export *us* to a foreign ABI | class member |
 | 5 | `naked` — no prologue/epilogue, body is raw asm | class member |
-| 6 | `funcptr<Ret, Args…>` | type |
-| 7 | `unknown <world> funcptr<…>` | type |
-| 8 | capture-free lambda → C function pointer | implicit conversion |
+| 6 | `methodptr<Ret, Args…>` | type |
+| 7 | `unknown <world> methodptr<…>` | type |
+| 8 | capture-free lambda → a bare code address | implicit conversion |
 | 9 | `asm("arch"[, "dialect"]) { … } [out(…)] [in(…)] [clobber(…)]` | statement |
 | 10 | `native_libs = "…"` in the manifest `[build]` | manifest |
 
@@ -165,8 +165,8 @@ only by the class that owns it, which is the encapsulation the redesign is for.
 - **`unknown <world>`** stays. It is the only way to be *called from* a foreign ABI, and the world is
   required because the compiler must never infer it.
 - **`naked`** stays.
-- **`funcptr` becomes `methodptr`.** The vocabulary rule, applied consistently: `function` remains the
-  first-class value type, and what a pointer points at is a *method*.
+- **`funcptr` becomes `methodptr`.** The vocabulary rule, applied consistently, and the old spelling
+  is gone rather than deprecated — nothing ever wrote it.
 - **A capture-free lambda converts to a `methodptr`**, full stop — not to "a C function pointer". The
   ABI it is called through is whatever the pointer's type says, `unknown <world>` included.
 - **`asm(…)` blocks** are unchanged.
@@ -224,9 +224,18 @@ methodptr-type  := [ "unknown" world ] "methodptr" "<" Type ("," Type)* ">"
    for Linux, since it cannot be run here) and `codegen_ffi_syscall_wrong_target_errors`.
 5. ~~Make non-`static` externs pass the receiver first, and delete the assumption in codegen that
    produced an IR-verifier error.~~ **DONE.**
-6. ~~`funcptr` → `methodptr`, with the old spelling accepted and deprecated for one release.~~ **DONE.**
-   Both spellings are read at all three sites that recognise the type; nothing in the tree used
-   `funcptr`, so the transition costs nobody anything.
+6. ~~`funcptr` → `methodptr`.~~ **DONE, and then finished.** The first pass renamed only the three
+   parser sites: the canonical string every later pass matches on stayed `funcptr<`, and the word
+   reached neither the documentation nor a test — which is how a rename half-lands and stays that
+   way. It is `methodptr` everywhere now, and `funcptr` is out of the grammar rather than kept as a
+   courtesy: nothing in this tree or in the OS ever wrote it, so there was nobody to be kind to.
+
+   **And the type did not work.** The predicate that decides whether a value is callable knew only
+   the closure spelling while carrying a comment naming both, so a call through a code address never
+   reached a callable path: it fell through to method resolution by NAME and came out as a call to
+   the first *argument*, with no arguments, returning `i32`. It compiled clean every time, and there
+   was not one test of the type anywhere. Both halves are covered now —
+   `codegen_methodptr_calls_runs` and `ir_methodptr_call_carries_its_return_type`.
 7. ~~The mangled-symbol warning.~~ **DONE.** `cdecl` binding an Itanium (`_ZN…`) or MSVC (`?…@@…`)
    mangled name warns, because no C compiler produces either. A warning and not an error on purpose:
    pasting a mangled symbol by hand is exactly how a C++ binding works without a mangler of our own,

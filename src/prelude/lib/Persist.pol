@@ -139,7 +139,7 @@
 
             // REPLAY: fold the log into a state. This is the operation the whole idea is for -- the
             // current value is not stored anywhere, it is what the events add up to.
-            public method replay(function<int, int, int, int> combine, int initial) returns int {
+            public method replay(Combiner3<int, int, int, int>* combine, int initial) returns int {
                 mutable int state = initial;
                 for (mutable int i = 0; i < this.size(); i++) {
                     state = combine(state, this.kindAt(i), this.valueAt(i));
@@ -154,7 +154,7 @@
             //
             // The rewrite runs only when the stored version is BEHIND, so calling it at startup every
             // time is correct and costs one comparison after the first run.
-            public method migrate(int toVersion, function<int, int, int> kindRewrite) returns int {
+            public method migrate(int toVersion, Combiner<int, int, int>* kindRewrite) returns int {
                 if (this.schema >= toVersion) { return 0; }
                 ArrayList<int> ks = this.kindList();
                 mutable int changed = 0;

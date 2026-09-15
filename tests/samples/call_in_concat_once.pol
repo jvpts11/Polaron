@@ -1,0 +1,55 @@
+import System.IO.Console;
+program CallInConcatOnce;
+
+// A CALL INSIDE A STRING CONCATENATION RUNS ONCE.
+//
+// It is the sort of thing nobody writes a test for, because it is not a feature -- it is the
+// assumption every other test rests on. `"count " + c.bump().toString()` is one call, and a language
+// in which it is two is a language where any expression that both computes and changes something
+// gives a different answer depending on where it is printed.
+//
+// FOUND BY A DIFFERENT BUG. Horizon's network stack stopped naming a concrete card, a driver's
+// bring-up started running twice, and the trail led here rather than to the interface: a probe that
+// printed a counter through a concatenation reported double, and the counter was right when the same
+// call was assigned to a local first.
+//
+// The checks below deliberately use side effects, because a call that is EVALUATED twice and has no
+// side effect is invisible. That is why this was not caught by any of the hundreds of samples that
+// concatenate a getter into a message.
+//
+// Prints:
+//   one 1
+//   two 2
+//   local 3
+//   both 4 5
+//   nested 6
+public bundle Main {
+    public namespace App {
+        public class Counter {
+            private mutable int n;
+            public constructor Counter() { this.n = 0; }
+            // Returns what it just became, so the printed number IS the number of times it ran.
+            public method bump() returns int { this.n = this.n + 1; return this.n; }
+            public method value() returns int { return this.n; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter c = new Counter() on heap;
+                System.IO.Console.println("one " + c.bump().toString());
+                System.IO.Console.println("two " + c.bump().toString());
+                // The same call, through a local first. If this one and the two above disagree, the
+                // concatenation is what differs and not the method.
+                int got = c.bump();
+                System.IO.Console.println("local " + got.toString());
+                // TWO CALLS IN ONE CONCATENATION, which is where an evaluation order that repeats
+                // shows up as a gap rather than as a doubling.
+                System.IO.Console.println("both " + c.bump().toString() + " " + c.bump().toString());
+                // ...and one inside an interpolation, which lowers differently again.
+                System.IO.Console.println($"nested {c.bump()}");
+                delete c;
+                return;
+            }
+        }
+    }
+}

@@ -184,7 +184,12 @@ bool synthesizeIpc(ast::Program& program) {
                              // the pass only needs to know whether to emit a dispatcher, and a program
                              // that imports from another one needs one anyway, for its lent-out objects)
     for (const Bundle& b : program.bundles) {
-        if (b.isPrelude || b.isImported || b.isRemote) {
+        // ...AND NOT A RUNTIME THE COMPILER APPENDED, for the same reason as the prelude: what a
+        // program exports over IPC is what its AUTHOR wrote. The region core's types are public
+        // because its symbols are an ABI, not because a client at the far end of a socket should be
+        // able to ask a server for a `RegionDesc`. Without this the generated dispatcher named every
+        // one of them, in a namespace that imports none of them, and nothing compiled.
+        if (b.isPrelude || b.isImported || b.isRemote || b.isAppendedRuntime) {
             continue;
         }
         for (const ImportDecl& i : b.imports) {
@@ -213,7 +218,12 @@ bool synthesizeIpc(ast::Program& program) {
     std::vector<Exported> exports;
     std::string hostNs;  // where the dispatcher goes: the namespace of the first exported class
     for (const Bundle& b : program.bundles) {
-        if (b.isPrelude || b.isImported || b.isRemote) {
+        // ...AND NOT A RUNTIME THE COMPILER APPENDED, for the same reason as the prelude: what a
+        // program exports over IPC is what its AUTHOR wrote. The region core's types are public
+        // because its symbols are an ABI, not because a client at the far end of a socket should be
+        // able to ask a server for a `RegionDesc`. Without this the generated dispatcher named every
+        // one of them, in a namespace that imports none of them, and nothing compiled.
+        if (b.isPrelude || b.isImported || b.isRemote || b.isAppendedRuntime) {
             continue;
         }
         for (const Namespace& ns : b.namespaces) {
@@ -589,7 +599,12 @@ bool synthesizeIpc(ast::Program& program) {
     }
 
     for (Bundle& b : program.bundles) {
-        if (b.isPrelude || b.isImported || b.isRemote) {
+        // ...AND NOT A RUNTIME THE COMPILER APPENDED, for the same reason as the prelude: what a
+        // program exports over IPC is what its AUTHOR wrote. The region core's types are public
+        // because its symbols are an ABI, not because a client at the far end of a socket should be
+        // able to ask a server for a `RegionDesc`. Without this the generated dispatcher named every
+        // one of them, in a namespace that imports none of them, and nothing compiled.
+        if (b.isPrelude || b.isImported || b.isRemote || b.isAppendedRuntime) {
             continue;
         }
         bool placed = false;

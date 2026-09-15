@@ -602,9 +602,24 @@ private:
             for (size_t i = 0; i < b.insts.size(); ++i) {
                 const Inst& in = b.insts[i];
 
-                // Rule 18: a `switch` marked total names every case and has no default edge. This
-                // is what a `match` over a `sealed enum` becomes, and it is the property that makes
-                // exhaustiveness a fact about the IR rather than about a check that ran earlier.
+                // Rule 18: a `switch` marked total names every case, and the edge nothing selects
+                // goes nowhere. This is what a `match` over a `sealed enum` becomes, and it is the
+                // property that makes exhaustiveness a fact about the IR rather than about a check
+                // that ran earlier.
+                //
+                // EDGE 0 IS THE DEFAULT AND IT ALWAYS EXISTS, including here. A machine's switch
+                // needs somewhere to go when the subject is none of the values -- LLVM's
+                // `SwitchInst` has no shape without a default destination -- so "there is no
+                // default" is spelled as a default that leads to `unreachable`. That is the
+                // spelling the backend can USE: a default it can prove is never taken is a range
+                // check it can drop, which is the whole difference between a jump table and a jump
+                // table with a bounds test in front of it.
+                //
+                // The second half of this rule used to be `cases.size() + 1 != edges.size()`, which
+                // was arithmetic on two arrays that had to stay in step -- and its message said the
+                // opposite of its condition, which is what a check nothing exercises decays into.
+                // The case value lives on the edge now, so that skew cannot happen and there is
+                // nothing left for a length to say. What is checked instead is the property.
                 if (in.op == Op::Switch && in.total) {
                     if (in.edges.empty()) {
                         fail(18, "a total `switch` has no edges at all", at(fn, b, i), in.loc);
@@ -614,15 +629,20 @@ private:
                                                   : (fn.value(in.operands[0]) != nullptr
                                                          ? fn.value(in.operands[0])->type
                                                          : nullptr);
+                        const size_t arms = in.edges.size() - 1;
                         if (subject != nullptr && subject->kind == TypeKind::Variant &&
-                            in.cases.size() != subject->fields.size()) {
+                            arms != subject->fields.size()) {
                             fail(18, "a total `switch` over " + TypeTable::spell(subject) +
-                                         " names " + std::to_string(in.cases.size()) + " of " +
+                                         " names " + std::to_string(arms) + " of " +
                                          std::to_string(subject->fields.size()) + " cases",
                                  at(fn, b, i), in.loc);
                         }
-                        if (in.cases.size() + 1 != in.edges.size()) {
-                            fail(18, "a total `switch` still carries a default edge",
+                        const Block* fallback = fn.block(in.edges[0].target);
+                        const bool goesNowhere =
+                            fallback != nullptr && !fallback->insts.empty() &&
+                            fallback->insts.front().op == Op::Unreachable;
+                        if (!goesNowhere) {
+                            fail(18, "a total `switch` has a default edge that goes somewhere",
                                  at(fn, b, i), in.loc);
                         }
                     }

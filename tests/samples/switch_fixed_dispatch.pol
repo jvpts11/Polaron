@@ -1,0 +1,63 @@
+import System.IO.Console;
+program SwitchFixedDispatch;
+
+// A SYSCALL DISPATCHER'S SHAPE: `switch` over a number, with every case naming a `fixed` member of
+// a class that holds the numbers. This is what Horizon's kernel entry looks like -- ninety-seven
+// arms of `case SyscallNr.Write` -- and it is the case where "is this a closed set of integers"
+// is a question about the CONSTANT FOLDER rather than about the syntax.
+//
+// A `fixed` member is not an enum constant and not a namespace `const`: it is a class member, so a
+// lowering that only knew the other two would ask the folder, be told no, and emit a compare chain
+// for the one dispatch in the system that runs on every call from every program.
+//
+// THE NUMBERS ARE DELIBERATELY NOT DENSE AND NOT IN ORDER. Linux's syscall numbers are neither, and
+// a rule that only recognised `0, 1, 2, ...` would pass a test written with dense numbers and then
+// meet `Read = 0, Write = 1, Close = 3, Fstat = 5, Lseek = 8` and fall back to the chain with
+// nothing to say so. The gap at 2 and 4 also means the default is reachable, which is what keeps
+// the arm that answers ENOSYS in the program.
+//
+// Prints:
+//   0 -> read
+//   1 -> wrote
+//   2 -> unknown
+//   3 -> closed
+//   5 -> stat
+//   8 -> sought
+public bundle main {
+    public namespace app {
+        public class Nr {
+            public fixed int Read = 0;
+            public fixed int Write = 1;
+            public fixed int Close = 3;
+            public fixed int Fstat = 5;
+            public fixed int Lseek = 8;
+        }
+
+        public class Main {
+            private static method serve(int nr) returns String {
+                switch (nr) {
+                    case Nr.Read  { return "read"; }
+                    case Nr.Write { return "wrote"; }
+                    case Nr.Close { return "closed"; }
+                    case Nr.Fstat { return "stat"; }
+                    case Nr.Lseek { return "sought"; }
+                    default { return "unknown"; }
+                }
+            }
+
+            public static method main(string[] args) returns void {
+                int[] asked = new int[6]();
+                asked[0] = 0;
+                asked[1] = 1;
+                asked[2] = 2;
+                asked[3] = 3;
+                asked[4] = 5;
+                asked[5] = 8;
+                for (mutable int i = 0; i < 6; i++) {
+                    System.IO.Console.println($"{asked[i]} -> {Main.serve(asked[i])}");
+                }
+                return;
+            }
+        }
+    }
+}

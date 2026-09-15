@@ -83,17 +83,17 @@ A growable list backed by a dynamic array that doubles on overflow; the general-
 | `public method toArray() returns T[]` | Copies the elements out into a fresh array. |
 | `public method size() returns int` | Number of elements. |
 | `public method isEmpty() returns boolean` | True when the list has no elements. |
-| `public method forEach(function<void, T> action) returns void` | Runs `action` on each element in order. |
-| `public method filter(function<boolean, T> keep) returns ArrayList<T>` | Returns a new list with the elements for which `keep` is true. |
-| `public method map<R>(function<R, T> transform) returns ArrayList<R>` | Returns a new list with `transform` applied to each element (may change type). |
-| `public method reduce<R>(R seed, function<R, R, T> combine) returns R` | Folds the elements left-to-right into a single accumulator starting from `seed`. |
-| `public method any(function<boolean, T> pred) returns boolean` | True if `pred` holds for at least one element. |
-| `public method all(function<boolean, T> pred) returns boolean` | True if `pred` holds for every element. |
-| `public method count(function<boolean, T> pred) returns int` | Number of elements satisfying `pred`. |
-| `public method sortedBy(function<int, T, T> compare) returns ArrayList<T>` | Returns a new list ordered by `compare` (stable merge sort with insertion-sort fallback); leaves this list untouched. |
-| `public method find(function<boolean, T> pred) returns Option<T>` | First element satisfying `pred` as `Some`, else `None`. |
-| `public method min(function<int, T, T> compare) returns Option<T>` | Smallest element by `compare` as `Some`, or `None` when empty. |
-| `public method max(function<int, T, T> compare) returns Option<T>` | Largest element by `compare` as `Some`, or `None` when empty. |
+| `public method forEach(Action1<T>* action) returns void` | Runs `action` on each element in order. |
+| `public method filter(Predicate<T>* keep) returns ArrayList<T>` | Returns a new list with the elements for which `keep` is true. |
+| `public method map<R>(Mapper<T, R>* transform) returns ArrayList<R>` | Returns a new list with `transform` applied to each element (may change type). |
+| `public method reduce<R>(R seed, Folder<R, T>* combine) returns R` | Folds the elements left-to-right into a single accumulator starting from `seed`. |
+| `public method any(Predicate<T>* pred) returns boolean` | True if `pred` holds for at least one element. |
+| `public method all(Predicate<T>* pred) returns boolean` | True if `pred` holds for every element. |
+| `public method count(Predicate<T>* pred) returns int` | Number of elements satisfying `pred`. |
+| `public method sortedBy(Comparer<T>* compare) returns ArrayList<T>` | Returns a new list ordered by `compare` (stable merge sort with insertion-sort fallback); leaves this list untouched. |
+| `public method find(Predicate<T>* pred) returns Option<T>` | First element satisfying `pred` as `Some`, else `None`. |
+| `public method min(Comparer<T>* compare) returns Option<T>` | Smallest element by `compare` as `Some`, or `None` when empty. |
+| `public method max(Comparer<T>* compare) returns Option<T>` | Largest element by `compare` as `Some`, or `None` when empty. |
 | `public override method iterator() returns Iterator<T>` | Returns an `ArrayListIterator<T>` over this list. |
 
 ```polaron
@@ -137,10 +137,10 @@ A lazy iterator pipeline (spec 25 / stdlib #25): a `Stream` is itself an `Iterat
 |-----------|-------------|
 | `public abstract method hasNext() returns boolean` | Whether the pipeline can yield another element. |
 | `public abstract method next() returns T` | Pulls the next element through the pipeline. |
-| `public method filter(function<boolean, T> pred) returns Stream<T>` | Wraps this stream in a `FilterStream` keeping only elements satisfying `pred`. |
-| `public method map<R>(function<R, T> fn) returns Stream<R>` | Wraps this stream in a `MapStream` applying `fn` (may change the element type). |
-| `public method fold<R>(R init, function<R, R, T> combine) returns R` | Terminal: folds all elements into an accumulator starting at `init`. |
-| `public method forEach(function<void, T> action) returns void` | Terminal: runs `action` on each remaining element. |
+| `public method filter(Predicate<T>* pred) returns Stream<T>` | Wraps this stream in a `FilterStream` keeping only elements satisfying `pred`. |
+| `public method map<R>(Mapper<T, R>* fn) returns Stream<R>` | Wraps this stream in a `MapStream` applying `fn` (may change the element type). |
+| `public method fold<R>(R init, Folder<R, T>* combine) returns R` | Terminal: folds all elements into an accumulator starting at `init`. |
+| `public method forEach(Action1<T>* action) returns void` | Terminal: runs `action` on each remaining element. |
 | `public method count() returns int` | Terminal: consumes the stream and returns how many elements it produced. |
 
 ---
@@ -167,7 +167,7 @@ Yields only the upstream elements that satisfy a predicate; caches one look-ahea
 
 | Signature | Description |
 |-----------|-------------|
-| `public constructor FilterStream(Stream<T> src, function<boolean, T> pred)` | Wraps `src`, keeping elements for which `pred` is true. |
+| `public constructor FilterStream(Stream<T> src, Predicate<T>* pred)` | Wraps `src`, keeping elements for which `pred` is true. |
 | `public override method hasNext() returns boolean` | Advances the source past rejected elements, caching the first accepted one. |
 | `public override method next() returns T` | Returns the cached accepted element and clears the cache. |
 
@@ -181,7 +181,7 @@ Applies a transform to each upstream element as it is pulled, possibly changing 
 
 | Signature | Description |
 |-----------|-------------|
-| `public constructor MapStream(Stream<T> src, function<R, T> fn)` | Wraps `src`, applying `fn` to each element. |
+| `public constructor MapStream(Stream<T> src, Mapper<T, R>* fn)` | Wraps `src`, applying `fn` to each element. |
 | `public override method hasNext() returns boolean` | Delegates to the source stream. |
 | `public override method next() returns R` | Returns `fn` applied to the source's next element. |
 
@@ -329,7 +329,7 @@ Hash map with open addressing (linear probing); capacity is a power of two, load
 | `public method get(K key) returns V` | Value for `key`, or a zero/null value if absent (check `containsKey` first). |
 | `public method containsKey(K key) returns boolean` | Whether `key` is present. |
 | `public method getOrDefault(K key, V defaultValue) returns V` | Value for `key`, or `defaultValue` if absent (single probe). |
-| `public method merge(K key, V value, function<V, V, V> combine) returns void` | Inserts `value`, or replaces the existing value with `combine(old, value)` — one probe (efficient tallying). |
+| `public method merge(K key, V value, Combiner<V, V, V>* combine) returns void` | Inserts `value`, or replaces the existing value with `combine(old, value)` — one probe (efficient tallying). |
 | `public method remove(K key) returns boolean` | Removes `key` (backward-shift of its probe cluster); returns whether it was present. |
 | `public method keyArray() returns K[]` | All keys, in arbitrary order. |
 | `public method valueArray() returns V[]` | All values, in arbitrary order. |

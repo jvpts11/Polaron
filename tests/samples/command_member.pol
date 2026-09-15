@@ -1,0 +1,81 @@
+import System.IO.Console;
+program CommandMember;
+
+// `command` -- THE THIRD KIND OF MEMBER, and the one that travels.
+//
+// A method is behaviour of the instance, a procedure is behaviour of the relation between two types,
+// and a command is behaviour written in one place to be run in another. It replaces the lambda, and
+// the difference is the whole reason it exists: a lambda's capture list is a set of outer locals
+// dragged into an anonymous block, and nobody can tell from the declaration what one holds. A
+// command's baggage is a declared list -- `carries (int floor) into pack` -- copied when the command
+// is built and read through a name the author chose, so a read of carried state never looks like a
+// read of anything else.
+//
+// Three things are exercised here, and each is a different half of the construct:
+//
+//   1. the DECLARED form, built by naming it: `Gate.aboveFloor(10)` -- and the arguments are the
+//      `carries` list, because the parameters are what the CALLER will supply later;
+//   2. the ROLE (`command IntTest(int x) returns boolean;`), which is how an API says what it will
+//      call without naming any particular command. Conformance is STRUCTURAL: `Gate` never heard of
+//      `IntTest`, `count` never heard of `aboveFloor`, and they meet because the signatures agree;
+//   3. the CALL, `test(x)`, which is what keeps the generated method's name out of anybody's source.
+//
+// Prints: over10=2 all=5 field=1 0
+
+public bundle Main {
+    public namespace App {
+
+        // THE ROLE. A signature and no body: it says what will be called, never what is held --
+        // baggage differs between commands playing the same role, so a role that named it would be
+        // demanding they all carry the same things.
+        public command IntTest(int x) returns boolean;
+
+        public class Gate {
+            // WITH BAGGAGE. `floor` is copied when the command is built, and the body reaches it
+            // through `pack`, which is the name this declaration gave the environment.
+            public command aboveFloor(int x) carries (int floor) into pack returns boolean {
+                return x > pack.floor;
+            }
+
+            // ...AND WITHOUT. No `carries`, so nothing is held: the stateless form.
+            public command always(int x) returns boolean { return true; }
+
+            // The API. It takes the role, so it compiles without knowing a single command exists.
+            public static method count(int[] xs, IntTest* test) returns int {
+                mutable int n = 0;
+                for (mutable int i = 0; i < xs.length(); i = i + 1) {
+                    if (test(xs[i])) {
+                        n = n + 1;
+                    }
+                }
+                return n;
+            }
+        }
+
+        // A command in a FIELD, called through `this` -- the shape a handler registration takes.
+        public class Rule {
+            private IntTest* test;
+            public constructor Rule(IntTest* test) { this.test = test; }
+            public method holds(int x) returns boolean { return this.test(x); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int[] xs = new int[5]();
+                xs[0] = 3;
+                xs[1] = 11;
+                xs[2] = 7;
+                xs[3] = 40;
+                xs[4] = 1;
+
+                Rule* r = new Rule(Gate.aboveFloor(6)) on heap;
+                System.IO.Console.printf("over10=%d all=%d field=%d %d\n",
+                                         Gate.count(xs, Gate.aboveFloor(10)),
+                                         Gate.count(xs, Gate.always()),
+                                         r.holds(7) ? 1 : 0,
+                                         r.holds(2) ? 1 : 0);
+                return;
+            }
+        }
+    }
+}

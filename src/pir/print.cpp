@@ -1,5 +1,6 @@
 #include "pir/text.h"
 
+#include <iomanip>
 #include <sstream>
 
 namespace polaron::pir {
@@ -9,12 +10,64 @@ namespace {
 std::string quote(const std::string& s) {
     std::string out = "\"";
     for (char c : s) {
+        // A NEWLINE INSIDE A TOKEN, IN A LINE-ORIENTED FORMAT.
+        //
+        // `fact.requires` carries the contract's own text, and a rendered condition is several lines
+        // of tree. Printed raw inside the quotes, one token then spanned twenty lines -- and the
+        // instruction reader's whole notion of an operand list is *what is left on THIS line*. Every
+        // line after the first read as the start of a new instruction, and the parse failed on a
+        // word out of the middle of somebody's `requires` clause: `unknown opcode 'offset'`.
+        //
+        // Escaping is the fix rather than teaching the reader about multi-line tokens, because a
+        // format whose lines are its structure should have no token that crosses one. The reader
+        // already unescapes; it just had nothing to unescape.
+        if (c == '\n') {
+            out += "\\n";
+            continue;
+        }
+        if (c == '\r') {
+            out += "\\r";
+            continue;
+        }
+        if (c == '\t') {
+            out += "\\t";
+            continue;
+        }
         if (c == '"' || c == '\\') {
             out += '\\';
         }
         out += c;
     }
     return out + "\"";
+}
+
+// A NAME, QUOTED WHEN IT HAS TO BE -- and the PRINTER decides that, not the reader.
+//
+// This is the fix for a round trip that was a claim. `parse(print(m))` is Stage 0's whole acceptance
+// criterion (polaron-ir.md §1.6), and it held only for modules with no generics in them: the
+// monomorphiser mangles `ArrayList<String>` to `ArrayList$String`, a pointer element keeps its star
+// in `ArrayList$Certificate*`, a destructor is `~Some$String`. The reader's idea of a name character
+// was a list somebody wrote once, and every mangling character added since was a chance to break the
+// round trip with nothing to notice, because no real module was ever read back.
+//
+// The rule is inverted here so it cannot drift again. The printer knows exactly which characters the
+// reader takes bare and quotes anything else, so a new mangling character costs nothing: it comes
+// out quoted, and quoted tokens are something the reader has understood all along.
+bool isBareNameChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+           c == '.' || c == '-' || c == '<' || c == '>';
+}
+
+std::string name(const std::string& s) {
+    if (s.empty()) {
+        return quote(s);
+    }
+    for (char c : s) {
+        if (!isBareNameChar(c)) {
+            return quote(s);
+        }
+    }
+    return s;
 }
 
 // A value's spelling. The NAME is decoration and the id is the identity, so the id is always printed
@@ -44,6 +97,40 @@ public:
         }
         out_ << " {\n";
 
+        // THE NAMED STRUCTS COME FIRST, AND UNTIL NOW THEY DID NOT COME AT ALL.
+        //
+        // A nominal struct is spelled `%Mixer` at every use, so a module that never declares it
+        // tells a reader the name and nothing else -- and `gep ptr @level of %Mixer imm 1` is an
+        // index into fields the reader has no way to know about. Parsing such a module produced the
+        // right instructions over EMPTY structs, and the first `gep` past field zero walked off the
+        // end of a type with nothing in it: an access violation, with no diagnostic, in a parser
+        // whose acceptance criterion is that this cannot happen.
+        //
+        // It stayed invisible because nothing ever read a real module back. The grammar in `text.h`
+        // has had `type %Point = {i32, i32}` in it from the start, the reader has had a branch for
+        // `type` from the start -- one that SKIPS it, on the reasoning that *the types are rebuilt
+        // from their uses* -- and the printer never emitted one, so the reasoning was never tested
+        // against a use that cannot rebuild anything.
+        //
+        // First, because a use may precede a definition inside a function and the reader should not
+        // need a second pass to resolve it.
+        for (const auto& [structName, type] : m_.types.namedStructs()) {
+            if (type == nullptr || type->fields.empty()) {
+                continue;   // an opaque forward reference: the name is all there is to say
+            }
+            out_ << "  type %" << name(structName) << " = {";
+            for (std::size_t i = 0; i < type->fields.size(); ++i) {
+                if (i != 0) {
+                    out_ << ", ";
+                }
+                printFieldShape(type->fields[i]);
+            }
+            out_ << "}\n";
+        }
+        if (!m_.types.namedStructs().empty()) {
+            out_ << "\n";
+        }
+
         for (const Global& g : m_.globals) {
             printGlobal(g);
         }
@@ -51,10 +138,12 @@ public:
             out_ << "\n";
         }
         for (const Hook& h : m_.init) {
-            out_ << "  init @" << h.fnKey << " for " << h.classKey << " order " << h.order << "\n";
+            out_ << "  init @" << name(h.fnKey) << " for " << name(h.classKey) << " order "
+                 << h.order << "\n";
         }
         for (const Hook& h : m_.fini) {
-            out_ << "  fini @" << h.fnKey << " for " << h.classKey << " order " << h.order << "\n";
+            out_ << "  fini @" << name(h.fnKey) << " for " << name(h.classKey) << " order "
+                 << h.order << "\n";
         }
         if (!m_.init.empty() || !m_.fini.empty()) {
             out_ << "\n";
@@ -68,8 +157,29 @@ public:
     }
 
 private:
+    // ONE FIELD, WITH EVERY PROPERTY THAT DECIDES WHERE ITS BYTES GO.
+    //
+    // The type alone is not the field. `weak` is what lets the region binder form a forest rather
+    // than a graph; a bit width makes it share a storage unit with its neighbours; and an
+    // `alignOverride` is a boundary a layout's resolver asked for, which is the difference between
+    // two counters on one cache line and two counters on two. A round trip that dropped any of them
+    // would give back a module that measures differently from the one that was printed -- which is
+    // the same class of silence as not printing the struct at all, one level down.
+    void printFieldShape(const Field& f) {
+        out_ << TypeTable::spell(f.type);
+        if (f.weak) {
+            out_ << " weak";
+        }
+        if (f.bitWidth != 0) {
+            out_ << " bits " << f.bitWidth;
+        }
+        if (f.alignOverride != 0) {
+            out_ << " align " << f.alignOverride;
+        }
+    }
+
     void printGlobal(const Global& g) {
-        out_ << "  global @" << g.name << " : " << TypeTable::spell(g.type) << " = ";
+        out_ << "  global @" << name(g.name) << " : " << TypeTable::spell(g.type) << " = ";
         if (g.zeroInit) {
             out_ << "zeroinit";
         } else if (!g.initStr.empty()) {
@@ -85,7 +195,7 @@ private:
     }
 
     void printFunction(const Function& fn) {
-        out_ << "  fn @" << fn.key << "(";
+        out_ << "  fn @" << name(fn.key) << "(";
         if (fn.signature != nullptr) {
             for (size_t i = 0; i < fn.signature->fields.size(); ++i) {
                 if (i != 0) {
@@ -202,7 +312,7 @@ private:
             out_ << " " << TypeTable::spell(in.type);
         }
         if (!in.text.empty()) {
-            out_ << " @" << in.text;
+            out_ << " @" << name(in.text);
         }
         // BEFORE `imm`, because for a field access the two are one fact: this aggregate, that
         // member of it. Printed even when the index is zero -- the first field is a real field, and
@@ -214,10 +324,26 @@ private:
             out_ << " imm " << in.imm;
         }
         if (in.fimm != 0.0) {
-            out_ << " fimm " << in.fimm;
+            // SEVENTEEN DIGITS, because six is what a stream gives you and six does not come back.
+            //
+            // `2147483647.0` printed as `2.14748e+09` and read back as 2147480000 -- a constant in
+            // the program silently changed by writing it down. Seventeen significant digits is the
+            // round-trip width of an IEEE double: the shortest count for which parse(print(x)) == x
+            // for every x. This is the only place a NUMBER crosses the text form, so it is the only
+            // place that has to know.
+            std::ostringstream f;
+            f << std::setprecision(17) << in.fimm;
+            out_ << " fimm " << f.str();
         }
         for (const std::string& e : in.extra) {
-            out_ << " [" << e << "]";
+            // QUOTED, because an extra is PROSE. `guard.contract` carries the clause as the author
+            // wrote it -- `[requires offset >= 0]` -- and the reader takes exactly one token after
+            // the bracket, so it got `requires` and left `offset >= 0]` to be read as the next
+            // instruction. The parse then failed on a word out of the middle of somebody's contract.
+            //
+            // `name()` quotes only when it has to, so `[requires]` and `[<prelude>]` stay as they
+            // read today and the ones with spaces in them stop being three tokens.
+            out_ << " [" << name(e) << "]";
         }
         for (size_t i = 0; i < in.operands.size(); ++i) {
             out_ << (i == 0 ? " " : ", ") << val(fn, in.operands[i]);
@@ -231,8 +357,10 @@ private:
                 out_ << val(fn, in.edges[i].args[k]);
             }
             out_ << ")";
-            if (in.op == Op::Switch && i > 0 && i - 1 < in.cases.size()) {
-                out_ << " case " << in.cases[i - 1];
+            // Edge 0 of a `switch` is the default and has no value; every other edge is an arm and
+            // carries its own, so there is no length to check before reading it.
+            if (in.op == Op::Switch && i > 0) {
+                out_ << " case " << in.edges[i].caseValue;
             }
         }
         // A REAL TOKEN, not a comment. `; 12:5` read nicely and did not survive the round trip,

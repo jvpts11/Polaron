@@ -1,0 +1,62 @@
+import System.IO.Console;
+program UniqueValue;
+
+// `unique` OVER A VALUE TYPE — the discipline is a property of the type, not of the representation.
+//
+// `ownership.md` §5: the disciplines lived on classes, which is why `atomic<T>` is a class and every
+// use of one is a separate heap allocation. Whether a value lives inside its owner or is reached
+// through a pointer is what `struct` versus `class` already decides; `unique` says **who may hold
+// it**, and it was pinned to one side by a sentence rather than by a reason.
+//
+// One vocabulary adjustment travels with it: for a class §19 says *one live reference*; a value has
+// no reference — it IS the storage — so it reads *one live holder*. Same discipline, and the
+// original sentence was written for the case at hand.
+//
+// Prints: moved=3 inline=10 sum=6
+
+public bundle Main {
+    public namespace App {
+
+        // A unique VALUE. No pointer, no allocation, no class: the whole thing is eight bytes on
+        // the frame, and the discipline still applies.
+        public unique struct Slot {
+            public mutable int v;
+            public constructor Slot(int v) { this.v = v; }
+            public method get() returns int { return this.v; }
+        }
+
+        public class Main {
+            // EVERY ASSIGNMENT IS A MOVE, so `a` is invalidated and reading it is refused. That
+            // half is asserted by `sema_rejects_copying_a_unique_value`; here the point is that the
+            // move itself WORKS and the value arrives intact.
+            public static method moving() returns int {
+                Slot a = new Slot(3) on stack;
+                Slot b = a;
+                return b.get();
+            }
+
+            // ...AND AN INLINE ARRAY OF THEM, which is `ownership.md` §6.3 and the shape AP-09
+            // named as the standard one that could not be written: a per-thread accumulator with no
+            // allocation anywhere in it.
+            public static method inline() returns int {
+                mutable Slot[4] slots;
+                for (mutable int i = 0; i < 4; i++) {
+                    slots[i] = new Slot(i + 1) on stack;
+                }
+                mutable int total = 0;
+                for (mutable int i = 0; i < 4; i++) {
+                    total = total + slots[i].get();
+                }
+                return total;
+            }
+
+            public static method main(string[] args) returns void {
+                Slot one = new Slot(1) on stack;
+                Slot two = new Slot(5) on stack;
+                System.IO.Console.printf("moved=%d inline=%d sum=%d\n",
+                                         Main.moving(), Main.inline(), one.get() + two.get());
+                return;
+            }
+        }
+    }
+}

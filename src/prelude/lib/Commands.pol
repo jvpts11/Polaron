@@ -1,0 +1,52 @@
+    // THE ROLES A COMMAND CAN PLAY -- the standard library's half of `command`.
+    //
+    // A command is behaviour a class hands out for somebody else to run (reference 14.1). An API that
+    // takes one has to be able to SAY SO, and what it needs to say is the shape it will call, not
+    // which command it will be given. That is what these are: a name and a signature, no body, no
+    // implementations listed. `ArrayList.sort` takes a `Comparer<T>*` and compiles without knowing a
+    // single comparison exists; a program writes `public command byAge(Dog* a, Dog* b) returns int`
+    // and never hears of `Comparer`. They meet because the signatures agree.
+    //
+    // WHY THE SET IS SMALL AND OVERLAPPING. Conformance is structural, so one command satisfies every
+    // role it fits: a `(Dog*) -> boolean` is a `Predicate<Dog*>` and also a `Mapper<Dog*, boolean>`,
+    // and neither role has to know about the other. That is what lets these stay named for what they
+    // MEAN at the call site -- `filter` asks for a predicate because that is what a filter wants --
+    // rather than being reduced to one arity-indexed family that reads like machinery.
+    //
+    // These replace `function<...>`, which was a shape with no name, no role, and no way for an API
+    // to say what it wanted beyond the arrow.
+    public namespace Commands {
+        // Something to do, with nothing to say about it. A thread's work, a test's body, a handler
+        // that neither takes nor answers.
+        public command Action() returns void;
+
+        // ...over one value, and over two. `forEach` and a subscription take the first; a chunked
+        // parallel loop, which is handed a range, takes the second.
+        public command Action1<T>(T value) returns void;
+        public command Action2<A, B>(A a, B b) returns void;
+
+        // A question about one value. `filter`, `any`, `all`, `count`, `find` -- and the authoriser
+        // an IPC server is handed, which is the same shape asked about a name.
+        public command Predicate<T>(T value) returns boolean;
+
+        // One value in, another out. `map`, and a request handler, which is a mapper from a request
+        // to a response however much ceremony surrounds it.
+        public command Mapper<T, R>(T value) returns R;
+
+        // The ORDER of two values: negative, zero or positive, the convention every sort in the
+        // library reads. It is the reason `Arrays.sort` can sort anything without a `Comparable`
+        // interface that every element type would have to implement.
+        public command Comparer<T>(T a, T b) returns int;
+
+        // An accumulator and the next value, giving the next accumulator -- `reduce` and `fold`, and
+        // the merge of an old value with a new one in a map.
+        public command Folder<R, T>(R accumulated, T value) returns R;
+
+        // Two values in, one out, with all three types free: the general shape `Comparer` and
+        // `Folder` are the two useful special cases of. A differential equation's `f(t, y)` is one.
+        public command Combiner<A, B, R>(A a, B b) returns R;
+
+        // ...and three in, which is where the family stops. Nothing in the library needs a fourth,
+        // and a role per arity forever is the sort of list that grows because nobody stopped it.
+        public command Combiner3<A, B, C, R>(A a, B b, C c) returns R;
+    }

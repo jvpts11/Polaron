@@ -64,6 +64,12 @@ public bundle main {
             }
         }
 
+        // What the pool region below allocates. Plain, because that is what a region holds.
+        public class Slot {
+            public mutable int value;
+            public constructor Slot(int value) { this.value = value; }
+        }
+
         public class Main {
             public static method main(string[] args) returns void {
                 Uart uart = new Uart();
@@ -81,6 +87,32 @@ public bundle main {
                 uart.puts(b"sum1..100^2 = 0x");
                 uart.hex(sum);   // 338350 = 0x529ae
                 uart.nl();
+
+                /* A FLAVOURED REGION ON BARE METAL (§17), which nothing here was booting.
+
+                   A `pool region` exercises the region CORE rather than the arena: a 448-byte
+                   descriptor the runtime lays out, a slot header in front of every object, and a
+                   free-list that `delete ... from region` puts a slot back on for the next
+                   allocation of that size class to pop.
+
+                   CHURNED PAST ITS CAPACITY ON PURPOSE. The region is a kilobyte and six hundred
+                   objects go through it, so without slot reclaim it runs out and panics: the sum
+                   arriving at all is the free-list working, and the sum being RIGHT is every slot
+                   having read back as the object that was stored in it.
+                   6 * (0 + 1 + .. + 99) = 29 700 = 0x7404. */
+                pool region churn = itself.allocate(1 kilobytes);
+                mutable long kept = 0;
+                mutable int spin = 0;
+                while (spin < 600) {
+                    Slot* s = new Slot(spin % 100) in region churn;
+                    kept = kept + cast<long>(s.value);
+                    delete s from region churn;
+                    spin = spin + 1;
+                }
+                uart.puts(b"pool = 0x");
+                uart.hex(kept);
+                uart.nl();
+                release region churn;
 
                 uart.puts(b"done");
                 uart.nl();

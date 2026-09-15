@@ -1,0 +1,44 @@
+import System.IO.Console;
+program RecordLongField;
+
+// A `record` WITH A 64-BIT FIELD COULD NOT BE DECLARED.
+//
+// The generated `hashCode` accumulates into an `int`, so `h = h * 31 + this.stamp` over a `long`
+// field is a `long` assigned to an `int` -- and the error landed on the `public record` line, about
+// an assignment nobody wrote:
+//
+//     error[Polaron-0301]: cannot assign a value of type 'long' to variable 'h' of type 'int'
+//
+// The float fields were already folded down to `int` for the mix, for exactly this reason. The wide
+// integers were the same problem one type across, and nothing had put a `long` in a record until a
+// program reading OLE property sets needed one to hold a FILETIME -- a moment in 100-nanosecond
+// ticks, which is the most ordinary 64-bit value there is.
+//
+// The claim is BOTH halves, so both are printed: it compiles at all (the hash), and the record still
+// says what it holds (`toString` and `equals` over the whole 64 bits, not the folded half).
+//
+// Prints: Stamp(133700000000000000, 7) equal=true different=false hashed=true
+public bundle main {
+    public namespace app {
+
+        public record Stamp(long ticks, int id) { }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                long ticks = cast<long>(1337) * cast<long>(100000000000000);
+                Stamp* a = new Stamp(ticks, 7) on heap;
+                Stamp* b = new Stamp(ticks, 7) on heap;
+                // THE TOP HALF MUST STILL COUNT. The hash folds it away on purpose; `equals` is what
+                // decides identity, and a record that answered `true` here would be one whose
+                // 64-bit field is only 32 bits of value.
+                Stamp* c = new Stamp(ticks + cast<long>(4294967296), 7) on heap;
+                System.IO.Console.println($"{a.toString()} equal={a.equals(b)} "
+                    + $"different={a.equals(c)} hashed={a.hashCode() == b.hashCode()}");
+                delete c;
+                delete b;
+                delete a;
+                return;
+            }
+        }
+    }
+}

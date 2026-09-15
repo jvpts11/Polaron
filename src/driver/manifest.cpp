@@ -160,7 +160,11 @@ Manifest parseManifestText(const std::string& text) {
             } else if (key == "panic_uart") {
                 m.panicUart = val;  // MMIO transmit register for the default panic reporter
             } else if (key == "image") {
-                m.imageFormat = val;     // elf | bin | iso
+                m.imageFormat = val;     // elf | bin | bootsector | iso
+            } else if (key == "entry_symbol") {
+                m.entrySymbol = val;     // where the loader jumps; see the note on Manifest::entrySymbol
+            } else if (key == "native") {
+                m.nativeSource = val;    // one C source linked into the image; see Manifest::nativeSource
             } else if (key == "boot") {  // comma-separated asm boot stubs, assembled with clang and linked in
                 std::stringstream bs(val);
                 std::string b;
@@ -170,6 +174,25 @@ Manifest parseManifestText(const std::string& text) {
                         m.bootSources.push_back(t);
                     }
                 }
+            } else {
+                // A KEY THIS SECTION DOES NOT HAVE, SAID OUT LOUD.
+                //
+                // Every branch above is silent about anything it does not match, and that is how
+                // `entry_symbol` came to be set in two manifests and read in none: it looked like a
+                // decision, it lived in the file where decisions live, and it did nothing. There is no
+                // way to notice that from the outside -- the build succeeds and the image is subtly
+                // not what was asked for.
+                //
+                // A WARNING AND NOT AN ERROR, because a manifest is also documentation: a project may
+                // carry a key for a future version of the toolchain, and refusing to build over it
+                // would be worse than the silence. What matters is that nobody can believe a key is
+                // being honoured when it is not.
+                std::fprintf(stderr,
+                             "polaron: warning: [freestanding] has no key '%s' -- it is being "
+                             "ignored. The keys this section understands are target, linker_script, "
+                             "load_address, boot_protocol, panic_uart, image, entry_symbol, native "
+                             "and boot.\n",
+                             key.c_str());
             }
         } else if (section == "dependencies") {
             Dependency d;

@@ -1,0 +1,21 @@
+[polaron_project]
+
+# THE SMALLEST UEFI APPLICATION THERE IS, as a build-format test.
+#
+# What is being checked is not what this program does -- it does nothing -- but that `polaron build`
+# can produce a file real firmware would load: a PE32+ executable, machine x86-64, subsystem 10.
+# Every one of those is a header field that firmware reads and silently declines when wrong, so the
+# failure mode without this test is a machine that boots something else instead.
+
+[program]
+name = "efiapp"
+version = "0.1.0"
+language_version = "1.0"
+entry = "main.pol"
+
+[freestanding]
+# The triple decides the CALLING CONVENTION as well as the object format: UEFI uses the Microsoft x64
+# order, and building this for an ELF target would put the system table in the wrong register even if
+# the file format somehow came out right.
+target = "x86_64-unknown-uefi"
+image = "efi"

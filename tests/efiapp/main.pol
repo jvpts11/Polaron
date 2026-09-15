@@ -1,0 +1,34 @@
+// A UEFI APPLICATION THAT DOES NOTHING, AND THE POINT IS THAT IT BUILDS.
+//
+// `image = "efi"` is the only image format that does not produce an ELF: a UEFI application is a
+// PE32+ executable, because the firmware's loader is the one Windows uses. Everything that can go
+// wrong with it goes wrong in the file HEADER -- the machine type, the subsystem, the entry point --
+// and firmware answers all three the same way, by declining the file and booting something else.
+//
+// So the test beside this one reads those fields, and this is the smallest program that produces
+// them.
+program EfiApp freestanding;
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+            // The driver builds its `kmain` wrapper around this, and the firmware never calls it --
+            // an EFI image is entered at `efi_main` below. It is here because `[program] entry` names
+            // a file the compiler expects to hold a `Main.main`.
+            public static method main(string[] args) returns int { return 0; }
+
+            // `unknown` for an unmangled symbol, because `/entry:efi_main` names it by that spelling
+            // in the PE header. `win64` for the convention the firmware calls with: the image handle
+            // arrives in RCX and the system table in RDX, which is not where a System V target would
+            // look for them.
+            //
+            // EFI_SUCCESS is zero. A status has the high bit set for an error, which is why it is an
+            // `address` and not an `int`: EFI_LOAD_ERROR is 0x8000000000000001, and thirty-two bits
+            // would turn every error in the specification into 1.
+            public unknown win64 static method efi_main(address imageHandle, address systemTable)
+                returns address {
+                return cast<address>(0);
+            }
+        }
+    }
+}

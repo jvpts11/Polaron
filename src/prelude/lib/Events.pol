@@ -1,11 +1,11 @@
     public namespace Events {
-        // Observer/event dispatch (spec 34): a publisher keeps a list of handler functions and calls them all
-        // on emit. Each handler is wrapped in a small object so it can live in an ArrayList (function values
-        // are not directly storable in a list yet). These are the concrete payload types; a fully generic
-        // Event<T> awaits nested-generic monomorphization.
+        // Observer/event dispatch (spec 34): a publisher keeps a list of handler commands and calls them
+        // all on emit. Each handler is wrapped in a small object so it can live in a plain array beside
+        // the count. These are the concrete payload types; a fully generic Event<T> awaits
+        // nested-generic monomorphization.
         public class VoidHandler {
-            private mutable function<void> fn;
-            public constructor VoidHandler(function<void> f) { this.fn = f; }
+            private mutable Action* fn;
+            public constructor VoidHandler(Action* f) { this.fn = f; }
             public method invoke() returns void { this.fn(); return; }
         }
         // Fires with no payload (a notification), e.g. onSave, onClose. Handlers live in a plain growable
@@ -27,7 +27,7 @@
                 this.cap = nc;
                 return;
             }
-            public method subscribe(function<void> h) returns void {
+            public method subscribe(Action* h) returns void {
                 if (this.count == this.cap) { this.grow(); }
                 this.hs[this.count] = new VoidHandler(h) on heap;
                 this.count = this.count + 1;
@@ -40,8 +40,8 @@
             public method count() returns int { return this.count; }
         }
         public class IntHandler {
-            private mutable function<void, int> fn;
-            public constructor IntHandler(function<void, int> f) { this.fn = f; }
+            private mutable Action1<int>* fn;
+            public constructor IntHandler(Action1<int>* f) { this.fn = f; }
             public method invoke(int arg) returns void { this.fn(arg); return; }
         }
         // Fires with an int payload, e.g. onTick(elapsed), onScore(points).
@@ -62,7 +62,7 @@
                 this.cap = nc;
                 return;
             }
-            public method subscribe(function<void, int> h) returns void {
+            public method subscribe(Action1<int>* h) returns void {
                 if (this.count == this.cap) { this.grow(); }
                 this.hs[this.count] = new IntHandler(h) on heap;
                 this.count = this.count + 1;
@@ -75,8 +75,8 @@
             public method count() returns int { return this.count; }
         }
         public class StringHandler {
-            private mutable function<void, String> fn;
-            public constructor StringHandler(function<void, String> f) { this.fn = f; }
+            private mutable Action1<String>* fn;
+            public constructor StringHandler(Action1<String>* f) { this.fn = f; }
             public method invoke(String arg) returns void { this.fn(arg); return; }
         }
         // Fires with a String payload, e.g. onMessage(text), onError(reason).
@@ -97,7 +97,7 @@
                 this.cap = nc;
                 return;
             }
-            public method subscribe(function<void, String> h) returns void {
+            public method subscribe(Action1<String>* h) returns void {
                 if (this.count == this.cap) { this.grow(); }
                 this.hs[this.count] = new StringHandler(h) on heap;
                 this.count = this.count + 1;

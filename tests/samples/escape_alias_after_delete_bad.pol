@@ -1,0 +1,31 @@
+import System.IO.Console;
+program EscapeAliasAfterDeleteBad;
+
+// A SECOND NAME FOR THE SAME OBJECT, READ AFTER THE FIRST WAS DELETED.
+//
+// `delete b` already made `b` unusable, and that check follows the NAME. Introducing one more name
+// for the same storage walked straight past it -- so the plainest possible way to defeat the
+// use-after-free rule was to write one extra line.
+//
+// An alias is recorded as a borrow of what it aliases, which puts it under the rule that already
+// exists rather than adding a second one. `Point p = q;` is unaffected: assignment copies in this
+// language, and it is `T*`, `T&` and an array that share.
+//
+// Refused with Polaron-1724.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int n;
+            public constructor Box(int n) { this.n = n; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box* b = new Box(7) on heap;
+                Box* alias = b;
+                delete b;
+                System.IO.Console.println($"{alias.n}");
+                return;
+            }
+        }
+    }
+}

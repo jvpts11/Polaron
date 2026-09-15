@@ -93,13 +93,72 @@ refuses an ARM mnemonic in an x86 block gets two more things it can refuse:
   error as the mnemonic, caught the same way;
 - a constraint and a `clobber` naming the same register, which is a real bug and reads as a typo.
 
-## 6. Still to design
+## 6. Decided (Wave 4.5)
 
-| | |
-|---|---|
-| 6.1 | register **pairs and classes** beyond a single name — `edx:eax` for a 64-bit result on a 32-bit target is the common one, and a single string does not express it |
-| 6.2 | architectures other than x86_64. `registerFamily()` is an x86 table today; the same clause has to mean something on aarch64, and the arch is already declared on the block |
-| 6.3 | whether `"memory"` and `"immediate"` are the right two class words, or whether more of C's classes are worth having. AP-18 needed neither — only specific registers |
+### 6.1 A register pair is written the way the architecture writes it: `"edx:eax"`
+
+**Decided.** The constraint is a colon-joined list of register names, **high part first**, in the
+order the architecture's own documentation prints them. `mul` on a 32-bit target puts its 64-bit
+result in `edx:eax`; that is how the manual writes it and how a person says it out loud, so it is how
+it is written here.
+
+**Why not C's way.** C spells this pair `"A"` — one letter meaning *this specific pair on this
+specific target* — and there is no `"B"` for another pair because the letters ran out. §3.1's whole
+argument is that a private alphabet is the wrong vocabulary; it is not improved by extending it.
+
+**What the checker does with it**, each a rule it can already almost express:
+
+- Split on `:` and require **every part to be a register of the block's architecture** — the same
+  `registerFamily()` lookup a single name already gets, run per part.
+- Require the parts to be **distinct families**. `"eax:ax"` names one register twice: a typo that
+  would silently produce an operand half of which overwrites the other half.
+- Require the operand's **width to equal the sum of the parts'**. A pair exists because the value
+  does not fit in one register; a 32-bit value in `edx:eax` means the author meant something else.
+- **Clobber the whole family of every part.** `registerFamily()` exists precisely because writing
+  `eax` destroys `rax`; a pair destroys two families. Getting that wrong is the failure the table
+  was built to prevent, arriving through the one syntax that names two registers at once.
+
+Two is not a special case of one — it is a **list**, and nothing in the rule stops at two.
+`edx:ecx:ebx:eax` is a legal spelling of a 128-bit operand if a target ever wants one, and the
+checker needs no new code for it.
+
+### 6.2 The table is per-architecture, and an unknown name names the architecture
+
+**Decided.** `registerFamily()` gains a parameter: the architecture **already declared on the
+block** — `asm("x86_64")`, `asm("aarch64")`. No fallback, no union table. A name unknown to that
+architecture is an error saying *which* architecture it was looked up in.
+
+**The phrasing matters more than the table.** What this prevents is not a typo, it is a **port**.
+`asm("aarch64") { ... } in ("rdi": port)` is a block somebody copied from the x86 side and changed
+the arch word on: every mnemonic is now checked against ARM and the *constraint* is not, so the one
+line still saying x86 is the one line nothing looks at. An error reading *`rdi` is not a register on
+aarch64* is the entire diagnosis. A union table would accept it and hand LLVM a constraint for a
+register the target does not have.
+
+This is a lookup gaining a parameter rather than a design, because **the block already declares the
+architecture** and the mnemonic checker already reads it (§1 counts that as the thing C cannot do).
+The constraint clause has simply not been reading the word beside it.
+
+The x86-64 table stays as it is. `aarch64` is `x0`–`x30` with their `w` halves as the same families,
+`sp`, `xzr`/`wzr`, and `v0`–`v31` — the aliasing rule is the same rule, writing `w3` destroys `x3`,
+which is why a family table exists rather than a set of names.
+
+### 6.3 `"memory"` and `"immediate"` are the two, and the list grows only on demand
+
+**Decided.** No further class words until a real block cannot be written without one.
+
+C has around twenty and most answer a question §3.1 removed. `"a"`, `"b"`, `"c"`, `"d"`, `"S"`, `"D"`
+are *specific registers behind letters* — this design writes `"ax"`, `"bx"`, `"cx"`. `"q"`, `"Q"`,
+`"R"`, `"l"` are subsets of the register file expressed as classes because there was no way to say
+"one of these": an artefact of the alphabet, not a need. What is genuinely left is the two here — an
+operand that must be **in memory** rather than a register, and one that must be **a constant folded
+into the instruction**. Neither is a register at all, which is why neither can be spelled as one.
+
+**AP-18 needed neither**; three real blocks driving a serial port wanted only specific registers.
+That is the evidence for stopping here, and it is weak evidence from one program — which is exactly
+why the rule is *add on demand* and not *this is the complete set*. A class word added because a
+block needed it arrives with the block that needed it. One added in advance arrives with a guess
+about what somebody will want, and stays whether they wanted it or not.
 
 ## 7. What this adds to the language
 

@@ -4,6 +4,7 @@
 
 #include "semantic/asmcheck.h"
 #include "semantic/comptime.h"
+#include "parser/monomorphize.h"  // kCommandMethod -- the one name a command answers to
 
 #include <algorithm>
 #include <cctype>
@@ -51,7 +52,28 @@ void SemanticAnalyzer::error(std::string message, SourceLocation loc) {
     // No explicit code at the call-site: infer one from the message so the diagnostic is still rich (the
     // mapping is the one table in diag/catalog.cpp). An unmatched message stays a clean one-liner.
     const diag::Code code = diag::classify(message);
-    errors_.push_back(SemaError{std::move(message), loc, code});
+    if (errorSink_ != nullptr) {
+        errorSink_->push_back(SemaError{std::move(message), loc, code});
+        return;
+    }
+    report(SemaError{std::move(message), loc, code});
+}
+
+// ONE MISTAKE IS ONE ERROR, however many times a rule was asked about it. The same expression is
+// typed more than once on some paths -- an assignment types its target and then its value against
+// it -- and `use of 'this' after \`delete this\`` came out twice, identical, on the same line and
+// column. Warnings have had this since a generic's body started being analysed once per
+// instantiation; errors never did, because an error usually ends the build before it can repeat.
+// The exact triple -- message, place, code -- so a line that really does have two different things
+// wrong with it still says both.
+void SemanticAnalyzer::report(SemaError e) {
+    for (const SemaError& had : errors_) {
+        if (had.code == e.code && had.loc.line == e.loc.line && had.loc.col == e.loc.col &&
+            had.message == e.message && std::string(had.loc.file) == std::string(e.loc.file)) {
+            return;
+        }
+    }
+    errors_.push_back(std::move(e));
 }
 
 void SemanticAnalyzer::warn(std::string message, SourceLocation loc) {
@@ -63,12 +85,28 @@ void SemanticAnalyzer::error(diag::Code code, std::string message, SourceLocatio
     if (quiet_ > 0) {
         return;   // see the note on the other `error`: a lifetime query must not report
     }
-    errors_.push_back(SemaError{std::move(message), loc, code});
+    if (errorSink_ != nullptr) {
+        errorSink_->push_back(SemaError{std::move(message), loc, code});
+        return;
+    }
+    report(SemaError{std::move(message), loc, code});
 }
 
 void SemanticAnalyzer::warn(diag::Code code, std::string message, SourceLocation loc) {
     if (allowed(code)) {
         return;   // this declaration said, with a reason, that it disagrees
+    }
+    // NEVER ABOUT A BODY THE COMPILER WROTE. The class member loop already refuses to run its own
+    // advice list over a synthesized member, and says why: the only edit the advice could ask for is
+    // not the author's to make. But half the rules do not live in that list -- they fire from the
+    // statement walk, while the body is being analysed -- and those went on reporting. The synthesized
+    // `toString` of an UNSEALED enum is the clearest case: a match on an open enum is REQUIRED to
+    // carry a `default` (an error without one), and a `default` over an enum is advised against
+    // (0B15), so the compiler wrote a body that argues with itself and reported it at `enum Kind {`,
+    // a line whose author wrote nothing of the sort. Errors still apply, everywhere: what is
+    // suppressed is advice, and only where nobody can act on it.
+    if (inSynthesizedMember_) {
+        return;
     }
     // ONE SOURCE LINE IS ONE FINDING, however many times the compiler walked it.
     //
@@ -101,7 +139,9 @@ void SemanticAnalyzer::pushAllows(const std::vector<ast::AnnotationUse>& outer,
                     continue;
                 }
                 if (const auto* lit = dynamic_cast<const ast::StringLiteralExpr*>(arg.value.get())) {
-                    frame.push_back(AllowEntry{lit->value, use.loc, false});
+                    // `honouredEarly` starts it USED: a rule the driver checks before this pass
+                    // exists already obeyed it, and this pass will never see that happen.
+                    frame.push_back(AllowEntry{lit->value, use.loc, use.honouredEarly});
                 }
             }
         }
@@ -523,15 +563,31 @@ std::string SemanticAnalyzer::checkMethodPatch(const std::string& className,
               call.loc);
         return "void";
     }
-    std::string want = "function<" + m->returnType + "," + className;
+    /* THE REPLACEMENT IS A COMMAND WHOSE SHAPE IS THE SLOT'S.
+     *
+     * `command (Dog d) returns void { ... }` for `Dog.bark`: the receiver first, then the method's
+     * own parameters, answering what the method answers. Checked against the command's ONE method
+     * rather than against a `function<...>` spelling, which is what this compared before -- the
+     * shape is the same question, asked of the thing that now expresses it. */
+    std::string want = "command (" + className;
     for (const std::string& pt : m->paramTypes) {
-        want += "," + pt;
+        want += ", " + pt;
     }
-    want += ">";
+    want += ") returns " + m->returnType;
     const std::string got = typeOf(*call.args[1]);
-    if (!got.empty() && got != want) {
-        error("the replacement for '" + className + "." + lit->value + "' must have type '" + want +
-                  "' (the receiver, then the method's parameters); got '" + got + "'",
+    const MethodInfo* run =
+        got.empty() ? nullptr : findMethod(baseType(got), kCommandMethod, /*objectFallback=*/false);
+    bool fits = run != nullptr && run->returnType == m->returnType &&
+                run->paramTypes.size() == m->paramTypes.size() + 1;
+    if (fits) {
+        fits = baseType(run->paramTypes[0]) == className;
+        for (std::size_t i = 0; fits && i < m->paramTypes.size(); ++i) {
+            fits = run->paramTypes[i + 1] == m->paramTypes[i];
+        }
+    }
+    if (!got.empty() && !fits) {
+        error("the replacement for '" + className + "." + lit->value + "' must be a `" + want +
+                  "` (the receiver, then the method's parameters); got '" + got + "'",
               call.args[1]->loc);
     }
     patchedClasses_.insert(className);
@@ -547,21 +603,51 @@ const MethodInfo* SemanticAnalyzer::findMethod(const std::string& className,
     if (c == nullptr) {
         c = lookupClass(baseType(className));  // see through T* / T&
     }
+    // A DECLARATION DOES NOT BEAT A DEFINITION, and the order of this walk used to let it.
+    //
+    // The interfaces were searched before the superclass, so a class whose base provides a real
+    // method and whose interface merely declares one of the same name resolved to the DECLARATION --
+    // and the abstract-method check downstream then reported the class as failing to implement
+    // something its base implements for it.
+    //
+    // Horizon is where that showed. `Peripheral implements Driver` and defines `start`; `E1000
+    // extends Peripheral implements NetworkCard`, and `NetworkCard` refines `Driver`. So `start` was
+    // reachable twice -- abstract through the interface, concrete through the base -- and the walk
+    // took whichever it met first, which was the one that does nothing. The error was "class 'E1000'
+    // must implement abstract method 'start'" about a method it inherits and calls successfully.
+    //
+    // An abstract find is therefore REMEMBERED rather than returned, and the walk carries on: if a
+    // definition exists anywhere up the chain it wins, and the declaration is the answer only when
+    // nothing defines it -- which is exactly what "abstract" means.
+    const MethodInfo* declared = nullptr;
     while (c != nullptr) {
         auto it = c->methods.find(method);
         if (it != c->methods.end()) {
-            return &it->second;
+            if (!it->second.isAbstract) {
+                return &it->second;
+            }
+            if (declared == nullptr) {
+                declared = &it->second;
+            }
         }
         for (const std::string& iface : c->interfaces) {
             const MethodInfo* m = findMethod(iface, method);
             if (m != nullptr) {
-                return m;
+                if (!m->isAbstract) {
+                    return m;
+                }
+                if (declared == nullptr) {
+                    declared = m;
+                }
             }
         }
         if (c->superclass.empty()) {
             break;
         }
         c = lookupClass(c->superclass);
+    }
+    if (declared != nullptr) {
+        return declared;
     }
     // Every object is-a Object at runtime, so Object's universal methods (equals/hashCode/equalsKey/...)
     // resolve on any receiver -- including one whose static type is an interface, which has no superclass
@@ -912,6 +998,10 @@ bool SemanticAnalyzer::declaresShared(const std::string& name) const {
     for (int steps = 0; !cur.empty() && steps <= limit; ++steps) {
         const ClassInfo* c = lookupClass(cur);
         if (c == nullptr) return false;
+        // THE MODIFIER FIRST, because it is the spelling this design settled on (§20.4). The marker
+        // interface below keeps working and is not deprecated here: two spellings of one question is
+        // a thing to resolve deliberately, not as a side effect of adding the better one.
+        if (c->isShareable) return true;
         for (const std::string& iface : c->interfaces) {
             if (baseType(iface) == "Shared") return true;
             if (declaresShared(iface)) return true;   // an interface may extend Shared
@@ -919,6 +1009,102 @@ bool SemanticAnalyzer::declaresShared(const std::string& name) const {
         cur = c->superclass;
     }
     return false;
+}
+
+// §14: `shareable` IS CHECKED, NOT TRUSTED, and the rule is decidable from the declaration alone.
+//
+//   > Legal when every mutable field is `atomic<T>`, or is itself shareable -- or when the type is
+//   > entirely immutable. Any other mutable field is an error, naming the field.
+//
+// A bare permission would be a one-word hole in the no-UB principle: write it over a type with a
+// plain mutable `int` and you have the race the compiler currently refuses. That refusal is what
+// makes AP-33 invert, and trading it for a password would be handing the objection back after
+// winning it. The marker interface's own comment conceded as much -- *"the whole of what it says is
+// that its author thought about it."*
+//
+// No whole-program knowledge and no flow analysis, which is why it can travel in the `.polh`. It
+// puts `shareable` in the same category as `override`: **you declare the intent and the compiler
+// confirms it** -- the house pattern, beside `layout` stating and the compiler refusing, and
+// `interrupt` declaring and the reachability walk checking.
+// AN ENTITY'S FIELDS EACH BECOME A COLUMN, and a column of N of something needs to know how wide one
+// of them is. That is the whole constraint, and it is not an arbitrary restriction: `Particle[]` is
+// one block whose columns run end to end, so the offset of the second column is the width of the
+// first times N. A field whose width is not decided at the declaration has no offset to give.
+//
+// A pointer field is fine -- it IS one word. A class-typed field by value is not, today: it would
+// have to flatten to its leaves (entity.md 15.5, "recursively, to leaves"), so that a nested `Vec3`
+// becomes three float columns rather than a struct column with alignment holes inside it, where
+// nobody would think to look for the defect this construct makes inexpressible.
+//
+// Refused with the reason and the way out, rather than silently laid out as a row.
+void SemanticAnalyzer::checkEntityColumns(const ast::ClassDecl& cls) {
+    if (!cls.isEntity) {
+        return;
+    }
+    for (const ast::MemberPtr& m : cls.members) {
+        const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get());
+        if (f == nullptr || f->isStatic) {
+            continue;
+        }
+        const std::string written = typeRefStr(f->type);
+        if (isRefType(written) || isArrayType(written)) {
+            error("'" + cls.name + "." + f->name + "' is a `" + written +
+                      "`, and an entity's fields each become a COLUMN of N of them -- so each one "
+                      "must have a width decided here. An array does not: its length is a property "
+                      "of the value, not of the declaration. Hold an index into a second entity "
+                      "instead, which is what the columns make cheap",
+                  f->loc);
+            continue;
+        }
+        if (const ClassInfo* held = lookupClass(baseType(written));
+            held != nullptr && !held->isInterface && baseType(written).back() != '*') {
+            error("'" + cls.name + "." + f->name + "' holds a `" + baseType(written) +
+                      "` by value, and an entity's fields each become a column. A nested aggregate "
+                      "has to flatten to its leaves for that -- so `Vec3 pos` would be three float "
+                      "columns -- and the flattening is not built yet. Write the leaves out as "
+                      "fields of the entity, or hold a pointer, which is one word and needs no "
+                      "flattening",
+                  f->loc);
+        }
+    }
+}
+
+void SemanticAnalyzer::checkShareable(const ast::ClassDecl& cls) {
+    if (!cls.isShareable) {
+        return;
+    }
+    for (const ast::MemberPtr& m : cls.members) {
+        const auto* f = dynamic_cast<const ast::FieldDecl*>(m.get());
+        if (f == nullptr || f->isStatic) {
+            continue;
+        }
+        // AN IMMUTABLE FIELD IS ALWAYS FINE. Nothing writes it after construction, so no two threads
+        // can disagree about it -- which is the whole of what the rule is protecting.
+        if (!f->isMutable) {
+            continue;
+        }
+        const std::string ft = baseType(f->type.name);
+        /* `atomic<T>` carries its own synchronisation; a shareable field carries this same promise,
+           recursively, and was checked when IT was declared.
+
+           ...AND SO DO `Mutex<T>` AND `Channel<T>`, which were missing. They are two of the four
+           ways this language says "two threads may reach this" -- the same list the thread boundary
+           reads -- and leaving them out meant the library's own synchronisers could not declare the
+           property they exist to provide: a `Semaphore` is a `Channel<int>`, and a
+           `CountdownLatch` is an `atomic<int>` and a `Channel<int>`. Nothing was unsound about
+           that; what it did was make the word unusable exactly where it is most true. */
+        if (ft == "atomic" || f->type.name.rfind("atomic<", 0) == 0 || ft == "Mutex" ||
+            f->type.name.rfind("Mutex<", 0) == 0 || ft == "Channel" ||
+            f->type.name.rfind("Channel<", 0) == 0 || declaresShared(ft)) {
+            continue;
+        }
+        error("'" + typeAsWritten(cls.name) + "' is `shareable`, but its field '" + f->name +
+                  "' is mutable and is not `atomic<" + typeAsWritten(ft) +
+                  ">`, a `Mutex<...>`, a `Channel<...>` or itself `shareable` -- so two threads "
+                  "reaching this type at once would race on it. Make the field one of those, or "
+                  "drop `mutable` if nothing writes it after construction",
+              f->loc);
+    }
 }
 
 bool SemanticAnalyzer::isPolymorphic(const std::string& name) const {
@@ -1124,6 +1310,25 @@ void SemanticAnalyzer::validateOverrides(const ast::Program& program) {
                                       m->name + "'",
                                   m->loc);
                         }
+                        // `surveyed` IS INHERITED, AND MAY NOT BE ADDED ON THE WAY DOWN.
+                        //
+                        // The binder already reads a virtual call through the summary of the STATIC
+                        // type, and unions the overrides into it -- so an override that surveys
+                        // itself does make callers of the base conservative, soundly. What it does
+                        // not do is let them SEE it: `Sink.take` reads like an ordinary method and
+                        // is conservative because a subclass in another file said so.
+                        //
+                        // A conservative summary nobody can see is the thing this word exists to
+                        // prevent, so the base has to say it too.
+                        if (base != nullptr && m->isSurveyed && !base->isSurveyed) {
+                            error("method '" + m->name +
+                                      "' is surveyed but the method it overrides is not. A caller "
+                                      "holding a reference to the base reads the base's promise, so "
+                                      "this would widen what the method may do without them seeing "
+                                      "it. Mark the overridden method surveyed too, or let this one "
+                                      "be derived from its body",
+                                  m->loc);
+                        }
                     }
                 }
 
@@ -1167,6 +1372,7 @@ FlowFacts SemanticAnalyzer::snapshotFlow() const {
     f.freed = freed_;
     f.invalidated = invalidatedAt_;
     f.borrows = borrowsFrom_;
+    f.stale = staleBorrows_;
     return f;
 }
 
@@ -1178,6 +1384,35 @@ void SemanticAnalyzer::restoreFlow(const FlowFacts& f) {
     freed_ = f.freed;
     invalidatedAt_ = f.invalidated;
     borrowsFrom_ = f.borrows;
+    staleBorrows_ = f.stale;
+}
+
+// AFTER A LOOP: KEEP THE ENTRY'S PROOFS AND THE BODY'S OBLIGATIONS.
+//
+// `restoreFlow(entry)` on its own threw away everything the body established, obligations included,
+// so
+//
+//     for (...) { delete b; }
+//     b.read();                        // nothing said
+//
+// walked out of the use-after-free rule -- not a borrow-rule gap, the PLAIN one, and it had been
+// open the whole time. One `for` was enough.
+//
+// The asymmetry is the same one a branch already states, for the same reason. A loop may run zero
+// times, so a PROOF made inside it does not hold afterwards and the entry's is the right answer. An
+// OBLIGATION is the other way round: the body can run, so what it owes is owed. `if (c) { delete x; }
+// x.read()` is refused on exactly these grounds, and a loop is a branch that may repeat.
+void SemanticAnalyzer::keepObligationsAfterLoop(const FlowFacts& bodyEnd) {
+    moved_.insert(bodyEnd.moved.begin(), bodyEnd.moved.end());
+    deleted_.insert(bodyEnd.deleted.begin(), bodyEnd.deleted.end());
+    freed_.insert(bodyEnd.freed.begin(), bodyEnd.freed.end());
+    invalidatedAt_.insert(bodyEnd.invalidated.begin(), bodyEnd.invalidated.end());
+    for (const auto& [name, from] : bodyEnd.borrows) {
+        borrowsFrom_.emplace(name, from);
+    }
+    for (const auto& [name, from] : bodyEnd.stale) {
+        staleBorrows_.emplace(name, from);
+    }
 }
 
 void SemanticAnalyzer::joinFlow(const FlowFacts& a, const FlowFacts& b) {
@@ -1217,14 +1452,61 @@ void SemanticAnalyzer::joinFlow(const FlowFacts& a, const FlowFacts& b) {
     // Emptied on either path is emptied here: an obligation, like the three above it.
     invalidatedAt_ = a.invalidated;
     invalidatedAt_.insert(b.invalidated.begin(), b.invalidated.end());
-    // Where a borrow CAME FROM is knowledge, not an obligation, so it survives only where both paths
-    // agree -- and disagreeing means one path rebound the name, which is the case that must not
-    // silently keep the old source.
-    borrowsFrom_.clear();
-    for (const auto& [name, from] : a.borrows) {
-        if (auto it = b.borrows.find(name); it != b.borrows.end() && it->second == from) {
-            borrowsFrom_.emplace(name, from);
+    // WHERE A BORROW CAME FROM IS AN OBLIGATION, and it used to be joined as knowledge -- kept only
+    // where both arms agreed. So
+    //
+    //     if (...) { p = owner.borrow(); }
+    //     delete owner;
+    //     p.read();                          // nothing said
+    //
+    // walked out of the rule, because the arm that did not take the borrow "disagreed" with the arm
+    // that did and the join threw the fact away. A borrow taken on ANY path is a reference that
+    // exists on that path, and reading it after its source is freed is unsafe on that path.
+    //
+    // It is the same asymmetry the three lines above already state: pessimistic about what you know,
+    // pessimistic about what you owe. `freed_`, `deleted_` and `invalidatedAt_` all union for exactly
+    // this reason, and `if (c) { delete x; } ... x.read()` is refused on the same grounds.
+    //
+    // ON A CONFLICT the first arm's source is kept. Two arms binding one name to two different
+    // owners is a name that points into one of two objects and the map holds one source per name;
+    // keeping one catches half of it and invents nothing, where keeping neither -- which is what
+    // this did -- catches none.
+    borrowsFrom_ = a.borrows;
+    for (const auto& [name, from] : b.borrows) {
+        borrowsFrom_.emplace(name, from);
+    }
+    // Stranded on either path is stranded here, for the same reason.
+    staleBorrows_ = a.stale;
+    for (const auto& [name, from] : b.stale) {
+        staleBorrows_.emplace(name, from);
+    }
+}
+
+// THE EMPTYING OF `who`, AND THE BORROWS IT STRANDS. `who` joins `invalidatedAt_` -- the fact about
+// the object, which a command's baggage asks -- and every local borrowing from it right now becomes
+// stale, which is the fact a read of that local asks. A borrow taken after this line is not in the
+// map yet, so it is not stranded: it borrows what the object holds after the emptying.
+void SemanticAnalyzer::invalidateSource(const std::string& who) {
+    invalidatedAt_.insert(who);
+    for (const auto& [name, from] : borrowsFrom_) {
+        if (from == who) {
+            staleBorrows_[name] = who;
         }
+    }
+}
+
+// AFTER A BRANCH WITH MANY ARMS: the join of every arm that reaches the code below it, two at a time,
+// which is `joinFlow`'s rule applied down the list. None reaching it means the code below is not
+// reached from here, and the entry state stands, as it does after an `if` whose arms both return.
+void SemanticAnalyzer::joinArms(const FlowFacts& entry, const std::vector<FlowFacts>& reaching) {
+    if (reaching.empty()) {
+        restoreFlow(entry);
+        return;
+    }
+    restoreFlow(reaching.front());
+    for (std::size_t i = 1; i < reaching.size(); ++i) {
+        const FlowFacts sofar = snapshotFlow();
+        joinFlow(sofar, reaching[i]);
     }
 }
 
@@ -1386,22 +1668,33 @@ bool SemanticAnalyzer::blockHasBreak(const ast::Block& b) {
 }
 
 // Read a null test and report what it PROVES, and for which arm. Only the shapes whose meaning is
-// unambiguous are recognised -- `x != null` and `x == null` against a plain name. Anything cleverer
-// (`a != null && b != null`, a call that returns a nullable) proves nothing here, which costs a cast at
-// the call site and keeps the analysis honest. Being incomplete is safe; being wrong is not.
-void SemanticAnalyzer::proofFromCondition(const ast::Expr& cond, std::string& provenThen,
-                                          std::string& provenElse) {
+// unambiguous are recognised -- `x != null` and `x == null` against a plain name, and chains of them
+// with `&&` and `||` (below). Anything cleverer (a field, a call that returns a nullable) proves nothing
+// here, which costs a cast at the call site and keeps the analysis honest. Being incomplete is safe;
+// being wrong is not.
+void SemanticAnalyzer::proofFromCondition(const ast::Expr& cond,
+                                          std::vector<std::string>& provenThen,
+                                          std::vector<std::string>& provenElse) {
     const auto* bin = dynamic_cast<const ast::BinaryExpr*>(&cond);
     if (bin == nullptr) {
         return;
     }
-    if (bin->op == "&&") {
-        // `a != null && ...`: whatever the left side proves holds for the whole `then` arm, because the
-        // right side only runs when the left was true. The `else` arm learns nothing.
-        std::string lThen, lElse, rThen, rElse;
+    // BOTH SIDES OF A CHAIN, not the first. `a != null && b != null` proves both in the `then` arm --
+    // the right side only runs when the left was true -- and `a == null || b == null` proves both in
+    // the `else` arm, because reaching it means every test in the chain was false. Only the first
+    // name was kept, so the guard clause every method that takes several pointers opens with,
+    // `if (a == null || b == null) { return; }`, narrowed nothing and each use needed its own test.
+    // The Horizon VFS hit it a dozen times in one file. The arm that learns nothing still learns
+    // nothing: `a || b` being true says nothing about which.
+    if (bin->op == "&&" || bin->op == "||") {
+        std::vector<std::string> lThen, lElse, rThen, rElse;
         proofFromCondition(*bin->lhs, lThen, lElse);
         proofFromCondition(*bin->rhs, rThen, rElse);
-        provenThen = !lThen.empty() ? lThen : rThen;
+        std::vector<std::string>& into = bin->op == "&&" ? provenThen : provenElse;
+        const std::vector<std::string>& left = bin->op == "&&" ? lThen : lElse;
+        const std::vector<std::string>& right = bin->op == "&&" ? rThen : rElse;
+        into.insert(into.end(), left.begin(), left.end());
+        into.insert(into.end(), right.begin(), right.end());
         return;
     }
     if (bin->op != "==" && bin->op != "!=") {
@@ -1422,9 +1715,9 @@ void SemanticAnalyzer::proofFromCondition(const ast::Expr& cond, std::string& pr
     }
     // `x != null` proves it in the `then`; `x == null` proves it in the `else`.
     if (bin->op == "!=") {
-        provenThen = name;
+        provenThen.push_back(name);
     } else {
-        provenElse = name;
+        provenElse.push_back(name);
     }
 }
 
@@ -1565,12 +1858,19 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
     // Value types first: a field can name a struct/record declared further down, and `keyFieldKind` has
     // to tell "a nested value" from "a reference to another object" to answer at all.
     valueTypeNames_.clear();
+    ordinalEnumNames_.clear();
     for (const ast::Bundle& b : program.bundles) {
         for (const ast::Namespace& n : b.namespaces) {
             for (const ast::ClassDecl& c : n.classes) {
                 if ((c.isStruct || c.isRecord) && !c.isUnion) {
                     valueTypeNames_.insert(c.name);
                 }
+            }
+            // ...and the enums, for the same reason and gathered in the same place: an enum field
+            // IS part of a type's identity, and this pass has to give `keyFieldKind` the same
+            // answer the driver gives it or the two halves disagree about where state lives.
+            for (const ast::EnumDecl& e : n.enums) {
+                ordinalEnumNames_.insert(e.name);
             }
         }
     }
@@ -1630,12 +1930,17 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                 info.isAbstract = cls.isAbstract;
                 info.isFinal = cls.isFinal;
                 info.isInterface = cls.isInterface;
+                info.isCommandType = cls.isCommandType;
+                info.isMustUse = cls.isMustUse;
                 info.isStruct = cls.isStruct;
                 info.isSealed = cls.isSealed;
                 info.isRegionClass = cls.isRegionClass;
                 info.permits = cls.permits;
                 info.isMovable = cls.isMovable;
                 info.isUnique = cls.isUnique;
+                info.isShareable = cls.isShareable;
+                info.isEntity = cls.isEntity;
+                info.isStable = cls.isStable;
                 info.isPartitionable = cls.isPartitionable;
                 // `unique` + `partitionable` is contradictory (spec 19.9): unique keeps a
                 // single live reference to the whole object; partitionable hands out
@@ -1746,8 +2051,14 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                         mi.returnIsMove = m->returnType.isMove;
                         mi.isVariadic = m->isVariadic;
                         mi.isExtern = m->isExtern;
+                        mi.isSurveyed = m->isSurveyed;
+                        mi.isMustUse = m->isMustUse;
                         mi.isDeprecated = m->isDeprecated;
                         mi.isInterrupt = m->isInterrupt;
+                        mi.isPass = m->isPass;
+                        mi.readsFields = m->readsFields;
+                        mi.writesFields = m->writesFields;
+                        mi.indexBinding = m->indexBinding;
                         mi.visibility = m->visibility;
                         mi.owner = cls.name;
                         info.methods[m->name] = std::move(mi);
@@ -1797,7 +2108,8 @@ void SemanticAnalyzer::registerClasses(const ast::Program& program) {
                             f != nullptr && !f->isStatic) {
                             if (f->isPersistent) {
                                 persistNames.push_back(f->name);
-                            } else if (ast::keyFieldKind(f->type, valueTypeNames_) !=
+                            } else if (ast::keyFieldKind(f->type, valueTypeNames_,
+                                                         ordinalEnumNames_) !=
                                        ast::KeyFieldKind::None) {
                                 hasKeyField = true;
                             }
@@ -2142,6 +2454,11 @@ void SemanticAnalyzer::validateTestDeclarations(const ast::Program& program) {
             currentNamespace_ = ns.name;   // see the note on lookupShared: every pass must say where it is
             currentBundle_ = bundle.name;
             for (const ast::ClassDecl& cls : ns.classes) {
+                // §14: a `shareable` type's mutable fields must each carry their own
+                // synchronisation. Here rather than in `validateHierarchy` because it is a fact
+                // about a declaration's own fields, not about what it inherits.
+                checkShareable(cls);
+                checkEntityColumns(cls);
                 std::map<std::string, std::string> hookOwner;  // hook kind -> the method holding it
                 for (const ast::MemberPtr& member : cls.members) {
                     const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
@@ -2957,7 +3274,18 @@ void SemanticAnalyzer::analyzeFieldInits(const ast::ClassDecl& cls) {
         // pointer) and `weak int*` (no identity, no weak-list head): the intrusive auto-null has nowhere to
         // hook. This keeps `weak` a precise tool rather than a footgun on a nonsensical target.
         if (f->isWeak) {
-            if (!f->type.isPointer) {
+            // NOT IN A `struct`. A weak field is a node on its target's list, unlinked when its holder
+            // dies -- and a value struct has no death the list can hear about: it is copied bit for bit
+            // (argument, return, assignment), so the copy carries the node's links without being on
+            // the list, and a stack struct simply stops existing at the end of its scope. The target's
+            // list then points into dead stack, and deleting the target walks it: in the Horizon VFS,
+            // a `PathRef` with two weak fields turned `delete mount` into a kernel fault.
+            if (cls.isStruct) {
+                error("'weak' is not allowed on a field of struct '" + cls.name + "': a struct is copied "
+                          "by value and has no end of life a weak reference can be unlinked at. Make '" +
+                          f->name + "' a plain pointer, or make '" + cls.name + "' a class.",
+                      f->loc);
+            } else if (!f->type.isPointer) {
                 error("'weak' requires a pointer: write 'weak " + typeRefStr(f->type) + "* " + f->name +
                           "'. A weak reference observes an object by identity, so it must be a pointer.",
                       f->loc);
@@ -3069,12 +3397,48 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
         return (ta != alias.end() && escapeScanParams_ != nullptr &&
                 ta->second < static_cast<int>(escapeScanParams_->size())) ? ta->second : -2;
     };
+    // WHETHER AN EXPRESSION NAMES SOMETHING THE RECEIVER HOLDS. `this.f`, `this.f[i]`,
+    // `this.f.g`, and a local that was bound to one of those -- all of them are storage whose life
+    // is the receiver's, so handing one back is handing back a borrow OF the receiver.
+    //
+    // A CALL IS NOT FOLLOWED HERE. `this.f.get(i)` might hand back the list's element or a number
+    // computed from it, and guessing turns a method that merely MEASURES its own field into one
+    // that lends it out. The transitive case is picked up where the callee's own summary is
+    // consulted, which is the same place the parameter half does it.
+    auto namesReceiverStorage = [&](const ast::Expr* e) -> bool {
+        while (e != nullptr) {
+            if (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) {
+                e = c->operand.get();
+                continue;
+            }
+            if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+                e = ix->array.get();
+                continue;
+            }
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+                e = mem->object.get();
+                continue;
+            }
+            if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+                return id->name == "this" || receiverLocals_.count(id->name) > 0;
+            }
+            return false;
+        }
+        return false;
+    };
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(s)) {
         int p = vd->init ? paramOf(vd->init.get()) : -1;   // `var y = param/alias` -> y aliases it
         if (p >= 0) {
             alias[vd->name] = p;
         } else {
             alias.erase(vd->name);
+        }
+        // `byte[] raw = this.bytes;` -- the local now names the receiver's storage, and a `return`
+        // of it later is the same fact as returning the field.
+        if (vd->init != nullptr && namesReceiverStorage(vd->init.get())) {
+            receiverLocals_.insert(vd->name);
+        } else {
+            receiverLocals_.erase(vd->name);
         }
         // A container built HERE, so a later `x.add(param)` is known to be filling something fresh
         // and the class is known without a symbol table this pass does not have.
@@ -3091,13 +3455,177 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                 }
             }
         }
+        // A BORROW OF A PARAMETER'S OWN STORAGE, which is the two facts composed. `peek(Owner* o)`
+        // returning `o.borrow()` hands the caller something `o` frees: the inner call lends the
+        // RECEIVER, the receiver is our PARAMETER, so the method lends that parameter. Neither half
+        // said it alone -- the receiver rule is about `this` and the parameter rule was only ever
+        // fed by a local bound to a parameter-borrowing call.
+        if (escapeScanReturnsBorrowShape_ && rs->value != nullptr) {
+            if (const auto* call = dynamic_cast<const ast::CallExpr*>(rs->value.get())) {
+                if (const auto* callee = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+                    const int from = paramOf(callee->object.get());
+                    // THE PARAMETER'S DECLARED TYPE, not `typeOf`. This pass runs before the
+                    // method's parameters are locals, so asking the type checker about `o` answers
+                    // nothing at all -- and a lookup keyed on an empty class name finds nothing and
+                    // says nothing, which is a silence that reads exactly like "no borrow here".
+                    if (from >= 0 && escapeScanParams_ != nullptr &&
+                        from < static_cast<int>(escapeScanParams_->size())) {
+                        const std::string recvClass =
+                            baseType(typeRefStr((*escapeScanParams_)[from].type));
+                        if (!recvClass.empty() &&
+                            returnsBorrowOfReceiver_.count(recvClass + "." + callee->member) > 0) {
+                            if (returnsBorrowOfParam_.emplace(escapeScanKey_, from).second) {
+                                escapeSummaryChanged_ = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // ...and so is handing back what the receiver holds -- but only when the return SHAPE
+        // shares rather than copies.
+        bool handsBackOurStorage =
+            escapeScanReturnsBorrowShape_ && rs->value != nullptr &&
+            namesReceiverStorage(rs->value.get());
+        // AND THROUGH ONE CALL, WHICH IS HOW A COLLECTION IS READ. `return this.items.get(i)` hands
+        // back an element of a list this object owns -- the list is ours, so the element is ours,
+        // and a caller holding it past our destructor is holding freed storage. Reading only direct
+        // field paths left every `at`, `get` and `first` in the language outside the rule, which is
+        // most of the accessors there are.
+        //
+        // ONE STEP AND THROUGH THE CALLEE'S OWN ANSWER, not a guess: the inner method has to say for
+        // itself that it lends out its receiver. The fixpoint below carries that back out, so a
+        // chain of wrappers settles without this having to walk it.
+        if (escapeScanReturnsBorrowShape_ && !handsBackOurStorage && rs->value != nullptr) {
+            if (const auto* call = dynamic_cast<const ast::CallExpr*>(rs->value.get())) {
+                if (const auto* callee = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+                    std::string inner;
+                    if (const auto* rid =
+                            dynamic_cast<const ast::IdentifierExpr*>(callee->object.get());
+                        rid != nullptr && rid->name == "this") {
+                        inner = escapeScanClass_;                       // this.M(...)
+                    } else if (const auto* rmem =
+                                   dynamic_cast<const ast::MemberExpr*>(callee->object.get())) {
+                        if (const auto* oid =
+                                dynamic_cast<const ast::IdentifierExpr*>(rmem->object.get());
+                            oid != nullptr && oid->name == "this") {    // this.field.M(...)
+                            if (const FieldInfo* fi = findField(escapeScanClass_, rmem->member)) {
+                                inner = baseType(fi->type);
+                            }
+                        }
+                    }
+                    if (!inner.empty() &&
+                        returnsBorrowOfReceiver_.count(inner + "." + callee->member) > 0) {
+                        handsBackOurStorage = true;
+                    }
+                    // ...AND THE ANSWER A GENERIC CANNOT GIVE, taken from ownership instead.
+                    //
+                    // `return this.items.get(i)` asks `ArrayList.get`, whose declared return type is
+                    // `T` -- not a pointer, not an array, nothing this can read a lending shape off.
+                    // So every container's accessor sat outside the rule, which is most of the
+                    // accessors there are.
+                    //
+                    // The class already says the thing that matters, in its destructor: `~Bag`
+                    // walks `items` and deletes each element, so `Bag` OWNS those elements. A method
+                    // that reads one out and hands it back is lending out storage this object frees,
+                    // whatever the container in the middle spells its type parameter.
+                    if (!handsBackOurStorage) {
+                        if (const auto* rmem =
+                                dynamic_cast<const ast::MemberExpr*>(callee->object.get())) {
+                            if (const auto* oid =
+                                    dynamic_cast<const ast::IdentifierExpr*>(rmem->object.get());
+                                oid != nullptr && oid->name == "this") {
+                                auto owned = ownedContents_.find(escapeScanClass_);
+                                if (owned != ownedContents_.end() &&
+                                    owned->second.count(rmem->member) > 0) {
+                                    handsBackOurStorage = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (handsBackOurStorage) {
+            if (returnsBorrowOfReceiver_.insert(escapeScanKey_).second) {
+                escapeSummaryChanged_ = true;
+            }
+        }
     } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(s)) {
         int slot = storeSlot(as->target.get());
         if (slot != -2) {
             int p = paramOf(as->value.get());   // storing parameter p into slot's ref field
             if (p >= 0 && p < static_cast<int>(esc.size())) {
                 if (slot == -1) {
-                    esc[p] = true;  // escapes into the receiver
+                    // A NUMBER READ OUT OF A PARAMETER IS NOT THE PARAMETER, and this said it was.
+                    //
+                    // `paramOf` reads `table.at(i)` as borrowing from `table` -- right for a call
+                    // that hands back one of its rows, wrong for one that hands back an integer.
+                    // `this.first = from.u32(offset)` is the second, and the bit was set before
+                    // anything looked at where the value landed, so a method that only MEASURES its
+                    // argument was recorded as keeping it.
+                    //
+                    // THE COMPILER'S OWN §11.7 CROSS-CHECK IS WHAT SAID SO, on a program that stores
+                    // four integers read out of a file: *"the region binder says parameter 0 of
+                    // `DirectoryEntry.read` is stored into the receiver, and the graph proves it
+                    // never leaves the body -- one of the two is wrong"*. The binder was.
+                    //
+                    // A field whose declared type is a NUMBER cannot hold a reference in ANY
+                    // instantiation -- an `int` field is an `int` for every `T` -- so this stays
+                    // sound through generics, where the type-precise test the note below warns
+                    // about would not: a `T` field holding a `Node*` must keep escaping, and does.
+                    const bool intoNumber = [&]() -> bool {
+                        const ast::Expr* tgt = as->target.get();
+                        // `this.raw[i] = from.at(offset + i);` -- THE SAME FACT ONE INDIRECTION
+                        // DOWN, and the half a decoder is actually written in: a loop copying bytes
+                        // out of a file into the record's own buffer. Reading only `this.f = ...`
+                        // fixed the four scalar stores in `DirectoryEntry.read` and left the byte
+                        // loop above them still claiming the file was kept, so §11.7 went on saying
+                        // the two halves of the compiler disagreed -- and it was right.
+                        bool throughElement = false;
+                        if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(tgt)) {
+                            tgt = ix->array.get();
+                            throughElement = true;
+                        }
+                        const auto* tm = dynamic_cast<const ast::MemberExpr*>(tgt);
+                        if (tm == nullptr) {
+                            return false;   // a store through something that is not a field
+                        }
+                        // `Keeper.base = at` in a static method is the same store as `this.base = at`,
+                        // and `storeSlot` already reads it so. Answering only for `this` left a static
+                        // method that files away one NUMBER read out of its argument recorded as
+                        // keeping the argument -- `Ram.open(&frames)` in the Horizon kernel.
+                        const auto* to = dynamic_cast<const ast::IdentifierExpr*>(tm->object.get());
+                        if (to == nullptr ||
+                            (to->name != "this" && baseType(to->name) != escapeScanClass_)) {
+                            return false;
+                        }
+                        const std::string owner =
+                            escapeScanKey_.substr(0, escapeScanKey_.rfind('.'));
+                        const ClassInfo* ci = lookupClass(baseType(owner));
+                        if (ci == nullptr) {
+                            return false;
+                        }
+                        const auto fld = ci->fields.find(tm->member);
+                        if (fld == ci->fields.end()) {
+                            return false;
+                        }
+                        std::string ft = fld->second.type;
+                        // An element of a `byte[]` is a `byte`. Strip exactly one level, and only
+                        // when the store went through one: a `Node*[]` field still holds references,
+                        // and so does a `T[]` -- whose element type is `T`, which is no number's
+                        // name in any instantiation, so generics stay conservative for free.
+                        if (throughElement) {
+                            if (ft.size() < 2 || ft.compare(ft.size() - 2, 2, "[]") != 0) {
+                                return false;   // indexing a field that is not an array
+                            }
+                            ft.erase(ft.size() - 2);
+                        }
+                        return isIntName(ft) || isFloatType(ft) || ft == "char" || ft == "boolean";
+                    }();
+                    if (!intoNumber) {
+                        esc[p] = true;  // escapes into the receiver
+                    }
                     // ...AND INTO WHICH FIELD, which is what decides whether this is a borrow or a
                     // handover. A store into a field the class FREES is ownership: `list.add(item)`
                     // is the most ordinary line in the language and must not be a diagnostic. Without
@@ -3138,7 +3666,8 @@ void SemanticAnalyzer::scanStmt(const ast::Stmt* s, std::unordered_map<std::stri
                         if (!intoElement) {
                             if (const auto* tobj =
                                     dynamic_cast<const ast::IdentifierExpr*>(tmem->object.get());
-                                tobj != nullptr && tobj->name == "this") {
+                                tobj != nullptr &&
+                                (tobj->name == "this" || baseType(tobj->name) == escapeScanClass_)) {
                                 const std::string owner =
                                     escapeScanKey_.substr(0, escapeScanKey_.rfind('.'));
                                 if (const ClassInfo* ci = lookupClass(baseType(owner)); ci != nullptr) {
@@ -3375,24 +3904,70 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                 for (const ast::ClassDecl& cls : ns.classes) {
                     for (const ast::MemberPtr& member : cls.members) {
                         if (const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get())) {
-                            if (m->isAbstract || m->isExtern) {
-                                continue;  // no Polaron body to scan
+                            if (m->isAbstract || m->isExtern || m->isLayoutResolver) {
+                                continue;  // no Polaron body to scan -- see the resolver note below
                             }
                             escapeScanClass_ = baseType(cls.name);
                             escapeScanParams_ = &m->params;
                             escapeScanParamTargets_.assign(m->params.size(), {});
                             escapeScanFieldFor_.clear();
                             borrowLocals_.clear();
+                            receiverLocals_.clear();
                             std::unordered_map<std::string, int> alias;   // param/alias name -> param index
                             for (std::size_t i = 0; i < m->params.size(); ++i) {
                                 alias[m->params[i].name] = static_cast<int>(i);
                             }
                             std::string key = escapeScanClass_ + "." + m->name;
                             escapeScanKey_ = key;
+                            // A REFERENCE OR AN ARRAY IS SHARED; EVERYTHING ELSE IS COPIED.
+                            // `byte[] record()` lends the caller the receiver's own block -- the
+                            // shape that outlived a compound file -- while `String name()` builds
+                            // them one of their own, and freeing the source cannot reach it.
+                            escapeScanReturnsBorrowShape_ = m->returnType.isPointer ||
+                                                            m->returnType.isRef ||
+                                                            m->returnType.isArray ||
+                                                            isRefType(m->returnType.name);
                             std::vector<bool> esc = escapesToReceiver_.count(key) > 0
                                                         ? escapesToReceiver_[key]  // keep bits from prior round
                                                         : std::vector<bool>(m->params.size(), false);
-                            scanEscapes(m->body, alias, esc);
+                            // `surveyed`: THE SUMMARY IS STATED, NOT FOUND. The body is not read for
+                            // this, because reading it is the thing the author has said cannot be
+                            // done -- the call into a foreign library, the address arithmetic, the
+                            // pointer that arrived from somewhere this analysis has no words for.
+                            //
+                            // So the worst case stands in for it: every reference parameter is kept,
+                            // and a reference result borrows everything within reach. That is not a
+                            // punishment, it is the only sound reading of "I cannot tell you what
+                            // this does" -- and it is why marking a method costs its CALLERS, which
+                            // is the property that stops anybody reaching for the word out of
+                            // convenience.
+                            // A REFERENCE PARAMETER IS ONE THE CALLEE COULD HOLD ON TO. A value
+                            // parameter is copied at the call and cannot dangle, so a worst case
+                            // that included it would refuse programs for a reason that does not
+                            // exist.
+                            auto sharesStorage = [](const ast::TypeRef& t) {
+                                return t.isPointer || t.isRef || t.isArray || isRefType(t.name);
+                            };
+                            if (m->isSurveyed) {
+                                for (std::size_t i = 0; i < m->params.size(); ++i) {
+                                    if (i < esc.size() && sharesStorage(m->params[i].type)) {
+                                        esc[i] = true;
+                                    }
+                                }
+                                if (escapeScanReturnsBorrowShape_) {
+                                    returnsBorrowOfReceiver_.insert(key);
+                                    for (std::size_t i = 0; i < m->params.size(); ++i) {
+                                        if (sharesStorage(m->params[i].type)) {
+                                            returnsBorrowOfParam_.emplace(key, static_cast<int>(i));
+                                            break;   // the map holds one source; the first is enough
+                                                     // to reach the caller, and the receiver above
+                                                     // already carries the shorter-lived answer
+                                        }
+                                    }
+                                }
+                            } else {
+                                scanEscapes(m->body, alias, esc);
+                            }
                             escapesToReceiver_[key] = esc;
                             // A VIRTUAL CALL MAY RUN ANY OVERRIDE, so the summary read at a call site
                             // has to be the union over all of them. Read from the static type alone,
@@ -3504,12 +4079,14 @@ void SemanticAnalyzer::computeEscapeSummaries(const ast::Program& program) {
                             escapeScanParamTargets_.assign(ct->params.size(), {});
                             escapeScanFieldFor_.clear();
                             borrowLocals_.clear();
+                            receiverLocals_.clear();
                             std::unordered_map<std::string, int> alias;
                             for (std::size_t i = 0; i < ct->params.size(); ++i) {
                                 alias[ct->params[i].name] = static_cast<int>(i);
                             }
                             const std::string key = escapeScanClass_ + ".<new>";
                             escapeScanKey_ = key;
+                            escapeScanReturnsBorrowShape_ = false;   // a constructor returns nothing
                             std::vector<bool> esc =
                                 escapesToReceiver_.count(key) > 0
                                     ? escapesToReceiver_[key]
@@ -3679,6 +4256,16 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         if (m->isAbstract || m->isExtern) {
                             continue;  // no Polaron body to analyze
                         }
+                        // A LAYOUT'S RESOLVER IS READ, NOT RUN, and so it is not analysed either.
+                        // Inside it `itself` is the arrangement being decided and `itself.place(head)`
+                        // names a FIELD -- neither is a value the program can hold, so the ordinary
+                        // rules report *use of undeclared variable 'itself'* about a line whose whole
+                        // job is to be read while the program is being built. `readResolver` checks
+                        // it instead, and it knows what the four verbs are and what they take. Same
+                        // exemption `onArrange` has, at the one other place a block is data.
+                        if (m->isLayoutResolver) {
+                            continue;
+                        }
                         if (m->isAsync && freestanding_) {
                             error("async methods are not available in freestanding mode (spec 36.3)",
                                   m->loc);
@@ -3756,6 +4343,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // Set around the body only, so a field initializer or a contract analyzed
                         // outside one does not get attributed to whichever method ran last.
                         currentMethodKey_ = cls.name + "." + m->name;
+                        inEntryPoint_ = m == entry_.method;
                         methodFacts_[currentMethodKey_];  // exists even when it does nothing
                         // Both levels: `class Box<T> { method map<R>(...) }` has T and R in scope
                         // inside `map`, and a check meeting either must wait for the instantiation.
@@ -3784,6 +4372,36 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                                 interruptTrapParam_ = m->params[0].name;
                             }
                         }
+                        // `reentrant` is the wide property; `interrupt` is one case of it (§4, §7),
+                        // so a handler is a root of BOTH walks. Two diagnostics for one violation
+                        // would be noise, and there are not: the interrupt walk reports the
+                        // handler's own prohibitions, and this one reports what a method that is
+                        // not a handler reaches. A handler with no `reentrant` on it is registered
+                        // here anyway, under its real key, because virality has to start somewhere
+                        // and the implication is the design's.
+                        if (m->isReentrant || m->isInterrupt) {
+                            // ...BUT NOT WHEN THE PROGRAM HAS TAKEN THE NAME OVER.
+                            //
+                            // The key is `ShortName.method`, which is what `methodFacts_` is keyed
+                            // by throughout, and a program is allowed to declare a class whose short
+                            // name the standard library also uses -- `Polaron-0B02` says so and says
+                            // whose wins. When it does, this root names the LIBRARY's method and the
+                            // walk finds the PROGRAM's, and every field of a class that never asked
+                            // for the property is reported as reaching it.
+                            //
+                            // Horizon declares `Framebuffer`, the library declares `Screen
+                            // .Framebuffer`, and its `plot` and `fill` are `reentrant` because a
+                            // fault handler draws. Eight errors about a kernel's own fields, none of
+                            // them true and none of them the kernel's to fix. What is not skipped is
+                            // the program's own root of that name: that one is checked as always,
+                            // which is where the check is worth having.
+                            const auto known = classes_.find(cls.name);
+                            const bool takenOver = bundle.isPrelude && known != classes_.end() &&
+                                                   !known->second.fromPrelude;
+                            if (!takenOver) {
+                                reentrantRoots_.emplace_back(cls.name + "." + m->name, m->loc);
+                            }
+                        }
                         // A BOUND TARGET OWES WHAT A CONSTRUCTOR OWES. `procedure into<Fahrenheit f>`
                         // hands the body raw storage, so the body is that object's construction and
                         // carries the same obligation: every field assigned before it ends. Seeded
@@ -3807,9 +4425,43 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         // The advice frame for this body: the class's `[Allow]`s come with the
                         // method's, so one written on the class covers everything inside it.
                         pushAllows(cls.annotations, m->annotations);
-                        analyzeMethodBody(m->body, m->params,
-                                          m->isStatic ? std::string() : cls.name, false, contracts,
-                                          posts, retT == "void" ? std::string() : retT);
+                        // `pass advance(float dt) index i` -- the row's position, which the body may
+                        // read and the caller does not supply. It is a BINDER, so it enters the
+                        // body's scope the way a parameter does and sits outside the parameter list
+                        // the way `foreach`'s does.
+                        pendingIndexBinding_ = m->indexBinding;
+                        // POLARON_SKIP_PRELUDE_BODIES=1 -- A MEASUREMENT, NOT A FEATURE.
+                        //
+                        // The whole front end of a compile is the standard library: an EMPTY program
+                        // and a hello-world cost the same 152 ms of analysis and 49 of
+                        // monomorphisation, so the user's own code is free and the 250 ms is the
+                        // 20 750 lines of prelude, re-analysed from scratch every time.
+                        //
+                        // That reframes what "a precompiled prelude" has to be. Caching the parsed
+                        // AST -- the obvious reading, and the one the plan carried -- saves
+                        // `appendPrelude`, which is **22 ms of 250**. What costs is the ANALYSIS, and
+                        // this switch exists to measure the ceiling of caching it before anybody
+                        // builds the serialisation to do so.
+                        //
+                        // It is not a flag anybody should ship: the prelude's bodies are where its
+                        // `methodFacts_` come from, and the interrupt and reentrant walks follow
+                        // those into the library. Skipping them makes a handler that calls a
+                        // prelude method which allocates compile clean, which is the very hole
+                        // closed an hour ago at the other end.
+                        const bool skipBody = bundle.isPrelude &&
+                                              std::getenv("POLARON_SKIP_PRELUDE_BODIES") != nullptr;
+                        if (!skipBody) {
+                            const bool wasSurveyed = inSurveyedBody_;
+                            const bool wasSynthesized = inSynthesizedMember_;
+                            inSurveyedBody_ = m->isSurveyed;
+                            inSynthesizedMember_ = m->isSynthesized;
+                            analyzeMethodBody(m->body, m->params,
+                                              m->isStatic ? std::string() : cls.name, false,
+                                              contracts, posts,
+                                              retT == "void" ? std::string() : retT);
+                            inSurveyedBody_ = wasSurveyed;
+                            inSynthesizedMember_ = wasSynthesized;
+                        }
                         // THE STRUCTURAL ADVICE, AFTER THE BODY -- and NONE of it may call `typeOf`.
                         //
                         // The scopes the body opened are gone by here, and `typeOf` REPORTS an
@@ -3836,6 +4488,7 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         warnRepeatedMagicNumber(*m);
                         warnThrowCaughtHere(m->body);
                         warnHeapWithLexicalLifetime(m->body);
+                        warnAllocationsWantARegion(m->body);
                         warnRepeatedCleanup(*m);
                         warnThrowInLoop(m->body);
                         warnBooleanOutParameter(*m);
@@ -4013,8 +4666,29 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                             // an assignment like any other -- so regions are NOT excluded.
                             pendingCtorFields_.push_back({fd->name, fd->loc});
                         }
+                        // A CONSTRUCTOR IS A BODY THE REACHABILITY WALK HAS TO BE ABLE TO REACH.
+                        //
+                        // `currentMethodKey_` was set for METHODS and for nothing else, so a
+                        // constructor's body produced no row in `methodFacts_` at all -- and the
+                        // `interrupt`/`reentrant` walk, which follows `callees` through that table,
+                        // had nothing to follow even once a `new T()` told it where to go. A handler
+                        // building a stack object whose CONSTRUCTOR allocates therefore compiled
+                        // clean, which is the ledger's *"the walk does not follow compiler-generated
+                        // calls"*: the rule watched every path a person writes and none the language
+                        // inserts.
+                        //
+                        // The key is `<class>.<class>`, which is what a constructor is called and
+                        // what the call site below builds. It cannot collide with a method: a method
+                        // may not be named after its own class.
+                        currentMethodKey_ = cls.name + "." + cls.name;
+                        inEntryPoint_ = false;
+                        methodFacts_[currentMethodKey_];
+                        const bool wasSynthesized = inSynthesizedMember_;
+                        inSynthesizedMember_ = c->isSynthesized;   // a record's primary constructor
                         analyzeMethodBody(c->body, c->params, cls.name, /*inConstructor=*/true,
                                           contracts);
+                        inSynthesizedMember_ = wasSynthesized;
+                        currentMethodKey_.clear();
                         // ...and what it left unset. The two messages are the two different mistakes,
                         // exactly as for locals: never assigned, versus assigned on only some paths.
                         //
@@ -4082,7 +4756,17 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                         currentReturnType_ = "void";
                         currentReturnIsMove_ = false;
                         currentThrows_.clear();
+                        // ...AND SO IS A DESTRUCTOR, for the same reason and with a sharper edge.
+                        //
+                        // The rule's own second entry is "must not free memory", and the commonest
+                        // way a handler frees memory is the one nobody writes: a stack object whose
+                        // destructor runs at the closing brace. `~` is the reserved name -- no
+                        // method may be called it -- so the key cannot collide.
+                        currentMethodKey_ = cls.name + ".~";
+                        inEntryPoint_ = false;
+                        methodFacts_[currentMethodKey_];
                         analyzeMethodBody(d->body, {}, cls.name, false);
+                        currentMethodKey_.clear();
                     }
                 }
                 // THE LIFECYCLE HOOKS ARE BODIES TOO, and they were not analyzed at all.
@@ -4143,9 +4827,13 @@ void SemanticAnalyzer::analyzeBodies(const ast::Program& program) {
                     // like everyone else's -- without a key, `facts()` returns null and the totality
                     // check has nothing to read about a conversion written here.
                     currentMethodKey_ = en.name + "." + m->name;
+                    inEntryPoint_ = false;
                     methodFacts_[currentMethodKey_];
+                    const bool wasSynthesized = inSynthesizedMember_;
+                    inSynthesizedMember_ = m->isSynthesized;   // the enum's own generated `toString`
                     analyzeMethodBody(m->body, m->params,
                                       m->isStatic ? std::string() : en.name, false, contracts);
+                    inSynthesizedMember_ = wasSynthesized;
                     currentMethodKey_.clear();
                 }
             }
@@ -4281,6 +4969,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
         const bool timeThem = std::getenv("POLARON_TIME_REGIONS") != nullptr;
         const auto t0 = std::chrono::steady_clock::now();
         computeOwnership(program);
+        computeReceiverMutation(program);
         const auto t1 = std::chrono::steady_clock::now();
         computeEscapeSummaries(program);
         const auto t2 = std::chrono::steady_clock::now();
@@ -4301,6 +4990,7 @@ bool SemanticAnalyzer::analyze(const ast::Program& program, bool libraryMode, bo
     checkPersistentReleases();  // spec 18.15: after all bodies, so releases are collected
     checkInterruptReach();      // after all bodies, so the call graph is whole
     checkByValueMutations();    // ...and for the same reason: which methods change their object
+    checkReadonly(program);     // ...and which ones write anything at all (B.1/D.6)
     checkProcedureTotality(program);
     reportUnusedAllows();  // last: every rule that could have needed one has now run
     return errors_.empty();
@@ -4530,6 +5220,76 @@ std::string SemanticAnalyzer::lazyInitGuardField(const ast::Expr& cond) {
     return (obj != nullptr && obj->name == "this") ? mem->member : "";
 }
 
+/* `readonly` -- DECLARED, AND THEN CHECKED (B.1 / D.6).
+ *
+ * The analysis was already here: every body records whether it writes anything that outlives it,
+ * and the call graph is recorded beside it. What was missing was the word. With it, an inference the
+ * compiler kept to itself becomes a promise a reader can rely on -- and, being checked, one the
+ * author cannot get wrong.
+ *
+ * COMPOSED BY FIXPOINT, because a promise about a body that only calls other bodies is a promise
+ * about them too. A method that writes nothing itself but calls something that does is not
+ * readonly, and saying otherwise would make the word worth less than nothing.
+ *
+ * STRICT, deliberately (D.6): no cache, no memo, no "observationally pure". A method that writes a
+ * cache writes, and the honest way to say what that means is `lazy`, which the compiler understands.
+ */
+void SemanticAnalyzer::checkReadonly(const ast::Program& program) {
+    // Every method that writes, directly or through anything it calls.
+    std::set<std::string> writes;
+    for (const auto& [key, facts] : methodFacts_) {
+        if (facts.writesState) {
+            writes.insert(key);
+        }
+    }
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (const auto& [key, facts] : methodFacts_) {
+            if (writes.count(key) > 0) {
+                continue;
+            }
+            for (const std::string& callee : facts.callees) {
+                if (writes.count(callee) > 0) {
+                    writes.insert(key);
+                    grew = true;
+                    break;
+                }
+            }
+        }
+    }
+    for (const auto& b : program.bundles) {
+        if (b.isPrelude || b.isImported) {
+            continue;   // their bodies were checked by the build that produced them
+        }
+        for (const auto& ns : b.namespaces) {
+            for (const auto& c : ns.classes) {
+                for (const auto& m : c.members) {
+                    const auto* md = dynamic_cast<const ast::MethodDecl*>(m.get());
+                    if (md == nullptr || !md->isReadonly) {
+                        continue;
+                    }
+                    const std::string key = c.name + "." + md->name;
+                    if (writes.count(key) == 0) {
+                        continue;
+                    }
+                    auto own = methodFacts_.find(key);
+                    const bool direct = own != methodFacts_.end() && own->second.writesState;
+                    error(diag::Code::ReadonlyWrites,
+                          "'" + c.name + "." + md->name + "' is declared `readonly`, and it " +
+                              (direct ? "writes"
+                                      : "calls something that writes") +
+                              " -- so the word promises something the body does not do. Drop "
+                              "`readonly`, or move the write out of it (a cache is a write: say "
+                              "`lazy`, which the compiler knows how to keep)",
+                          direct && !own->second.firstWrite.file.empty() ? own->second.firstWrite
+                                                                         : md->loc);
+                }
+            }
+        }
+    }
+}
+
 void SemanticAnalyzer::checkByValueMutations() {
     if (byValueCalls_.empty()) {
         return;
@@ -4622,8 +5382,37 @@ void SemanticAnalyzer::noteFieldForInterrupt(const std::string& owner, const std
 // Ring, and a fact about Ring is not a bug. "Keyboard's interrupt reaches it, via push" is the bug,
 // and it is the sentence that says which of the two to change.
 void SemanticAnalyzer::checkInterruptReach() {
+    // ONE WALK, TWO SETS OF ROOTS. `reentrant` is the wide property and `interrupt` is one case of
+    // it (`reentrant.md` §4), so the machinery is the same and only the roots and the wording
+    // differ: *an interrupt must not X* against *a `reentrant` method must not X*.
+    //
+    // Both come through here rather than one calling the other, because the PATH is what makes the
+    // diagnostic useful -- *"Ring.push allocates"* is a fact about Ring and not a bug; *"Keyboard's
+    // interrupt reaches it, via push"* is the bug -- and a path is only correct relative to the root
+    // it started from.
+    struct Walk {
+        std::string root;         // the method key to start from
+        SourceLocation loc;       // where the declaration is, for a diagnostic about the root
+        bool asInterrupt;         // which sentence the message uses
+    };
+    std::vector<Walk> walks;
     for (const auto& [cls, loc] : interruptRoots_) {
-        const std::string root = cls + ".interrupt";
+        walks.push_back({cls + ".interrupt", loc, true});
+    }
+    for (const auto& [key, loc] : reentrantRoots_) {
+        walks.push_back({key, loc, false});
+    }
+    for (const Walk& w : walks) {
+        checkReentrantFrom(w.root, w.asInterrupt);
+    }
+}
+
+// The walk itself, from one root. Split out of `checkInterruptReach` when `reentrant` gave it a
+// second kind of root; the body is unchanged apart from the two sentences that name which property
+// was violated.
+void SemanticAnalyzer::checkReentrantFrom(const std::string& rootKey, bool asInterrupt) {
+    {
+        const std::string root = rootKey;
         // BFS, keeping for each method the chain that first reached it -- the first chain found is
         // the shortest, which is the one worth printing.
         std::map<std::string, std::vector<std::string>> pathTo{{root, {}}};
@@ -4650,22 +5439,33 @@ void SemanticAnalyzer::checkInterruptReach() {
                 via += ")";
             }
             for (const auto& [what, where] : it->second.unsafeOps) {
-                error("an interrupt must not " + what + via +
-                          ". The code this handler interrupted may be standing inside the very "
-                          "machinery this reaches -- the allocator, or the lock -- so it can be "
-                          "entered while that machinery is half-way through its own work. C states "
-                          "this rule in prose and checks none of it.",
+                error((asInterrupt ? "an interrupt must not " : "a `reentrant` method must not ") +
+                          what + via +
+                          (asInterrupt
+                               ? ". The code this handler interrupted may be standing inside the "
+                                 "very machinery this reaches -- the allocator, or the lock -- so "
+                                 "it can be entered while that machinery is half-way through its "
+                                 "own work. C states this rule in prose and checks none of it."
+                               : ". `reentrant` says this may be entered again while an earlier "
+                                 "entry is still running, and that earlier entry may be standing "
+                                 "inside the very machinery this reaches -- the allocator, or the "
+                                 "lock, which deadlocks against itself. The obligation is viral: "
+                                 "everything this calls carries it too, including the destructor "
+                                 "that runs at the end of a scope."),
                       where);
             }
             for (const auto& [name, where] : it->second.unsharedState) {
                 if (!reportedState.insert(name).second) {
                     continue;
                 }
-                error("'" + name + "' is mutable state an interrupt reaches" + via +
-                          ", so the handler and the code it preempts both touch it. Say so: "
-                          "`volatile` when hardware is on the other end, `atomic<T>` for a counter "
-                          "or a flag. Both are one instruction on x86-64 and neither needs a "
-                          "runtime.",
+                error("'" + name + "' is mutable state " +
+                          (asInterrupt ? "an interrupt reaches" : "a `reentrant` method reaches") +
+                          via +
+                          (asInterrupt ? ", so the handler and the code it preempts both touch it. "
+                                       : ", so two live entries of it would both touch it. ") +
+                          "Say so: `volatile` when hardware is on the other end, `atomic<T>` for a "
+                          "counter or a flag. Both are one instruction on x86-64 and neither needs "
+                          "a runtime.",
                       where);
             }
             for (const std::string& callee : it->second.callees) {
@@ -4925,6 +5725,24 @@ void SemanticAnalyzer::checkPersistentReleases() {
 // genuine non-constant, or a ring of constants defined in terms of each other, and the message says
 // both are possible because from here they look the same.
 void SemanticAnalyzer::evaluateConsts(const ast::Program& program) {
+    // WHICH MACHINE THIS BUILD IS FOR, seeded as an ordinary named constant before anything folds.
+    //
+    // It could have been a special case in the comptime evaluator alone -- and it started as one --
+    // but then the NAME resolves nowhere else: `comptime if (__target_arch == 1)` folded and the
+    // same expression was `use of undeclared variable` from the type checker two lines earlier.
+    // Seeding the table gives every stage that already reads a constant the same answer through the
+    // mechanism it already uses, which is one mechanism instead of three agreeing by hand.
+    //
+    // `Machine.Target.Arch` is where this gets a name people write; the underscores say nobody
+    // should be writing THIS one.
+    constInts_[comptime::kTargetArchName] = targetArch_;
+    // ...AND ITS TYPE, in the table the type checker reads. Two tables because they answer two
+    // questions -- what is this name worth, and what is this name -- and a constant that has a
+    // value and no type folds and then fails to resolve, which is exactly what happened.
+    constTypes_[comptime::kTargetArchName] = "int";
+    constInts_[comptime::kTargetBitsName] = targetBits_;
+    constTypes_[comptime::kTargetBitsName] = "int";
+
     // CONSTANTS FOLD TO A FIXED POINT, NOT IN DECLARATION ORDER.
     //
     // A single sweep resolved a `fixed` only when everything it names had already been folded --
@@ -5049,6 +5867,31 @@ void SemanticAnalyzer::processImports(const ast::Program& program) {
                 error("'" + symbol + "' is not available in freestanding mode (spec 36.3): " + why,
                       imp.loc);
                 bringIntoScope();   // keep going: one honest error beats a cascade of unknown names
+                return;
+            }
+        }
+        // ...AND THE SAME GATE ACROSS ARCHITECTURES, which is the one `Machine` needed
+        // (freestanding-prelude.md S6-S7). `Machine.Port` is the x86 I/O address space: `in` and
+        // `out` are instructions aarch64 does not have, and on that target a device register is
+        // memory. The bodies are already partitioned by `comptime if`, so the non-x86 arm compiles
+        // to nothing -- and a library that silently does nothing is a driver that appears to work.
+        //
+        // REPORTED AT THE IMPORT, for the reason the freestanding gate gives above: it is where the
+        // programmer said they wanted it, it is one line instead of thirty, and it is the difference
+        // between "you cannot have this here" and "this one call happens to do nothing".
+        //
+        // A `demand` inside the library would have been the other way, and it is wrong: it fires on
+        // the DECLARATION, so merely having `Machine.Port` in the prelude would break every non-x86
+        // build, including the ones that never name it.
+        if (std::string(imp.loc.file) != "<prelude>" &&
+            targetArch_ != static_cast<long long>(comptime::TargetArch::X86)) {
+            if (symbol == "Io") {
+                error("'Machine.Port.Io' is the x86 I/O address space, and this build is not for "
+                      "x86. `in` and `out` are instructions this target does not have; here a "
+                      "device register is MEMORY -- reach it with `Machine.Raw.Bytes.read32` / "
+                      "`write32` at the address the firmware or the device tree gave you",
+                      imp.loc);
+                bringIntoScope();
                 return;
             }
         }
@@ -5331,6 +6174,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     suppressNarrowing_ = false;
     activationOwned_.clear();
     classArenaOwned_.clear();
+    programLongLocals_.clear();
     lambdaLocals_.clear();
     extracted_.clear();
     checkpointRegion_.clear();
@@ -5340,7 +6184,9 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     acquired_.clear();
     borrowedRegion_.clear();
     borrowsFrom_.clear();
+    lentByACall_.clear();
     invalidatedAt_.clear();
+    staleBorrows_.clear();
     parentRegion_.clear();
     // WHOSE VALUES THE CALLER CAN SEE. A store into `this` of something the caller handed us is a
     // question only the caller can answer, and answering it here reported the wrong line -- so the
@@ -5352,6 +6198,7 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
     catchStack_.clear();
     regionConstraints_.clear();
     regionFlavor_.clear();
+    regionGrowable_.clear();
     methodLabels_.clear();
     comefromTargets_.clear();
     collectMethodLabels(body);  // chaos tetrad targets are validated against these (spec 7.9-7.11)
@@ -5373,6 +6220,13 @@ void SemanticAnalyzer::analyzeMethodBody(const ast::Block& body,
             }
         }
         declareLocal(p.name, lv);
+    }
+    // ...AND THE ROW'S INDEX, if the pass asked for one. Declared after the parameters and taken
+    // immediately, so a body analysed next does not inherit it.
+    if (!pendingIndexBinding_.empty()) {
+        declareLocal(pendingIndexBinding_, LocalVar{"int", false});
+        currentParamNames_.insert(pendingIndexBinding_);
+        pendingIndexBinding_.clear();
     }
     // DEFINITE ASSIGNMENT FOR FIELDS. Seeded here so the flow machinery that already exists for locals
     // does the work: `init_` is keyed by opaque strings, and the join at a branch merge operates on the
@@ -5511,6 +6365,23 @@ std::string SemanticAnalyzer::analyzeExpectingBlock(const ast::Block* block) {
 
 void SemanticAnalyzer::checkAssignTarget(const ast::Expr& target, const std::string& valueType,
                                          SourceLocation loc, const ast::Expr* valueExpr) {
+    /* DOES THIS BODY WRITE STATE? Recorded here, at the one place every assignment passes through.
+     *
+     * A write to a plain LOCAL is not state: the storage dies with the frame and nobody else can see
+     * it, so a method that only shuffles its own locals still reads as one that writes nothing.
+     * Anything else -- a field of `this`, a field of something it was handed, a static, a slot of an
+     * array -- outlives the call or is visible to somebody who did not make it, and that is what
+     * `readonly` promises does not happen. */
+    if (MethodFacts* mf = facts();
+        mf != nullptr && dynamic_cast<const ast::IdentifierExpr*>(&target) == nullptr) {
+        mf->writesState = true;
+        // `SourceLocation` defaults to line 1, column 1 -- not to zero -- so "not set yet" is the
+        // empty FILE and not the line. Guarding on the line meant the first write was never
+        // recorded, and the refusal pointed at `:1:1`, which is nowhere.
+        if (mf->firstWrite.file.empty()) {
+            mf->firstWrite = loc;
+        }
+    }
     // A compile-time integer literal coerces to a narrower target type when it fits (spec).
     auto fits = [&](const std::string& targetType) {
         return valueExpr != nullptr && intLiteralFits(*valueExpr, targetType);
@@ -6306,7 +7177,23 @@ void SemanticAnalyzer::checkTypeAccessible(const std::string& typeName, SourceLo
                 }
             }
         }
-        const std::string b = typeBundle_.count(n) ? typeBundle_[n] : std::string("<bundle>");
+        // A PROGRAM'S OWN TYPE OF THE SAME SHORT NAME. A program that declares a plain `Result` next
+        // to the library's generic `Errors.Result` was warned "yours wins" (0B02) and then told, at
+        // its own declaration, to import the library's -- the generic's homes were the only ones
+        // this branch looked at. The other declarations of the name are in the type table too.
+        if (const auto own = typesByWritten_.find(n); own != typesByWritten_.end()) {
+            for (const std::uint32_t id : own->second) {
+                if (types_[id].ns == currentNamespace_) {
+                    return;
+                }
+            }
+        }
+        // The bundle of the generic's namespace, not the name's: `typeBundle_` holds one bundle per
+        // short name, and a program's own type of the name overwrote it ("import Main.Errors.Result").
+        const auto home = namespaceBundle_.find(gh->second.front());
+        const std::string b = home != namespaceBundle_.end() ? home->second
+                              : typeBundle_.count(n)          ? typeBundle_[n]
+                                                              : std::string("<bundle>");
         error("type '" + n + "' is in namespace '" + gh->second.front() + "'; import it (import " +
                   b + "." + gh->second.front() + "." + n + ";) to use it here",
               loc);
@@ -6456,38 +7343,63 @@ void SemanticAnalyzer::checkOwnershipAssign(const std::string& targetType, const
         // cannot be value-copied -- the shallow copy would alias the unique and break its single-owner
         // guarantee (a movable field is deep-copied, but a unique one has no valid copy). Share by
         // pointer/reference instead.
-        error("cannot copy '" + ci->name + "' into " + what +
-                  ": it owns a 'unique' field, which may not be duplicated (spec 19.2) -- share it "
-                  "by pointer ('" + ci->name + "*') or reference",
+        // NAMED, and named by the path (`ownership.md` §6.1). The field that forbids the copy is
+        // frequently not in the type being copied but two types below it, so *"it owns a unique
+        // field"* sent the reader looking through a declaration that does not contain the cause.
+        //
+        // ...AND BY THE NAME THAT WAS WRITTEN. `ci->name` is the qualified key -- `App__Queue` --
+        // which is what the compiler files the class under and not what anybody typed. A message
+        // naming a type the source does not contain is a message about somebody else's program.
+        // Through `typeAsWritten`, the one shared projection, which also says the FULL PATH when the
+        // bare name genuinely identifies two types -- exactly when the reader needs it.
+        const std::string path = uniqueFieldPath(baseType(targetType));
+        const std::string wrote = typeAsWritten(ci->name);
+        error("cannot copy '" + wrote + "' into " + what + ": its field '" + path +
+                  "' is 'unique', and a unique value may not be duplicated (spec 19.2) -- share it "
+                  "by pointer ('" + wrote + "*') or reference, or move it",
               loc);
     }
 }
 
-bool SemanticAnalyzer::classHasUniqueField(const std::string& className) {
+// WHICH FIELD MAKES THIS TYPE UNCOPYABLE, by the path a reader can follow -- `head`, or
+// `outer.inner.slot` when the reason is two types down. Empty when the type may be copied.
+//
+// It used to return a bare `true` and the message said *"it owns a `unique` field"*, which
+// `ownership.md` §6.1 rules out in the same sentence that states the rule: *"The diagnostic must
+// name the field that causes it. Without that, the user sees a refusal with no visible cause."*
+// The cause is frequently not in the file being read -- a struct three types down owns something
+// unique and the copy at hand is refused for it -- so the name is not a nicety, it is the only
+// thing that turns the refusal into an action.
+std::string SemanticAnalyzer::uniqueFieldPath(const std::string& className) {
     const ClassInfo* ci = lookupClass(className);
     if (ci == nullptr) {
-        return false;
+        return {};
     }
     for (const auto& [fname, fi] : ci->fields) {
-        (void)fname;
         if (isRefType(fi.type)) {
             continue;  // a pointer/ref field shares; the owner's copy doesn't dup it
         }
         const std::string ft = baseType(fi.type);
         const ClassInfo* fci = lookupClass(ft);
-        // The field is marked `unique`, or its type is a `unique` class -- either way the value cannot
-        // be duplicated, so the owning object cannot be value-copied.
+        // The field is marked `unique`, or its type is a `unique` class -- either way the value
+        // cannot be duplicated, so the owning object cannot be value-copied.
         if (fi.isUnique || (fci != nullptr && fci->isUnique)) {
-            return true;
+            return fname;
         }
-        if (fci != nullptr && ft != className && classHasUniqueField(ft)) {
-            return true;  // recurse
+        if (fci != nullptr && ft != className) {
+            if (const std::string deeper = uniqueFieldPath(ft); !deeper.empty()) {
+                return fname + "." + deeper;
+            }
         }
     }
     if (!ci->superclass.empty()) {
-        return classHasUniqueField(baseType(ci->superclass));
+        return uniqueFieldPath(baseType(ci->superclass));
     }
-    return false;
+    return {};
+}
+
+bool SemanticAnalyzer::classHasUniqueField(const std::string& className) {
+    return !uniqueFieldPath(className).empty();
 }
 
 // spec 27: "Pointer arithmetic is allowed on every type, but the compiler emits a warning, because
@@ -6574,6 +7486,25 @@ static void setEnumCount(comptime::Context& ctx,
         out = static_cast<long long>(it->second.size());
         return true;
     };
+    // ...AND WHICH NUMBER EACH MEMBER IS. The map holds the members in declaration order, so the
+    // ordinal is the index -- the same fact `count()` reads the size of, asked one level in.
+    //
+    // It is what lets a wire format be pinned: `demand cast<int>(WmOp.raise) == 11` stops an
+    // insertion in the middle of an enum from silently renumbering a protocol that separately
+    // compiled programs are already speaking.
+    ctx.enumOrdinal = [enums](const std::string& name, const std::string& member, long long& out) {
+        auto it = enums->find(name);
+        if (it == enums->end()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < it->second.size(); ++i) {
+            if (it->second[i] == member) {
+                out = static_cast<long long>(i);
+                return true;
+            }
+        }
+        return false;
+    };
 }
 
 // Evaluates a constant integer/boolean/char expression at compile time (spec 28),
@@ -6583,12 +7514,20 @@ bool evalConstInt(const ast::Expr& e, long long& out,
                   const std::unordered_map<std::string, long long>* consts,
                   const std::unordered_map<std::string, const ast::MethodDecl*>* methods,
                   const std::unordered_map<std::string, double>* dconsts,
-                  const std::unordered_map<std::string, std::vector<std::string>>* enums) {
+                  const std::unordered_map<std::string, std::vector<std::string>>* enums,
+                  long long targetArch) {
     comptime::Context ctx;
     ctx.consts = consts;
     ctx.dconsts = dconsts;  // so a double const in e.g. a comparison still resolves
     ctx.methods = methods;
     setEnumCount(ctx, enums);
+    // The target, so a `comptime if` over `__target_arch` folds here as it does in the lowering.
+    // Both stages have to reach the same answer or the analyzer checks one arm and the backend
+    // emits the other -- which is not a diagnostic, it is a different program.
+    ctx.targetArch = [targetArch](long long& out) {
+        out = targetArch;
+        return true;
+    };
     return comptime::evalInt(e, out, ctx);
 }
 

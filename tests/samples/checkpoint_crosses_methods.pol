@@ -1,0 +1,88 @@
+import System.IO.Console;
+
+// A CHECKPOINT THAT CROSSES A METHOD BOUNDARY, which `region_stack.pol` beside this one does not.
+//
+// That sample marks and rolls back INSIDE one method, so the checkpoint never becomes a return value
+// or a parameter -- and the whole of this bug lived in that gap. `checkpoint` was missing from the
+// table that maps a type name to a machine type, so it fell through to "an unknown class" and got an
+// opaque structure: a method declared `returns checkpoint` computed the cursor correctly and then
+// emitted `ret undef`, and a method taking one as a parameter received undef.
+//
+// HOW FAR THAT TRAVELS BEFORE ANYTHING NOTICES is the reason this file exists. `rollback` then set the
+// region's cursor to whatever was in the register, so the arena's idea of how full it was became a
+// random number; the next allocation handed back a wild pointer, and the round after that faulted in
+// ring 3 on a region block pointer of 2. Horizon's shell does exactly what this file does -- a mark
+// before each loop round and a rewind after, through two one-line methods -- and it crashed four
+// indirections away from the missing line.
+//
+// The check is a COUNT, not a crash: the region here holds a few hundred bytes and the loop pushes far
+// more than that through it, so it completes only if the rewind actually rewinds. A cursor that is
+// never restored runs out of room; a cursor restored to a garbage value corrupts the arena. Both show
+// up as a wrong final `used`.
+program CheckpointCrossesMethods;
+
+public bundle main {
+    public namespace app {
+
+        // The mark and the rewind are METHODS, and separate ones, because that is the arrangement
+        // that broke: a region lives in an object, so the object is the only thing that can mark it,
+        // and the caller holds the checkpoint in between.
+        public class Arena {
+            public fixed address Room = 1024;
+
+            private mutable stack region space;
+
+            public constructor Arena() {
+                this.space = itself.allocate(Arena.Room);
+            }
+            public destructor ~Arena() returns void {
+                release region this.space;
+                return;
+            }
+
+            public method mark() returns checkpoint {
+                checkpoint m = mark of region this.space;
+                return m;
+            }
+            public method rewind(checkpoint m) returns void {
+                rollback region this.space to m;
+                return;
+            }
+            public method take(int n) returns byte* {
+                byte[] b = new byte[n]() in region this.space;
+                b[0] = cast<byte>(n & 255);
+                return &b[0];
+            }
+            public method used() returns long {
+                return used of region this.space;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Arena a = new Arena() on stack;
+                long empty = a.used();
+
+                // SIXTEEN THOUSAND BYTES THROUGH A ONE-KILOBYTE ARENA. It fits only because every
+                // round is rewound; without the rewind the region is full after the eighth.
+                for (mutable int round = 0; round < 128; round++) {
+                    checkpoint m = a.mark();
+                    byte* first = a.take(64);
+                    byte* second = a.take(64);
+                    if (first[0] != cast<byte>(64) || second[0] != cast<byte>(64)) {
+                        System.IO.Console.printf("bad bytes\n");
+                        return;
+                    }
+                    a.rewind(m);
+                }
+
+                // ...AND THE CURSOR IS BACK WHERE IT STARTED. `used` after the last rewind must equal
+                // `used` before the first allocation ever happened: any other number means the mark
+                // that came back through two method boundaries was not the one that went in.
+                long after = a.used();
+                System.IO.Console.printf("empty=%d after=%d\n", empty, after);
+                return;
+            }
+        }
+    }
+}

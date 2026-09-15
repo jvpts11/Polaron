@@ -270,7 +270,7 @@
             }
             // Serve this program's exported types forever. `auth` is the capability policy: it is asked
             // for every capability a client requests, and its answer is final.
-            public static method serve(String name, function<boolean, String> auth) returns void {
+            public static method serve(String name, Predicate<String>* auth) returns void {
                 IpcServer.serve(name, auth);
                 return;
             }
@@ -281,7 +281,7 @@
             private static mutable ArrayList<long> nonces;
             private static mutable ArrayList<String> caps;
             private static mutable boolean ready;
-            public static method serve(String name, function<boolean, String> auth) returns void {
+            public static method serve(String name, Predicate<String>* auth) returns void {
                 IpcServer.nonces = new ArrayList<long>() on heap;
                 IpcServer.caps = new ArrayList<String>() on heap;
                 IpcServer.ready = true;
@@ -300,7 +300,7 @@
                 Ipc.close(srv);
                 return;
             }
-            private static method session(long conn, function<boolean, String> auth) returns void {
+            private static method session(long conn, Predicate<String>* auth) returns void {
                 while (true) {
                     String msg = Ipc.recv(conn);
                     if (msg.length() == 0) {
@@ -321,7 +321,7 @@
             }
             // Mint a nonce for `cap` if the policy approves, and REMEMBER it: that memory is what makes
             // the token unforgeable -- a client cannot invent one this program never issued.
-            private static method grant(String cap, function<boolean, String> auth) returns String {
+            private static method grant(String cap, Predicate<String>* auth) returns String {
                 if (!auth(cap)) {
                     return IpcProto.errorFrame("capability refused: " + cap);
                 }

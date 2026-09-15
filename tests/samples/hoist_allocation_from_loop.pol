@@ -1,0 +1,66 @@
+import System.IO.Console;
+program HoistAllocationFromLoop;
+
+// §11.6: AN ALLOCATION INSIDE A LOOP WHOSE RESULT DIES IN THE ITERATION MOVES OUT.
+//
+// This is where the frame is worth the most. An allocation outside a loop costs one call to the
+// allocator; the same allocation inside costs a call, a free list walk, a header and a release --
+// every iteration, for an object that never leaves the braces it was written in.
+//
+// It is §11.5 with one more thing proved, and the extra proof is what stops it being wrong. A frame
+// slot is ONE address reused every time round, so two objects from two iterations that are both
+// still live would be one object with two names. `held` below is exactly that, and it must stay on
+// the heap: the loop keeps the previous iteration's object alive across the back edge.
+//
+// Prints: sum=45 chain=10
+
+public bundle Main {
+    public namespace App {
+
+        public class Cell {
+            public mutable int v;
+            public constructor Cell(int v) { this.v = v; }
+        }
+
+        public class Main {
+            // MOVES OUT. Allocated and deleted inside the same iteration, so at no moment do two of
+            // them exist. One frame slot serves all ten.
+            public static method sum(int n) returns int {
+                mutable int total = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    Cell* c = new Cell(i) on heap;
+                    total = total + c.v;
+                    delete c;
+                }
+                return total;
+            }
+
+            // STAYS. `keep` holds the previous iteration's object while the next one is made, so
+            // two are live at once -- and one frame slot cannot hold two objects. The `delete` is
+            // there and the object still does not escape the method; what rules it out is the
+            // OVERLAP, which is the whole of what makes this a separate question from §11.5's.
+            public static method chain(int n) returns int {
+                mutable nullable Cell* keep = null;
+                mutable int seen = 0;
+                for (mutable int i = 0; i < n; i++) {
+                    Cell* made = new Cell(i) on heap;
+                    if (keep != null) {
+                        seen = seen + 1;
+                        delete keep;
+                    }
+                    keep = made;
+                }
+                if (keep != null) {
+                    seen = seen + 1;
+                    delete keep;
+                }
+                return seen;
+            }
+
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("sum=%d chain=%d\n", Main.sum(10), Main.chain(10));
+                return;
+            }
+        }
+    }
+}

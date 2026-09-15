@@ -1,0 +1,40 @@
+program SuperMethodBad;
+
+// THE REFUSAL, and it is the half that has something to lose.
+//
+// `super.m()` compiles to a call NAMED at the base rather than looked up in the table, and a call
+// naming a key nothing defines **emits nothing at all** -- the backend looks it up, finds no
+// function, and the value the program was about to use is quietly undef. That is not a theory: it
+// is what `super_method.pol` did before this check existed, and it read as an access violation with
+// no diagnostic anywhere in the compile.
+//
+// So the analyzer has to catch it, and it has to catch the case that looks like it should work:
+// `Leaf` declares `only()` and `super.only()` asks for the base's -- which does not exist, because
+// the method is this class's own and there is nothing below it to call.
+
+public bundle Main {
+    public namespace App {
+
+        public class Root {
+            public method shared() returns int { return 1; }
+        }
+
+        public class Leaf extends Root {
+            // Fine: `Root` declares it.
+            public override method shared() returns int { return super.shared() + 1; }
+
+            // NOT fine: nothing above this class declares `only`, so there is no body to name.
+            // Dispatching it instead would find this method and recurse until the stack ended.
+            public method only() returns int { return super.only() + 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Leaf* l = new Leaf() on heap;
+                l.only();
+                delete l;
+                return;
+            }
+        }
+    }
+}

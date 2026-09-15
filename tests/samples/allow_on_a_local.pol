@@ -1,0 +1,34 @@
+import System.IO.Console;
+program AllowOnALocal;
+
+// `[Allow(...)]` ON A LOCAL DECLARATION, which used to be a syntax error.
+//
+// Every other place the compiler reports advice has somewhere to answer it -- a class takes an
+// annotation, a method takes one, a field takes one. A LOCAL did not, so the one kind of advice that
+// is ABOUT a local could not be answered at all. The author's two moves were both bad: change code
+// that was right, or write the `[Allow]` on the whole method and switch the rule off for every other
+// local in it.
+//
+// THE SECOND LOCAL IS THE TEST. `spare` is exempted and `forgotten` is not, in the same method, so
+// the exemption has to be about the DECLARATION and not about the scope. An implementation that
+// pushed the allow as a frame -- which is how every other `[Allow]` here works -- would cover the
+// rest of the method and silence both, and this file would compile clean and prove nothing.
+//
+// Prints:
+//   spare 0 forgotten 0
+public bundle Main {
+    public namespace Advice {
+        public class Main {
+            public static method main(string[] args) returns void {
+                // Kept deliberately: the next change assigns to it, and the author would rather say
+                // so here than have the word taken off and put back.
+                [Allow(code: "Polaron-0B0D", why: "the next change writes to it and the word marks the slot")]
+                mutable int spare = 0;
+                // ...and this one is a real oversight, which must still be reported.
+                mutable int forgotten = 0;
+                System.IO.Console.println("spare " + spare.toString() + " forgotten "
+                                          + forgotten.toString());
+            }
+        }
+    }
+}

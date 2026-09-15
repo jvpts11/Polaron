@@ -1,18 +1,32 @@
 import System.IO.Console;
 program FfiCallback;
 
-// FFI callback (spec 26): a capture-free lambda passed to a C function is lowered to a raw C
-// function pointer (no environment), so the C side can call it directly. polaron_apply_cb is a C
-// helper `int polaron_apply_cb(int (*f)(int), int x) { return f(x); }`.
+// FFI CALLBACK (spec 26): what crosses to C is a CODE ADDRESS, and the language has a word for one.
+//
+// This used to be a capture-free lambda, lowered to a raw C function pointer because it happened to
+// have no environment to leave behind. That worked and said nothing: the declared type was
+// `function<int, int>` -- a closure type -- so whether a given value could cross the border depended
+// on a property of its body rather than on anything a reader could see at the declaration.
+//
+// `methodptr<int, int>` is the border, stated: one machine word, plain C ABI, zero state, and none
+// of the region binder's guarantees. `Squares.of` without a call IS that address, which is where one
+// comes from without a foreign symbol. A command cannot be written here, and that is the point -- a
+// command is an object with a method, and `polaron_apply_cb` takes a function pointer.
+//
+// polaron_apply_cb is a C helper `int polaron_apply_cb(int (*f)(int), int x) { return f(x); }`.
 
 public bundle main {
     public namespace app {
+        public class Squares {
+            public static method of(int n) returns int { return n * n; }
+        }
         public class Cb {
-            public extern cdecl static method polaron_apply_cb(function<int, int> f, int x) returns int;
+            public extern cdecl static method polaron_apply_cb(methodptr<int, int> f, int x)
+                returns int;
         }
         public class Main {
             public static method main(string[] args) returns void {
-                int r = Cb.polaron_apply_cb(lambda(int n) returns int { return n * n; }, 7);
+                int r = Cb.polaron_apply_cb(Squares.of, 7);
                 System.IO.Console.printf("r=%d\n", r);   // 49
                 return;
             }

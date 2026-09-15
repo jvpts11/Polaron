@@ -1,0 +1,33 @@
+import System.IO.Console;
+program IntMinusAddressCast;
+
+// AN `int` AND AN `address` IN ONE EXPRESSION, then narrowed. `8192 - (at & 4095)` is the room left in
+// two pages from an offset -- the Horizon NVMe driver's `perCommand` -- and `cast<int>(...) / bs` turns
+// it into a count of blocks.
+//
+// The lowering widened a mixed pair only when both sides were `Int`, and an `address` is `Addr`: the
+// subtraction was typed after its LEFT operand, a 32-bit literal, while the backend computed it in 64
+// bits. The `cast<int>` then saw an `int` already and emitted nothing, the division ran in 64 bits, and
+// its result was stored into a 4-byte local -- which the optimiser, rightly, turned into `undef`. The
+// driver's loop got a block count of nothing and never advanced.
+//
+// Must print `16 8192 15 7936`.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            static method room(address at, int bs) returns int {
+                int r = cast<int>(8192 - (at & 4095)) / bs;
+                return r;
+            }
+            static method span(address at) returns int {
+                return cast<int>(8192 - (at & 4095));
+            }
+            public static method main(string[] args) returns void {
+                address aligned = cast<address>(0x4842000);
+                address inside = cast<address>(0x4842100);
+                System.IO.Console.println($"{Main.room(aligned, 512)} {Main.span(aligned)} {Main.room(inside, 512)} {Main.span(inside)}");
+                return;
+            }
+        }
+    }
+}

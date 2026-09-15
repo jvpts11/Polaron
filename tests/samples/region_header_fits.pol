@@ -1,0 +1,78 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program RegionHeaderFits;
+
+// THE `static_assert` THE C++ REGION CORE CARRIED, AS A TEST -- because the Polaron one cannot carry
+// it. `polaron_region_core.hpp` ended with
+//
+//     static_assert(sizeof(PolaronRegionDesc) <= POLARON_REGION_HDR, ...)
+//
+// and there is no `sizeof` in this language to write that with. The claim it protected is real and
+// sharp: a region's descriptor sits at the head of the block, the compiler hardcodes 448 as the byte
+// offset where the OBJECTS start, and a descriptor that outgrew 448 would write its own fields over
+// the first object in the region. Nothing would report it. The first object would simply change.
+//
+// So it is checked by consequence instead. The descriptor's LAST field is the free-list table, at
+// +128 and running to +392 -- the furthest anything reaches -- and it is written by `delete ... from
+// region`, once per size class. This allocates an object in the first slot, stamps it, then exercises
+// the free-lists across every class from the smallest to the largest, and reads the first object
+// back. If the table ever reaches past 448 it lands on that object and the numbers change.
+//
+// Growing the descriptor is a legitimate thing to want to do. This does not forbid it; it requires
+// that `RegionCore.HeaderBytes` and `kFlavouredRegionHeader` in the lowering grow with it.
+
+public bundle Main {
+    public namespace App {
+        public class Marker {
+            public mutable long a;
+            public mutable long b;
+            public constructor Marker(long first, long second) {
+                this.a = first;
+                this.b = second;
+            }
+        }
+
+        // 640 bytes, which is past the 512-byte ceiling of the sized classes -- so freeing one writes
+        // the LARGE entry, `freelists[32]`, the last eight bytes the descriptor occupies. Carried in
+        // as a value so the constructor assigns the field whole: an inline array filled element by
+        // element does not count as assigning it (Polaron-0612), and rightly.
+        public struct Cells {
+            public mutable long[80] slots;
+        }
+        public class Big {
+            public mutable Cells body;
+            public constructor Big(Cells seed) { this.body = seed; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool region p = itself.allocate(64 kilobytes);
+
+                // The FIRST slot, immediately after the header. If the descriptor overruns, this is
+                // what it overruns into.
+                Marker* first = new Marker(1234567, 7654321) in region p;
+
+                // Now write the free-list table, at both ends. Each delete stores an address into
+                // `freelists[class]`, which is the part of the descriptor furthest from its start:
+                // a 16-byte object writes entry 0, at +128, and a buffer past the 512-byte pool
+                // ceiling writes entry 32, at +384 -- the last eight bytes the descriptor has.
+                mutable Cells seed = new Cells() on stack;
+                seed.slots[0] = 42;
+                for (mutable int round = 0; round < 3; round = round + 1) {
+                    Marker* small = new Marker(1, 2) in region p;
+                    Big* large = new Big(seed) in region p;
+                    delete small from region p;
+                    delete large from region p;
+                }
+
+                if (first.a == 1234567 && first.b == 7654321) {
+                    System.IO.Console.println("header fits");
+                } else {
+                    System.IO.Console.printf("HEADER OVERRUN: %lld %lld\n", first.a, first.b);
+                }
+                release region p;
+                return;
+            }
+        }
+    }
+}

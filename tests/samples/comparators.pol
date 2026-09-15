@@ -1,9 +1,12 @@
 import System.IO.Console;
 import System.Collections.ArrayList;
 import System.Collections.Comparators;
+import System.Commands.Comparer;
 program ComparatorsDemo;
 
-// Comparator combinators (spec 34.1) built on closures, used with sortedBy. Prints:
+// Comparator combinators (spec 34.1), each of them a `command`, used with sortedBy. Two of the three
+// carry the comparators they wrap, which is what a combinator IS -- and as lambdas that holding was
+// nowhere in the declaration. Prints:
 //   asc=1,2,3 desc=3,2,1 tie=2
 public bundle main {
     public namespace app {
@@ -14,8 +17,8 @@ public bundle main {
                 ArrayList<int> asc = nums.sortedBy(Comparators.naturalInt());
                 ArrayList<int> desc = nums.sortedBy(Comparators.reversed(Comparators.naturalInt()));
                 // thenComparing: first always ties (returns 0), so the natural order breaks the tie.
-                function<int, int, int> tc =
-                    Comparators.thenComparing(lambda(int a, int b) returns int { return 0; },
+                Comparer<int>* tc =
+                    Comparators.thenComparing(command (int a, int b) returns int { return 0; },
                                               Comparators.naturalInt());
                 System.IO.Console.printf("asc=%d,%d,%d desc=%d,%d,%d tie=%d\n",
                     asc.get(0), asc.get(1), asc.get(2), desc.get(0), desc.get(1), desc.get(2), tc(5, 3));

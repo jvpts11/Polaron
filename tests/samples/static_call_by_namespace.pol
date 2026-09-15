@@ -1,0 +1,42 @@
+import System.IO.Console;
+program StaticCallByNamespace;
+
+// TWO CLASSES OF ONE NAME, TOLD APART BY THEIR NAMESPACE -- at a static call, which is where it
+// could not be said before.
+//
+// Namespaces already scope type NAMES: two `Reader`s are renamed apart internally, and
+// `text.Reader v = new text.Reader()` names either one in a type position. A static call through the
+// same path did not resolve, and the compiler said so in its own words -- "a static call through a
+// qualified path is not resolved yet -- reach 'parse' through an instance, or give one of the two
+// types a distinct name". Neither of those is disambiguation; they are ways to avoid needing it.
+//
+// The reason was mechanical and is worth keeping: `text.Reader` in an expression is a CHAIN of
+// nodes, not one name, so the substitution that does the renaming -- which matches a single name --
+// never saw it. It is collapsed now in the pass that renames, so everything downstream sees the
+// ordinary `Class.method` shape and knows nothing about paths.
+//
+// It matters more now that a static call must name its class: the path is the only thing left that
+// separates two classes with one name.
+//
+// Prints:
+//   2 101
+public bundle Main {
+    public namespace Text {
+        public class Reader {
+            public static method parse(int n) returns int { return n + 1; }
+        }
+    }
+    public namespace Binary {
+        public class Reader {
+            public static method parse(int n) returns int { return n + 100; }
+        }
+    }
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("%d %d\n", Text.Reader.parse(1), Binary.Reader.parse(1));
+                return;
+            }
+        }
+    }
+}

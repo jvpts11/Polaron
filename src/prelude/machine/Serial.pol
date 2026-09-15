@@ -1,0 +1,119 @@
+    // ---- Machine.Serial: the 16550 UART ----
+    //
+    // How a kernel says anything at all before video works -- including how it reports that the
+    // descriptor tables it just loaded were wrong. That is why it is second in the first cut
+    // (freestanding-prelude.md ?S4) and why the harder things are deliberately after it: debugging
+    // paging with no way to print is a worse position than not having paging.
+    //
+    // Every register is NAMED. Six of the eight appear as bare hex in most kernels --
+    // `out8(0x3FB, 0x80)` is the divisor latch being opened, and there is no way to know that from
+    // the line. They are `short address` for the reason `Machine.Port` gives: a port written `int`
+    // is indistinguishable from the byte written to it.
+    //
+    // TEXT TAKES A `byte*` OR A `byte[]`, NEVER A `String`. That is not a restriction imposed on this
+    // library, it is what makes it usable at all (?S5) -- and it is what a fault handler needs, since
+    // `puts` is what says anything when the object graph is the thing that is broken.
+    public namespace Serial {
+
+        public class Uart {
+            // COM1's register block, as eight ADDRESSES rather than eight numbers.
+            public fixed short address Data        = 0x3F8;   // data / divisor low
+            public fixed short address Interrupt   = 0x3F9;   // interrupt enable / divisor high
+            public fixed short address Fifo        = 0x3FA;
+            public fixed short address Line        = 0x3FB;   // 8N1, and the DLAB bit
+            public fixed short address Modem       = 0x3FC;
+            public fixed short address Status      = 0x3FD;
+
+            public fixed int TxReady          = 0x20;   // status bit: holding register empty
+            public fixed int RxReady          = 0x01;   // status bit: a byte is waiting
+            public fixed int DivisorLatch     = 0x80;   // Line bit 7: the next two writes are the rate
+            public fixed int EightBitNoParity = 0x03;
+            public fixed int Divisor115200    = 0x01;
+            public fixed int Divisor38400     = 0x03;
+
+            // 8N1 at 38400 baud, FIFO on. Call once before anything else here.
+            public static method open() returns void {
+                Io.out8(Uart.Interrupt, 0x00);                    // no interrupts yet
+                Io.out8(Uart.Line, Uart.DivisorLatch);            // DLAB on
+                Io.out8(Uart.Data, Uart.Divisor38400);            // divisor low
+                Io.out8(Uart.Interrupt, 0x00);                    // divisor high
+                Io.out8(Uart.Line, Uart.EightBitNoParity);        // DLAB off with it
+                // FIFO on, both halves cleared, TRIGGER AT ONE BYTE (0x07, not 0xC7).
+                //
+                // A 14-byte threshold is right for a port that is POLLED -- the reader looks whenever
+                // it likes and the depth only smooths things -- and wrong for one driven by an
+                // interrupt, where the tail of a short line waits for later characters that may never
+                // come. It bounds the latency of a line that has stopped arriving, which is every
+                // command a person types.
+                Io.out8(Uart.Fifo, 0x07);
+                Io.out8(Uart.Modem, 0x0B);                        // RTS/DSR set
+                return;
+            }
+
+            // Block until the transmit holding register is empty, then send one byte.
+            //
+            // `reentrant`: this is what a fault handler and an assertion use to say anything, so it
+            // is called from interrupt context by construction. It allocates nothing, frees nothing,
+            // takes no lock, and touches no mutable state -- and now the compiler holds it to that.
+            public static reentrant method write(int ch) returns void {
+                while ((Io.in8(Uart.Status) & Uart.TxReady) == 0) { }
+                Io.out8(Uart.Data, ch & 255);
+                return;
+            }
+
+            // DELIBERATELY A RAW POINTER, not a view or a String. `puts` is what the earliest boot
+            // code and a fault handler use, and it has to work when the object graph is what is
+            // broken. An index and a comparison depend on nothing; anything else here is a dependency
+            // the reporter has on the machinery it may be reporting the failure of.
+            public static reentrant method puts(byte* s) returns void {
+                mutable int i = 0;
+                mutable int ch = cast<int>(s[0]) & 255;
+                while (ch != 0) {
+                    Uart.write(ch);
+                    i = i + 1;
+                    ch = cast<int>(s[i]) & 255;
+                }
+                return;
+            }
+
+            // ...and the counted form, for text that is not NUL-terminated.
+            public static reentrant method putn(byte* s, int count) returns void {
+                mutable int i = 0;
+                while (i < count) {
+                    Uart.write(cast<int>(s[i]) & 255);
+                    i = i + 1;
+                }
+                return;
+            }
+
+            // Is there a byte waiting? Non-blocking, so a poll loop can do something else.
+            public static reentrant method ready() returns boolean {
+                return (Io.in8(Uart.Status) & Uart.RxReady) != 0;
+            }
+
+            // One byte in, blocking. -1 is never returned: the wait is the contract.
+            public static reentrant method read() returns int {
+                while ((Io.in8(Uart.Status) & Uart.RxReady) == 0) { }
+                return Io.in8(Uart.Data) & 255;
+            }
+            // ...AND THE BUFFER FORM, which is what a Polaron program at this level naturally holds.
+            // The `byte*` pair above is for the one caller that cannot afford anything else -- a
+            // fault handler reporting on the object graph it may be the failure of.
+            //
+            // An `Extent` AND NOT A `byte[]`, for the reason written out in `Raw.pol`: a `T[]` in
+            // this ABI is one pointer to a heap block with a length header, so a parameter of that
+            // type can only be satisfied by allocating -- in the tier whose whole premise is that
+            // there is no heap. What a caller here has is an inline `byte[64]` on its own frame, and
+            // an `Extent` is how it hands that over: two words, no header, and the length travelling
+            // with the pointer it belongs to.
+            public static reentrant method put(Extent text, int count) returns void {
+                mutable int i = 0;
+                int n = count < text.capacity ? count : text.capacity;
+                while (i < n) {
+                    Uart.write(text.get(i));
+                    i = i + 1;
+                }
+                return;
+            }
+        }
+    }

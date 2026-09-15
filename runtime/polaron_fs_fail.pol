@@ -1,0 +1,138 @@
+program PolaronFailReport freestanding;
+
+public bundle Runtime {
+    public namespace Diagnostics {
+        // A bounded, stack-owned message. Reporting a failure must work before
+        // the heap or regions are available, and concurrent failures must not
+        // overwrite one shared static message buffer.
+        public struct FailureMessage {
+            public fixed int Capacity = 1024;
+            [Allow(code: "Polaron-0B50", why: "two of these are never compared: one exists per failure, for as long as it takes to hand the finished bytes to the panic, and it is not stored, returned or keyed on anywhere")]
+            private mutable byte* text;
+            private mutable int used;
+
+            public constructor FailureMessage(byte* storage) {
+                this.text = storage;
+                this.used = 0;
+            }
+
+            public method appendByte(byte value) returns void {
+                if (this.used < FailureMessage.Capacity - 1) {
+                    this.text[this.used] = value;
+                    this.used = this.used + 1;
+                }
+                return;
+            }
+
+            /* `nullable` IS LOAD-BEARING, not caution. Two of the four shapes codegen emits for a
+               fired guard pass a null label -- the ones with no values to report -- so a plain
+               `byte*` here is a promise the compiler is entitled to act on: LLVM marks the parameter
+               `nonnull` and the check below folds to always-true. */
+            public method appendText(nullable byte* bytes) returns void {
+                if (bytes == null) { return; }
+                mutable int at = 0;
+                while (this.used < FailureMessage.Capacity - 1 && bytes[at] != 0) {
+                    this.appendByte(bytes[at]);
+                    at = at + 1;
+                }
+                return;
+            }
+
+            /* WRITTEN BACKWARDS AND TURNED ROUND, rather than into a scratch array.
+               A digit loop produces the least significant digit first, so it wants somewhere to
+               keep them -- and `new byte[20]()` here is an allocation inside a fired guard, which
+               is the one place in the program that must not need the allocator. Reversing the span
+               in place costs a few byte swaps and needs no storage at all. */
+            public method appendNumber(long value) returns void {
+                mutable uint64 magnitude = cast<uint64>(value);
+                if (value < 0) {
+                    magnitude = cast<uint64>(0) - magnitude;
+                    this.appendByte(cast<byte>(45));
+                }
+                // Unsigned magnitude also represents the absolute value of INT64_MIN.
+                int first = this.used;
+                do {
+                    this.appendByte(cast<byte>(48 + cast<int>(magnitude % cast<uint64>(10))));
+                    magnitude = magnitude / cast<uint64>(10);
+                } while (magnitude != 0);
+                mutable int lo = first;
+                mutable int hi = this.used - 1;
+                while (lo < hi) {
+                    byte swap = this.text[lo];
+                    this.text[lo] = this.text[hi];
+                    this.text[hi] = swap;
+                    lo = lo + 1;
+                    hi = hi - 1;
+                }
+                return;
+            }
+
+            public method finish() returns byte* {
+                this.text[this.used] = cast<byte>(0);
+                return this.text;
+            }
+        }
+
+        public class FailureReporter {
+            private extern cdecl static method panic(byte* message) returns void
+                symbol("__polaron_panic");
+
+            /* THE MESSAGE'S STORAGE IS PART OF THE IMAGE, which is the only honest answer here.
+               It was a stack array, and an array's `on stack` was read by nothing: this allocated
+               1032 bytes through `__polaron_malloc` inside a fired guard -- so a guard that fired
+               BECAUSE the allocator was wrong called the allocator to say so. `on static` costs no
+               allocation, needs no stack, and exists before the first instruction.
+
+               ONE BUFFER FOR THE PROGRAM, said out loud. Two failures at once would overwrite each
+               other's message; on a machine that halts at the first one there is no second, and a
+               garbled sentence is a better failure than a blown stack in the reporter for a guard
+               that fired on a full one. */
+            private static mutable byte[] room = new byte[FailureMessage.Capacity]() on static;
+
+            /** What a fired guard calls: the clause that broke, and the two values it stopped on.
+             *
+             * NONE OF THIS SIGNATURE IS A CHOICE. Codegen emits the call, so the six parameters and
+             * their order are the ABI every `requires`, every bounds check and every null check in
+             * the language already compiles to.
+             *
+             * THE THREE TEXTS ARE `byte*` AND NOT `address`, and on a 64-bit machine the difference
+             * is invisible. `address` means SIXTY-FOUR BITS in Polaron -- that is what the width
+             * family is for, with `half address` and `short address` beside it -- while codegen
+             * emits `ptr`, which is four bytes wide on a 32-bit target. The first argument survived
+             * anyway: the callee read eight bytes where four were pushed, and casting back to a
+             * pointer truncated to the same four. Everything after it read from the wrong offset. It
+             * booted, it printed its headline, and it said `jÔ = 8591002698, Sÿ = 412318131120`.
+             *
+             * THE LABELS ARE `nullable` AND THE HEADLINE IS NOT, because two of the four shapes
+             * codegen emits pass null labels -- a guard with no values to report -- and a plain
+             * `byte*` is a promise the optimiser is entitled to act on.
+             *
+             * `surveyed` because handing a pointer to an extern is where the region binder stops
+             * having anything to prove, and this is the one call where the other side is READ:
+             * `__polaron_panic` is the compiler's own weak stub or a kernel's override, it writes
+             * the bytes and halts, and it keeps nothing. The binder's other suggestion is to declare
+             * the parameter `address` -- which would buy its silence with the wrong-width argument
+             * described above.
+             */
+            [Allow(code: "Polaron-0B24", why: "the call is emitted by codegen, not written by anyone: `__polaron_fail(headline, aLabel, a, bLabel, b, code)` is the shape a guard compiles to, and the three texts arrive in the order the compiler put them in")]
+            public unknown c static surveyed method __polaron_fail(byte* headline,
+                nullable byte* aLabel, long a, nullable byte* bLabel, long b, int code)
+                returns void {
+                FailureMessage message = new FailureMessage(&FailureReporter.room[0]) on stack;
+                message.appendText(headline);
+                if (aLabel != null && bLabel != null) {
+                    message.appendText(b"   |  ");
+                    message.appendText(aLabel);
+                    message.appendText(b" = ");
+                    message.appendNumber(a);
+                    message.appendText(b", ");
+                    message.appendText(bLabel);
+                    message.appendText(b" = ");
+                    message.appendNumber(b);
+                }
+                FailureReporter.panic(message.finish());
+                return;
+            }
+        }
+    }
+}

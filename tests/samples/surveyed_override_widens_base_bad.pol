@@ -1,0 +1,29 @@
+import System.IO.Console;
+program SurveyedOverrideWidensBaseBad;
+
+// `surveyed` IS INHERITED, NOT ADDED ON THE WAY DOWN.
+//
+// The binder already unions an override's summary into its base, so a surveyed override does make
+// callers of the base conservative -- soundly. What it does not do is let them SEE it: `Sink.take`
+// would read like an ordinary method and be conservative because a subclass in another file said
+// so. A conservative summary nobody can see is the thing this word exists to prevent.
+//
+// Refused with Polaron-0606, the same family as overriding a `final`: both are an override changing
+// the contract its callers read.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Sink {
+        public mutable int seen;
+        public constructor Sink() { this.seen = 0; }
+        public method take(Leaf* l) returns void { this.seen = l.n; return; }
+    }
+    public class Keeper extends Sink {
+        public constructor Keeper() { }
+        public override surveyed method take(Leaf* l) returns void { this.seen = l.n; return; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Keeper* k = new Keeper() on heap; delete k; return;
+        }
+    }
+} }

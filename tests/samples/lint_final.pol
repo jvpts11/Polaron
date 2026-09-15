@@ -72,14 +72,21 @@ public bundle Main {
 
         // FIRES (0B3C): a field outlives the call that produced the value, and the binder proves
         // nothing about the other side of a foreign boundary.
+        //
+        // IT DID NOT USED TO BE THIS SHAPE, and the old one was the rule's own defect written down.
+        // `Borrowed` allocated in its constructor and freed in its destructor, through the same
+        // foreign interface -- which is exactly what 0B3C's advice tells an author to do: *wrap the
+        // address in a type that owns it and frees it, so the lifetime has one place that knows
+        // about it*. So this file asserted that the compiler warns about the remedy it recommends,
+        // and the assertion passed for as long as the defect lasted.
+        //
+        // What is here now is what the rule is actually about: an address that arrived from
+        // somewhere else, kept in a field, with nothing in this program saying when the far side
+        // frees it. `address_owner_is_the_fix.pol` holds the two shapes side by side.
         public class Borrowed {
             public mutable address held;
-            public constructor Borrowed() {
-                this.held = Allocator.alloc(8);
-            }
-            public destructor ~Borrowed() returns void {
-                Allocator.free(this.held);
-                return;
+            public constructor Borrowed(address fromSomebodyElse) {
+                this.held = fromSomebodyElse;
             }
         }
 
@@ -136,7 +143,9 @@ public bundle Main {
             public static method main(string[] args) returns void {
                 Piece* p = new Piece() on heap;
                 Counters* c = new Counters() on heap;
-                Borrowed* b = new Borrowed() on heap;
+                // The address comes from the allocator HERE, which is the point: the class receives
+                // one it did not produce and does not free, so nothing in it knows the lifetime.
+                Borrowed* b = new Borrowed(Allocator.alloc(8)) on heap;
                 c.send(1);
                 System.IO.Console.println($"{p.size()} {c.count()} {Work.copies()} {Work.fills(3)} {Work.scans("a,b,c")} {Work.twice()}");
                 delete p;

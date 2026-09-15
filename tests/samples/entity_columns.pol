@@ -1,0 +1,82 @@
+import System.IO.Console;
+program EntityColumns;
+
+// AN `entity` IS A VALUE TYPE WHOSE ARRAYS ARE TRANSPOSED (docs/design/entity.md).
+//
+// This is AP-06 -- the objection that stands. *"A loop over one field of ten thousand objects
+// touches ten thousand cache lines where a column touches six hundred. Systems code needs columns,
+// so at this level you must abandon the type."* Polaron could already express structure-of-arrays
+// and run level with C, but only by dissolving `Particle` into parallel `float[]`s -- and then the
+// thing the program is about has no type. The measurement was written twice and failed twice for
+// exactly that reason.
+//
+// What is proved here is that the storage really is column-major, and reading a field back cannot
+// show it: `swarm[3].y` gives 30 under either arrangement. So the ADDRESSES are measured instead,
+// which is the one observation the two arrangements cannot agree on.
+//
+//   `&swarm[1].x - &swarm[0].x`  is 4 in columns (the next element of x) and 8 in rows (the next
+//                                 row, past this row's y)
+//   `&swarm[0].y - &swarm[0].x`  is 400 in columns (the whole x column, 100 ints) and 4 in rows
+//
+// A compiler that quietly kept rows prints `step 8` and `column 4`, and every other line of this
+// program still passes -- which is why the addresses are what is asked.
+//
+// The second representation is proved beside it. `Particle p = swarm[i]` MATERIALISES: it copies one
+// value out of each column into a local, which is an ordinary value of the struct the entity also
+// is. It is a COPY, so writing to it afterwards does not touch the block -- that is what value
+// semantics mean, and it is the whole difference between it and `swarm[i].x = ...`, which writes the
+// column directly. Both spellings are in the language on purpose.
+//
+// Prints:
+//   y3 30
+//   step 4
+//   column 400
+//   sumx 4950
+//   row 7 70
+//   untouched 7
+public bundle Main {
+    public namespace Swarm {
+
+        public entity Particle {
+            public mutable int x;
+            public mutable int y;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Particle[] swarm = new Particle[100]();
+                mutable int i = 0;
+                while (i < 100) {
+                    swarm[i].x = i;
+                    swarm[i].y = i * 10;
+                    i = i + 1;
+                }
+
+                System.IO.Console.println("y3 " + swarm[3].y.toString());
+
+                // THE MEASUREMENT. Two distances, each of which the two arrangements answer
+                // differently, so neither can be produced by accident.
+                address first = cast<address>(&swarm[0].x);
+                address second = cast<address>(&swarm[1].x);
+                address firstY = cast<address>(&swarm[0].y);
+                System.IO.Console.println("step " + (second - first).toString());
+                System.IO.Console.println("column " + (firstY - first).toString());
+
+                mutable int sum = 0;
+                mutable int k = 0;
+                while (k < 100) {
+                    sum = sum + swarm[k].x;
+                    k = k + 1;
+                }
+                System.IO.Console.println("sumx " + sum.toString());
+
+                // MATERIALISE one row, then change the copy and read the block back. If the copy
+                // were a view, `untouched` would print 99.
+                Particle one = swarm[7];
+                System.IO.Console.println("row " + one.x.toString() + " " + one.y.toString());
+                one.x = 99;
+                System.IO.Console.println("untouched " + swarm[7].x.toString());
+            }
+        }
+    }
+}

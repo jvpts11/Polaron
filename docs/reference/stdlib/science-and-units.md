@@ -49,7 +49,7 @@ adding two of them is adding two integers, and no conversion happens where it co
 ```polaron
 import System.Science.Roots;
 
-double r = Roots.brent(lambda[](double x) returns double { return x * x - 2.0; },
+double r = Roots.brent(command (double x) returns double { return x * x - 2.0; },
                        0.0, 2.0, 1e-12, 100);
 ```
 

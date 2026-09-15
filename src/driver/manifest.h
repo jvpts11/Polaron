@@ -91,13 +91,43 @@ struct Manifest {
     std::string fsTarget = "x86_64-unknown-none-elf";  // [freestanding] target = "..." (bare-metal triple)
     std::string linkerScript;                          // [freestanding] linker_script = "kernel.ld" (override)
     std::vector<std::string> bootSources;              // [freestanding] boot = "boot.s, ..." (asm linked in)
+    // [freestanding] entry_symbol = "_start" -- WHERE THE LOADER JUMPS, which is not the same thing as
+    // `[program] entry` and is the reason both exist. `entry` names the FILE the compiler starts from
+    // and expects a `Main.main` in; this names the SYMBOL that goes in the image's entry field.
+    //
+    // IT WAS WRITTEN IN TWO MANIFESTS BEFORE IT WAS READ IN ANY. Horizon's libc projects set it, with
+    // a comment explaining that without it the loader would enter through a method with a prologue and
+    // argc would be unreadable -- and the parser had no case for the key, so it was dropped on the
+    // floor and the generated script chose from `bootSources.empty()` instead. That is the shape this
+    // project keeps finding: a line that reads as a decision, in a file where decisions live, having
+    // no effect at all. Empty means "decide from what the image contains", which is the old behaviour.
+    std::string entrySymbol;
+    // [freestanding] native = "demo/sieve.c" -- ONE C SOURCE compiled and linked into the image.
+    //
+    // It is how a program written in C is built against a libc written in Polaron: the Polaron half
+    // exports `_start`, `printf`, `malloc` and `open` across the C ABI, and this is the translation
+    // unit that calls them. Compiled with the same freestanding triple and flags as everything else,
+    // and named `<stem>.native.o` in the output directory.
+    //
+    // IT WAS WRITTEN IN A MANIFEST AND READ IN NONE, exactly like `entrySymbol` above -- and this one
+    // had already broken something. Horizon's two C demos stopped linking (`undefined symbol: main`)
+    // and their build script answered a failed build with `continue`, so the previous day's binaries
+    // stayed on disk and were staged onto every disk image afterwards. Nothing said a word.
+    std::string nativeSource;
     // With no explicit `linker_script` the driver GENERATES one from these two. A bare-metal image's
     // layout is boilerplate -- entry symbol, load address, then the standard text/rodata/data/bss order --
     // so it should no more be hand-written than the memcpy/memset stubs the driver already generates.
     std::string loadAddress = "1M";     // [freestanding] load_address = "0x100000" | "1M" (default 1 MiB)
-    // [freestanding] image = "elf" (default) | "bin" | "iso". The linked ELF is always produced; `bin`
-    // additionally flattens it (llvm-objcopy -O binary) for a BIOS/UEFI/embedded payload, and `iso`
-    // wraps it in a bootable El Torito CD image (GRUB + xorriso).
+    // [freestanding] image = "elf" (default) | "bin" | "bootsector" | "efi" | "iso". The linked ELF is
+    // always produced; `bin` additionally flattens it (llvm-objcopy -O binary) for a BIOS or embedded
+    // payload, `bootsector` flattens it AND checks the first 512 bytes end 0x55 0xAA and pads the
+    // whole to whole sectors, and `iso` wraps it in a bootable El Torito CD image (GRUB + xorriso).
+    //
+    // `efi` is the exception: it produces a PE32+ executable INSTEAD of an ELF, because a UEFI
+    // application is not an ELF at any stage -- the firmware's loader is the one Windows uses. It
+    // requires `target = "x86_64-unknown-uefi"` and links with lld-link rather than ld.lld, and there
+    // is no linker script, no load address and no `_start`: the entry point is `efi_main` and the
+    // firmware decides where the image goes.
     std::string imageFormat = "elf";
     std::string bootProtocol;           // [freestanding] boot_protocol = "pvh" -> emit .note.Xen first
     // [freestanding] panic_uart = "0x09000000" -- the byte-wide transmit register of a UART the board

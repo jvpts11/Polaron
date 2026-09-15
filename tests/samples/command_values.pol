@@ -1,0 +1,55 @@
+import System.IO.Console;
+program CommandValues;
+
+// A COMMAND VALUE OF EACH KIND OF ANSWER -- int, boolean, char, and none at all.
+//
+// This is four old files in one. `lambda.pol`, `lambda_bool.pol`, `lambda_char.pol` and
+// `lambda_void.pol` were the same test written four times, differing only in the return type of the
+// value they built, and four files that differ in one token were already saying something about the
+// tests rather than about the language. What they were checking is worth keeping: that a value of
+// this kind is built, held, passed and called like anything else, whatever it answers -- including
+// a `char` decided by an `if`, which is the case that proves the body is a body and not one
+// expression wearing braces.
+//
+// Prints: add=8 square=36 p=1 q=0 g=A h=B hi=7
+
+public bundle Main {
+    public namespace App {
+        public command IntPair(int a, int b) returns int;
+        public command IntMap(int n) returns int;
+        public command IntTest(int n) returns boolean;
+        public command Grader(int n) returns char;
+        public command Greeting() returns void;
+
+        public class Arithmetic {
+            public command add(int a, int b) returns int { return a + b; }
+            public command square(int n) returns int { return n * n; }
+            public command isPositive(int n) returns boolean { return n > 0; }
+            public command grade(int n) returns char {
+                if (n >= 90) { return 'A'; }
+                return 'B';
+            }
+            public command greet() carries (int who) into pack returns void {
+                System.IO.Console.printf("hi=%d\n", pack.who);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                IntPair* add = Arithmetic.add();
+                IntMap* square = Arithmetic.square();
+                IntTest* isPos = Arithmetic.isPositive();
+                Grader* grade = Arithmetic.grade();
+                Greeting* greet = Arithmetic.greet(7);
+
+                System.IO.Console.printf("add=%d square=%d p=%d q=%d g=%c h=%c\n",
+                                         add(3, 5), square(6),
+                                         isPos(5) ? 1 : 0, isPos(0) ? 1 : 0,
+                                         grade(95), grade(70));
+                greet();
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,70 @@
+import System.IO.Console;
+program TwoOwnersForOneObject;
+
+// TWO OWNERS FOR ONE OBJECT, WRITTEN AS ONE ASSIGNMENT.
+//
+// `this.buf = other.buf` inside `Holder` copies a pointer between two fields that are BOTH freed by
+// `~Holder`. After that line two objects own one `Buf`, and whichever is destroyed second frees
+// storage the first already freed. There is no `delete` near the line that caused it: the crash
+// arrives later, in a destructor, possibly in another file.
+//
+// THE DESTRUCTOR IS WHAT MAKES IT DECIDABLE, as everywhere else in this analysis. A field a class
+// frees is a field it owns -- the author already wrote that sentence -- so copying a pointer from
+// one owned field into another is copying an ownership that only one of them can have.
+//
+// `Viewer` is the other half and is why the rule is about OWNERSHIP rather than about assignment:
+// it takes the same pointer from the same place and its destructor frees nothing, so it is a
+// borrower and this is the ordinary way to write one. It must not be mentioned in the output.
+//
+// ADVICE RATHER THAN A REFUSAL, and the language decides that, not taste: the cure is a move, and
+// `this.buf = move other.buf` is refused today -- "cannot move field 'buf' of non-partitionable
+// type". An error here would leave the author holding a shape with no legal way to write it. When
+// the move exists, this becomes a refusal.
+//
+// Warns with Polaron-0B53.
+public bundle Main {
+    public namespace App {
+        public class Buf {
+            public mutable int n;
+            public constructor Buf() { this.n = 1; }
+        }
+
+        public class Holder {
+            public mutable Buf* buf;
+            public constructor Holder() { this.buf = new Buf() on heap; }
+            public destructor ~Holder() returns void { delete this.buf; }
+
+            // <- the line: both sides are owned, so this makes a second owner
+            public method takeFrom(Holder* other) returns void {
+                this.buf = other.buf;
+                return;
+            }
+        }
+
+        public class Viewer {
+            public mutable Buf* seen;
+            public constructor Viewer(Buf* at) { this.seen = at; }
+            // No destructor freeing `seen`: this class borrows, and says so the only way the
+            // language asks it to.
+            public method watch(Holder* other) returns void {
+                this.seen = other.buf;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Holder* a = new Holder() on heap;
+                Holder* b = new Holder() on heap;
+                a.takeFrom(b);
+                Viewer* v = new Viewer(b.buf) on heap;
+                v.watch(a);
+                System.IO.Console.println($"{v.seen.n}");
+                delete v;
+                delete b;
+                delete a;
+                return;
+            }
+        }
+    }
+}

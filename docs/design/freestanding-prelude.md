@@ -139,22 +139,90 @@ It is also what turns AP-32 from an argument into a demonstration: *"nobody has 
 by a kernel that boots, and a kernel that boots **on a standard library** is a different claim from a
 kernel that boots on hand-written casts.
 
-## 9. The decision this asks for
+## 9. The decision this asks for — made (Wave 4.5)
 
-**Scope, in three parts. One is settled:**
+**Scope, in three parts. All three are settled:**
 
-1. **Is the three-tier split accepted?** — core / hosted / bare, with the core tier lifted out of the
-   hosted prelude so a freestanding program can have it. This is the two-thirds of the work that is
-   sorting, and it is worth more than the bare tier is. **Open.**
-2. **Is the first cut the five in §4**, with descriptor tables, paging, interrupt controllers and the
-   spinlock deliberately second? **Open.**
+1. **The three-tier split is accepted** — core / hosted / bare, with the core tier lifted out of the
+   hosted prelude so a freestanding program can have it.
+
+   **Because the tiering already exists and is done wrongly.** §2 quotes the gate: half a dozen
+   checks ask *which file did this declaration come from*. That is a tier boundary — an unnamed one,
+   drawn along the file system, enforced by refusal. `Result` and `Option` are on the wrong side of
+   it for no reason anybody chose; they are there because they happen to live in a file the gate
+   rejects. Accepting the split does not introduce a boundary, it **names the one already being
+   enforced** and turns a refusal into an offer.
+
+2. **The first cut is the five in §4**, with descriptor tables, paging, interrupt controllers and
+   the spinlock deliberately second.
+
+   **Because the order is the boot order.** `Port` is under everything else on x86; `Serial` is how
+   a kernel says anything at all before video works — including how it reports that the descriptor
+   tables it just loaded were wrong. Putting the second cut first means debugging paging with no way
+   to print. And the four held back are each large *and* each deeply architecture-shaped, so each is
+   a design of its own; the five are small and nearly architecture-free, which is what makes them a
+   first cut rather than a first instalment.
+
 3. ~~The bundle name~~ — **`Machine`. Decided.**
 
-## 10. Open
+## 10. Decided (Wave 4.5)
 
-| | |
-|---|---|
-| 10.1 | where `Machine` lives on disk. `src/prelude/lib/` is the hosted library; a sibling directory keeps the tiers apart in the file system as well as in the language |
-| 10.2 | whether the **core** tier is a third bundle or stays inside `System` with the gate letting it through. The second is less disruptive and less honest |
-| 10.3 | how much of `pico`'s existing hardware code can be lifted rather than rewritten — which cannot be answered from this tree, because `pico` is not in it |
-| 10.4 | a freestanding program with **no** heap at all: every allocation is an error rather than a `reentrant` violation. Whether that is a program-level statement or just what happens (`reentrant.md` §10.5) |
+### 10.1 `src/prelude/machine/`, a sibling of `lib/`
+
+**Decided.** The tier has to be visible **where the gate looks**, and the gate looks at the file path
+(§2). A `Machine` bundle scattered through `lib/` would be a tier the language knows about and the
+compiler's own checks cannot see — which is today's failure exactly, inverted. The directory is not
+organisation; it is the thing being tested.
+
+### 10.2 Core is a bundle of its own, and `System` keeps its names by `typealias`
+
+**Decided**, and the document had already said which answer was right: *"the second is less
+disruptive and less honest."* When those are the two axes, honesty wins — the disruption is one-off
+and the dishonesty is permanent. A `System.Errors.Result` usable with no operating system under it is
+a name that lies about its tier every time anybody reads it.
+
+**The disruption is then paid off rather than accepted**, with a word the language already has.
+`Core` owns the declarations; `System` declares a `typealias` for each name it used to own. Existing
+`import System.Errors.Result` keeps compiling, `import Core.Result` works in freestanding, and there
+is exactly one definition. No re-export mechanism has to be invented — which matters, because
+inventing one was the other reading of "less disruptive".
+
+### 10.3 Answered — four of five lift, and Horizon is the measurement
+
+The item read *"cannot be answered from this tree, because `pico` is not in it."* It is answerable:
+`pico` is **Horizon**, and it is **678 Polaron files, 102 358 lines** of exactly this code.
+
+| §4 entry | in Horizon | liftable? |
+|---|---|---|
+| `Machine.Port` | port I/O under `Cpu`, `src/arch/` | yes — it is `in`/`out` and nothing else |
+| `Machine.Serial` | `src/arch/serial.pol`, **224 lines** | **yes, as it stands** |
+| `Machine.Screen` | `framebuffer.pol` (153), `textconsole.pol` (52), `graphicsconsole.pol` (310) | the first two; the third is a console, not a screen |
+| `Machine.Memory` | `src/memory/memorymap.pol`, `memoryregion.pol` | yes |
+| `Machine.Format` | the digit loops, written by hand at each site | **no — this is the one to write** |
+
+**`serial.pol` names nothing hosted**: no `String`, no `on heap`, no import of anything at all. §5
+says the two things making this a library rather than a subset are no heap and no `String` — and a
+driver written under the freestanding gate has already been forced to satisfy both. **The gate that
+refused these programs a library is what made their code liftable**, which is worth saying because it
+is the one good thing about the present arrangement and it stops being true the moment the library
+exists.
+
+Four lifted, one written — and the one to write is `Format`, which is also the one every kernel
+currently re-writes as a digit loop. Not a coincidence: **what nobody could share is what nobody
+had.**
+
+### 10.4 It is what happens, not a program-level statement
+
+**Decided.** A freestanding program with no heap does not declare *no allocation anywhere*. It
+declares no `heap class`, and then every allocation site has nothing to call.
+
+**Because the statement would be a second way of saying something already said.** §36 makes
+`heap class X` the program's allocator and exactly one exists per program; a program declaring none
+has no allocator, so `new T() on heap` in it is already an error — one that names the missing
+declaration, which is a better message than a mode flag could give. A program-level `noheap` would
+have to agree with the absence of a `heap class` in every case, and **two facts that must agree are
+one fact and one opportunity to disagree.**
+
+This is `reentrant.md` §10.5's answer seen from the other side, and the two now match: `reentrant` is
+a property of a **method** and stays one. *Every method is reentrant* is not declared — it is what a
+program with nothing shared to violate turns out to be.

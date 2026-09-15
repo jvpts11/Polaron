@@ -18,8 +18,14 @@ public bundle main {
         }
         public class Main {
             public static method main(string[] args) returns void {
-                int n = Pair.sizeof();         // 16 (vtable pointer + two ints; every class is an Object)
-                int n2 = Raw.sizeof(Pair);     // 16 -- the same size, asked the other way
+                // EIGHT, AND IT USED TO BE SIXTEEN. `Pair` is two `int`s and that is now what it
+                // costs. `dynamic` made the object header a word the AUTHOR writes rather than one
+                // the driver assigned to every class in a loop: nothing extends `Pair`, nothing
+                // overrides anything on it, and nobody asked to hold it as an `Object`, so it is
+                // its fields. AP-02 -- *every object carries a vtable pointer whether it needs one
+                // or not* -- falls here, and this is the line that measures it.
+                int n = Pair.sizeof();         // 8 -- two ints, and no header
+                int n2 = Raw.sizeof(Pair);     // 8 -- the same size, asked the other way
                 Pair p = new Pair() on stack;
                 int m = Raw.sizeof(p);         // size of p's type (pointer to Pair)
                 System.IO.Console.printf("n=%d n2=%d mpos=%d\n", n, n2, m > 0);

@@ -1,0 +1,36 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+program ForeachReadOnlyCallOk;
+
+// THE CONTROL THAT CAUGHT A BAD RULE. `toArray()` copies the list into a fresh array: it writes
+// `out[i] = this.data[i]`, mentions `this`, and changes nothing.
+//
+// The first version of the mutation summary searched the PRINTED body for the words "Assign" and
+// "this", which conflates "assigns anything" with "assigns a field of this" -- and got the two
+// commonest cases exactly backwards: this copy was called a mutation, while `remove`, which shifts
+// the tail by delegating to `this.removeAt(i)`, was called read-only. It passed the whole suite,
+// because nothing in the corpus wrote either shape inside a `foreach`.
+//
+// Read off the AST now: an assignment rooted at `this`, a `delete` of one of our own fields, or --
+// transitively -- a call on ourselves or on one of our fields that reaches one of those. The
+// transitive half is not a refinement; it is where the delegating methods live.
+//
+// Prints:
+//   9
+public bundle Main { public namespace App {
+    public class Main {
+        public static method main(string[] args) returns void {
+            ArrayList<int>* xs = new ArrayList<int>() on heap;
+            for (mutable int i = 0; i < 3; i++) { xs.add(i); }
+            mutable int n = 0;
+            foreach (int v in xs) {
+                int[] snap = xs.toArray();      // SÓ LÊ: faz uma cópia
+                n = n + snap.length();
+                delete snap;
+            }
+            System.IO.Console.println($"{n}");
+            delete xs;
+            return;
+        }
+    }
+} }

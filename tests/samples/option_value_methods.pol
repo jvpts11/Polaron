@@ -20,7 +20,7 @@ program OptionValueMethods;
 // `this.isSome()`, a virtual self-call. So the receiver the compiler builds from the tag cannot be a
 // convenient half-object -- it needs its vtable, or the inherited method dispatches into nothing.
 //
-// `present` is the other one: it takes a lambda, so the built receiver has to survive being passed
+// `present` is the other one: it takes a command, so the built receiver has to survive being passed
 // arguments as well as being dispatched on.
 //
 // Prints:
@@ -34,15 +34,15 @@ public bundle Main {
                 mutable ArrayList<int> xs = new ArrayList<int>() on heap;
                 xs.add(4);
 
-                Option<int> hit = xs.find(lambda(int v) returns boolean { return v == 4; });
+                Option<int> hit = xs.find(command (int v) returns boolean { return v == 4; });
                 System.IO.Console.printf("hit: isSome=%d isNone=%d valueOr=%d present=%d\n",
                     hit.isSome() ? 1 : 0, hit.isNone() ? 1 : 0, hit.valueOr(0 - 7),
-                    hit.present(lambda(int v) returns boolean { return v > 0; }) ? 1 : 0);
+                    hit.present(command (int v) returns boolean { return v > 0; }) ? 1 : 0);
 
-                Option<int> miss = xs.find(lambda(int v) returns boolean { return v == 9; });
+                Option<int> miss = xs.find(command (int v) returns boolean { return v == 9; });
                 System.IO.Console.printf("miss: isSome=%d isNone=%d valueOr=%d present=%d\n",
                     miss.isSome() ? 1 : 0, miss.isNone() ? 1 : 0, miss.valueOr(0 - 7),
-                    miss.present(lambda(int v) returns boolean { return v > 0; }) ? 1 : 0);
+                    miss.present(command (int v) returns boolean { return v > 0; }) ? 1 : 0);
 
                 Result<int, int> ok = Ok(3);
                 Result<int, int> bad = Err(0 - 2);

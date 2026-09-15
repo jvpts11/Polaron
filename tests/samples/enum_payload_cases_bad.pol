@@ -1,0 +1,29 @@
+import System.IO.Console;
+program EnumPayloadCasesBad;
+
+// The refusal that makes the feature worth having: a `match` over a sum that forgets a case.
+//
+// This is the whole reason a sum enum desugars to a SEALED hierarchy rather than to three unrelated
+// classes. The case list is closed, so the compiler can say `Rect` is missing -- by name. Without
+// the sealing the only way to make the match compile is a `default`, and a `default` is the arm that
+// silently swallows the case somebody adds next year.
+public bundle Main {
+    public namespace Shapes {
+
+        public enum Shape {
+            Circle(double radius),
+            Rect(double width, double height),
+            Empty
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape c = Circle(2.0);
+                match (c) {
+                    case Circle(double radius) { System.IO.Console.println("circle"); }
+                    case Empty() { System.IO.Console.println("empty"); }
+                }
+            }
+        }
+    }
+}

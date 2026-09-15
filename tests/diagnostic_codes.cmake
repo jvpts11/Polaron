@@ -14,6 +14,27 @@
 # the set of programs the suite already asserts are errors. A new negative test joins the guard by
 # existing.
 
+# ---- IT RUNS IN SHARDS, AND THAT IS THE WHOLE DIFFERENCE BETWEEN 358 SECONDS AND 22 ----
+#
+# This check is hundreds of `polc` invocations -- one per catalog code, one per sample in the corpus --
+# and they were all in one CMake script, which means one ctest test, which means ONE CORE. Everything
+# else in the suite finished in about forty seconds under `-j 8` and then this ran alone for six
+# minutes: the suite's wall clock WAS this test.
+#
+# Sharding costs nothing and needs no new mechanism, because ctest already has the parallelism. Each
+# shard takes every Nth item, so the split needs no agreement about how many items there are and stays
+# even as the corpus grows. `SHARD` and `SHARDS` come from the test registration.
+#
+# Sixteen of them, which is not tuning for this machine: it is the number that puts each shard under
+# thirty seconds, so no single test in the suite can sit blocking for longer than that -- which is
+# what a timeout is for, and a timeout of nine hundred seconds was not doing it.
+if(NOT DEFINED SHARD)
+    set(SHARD 0)
+endif()
+if(NOT DEFINED SHARDS)
+    set(SHARDS 1)
+endif()
+
 # FIRST, THAT EVERY CODE HAS SOMETHING TO SAY. A Code with a mapping rule but an empty catalog entry
 # renders as a code with no help under it -- worse than no code, because the reader follows it to
 # `--explain` and finds nothing. The corpus check below cannot see this: the diagnostic carries a
@@ -23,14 +44,20 @@ string(REGEX MATCHALL "Polaron-[0-9A-Fa-f]+" _codes "${_listing}${_lerr}")
 list(REMOVE_DUPLICATES _codes)
 list(LENGTH _codes _ncodes)
 set(_hollow "")
+set(_ci -1)
 foreach(_c IN LISTS _codes)
+    math(EXPR _ci "${_ci}+1")
+    math(EXPR _mine "${_ci} % ${SHARDS}")
+    if(NOT _mine EQUAL ${SHARD})
+        continue()
+    endif()
     execute_process(COMMAND "${POLC}" --explain "${_c}" OUTPUT_VARIABLE _e ERROR_VARIABLE _ee)
     set(_text "${_e}${_ee}")
     if(NOT _text MATCHES "why:" OR NOT _text MATCHES "fix:" OR NOT _text MATCHES "prevent:")
         list(APPEND _hollow "${_c}")
     endif()
 endforeach()
-message(STATUS "codes in the catalog: ${_ncodes}")
+message(STATUS "codes in the catalog: ${_ncodes} (shard ${SHARD} of ${SHARDS})")
 if(_hollow)
     message("These codes exist but have no complete write-up (why / fix / prevent):")
     foreach(_h IN LISTS _hollow)
@@ -46,7 +73,13 @@ list(REMOVE_DUPLICATES _hits)
 set(_bare "")
 set(_checked 0)
 set(_coded 0)
+set(_si -1)
 foreach(_rel IN LISTS _hits)
+    math(EXPR _si "${_si}+1")
+    math(EXPR _mine "${_si} % ${SHARDS}")
+    if(NOT _mine EQUAL ${SHARD})
+        continue()
+    endif()
     set(_file "${DIR}/${_rel}")
     if(NOT EXISTS "${_file}")
         continue()

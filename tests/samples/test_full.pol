@@ -98,7 +98,7 @@ public bundle Main {
             // For code whose JOB is to print: assert on what came out.
             [Test]
             public static method printed_output_is_captured() returns void {
-                String out = Test.captureOutput(lambda() returns void {
+                String out = Test.captureOutput(command () returns void {
                     System.IO.Console.println("total: 42");
                     System.IO.Console.println("errors: 0");
                 });
@@ -161,7 +161,7 @@ public bundle Main {
                 delete ds2;
 
                 Test.checking("exceptions");
-                Test.assertDoesNotThrow(lambda() returns void {
+                Test.assertDoesNotThrow(command () returns void {
                     Test.assertEqual(1, 1);
                 });
                 return;

@@ -745,6 +745,34 @@ Box<int> b = new Box<int>(42) on heap;
 int v = b.get();
 ```
 
+### Const generics: a hole where a number goes
+
+A type parameter is a hole where a **type** goes. `fixed int R` is a hole where a **number** goes,
+and it binds at stamping like everything else in the brackets:
+
+```polaron
+public struct Grid<fixed T, fixed int R, fixed int C> {
+    private mutable T[R * C] cells;                       // the extent is part of the type
+    public readonly method rows() returns int { return R; }
+    public method set(int r, int c, T v) returns void { this.cells[r * C + c] = v; }
+
+    // The dimensions UNIFY: `C` is this grid's column count, so `other`'s row count must match.
+    public readonly method timesShape<fixed int N>(Grid<T, C, N>& other) returns int { … }
+}
+
+Grid<int, 2, 3> g;            // two shapes are two types
+```
+
+Four things follow, and each is one a region cannot give you. The extent is in the type, so the
+value carries no length header, needs no allocation, and **embeds** as a field of another value type.
+The dimensions are constants in the body, so a loop over `R * C` has a bound the optimizer can see.
+And they discriminate in a signature: a 4×3 times a 7×9 does not compile, where a matrix carrying its
+dimensions as runtime fields accepts anything and fails while somebody is using it.
+
+`fixed` is per parameter and does not spread. A **bare** value parameter (`<int a>`) is reserved for
+the runtime-bound extent — a dimension supplied when the object is built, outside the type's identity
+— and is refused today rather than quietly given the stamped meaning.
+
 ### Constraints
 
 A type parameter may be constrained with `extends` or `implements`, so that
@@ -875,7 +903,7 @@ int sum = t + 5;              // fine: Celsius IS int
 ```
 
 Reach for it when a type expression is long enough to obscure the code that uses it — a
-`function<int, int>`, a nested generic — and when you genuinely do not want a new type.
+`HashMap<String, ArrayList<Dog*>>`, a nested generic — and when you genuinely do not want a new type.
 
 **`newtype` is opaque.** It creates a distinct nominal type over the same representation, and the
 two do not mix without a cast:

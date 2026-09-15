@@ -1,0 +1,42 @@
+import System.IO.Console;
+program NarrowNullChain;
+
+// A NULL TEST CHAIN NARROWS EVERY NAME IN IT, on the arm where every test agrees.
+//
+// `if (a == null || b == null) { return; }` reaches the code below only when both are non-null, and
+// `if (a != null && b != null)` runs its body only then. Only the first name of a chain was kept, so
+// `b` stayed `nullable` in both, and a method taking several pointers had to test each separately.
+//
+// Must print `5 12`.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int value;
+            public constructor Box(int v) { this.value = v; }
+        }
+        public class Main {
+            static method need(Box* x) returns int { return x.value; }
+
+            static method guarded(nullable Box* a, nullable Box* b) returns int {
+                if (a == null || b == null) { return 0 - 1; }
+                return Main.need(a) + Main.need(b);
+            }
+
+            static method both(nullable Box* a, nullable Box* b) returns int {
+                if (a != null && b != null) { return Main.need(a) * Main.need(b); }
+                return 0;
+            }
+
+            public static method main(string[] args) returns void {
+                Box* two = new Box(2) on heap;
+                Box* three = new Box(3) on heap;
+                Box* four = new Box(4) on heap;
+                System.IO.Console.println($"{Main.guarded(two, three)} {Main.both(three, four)}");
+                delete four;
+                delete three;
+                delete two;
+                return;
+            }
+        }
+    }
+}

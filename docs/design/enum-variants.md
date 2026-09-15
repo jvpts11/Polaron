@@ -208,15 +208,95 @@ written down rather than discovered.
 | Java-style enums **may become values, and must not stop being what they are** | §6.1 is how both hold |
 | frozen and parameterised cases may be mixed | §7 |
 
-## 10. Still to design
+## 10. Decided (Wave 4.5)
 
-| | |
-|---|---|
-| 10.1 | **generic enums.** `enum Result<T, E>` needs type parameters on an enum, which today's `enum` does not have. Monomorphisation then fixes each instantiation's payload size — which is what lifts §3.2 |
-| 10.2 | `match` over an enum with payloads — destructuring exists (positional, spec 16.2); confirm it reads `variant.tag` and `variant.payload` rather than a vtable |
-| 10.3 | equality (§8.2) — decided in principle; confirm what `==` does when a parameterised payload is itself a class |
-| 10.4 | `catalog` over an extended enum. A catalog *"forces both the shape and the specific values the enum must contain"* — what a required *value* means when a case is parameterised |
-| 10.5 | the boxed form. `Result<T,E>*` keeps the heap class today, and both forms coexist by design. Confirm the class survives the change, or that `*` over an enum means something |
+### 10.1 Generic enums: type parameters on the enum, monomorphised like a class
+
+**Decided.** `enum Result<T, E>` takes type parameters, and each instantiation is monomorphised the
+way a generic class already is — one `Result$int$Fault` with a fixed payload size, one
+`Result$String$Fault` with another.
+
+**Because that is what lifts §3.2, and nothing else does.** A payload beyond the 64-bit slot boxes
+today on both back ends, and it boxes because the size is not known at the declaration. `Result<T,E>`
+alone is still not known; `Result<int, Fault>` is 4 bytes and a tag, decided at monomorphisation, in
+the same pass that already decides `Box<int>`'s layout. **The generic parameter is not an extra
+feature next to sized payloads — it is the mechanism that makes them sized.**
+
+The variance and bounds grammar comes over unchanged (`typeParamVariance`, `typeParamBounds` are on
+`ClassDecl` and would be on `EnumDecl`), because a sum's parameters constrain exactly as a class's
+do: `enum Sorted<T extends Comparable<T>>` means what it looks like.
+
+**The one rule that is new to enums:** every case's payload must be sized by the instantiation.
+`Some(T)` is fine; a case holding an unmonomorphisable open type is refused, naming the case. That
+is the same refusal a generic class gets for an unsized field, arriving through a different word.
+
+### 10.2 `match` reads the tag and the payload — confirmed, and it must be measured
+
+**Decided and confirmed: `variant.tag` then `variant.payload`, never a vtable.**
+
+The PIR nodes already exist — `VariantMake`, `VariantTag`, `VariantPayload` — and `match` over a
+sealed class hierarchy compiles to a tag test today. Destructuring is positional (spec 16.2) and the
+positions are the case's declared payload fields, so `match (r) { Ok(v) -> ..., Err(e) -> ... }`
+needs no new syntax.
+
+**But "confirm" is the wrong verb for it, and this is the decision.** The whole objection this
+document answers is that the boxed form costs a vtable and a heap object per value. A `match` that
+quietly went through a vtable would give the numbers back while every declaration still read as a
+value sum — and it would look exactly like success. So the requirement is not that it reads the tag;
+it is that a test **fails if it stops doing so**: `pir_match_reads_the_tag`, asserting the absence of
+`vtable.load` in the matching function, in the shape `run_pass_matters_test` established in Wave 3.
+
+### 10.3 Equality is by tag, then by the payload's own `==`
+
+**Decided.** `a == b` on a value sum is: same tag, and the payloads equal **by whatever `==` means
+for the payload's type**. It is not a bitwise comparison of the storage.
+
+That answers the parameterised-class case directly: if the payload is a class, the payload comparison
+is that class's `equals` — so `Ok(dog1) == Ok(dog2)` is exactly `dog1 == dog2`, whatever the class
+decided that means, and a class with no `equals` compares by identity as it does everywhere else.
+
+**Why not bitwise, which would be simpler and faster.** The storage holds padding, and a union's
+inactive bytes are whatever the last case left there. `VariantMake` need not clear them, and
+requiring it to would put a memset on the constructor of every sum in the language to make a
+comparison work that nobody asked for. More importantly it would be **wrong**: two `Ok(Dog)` values
+holding equal dogs at different addresses are equal, and their bytes differ.
+
+§8.2's behaviour change stands and is restated here so it is in one place: `Ok(5) == Ok(5)` is
+**false** today for the boxed form, compared by identity, and **true** as a value. That is right for
+a value type, and it is a change to programs that exist.
+
+### 10.4 A `catalog` requires a case's *shape*; a required value means a frozen case
+
+**Decided.** A catalog over an extended enum requires **the case name and its payload types**. For a
+frozen case it may additionally require the value, exactly as today.
+
+The open question was what a required *value* means when a case is parameterised, and the answer is
+that it means nothing, because there is no value until construction. `Ok(T value)` has no value to
+require — that is the difference between it and `EARTH(5.972e24, 6.371e6)`, and it is the same
+difference §5.1 names as the whole of what is being added.
+
+So a catalog clause naming a value for a parameterised case is **refused**, and the diagnostic says
+which of the two it is: *`Ok` is a parameterised case; its payload is chosen at construction, so
+there is no value to require. Require its shape (`Ok(T)`) instead.* A silent acceptance here would
+mean a catalog that appears to constrain and does not, which is the failure mode a catalog exists to
+prevent.
+
+### 10.5 The class survives, and `*` over an enum stays what it is
+
+**Decided.** `Result` becomes an `enum`; the heap class does not become an error, and `*` over an
+enum keeps meaning *a pointer to one*.
+
+Both forms coexist by design (§9 already says so for `Option<T>` and `nullable T`, for the same
+reason). A value sum is the right default and a boxed one is still wanted where the sum is **large**,
+where it is **stored in a container that must not copy it**, or where it crosses a bundle boundary
+whose ABI was fixed before this change. Removing the boxed form to make the value form feel decisive
+would be taking something away to make a point.
+
+**`*` needs no new meaning.** An `enum` value is a value like a `struct`, and `Token*` is a pointer to
+one — which the language already handles for every other value type. What must not happen is `*`
+being read as *the boxed form*: a pointer to a value sum is one tag and one payload at an address,
+not an object with a header. That distinction is invisible in the source and visible in `sizeof`,
+so it is worth a test rather than a sentence.
 
 ## 11. What this adds to the language
 

@@ -1,6 +1,7 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.atomic;
+import System.Commands.Action;
 program AtomicCounter;
 
 // atomic<T> (spec 20.6): a lock-free atomic cell. get/set/add/increment/compareAndSet lower to
@@ -13,9 +14,13 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 atomic<int> counter = new atomic<int>(0) on heap;
-                function<void> work = lambda[captures: byvalue counter]() returns void {
+                // Carried as a POINTER, which is the whole point: two threads counting into ONE
+                // atomic. Written `atomic<int>` the baggage would be a copy -- and a copy of an
+                // atomic is two atomics, which is exactly the sharing that was wanted, not happening.
+                Action* work = command () carries (atomic<int>* cell = counter) into pack
+                    returns void {
                     for (mutable int i = 0; i < 100000; i++) {
-                        counter.increment();
+                        pack.cell.increment();
                     }
                 };
                 Thread t1 = new Thread(work) on heap;

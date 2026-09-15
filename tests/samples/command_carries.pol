@@ -1,0 +1,49 @@
+import System.IO.Console;
+program CommandCarries;
+
+// WHAT A COMMAND HOLDS, AND WHEN IT TOOK IT.
+//
+// This is the closure test, and the answer has changed. A lambda captured `base` by value or by
+// reference, and which one it was lived in a `[captures:]` clause that could also be left out
+// entirely. A command's baggage is DECLARED -- `carries (int base) into pack` -- and always copied
+// at construction, so there is one rule and it is on the line.
+//
+// The second half is the part worth a running test: `base` is changed AFTER the command is built,
+// and the command still answers with the value it took. There is no `byref` any more, and the
+// reason is not an omission -- a command that shared a caller's local would be a command that
+// cannot outlive the frame it was written in, which is exactly what a command is for.
+//
+// Prints: c=15 after=15 far=115
+
+public bundle Main {
+    public namespace App {
+        public command IntMap(int n) returns int;
+
+        public class Offsets {
+            public command addBase(int n) carries (int base) into pack returns int {
+                return n + pack.base;
+            }
+        }
+
+        public class Main {
+            // The command outlives the method that built it, which a `byref` capture could not have
+            // done: what it holds is a copy, so there is no frame for it to point back into.
+            public static method built() returns IntMap* {
+                mutable int base = 100;
+                IntMap* f = Offsets.addBase(base);
+                base = 999;
+                return f;
+            }
+
+            public static method main(string[] args) returns void {
+                mutable int base = 10;
+                IntMap* addBase = Offsets.addBase(base);
+                int before = addBase(5);
+                base = 900;                      // ...and the command does not notice
+                int after = addBase(5);
+                System.IO.Console.printf("c=%d after=%d far=%d\n", before, after, Main.built()(15));
+                return;
+            }
+        }
+    }
+}

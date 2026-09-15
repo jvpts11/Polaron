@@ -116,7 +116,10 @@ set(POLARON_PRELUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/prelude")
 #
 # Measured the hard way twice while adding subjects: a fix to a brand-new .pol changed nothing, twice,
 # and the second time the generated header still held the text the source no longer had.
-file(GLOB POLARON_PRELUDE_PARTS CONFIGURE_DEPENDS "${POLARON_PRELUDE_DIR}/lib/*.pol")
+# BOTH TIERS. `machine/` is the bare-metal bundle and is glob'd here for the same reason `lib/` is:
+# a file added there and not in this list has every later edit invisible to the build.
+file(GLOB POLARON_PRELUDE_PARTS CONFIGURE_DEPENDS "${POLARON_PRELUDE_DIR}/lib/*.pol"
+                                                  "${POLARON_PRELUDE_DIR}/machine/*.pol")
 set(POLARON_PRELUDE_HDR "${CMAKE_BINARY_DIR}/generated/prelude_source.h")
 add_custom_command(
     OUTPUT "${POLARON_PRELUDE_HDR}"
@@ -205,16 +208,58 @@ if(NOT DEFINED POLARON_DEFAULT_CLANG)
 endif()
 configure_file(src/driver/config.h.in "${CMAKE_BINARY_DIR}/polaron_config.h" @ONLY)
 
-# The region core (runtime/polaron_region_core.hpp) is compiled TWICE: once into polaron_rt above, and once for
-# the bare-metal target by `polaron build`. Embed its text in the driver so the second compilation uses the
-# very same source rather than a copy that drifts. configure_file makes the header a configure-time
-# dependency, so editing it regenerates this automatically.
+# THE SAME RUNTIME, FOR A 32-BIT MACHINE. A hosted Polaron program could be compiled for i686 -- the
+# data layout has been in `dataLayoutFor` all along -- and then had nothing to link against, because
+# `polaron_rt.lib` is x86-64 and a linker will not mix the two. So `--target=i686-pc-windows-msvc`
+# produced correct 32-bit IR and an unlinkable program, which is the same as no support at all.
+#
+# Built by clang rather than by the enclosing generator: this build tree is configured for one
+# architecture and CMake will not produce a second from it, while clang cross-compiles to i686 by
+# being told to. `llvm-lib` archives the object, so what lands beside the driver is an ordinary
+# `.lib` the link path can name exactly as it names the 64-bit one.
+#
+# OPTIONAL, and quietly so. A machine without an `llvm-lib` beside its clang still builds everything
+# else; what it loses is 32-bit targets, and the driver says so at the point somebody asks for one
+# rather than here, where nobody has yet.
+get_filename_component(_llvmbin "${POLARON_CLANG}" DIRECTORY)
+find_program(POLARON_LLVM_LIB llvm-lib PATHS "${_llvmbin}" NO_DEFAULT_PATH)
+if(WIN32 AND POLARON_LLVM_LIB AND NOT POLARON_CLANG STREQUAL "clang")
+    # BUILT TO A PLAIN PATH, THEN COPIED to wherever this configuration puts its binaries. A generator
+    # expression in an `add_custom_command` OUTPUT is not resolved by every generator -- with the MSBuild
+    # one the rule simply never ran, and the build reported nothing at all, which is the worst kind of
+    # silence. The copy is one line and works under every generator.
+    set(_rt32_obj "${CMAKE_BINARY_DIR}/polaron_rt32.obj")
+    set(_rt32_lib "${CMAKE_BINARY_DIR}/polaron_rt32.lib")
+    add_custom_command(
+        OUTPUT "${_rt32_lib}"
+        COMMAND "${POLARON_CLANG}" --target=i686-pc-windows-msvc -std=c++20 -O2
+                -c "${CMAKE_CURRENT_SOURCE_DIR}/runtime/polaron_rt.cpp" -o "${_rt32_obj}"
+        COMMAND "${POLARON_LLVM_LIB}" "/out:${_rt32_lib}" "${_rt32_obj}"
+        DEPENDS runtime/polaron_rt.cpp runtime/polaron_alloc_core.hpp
+        COMMENT "Building the 32-bit runtime (polaron_rt32.lib)"
+        VERBATIM)
+    add_custom_target(polaron_rt32 ALL DEPENDS "${_rt32_lib}")
+    add_custom_command(TARGET polaron_rt32 POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${_rt32_lib}" "$<TARGET_FILE_DIR:polc>/polaron_rt32.lib"
+        VERBATIM)
+    add_dependencies(polaron_rt32 polc)
+    message(STATUS "32-bit runtime: ${_rt32_lib} (copied beside the driver)")
+else()
+    message(STATUS "32-bit runtime: not built (needs clang + llvm-lib); i686 targets will be refused")
+endif()
+
+# The region core is POLARON now (runtime/polaron_region_core.pol), and it is no longer compiled twice.
+# It was a C++ header included by polaron_rt.cpp for the hosted world and written out again by
+# `polaron build` for the bare-metal one -- one text, two compilers, and the arrangement existed only
+# because the language could not read its own allocator. polc appends this source to every program it
+# builds, hosted and freestanding alike, so there is one body and it lands in the caller's own module.
 #
 # Emitted as SEVERAL adjacent raw literals rather than one. MSVC caps a single string literal at 16380
 # bytes (C2026) and the core is past that, so one literal builds under clang and fails under the
 # toolset this repository targets. Adjacent literals concatenate, so the value is identical either way
 # and the chunk size is nobody's business but this loop's.
-file(READ runtime/polaron_region_core.hpp POLARON_REGION_CORE_RAW)
+file(READ runtime/polaron_region_core.pol POLARON_REGION_CORE_RAW)
 string(LENGTH "${POLARON_REGION_CORE_RAW}" POLARON_RC_LEN)
 set(POLARON_REGION_CORE_SRC "")
 set(POLARON_RC_POS 0)
@@ -227,7 +272,8 @@ while(POLARON_RC_POS LESS POLARON_RC_LEN)
     string(APPEND POLARON_REGION_CORE_SRC "R\"POLARONRC(${POLARON_RC_CHUNK})POLARONRC\"\n")
     math(EXPR POLARON_RC_POS "${POLARON_RC_POS} + ${POLARON_RC_TAKE}")
 endwhile()
-configure_file(src/driver/region_core_src.h.in "${CMAKE_BINARY_DIR}/polaron_region_core_src.h" @ONLY)
+configure_file(src/driver/region_core_src.h.in
+               "${CMAKE_BINARY_DIR}/generated/polaron_region_core_src.h" @ONLY)
 
 # The HEAP core travels the same way, and for a sharper reason. `__polaron_malloc` was written against
 # libc and lived only in the hosted runtime, so a target without a C library had no heap at all: a
@@ -245,7 +291,7 @@ configure_file(src/driver/region_core_src.h.in "${CMAKE_BINARY_DIR}/polaron_regi
 # only symptom was two undefined symbols in a wasm module. A generated artifact that can go stale
 # without saying so is worse than one that is regenerated too often.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    runtime/polaron_region_core.hpp runtime/polaron_alloc_core.hpp)
+    runtime/polaron_region_core.pol runtime/polaron_alloc_core.hpp)
 file(READ runtime/polaron_alloc_core.hpp POLARON_ALLOC_CORE_RAW)
 string(LENGTH "${POLARON_ALLOC_CORE_RAW}" POLARON_AC_LEN)
 set(POLARON_ALLOC_CORE_SRC "")
@@ -260,6 +306,30 @@ while(POLARON_AC_POS LESS POLARON_AC_LEN)
     math(EXPR POLARON_AC_POS "${POLARON_AC_POS} + ${POLARON_AC_TAKE}")
 endwhile()
 configure_file(src/driver/alloc_core_src.h.in "${CMAKE_BINARY_DIR}/polaron_alloc_core_src.h" @ONLY)
+
+# Bootstrap memory support is itself Polaron, embedded so installed compilers
+# compile the same runtime without requiring the source checkout at run time.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS runtime/polaron_fs_seed.pol)
+file(READ runtime/polaron_fs_seed.pol POLARON_FS_SEED_SOURCE)
+configure_file(src/driver/fs_seed_src.h.in "${CMAKE_BINARY_DIR}/generated/polaron_fs_seed_src.h" @ONLY)
+
+# The failure reporter a fired guard calls, on the same terms as the seed above.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS runtime/polaron_fs_fail.pol)
+file(READ runtime/polaron_fs_fail.pol POLARON_FS_FAIL_SOURCE)
+configure_file(src/driver/fs_fail_src.h.in "${CMAKE_BINARY_DIR}/generated/polaron_fs_fail_src.h" @ONLY)
+
+# ...and what `unimport`/`reimport` mean on bare metal, which is a vault of saved machine code.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS runtime/polaron_fs_unload.pol)
+file(READ runtime/polaron_fs_unload.pol POLARON_FS_UNLOAD_SOURCE)
+configure_file(src/driver/fs_unload_src.h.in
+               "${CMAKE_BINARY_DIR}/generated/polaron_fs_unload_src.h" @ONLY)
+
+# ...and where a region's bytes come from when there is no heap under the program.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS runtime/polaron_fs_region.pol)
+file(READ runtime/polaron_fs_region.pol POLARON_FS_REGION_SOURCE)
+configure_file(src/driver/fs_region_src.h.in
+               "${CMAKE_BINARY_DIR}/generated/polaron_fs_region_src.h" @ONLY)
+
 
 # The lightweight toolchain driver: spawns polc + clang. No LLVM. Logic lives in a static lib so both
 # the polaron binary and the unit tests can link it (modules are added task by task).

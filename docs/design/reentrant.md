@@ -125,8 +125,12 @@ That is not a rule that goes around the region binder. **It is a question only t
 answer** — it already knows which region each allocation comes from and who can reach it. The marker
 gives the binder work rather than passing it by.
 
-> **Open (§10.1):** a handler that can interrupt *itself* — nested interrupts of the same vector —
-> re-enters its own exclusive region. Exclusive ownership is necessary and may not be sufficient.
+> **Decided (§10.1):** exclusive ownership is necessary and **not** sufficient. A handler that can
+> interrupt *itself* is inside its own region twice, and *"reachable from outside the method"* is
+> false both times — so the test is about the **activation**, not the method. The region must be
+> created and released within the activation, or `itself`-owned by a `region class` this activation
+> alone constructs. One that outlives the activation fails even when exclusively owned, because the
+> second entry finds the first entry's bump pointer.
 
 ## 6a. `interrupt` does not go away — one of its four jobs moves
 
@@ -176,17 +180,103 @@ different and much larger change. It is inherited where it is needed and written
 | | why |
 |---|---|
 | `reentrant synchronized` | `synchronized` takes a lock; re-entering deadlocks against yourself |
-| `reentrant async` | an `async` method suspends and resumes on a scheduler; the second entry is the scheduler's, not the caller's. **Open (§10.2)** — this may be a contradiction or may be exactly what an executor wants |
+| `reentrant async` | an `async` method suspends and resumes on a scheduler; the second entry is the scheduler's, not the caller's. **Decided (§10.2): a contradiction, and refused** |
 
-## 10. Still to design
+## 10. Decided (Wave 4.5)
 
-| | |
-|---|---|
-| 10.1 | self-interrupting handlers and an exclusively-owned region (§6) |
-| 10.2 | `reentrant async` (§9) |
-| 10.3 | `reentrant class` as a shorthand for *every method of it* — useful for a driver, and it is a member modifier rather than a universal prefix (`reentrant field` means nothing) |
-| 10.4 | what counts as **shared mutable state** in the narrow sense. Today's `interrupt` rule already answers this; the answer has to be lifted out with the rest and written down rather than inherited |
-| 10.5 | freestanding. A program with no heap at all would like every method to be `reentrant` by default; whether that is a program-level statement or just what happens is a separate question |
+### 10.1 Exclusivity is necessary and not sufficient — the region must be the *activation's* own
+
+**Decided.** §6 states the rule correctly — *do not reach storage another activation could be
+inside* — and then checks a weaker thing: *is this region reachable from outside the method*. A
+handler that can interrupt itself is inside its own region twice, and "outside the method" is false
+both times.
+
+So the test is about the **activation**, not the method. A region passes when either:
+
+- it is **created and released within the activation** — a region born after entry cannot be one an
+  outer activation is inside, whatever the method is; or
+- it is **`itself`-owned by a `region class` this activation alone constructs**, for the same reason.
+
+A region that outlives the activation — a field, a static, one passed in — fails **even when
+exclusively owned**, because the second entry finds the first entry's bump pointer.
+
+**No new machinery.** *Created and released within this activation* is a lexical-lifetime question
+about a region local, which is precisely what the binder computes to decide whether a borrow escapes.
+The rule reduces to *the region must be activation-local*, and `region-binder.md` already has the
+concept under that name.
+
+**The honest cost:** it forbids keeping a scratch region alive across entries to avoid re-creating
+it. That is a real optimisation and it is genuinely unsafe under nesting; a handler that wants it
+must mask its own vector for the duration, which is a hardware statement and not one the type system
+should make on its behalf.
+
+### 10.2 `reentrant async` is a contradiction
+
+**Decided: refused, under the §19.9 rule, alongside `reentrant synchronized`.**
+
+The two words disagree about **who the second entrant is**. `reentrant` is a promise to *any* second
+entrant, arriving at *any* point, without cooperation — that is what makes it worth having where the
+second entrant is the hardware. `async` suspends and resumes **on a scheduler**, at a point the method
+chose, through state the scheduler owns. A suspended `async` method has a live frame with locals in
+it that the scheduler is holding, and a second entry while it is suspended reaches that frame. That
+is not reentrancy: the property is precisely that there is no such state to reach.
+
+**What an executor actually wants is two words on two methods.** It needs to be entered from several
+threads — `synchronized`, or `Shared` — and it needs its *submit* path callable from a handler,
+which is `reentrant` on that one method. Both are expressible today, each where it is true. The
+contradiction only appears in asking one method to be both.
+
+### 10.3 No `reentrant class`
+
+**Decided: it stays a member modifier; there is no class-level shorthand.**
+
+The case for it was a driver whose every method is reentrant. The case against is what it would do on
+the day one method is not: written once at the top, inherited by every method added later, and the
+first one that touches a shared counter is refused at a line that does not contain the word. **A
+property whose declaration is far from its violation is the shape that gets suppressed rather than
+fixed.**
+
+**And the driver case is weaker than it looks.** A driver has an interrupt handler — implicitly
+`reentrant` already (§7) — and virality carries the obligation into everything the handler calls
+(§8). So the methods that genuinely need the property already have it without the word being written
+once. What a class-level shorthand would add is the property on the methods the handler *does not*
+call, which is exactly where it is least likely to be true.
+
+### 10.4 Shared mutable state, written down instead of inherited
+
+**Decided**, and stated as a rule rather than as `interrupt`'s list:
+
+> A `reentrant` method may not read or write any location that is **(a) mutable**, **(b) reachable
+> from outside the current activation**, and **(c) not proven exclusive to it**.
+
+Three clauses, each doing work:
+
+- **Mutable.** A `fixed` static, a `constant` global, a vtable in `.rdata` — read freely. This is
+  what lets a reentrant method make a virtual call at all, and it is why the rule is about
+  mutability and not about globals.
+- **Reachable from outside the activation.** A static, a field of a receiver that came from outside,
+  anything behind a pointer parameter. Locals and activation-local regions are not.
+- **Not proven exclusive.** The escape hatch, and it is the binder's answer rather than an
+  annotation: an object this activation holds the only reference to is unreachable by definition.
+
+**Why writing it out changes anything.** `interrupt`'s version is a *list of prohibitions* — must not
+allocate, must not free — and a list is a set of instances of a rule nobody wrote down. *Must not
+allocate* is a **consequence**: the allocator's free list is mutable, reachable and shared. Stated as
+a rule, the allocator stops being a special case and the check reaches the shared counter the list
+never mentioned.
+
+### 10.5 Freestanding: it is what happens, not a default and not a statement
+
+**Decided.** A program with no heap does not declare *every method reentrant*. It declares no
+`heap class`, and the largest source of violations then has nothing to violate.
+
+A freestanding default would be worse than useless: every method would carry a promise nobody wrote,
+most would keep it by accident, and the first method that legitimately owns a mutable static would be
+refused for failing a property nobody asked it for. **A property that is on by default is a property
+nobody reads**, and this word's entire value is that it is written where it is meant.
+
+`freestanding-prelude.md` §10.4 reaches the same answer from the allocator's side. They agree for one
+reason: **the absence of a `heap class` is already the statement.**
 
 ## 11. What this closes
 

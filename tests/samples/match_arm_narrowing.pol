@@ -1,0 +1,37 @@
+import System.IO.Console;
+program MatchArmNarrowing;
+
+// ...BUT WHAT EVERY ARM THAT FALLS THROUGH PROVES, HOLDS AFTER THE `match`. Each arm below either
+// returns or has proved `box` non-null, so the call after the `match` needs no test of its own -- the
+// join of the arms, the `if`'s rule applied arm by arm. Prints `7`.
+public bundle Main {
+    public namespace App {
+        public sealed enum Pick { first, second }
+        public class Box {
+            private mutable int held;
+            public constructor Box(int held) { this.held = held; }
+            public method value() returns int { return this.held; }
+        }
+        public class Main {
+            public static method weigh(Box* b) returns int { return b.value(); }
+            public static method pick(int n) returns nullable Box* {
+                if (n == 0) { return null; }
+                return new Box(n) on heap;
+            }
+            public static method main(string[] args) returns void {
+                nullable Box* box = Main.pick(7);
+                Pick which = Pick.second;
+                match (which) {
+                    case first {
+                        if (box == null) { return; }
+                    }
+                    case second {
+                        if (box == null) { return; }
+                    }
+                }
+                System.IO.Console.println($"{Main.weigh(box)}");
+                return;
+            }
+        }
+    }
+}

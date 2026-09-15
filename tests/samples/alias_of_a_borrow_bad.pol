@@ -1,0 +1,30 @@
+import System.IO.Console;
+program AliasOfABorrowBad;
+
+// A SECOND NAME FOR A BORROW.
+//
+// `p` names something `o` owns and `q = p` names it again. Recording `q borrows p` pointed the check
+// at a local nobody ever deletes, so one extra assignment walked out of the rule -- the same way one
+// extra assignment used to walk out of the use-after-free rule. An alias of a borrow borrows from
+// the same SOURCE, not from the borrow.
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Owner {
+        public mutable Leaf* leaf;
+        public constructor Owner() { this.leaf = new Leaf(3) on heap; }
+        public destructor ~Owner() returns void { delete this.leaf; return; }
+        public method borrow() returns Leaf* { return this.leaf; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Owner* o = new Owner() on heap;
+            Leaf* p = o.borrow();
+            Leaf* q = p;                              // alias de um empréstimo
+            delete o;
+            System.IO.Console.println($"{q.n}");
+            return;
+        }
+    }
+} }

@@ -2,7 +2,7 @@ import System.IO.Console;
 import System.Collections.ArrayList;
 program CollectionFunctional;
 
-// Functional pipeline on a collection (spec 34): forEach runs a lambda over each element, filter keeps
+// Functional pipeline on a collection (spec 34): forEach runs a command over each element, filter keeps
 // the ones a predicate selects, map transforms each into a new list, reduce folds them to one value,
 // and any/all/count test a predicate across the elements.
 // Prints: 1 2 3 4 5 / evens=2 e0=2 e1=4 d0=2 d4=10 sum=15 / anyOdd=1 allEven=0 big=2.
@@ -16,16 +16,16 @@ public bundle main {
                 nums.add(3);
                 nums.add(4);
                 nums.add(5);
-                nums.forEach(lambda(int x) returns void { System.IO.Console.printf("%d ", x); });
+                nums.forEach(command (int x) returns void { System.IO.Console.printf("%d ", x); });
                 System.IO.Console.println("");
-                ArrayList<int> evens = nums.filter(lambda(int x) returns boolean { return x % 2 == 0; });
-                ArrayList<int> doubled = nums.map<int>(lambda(int x) returns int { return x * 2; });
-                int sum = nums.reduce<int>(0, lambda(int a, int x) returns int { return a + x; });
+                ArrayList<int> evens = nums.filter(command (int x) returns boolean { return x % 2 == 0; });
+                ArrayList<int> doubled = nums.map<int>(command (int x) returns int { return x * 2; });
+                int sum = nums.reduce<int>(0, command (int a, int x) returns int { return a + x; });
                 System.IO.Console.printf("evens=%d e0=%d e1=%d d0=%d d4=%d sum=%d\n",
                     evens.size(), evens.get(0), evens.get(1), doubled.get(0), doubled.get(4), sum);
-                boolean anyOdd = nums.any(lambda(int x) returns boolean { return x % 2 == 1; });
-                boolean allEven = nums.all(lambda(int x) returns boolean { return x % 2 == 0; });
-                int big = nums.count(lambda(int x) returns boolean { return x > 3; });
+                boolean anyOdd = nums.any(command (int x) returns boolean { return x % 2 == 1; });
+                boolean allEven = nums.all(command (int x) returns boolean { return x % 2 == 0; });
+                int big = nums.count(command (int x) returns boolean { return x > 3; });
                 System.IO.Console.printf("anyOdd=%d allEven=%d big=%d\n", anyOdd, allEven, big);
                 return;
             }

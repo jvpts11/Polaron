@@ -1,0 +1,125 @@
+import System.IO.Console;
+program LayoutResolver;
+
+// THE LAYOUT CONSTRAINS, THE LAYOUT CONCEDES, THE TARGET RESOLVES.
+//
+// Three roles, and the first design of `layout` had only the first of them -- which is why every
+// attempt to add a verb to it came out crooked. A layout could say *this must measure 20 bytes* and
+// nothing else; there was no way for a type to say *and here is how*, so the one arrangement the
+// compiler knew was the one every layout got.
+//
+// THE FIELD-NAMING PROBLEM DOES NOT GET SOLVED HERE, IT DISAPPEARS. Three earlier proposals tried to
+// let the LAYOUT talk about the target's fields -- roles bound on the clause, an inline block in the
+// type, a modifier on the field -- and all three become unnecessary the moment the resolver lives on
+// the target. `Counters` names `hits` and `misses` because they are its own; `Unshared` never sees
+// them and does not need to.
+//
+// AN OBLIGATION OR A DEFAULT, and the language already draws that line: a member declared with NO
+// BODY must be supplied by whoever the declaration is about, one declared WITH a body is a default
+// they may replace. `Unshared` below declares `arrange()` bodyless -- *arrange yourself; I say what
+// it must cost* -- which is exactly what a hardware descriptor wants.
+//
+// WHAT THE NUMBERS PROVE, and why they are addresses rather than a size. A size would be satisfied
+// by any arrangement that happens to add up; what `isolate` promises is that two fields do not share
+// a cache line, and the only thing that answers that is the DISTANCE BETWEEN THEM. 64 is the answer;
+// 4 would be the two counters adjacent, which is the false sharing the layout exists to prevent and
+// which measures the same total size on this target either way.
+//
+// Prints:
+//   counters 128
+//   apart 64
+//   packet 12
+//   order 0 8
+
+public bundle Main {
+
+    public namespace App {
+
+        // CONCEDES `padding` AND NOT `reorder`, which is the interesting pair. The resolver may
+        // spread the fields out -- that is what `isolate` needs -- and may not permute them, so the
+        // order it places them in has to be the order they are declared in. A layout is the outer
+        // authority even over its own target: `permits` is not advice.
+        public layout Unshared permits padding {
+            onArrange {
+                itself.fitWithin(128 bytes);
+                itself.refuse("two counters, two lines");
+                itself.resolvedBy(arrange);
+            }
+
+            // NO BODY: an obligation. A target that does not supply one is refused on its `arranges`
+            // clause, which is the line that took the obligation on.
+            comptime method arrange() returns void;
+        }
+
+        public struct Counters arranges Unshared {
+            public mutable int hits;
+            public mutable int misses;
+
+            // `isolate` IS NOT SUGAR FOR `align(f, 64 bytes)`. A cache line is a property of the
+            // machine, and a kernel built for another one does not want 64 written into its source.
+            // *Alone on its line* is the intent; the number is this target's answer to it.
+            public comptime method arrange() returns void {
+                itself.isolate(hits);
+                itself.isolate(misses);
+            }
+        }
+
+        // AND ONE WITH A DELIBERATE HOLE, because `pad` is the verb with no other spelling. This is
+        // a register block whose second word the device does not use: the gap is part of the format
+        // and writing a dummy field would put a name on something that is not a value.
+        public layout Block permits padding {
+            onArrange {
+                itself.fitWithin(12 bytes);
+                itself.refuse("the device reads twelve bytes");
+                itself.resolvedBy(arrange);
+            }
+            comptime method arrange() returns void;
+        }
+
+        public struct Packet arranges Block {
+            public mutable int opcode;
+            public mutable int status;
+
+            public comptime method arrange() returns void {
+                itself.place(opcode);
+                itself.pad(4 bytes);
+                itself.place(status);
+            }
+        }
+
+        public class Main {
+            // The distance between two fields, in bytes, read off their addresses -- which is the
+            // only question `isolate` actually answers. Taking the difference rather than printing
+            // two numbers keeps the assertion independent of where the value itself was put.
+            public static method gap(address lo, address hi) returns int {
+                return cast<int>(hi - lo);
+            }
+
+            public static method main(string[] args) returns void {
+                Counters c = new Counters();
+                c.hits = 1;
+                c.misses = 2;
+                // 128, not 8. Two ints that fit in one word each, deliberately spread across two
+                // cache lines because the layout says they are written by different threads.
+                System.IO.Console.println("counters " + Counters.sizeof().toString());
+                // ...AND THE PROOF IS THE DISTANCE. 64 is one line apart; 4 would be adjacent, which
+                // is what the compiler's own strategy would have produced and what the whole
+                // declaration exists to prevent.
+                System.IO.Console.println("apart " + Main.gap(&c.hits, &c.misses).toString());
+
+                Packet p = new Packet();
+                p.opcode = 7;
+                p.status = 9;
+                // 12: four bytes of opcode, four the resolver asked for and nothing put in, four of
+                // status. Without the `pad` this measures 8.
+                System.IO.Console.println("packet " + Packet.sizeof().toString());
+                // The declared order survived, which is `permits` being the outer authority: neither
+                // layout concedes `reorder`, so `opcode` is first and `status` is eight bytes on --
+                // past the hole rather than next to it.
+                System.IO.Console.println("order " + Main.gap(&p, &p.opcode).toString() + " " +
+                                          Main.gap(&p.opcode, &p.status).toString());
+                return;
+            }
+        }
+    }
+}

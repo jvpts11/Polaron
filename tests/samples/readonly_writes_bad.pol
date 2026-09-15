@@ -1,0 +1,45 @@
+import System.IO.Console;
+program ReadonlyWritesBad;
+
+// `readonly` IS CHECKED, and checked through the CALL GRAPH.
+//
+// Two refusals here, and the second is the one worth the machinery. `count` writes a field itself,
+// which any reader would catch. `total` writes nothing at all -- every line of it is a read -- and
+// it calls `count`, so it writes. A promise about a body that mostly calls other bodies is a promise
+// about them, or it is not a promise.
+//
+// The cache is the shape that tempts everybody: it is invisible from outside, the answer never
+// changes, and it is still a write. The language has a word for exactly that (`lazy`), which the
+// compiler understands and can reason about, and the diagnostic says so.
+//
+// Refused with Polaron-0815, twice.
+
+public bundle Main {
+    public namespace App {
+        public class Tally {
+            private mutable int seen;
+            private mutable int cached;
+
+            public constructor Tally() { this.seen = 0; this.cached = 0; }
+
+            // A cache is a write.
+            public readonly method count(int n) returns int {
+                this.cached = n * 2;
+                return this.cached;
+            }
+
+            // ...and this one writes because what it calls does.
+            public readonly method total(int n) returns int {
+                return this.count(n) + this.seen;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Tally t = new Tally() on stack;
+                System.IO.Console.printf("%d\n", t.total(3));
+                return;
+            }
+        }
+    }
+}

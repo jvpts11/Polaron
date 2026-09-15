@@ -53,6 +53,7 @@ TokenKind keywordKind(std::string_view text) {
         {"abstract", TokenKind::KwAbstract},
         {"final", TokenKind::KwFinal},
         {"override", TokenKind::KwOverride},
+        {"surveyed", TokenKind::KwSurveyed},
         {"mutable", TokenKind::KwMutable},
         {"nullable", TokenKind::KwNullable},
         {"sealed", TokenKind::KwSealed},
@@ -77,6 +78,19 @@ TokenKind keywordKind(std::string_view text) {
         {"null", TokenKind::KwNull},
         {"move", TokenKind::KwMove},
         {"movable", TokenKind::KwMovable},
+        {"dynamic", TokenKind::KwDynamic},
+        {"shareable", TokenKind::KwShareable},
+        {"reentrant", TokenKind::KwReentrant},
+        // `entity`, `pass`, `sparse` and `stable` are NOT here, and the design said they would be.
+        // The check that found them free asked the keyword table and not the programs: `sparse` is
+        // a field of the prelude's own sparse-set store, `stable` describes a merge sort in two
+        // comments and a handle in a third, and `pass` is a local in a dozen places across the
+        // tests and the operating system. Four new hard words would have broken all of it.
+        //
+        // They are SOFT instead, checked by position: `entity` and `pass` only where `class` and
+        // `method` may stand, `sparse` and `stable` only in the modifier run before a type. Nothing
+        // else can appear in any of those places, so each word costs the language nothing and every
+        // program keeps its name. See `atSoftWord` in the parser.
         {"unique", TokenKind::KwUnique},
         {"weak", TokenKind::KwWeak},
         {"partitionable", TokenKind::KwPartitionable},
@@ -103,9 +117,41 @@ TokenKind keywordKind(std::string_view text) {
         {"transient", TokenKind::KwTransient},
         {"deprecated", TokenKind::KwDeprecated},
         {"partial", TokenKind::KwPartial},
-        {"lambda", TokenKind::KwLambda},
-        {"function", TokenKind::KwFunction},
+        // `lambda` AND `function` ARE NOT WORDS OF THIS LANGUAGE ANY MORE (reference 14.1).
+        //
+        // A lambda's capture list is a set of outer locals dragged into an anonymous block, and
+        // nobody could tell from the declaration what one held -- the clause could be left out
+        // entirely, and then the holding happened because the body mentioned a name. `command`
+        // replaces it: the baggage is a declared list, copied at construction, reached through a
+        // name the author chose. `function<...>` goes with it, because a callable's TYPE is now a
+        // role somebody named -- `Predicate<T>`, `Comparer<T>`, `DogTest`.
+        //
+        // They are not kept as reserved words that error, either. `function` is an ordinary English
+        // word and a perfectly good field name, and barring it forever to explain a construct nobody
+        // can write any more is a cost paid by every future program for a message read once.
         {"methodref", TokenKind::KwMethodref},
+        {"command", TokenKind::KwCommand},
+        {"carries", TokenKind::KwCarries},
+        // `readonly` -- THIS METHOD WRITES NOTHING, and the compiler refuses the declaration if it
+        // does. Not `pure`: the word carries a functional-programming freight this language does not
+        // want, and "only reads" is what the property actually is, member for member. C# uses it on
+        // members for the same meaning.
+        {"readonly", TokenKind::KwReadonly},
+        // `cold` -- RARELY TAKEN, said out loud. The inliner costs a method by its SIZE, which is a
+        // poor proxy for a path that runs once in a thousand calls; this moves the body out of the
+        // hot line and keeps it from being inlined into one. No `hot` beside it: hot is what the
+        // optimizer already assumes, so the word would spend a token and add no fact.
+        {"cold", TokenKind::KwCold},
+        // `mustuse` (B.2). A `Result` whose answer is dropped is an error nobody handled, and the
+        // commonest bug this language's error model exists to prevent -- so the default belongs on
+        // the TYPE, where it is stated once. A warning and not an error: throwing an answer away is
+        // sometimes right, and a rule that cannot be answered is a rule people switch off.
+        //
+        // Its valve, `discard e;`, is a SOFT keyword -- recognised at the start of a statement and
+        // an ordinary identifier everywhere else. It has to be: the standard library's `Memo` and
+        // `EventLog` both have a `discard()` method, which is exactly the ordinary use of the word
+        // that reserving it would take away.
+        {"mustuse", TokenKind::KwMustuse},
         {"typealias", TokenKind::KwTypealias},
         {"newtype", TokenKind::KwNewtype},
         {"annotation", TokenKind::KwAnnotation},

@@ -1,0 +1,44 @@
+import System.IO.Console;
+program NullablePrimitiveProven;
+
+// A `nullable int` THE ANALYZER HAS PROVEN PRESENT IS READ AS THE NUMBER. It is a box -- a pointer
+// to four bytes, null when absent -- and the code generator has no narrowing of its own, so a
+// proven `n` still arrived as the box: `n + 1` added one to the ADDRESS, `int m = n;` stored
+// `undef`, and `return k * 10;` from a `returns nullable int` handed back the POINTER 40. All of it
+// compiled without a word. Each line below is one of the ways a number meets a box: arithmetic, a
+// comparison, a declaration, a call argument either way, a result either way, and both arms of
+// `?:` -- where a box meeting a number joins as a box, because `c ? n : 5` is itself nullable.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method twice(int v) returns int { return v * 2; }
+            public static method given(nullable int v) returns int {
+                if (v == null) { return 0 - 7; }
+                return v;
+            }
+            public static method pick(int k) returns nullable int {
+                if (k == 0) { return null; }
+                return k * 10;
+            }
+            public static method main(string[] args) returns void {
+                nullable int n = 5;
+                nullable int gone = null;
+                int m = n + 1;
+                mutable int k = 0 - 1;
+                if (gone != null) { k = gone + 1; }
+                int plain = n;
+                int b = n != null ? n : 0;
+                int c = gone == null ? 0 : gone;
+                nullable int d = k > 0 ? n : 3;
+                boolean big = n > 4;
+                int t = Main.twice(n);
+                nullable int p = Main.pick(4);
+                int q = p == null ? 0 : p + 2;
+                System.IO.Console.println($"{m} {k} {plain} {b} {c} {big} {t} {Main.given(n)} " +
+                                          $"{Main.given(gone)} {Main.given(d)} {Main.given(7)} {q} " +
+                                          $"{Main.given(Main.pick(0))}");
+                return;
+            }
+        }
+    }
+}

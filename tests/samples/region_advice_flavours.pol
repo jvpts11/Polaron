@@ -1,0 +1,54 @@
+import System.IO.Console;
+program RegionAdviceFlavours;
+
+// A REGION SUGGESTED, AND THE FLAVOUR CHOSEN FOR THE READER.
+//
+// `Polaron-0B1A` says one `new ... on heap` with its `delete` in the same block should be `on
+// stack`. Three or more of them is a different fact: the method is keeping a manual ledger, every
+// entry has to stay in step with its partner, and every exit anybody adds later has to remember all
+// of them. That is what a region removes -- not by making the code safer, but by making its safety
+// unconditional.
+//
+// AND THE FLAVOUR IS PART OF THE ADVICE, because "use a region" without saying which kind leaves
+// the reader the decision the compiler is better placed to make. Allocating and freeing inside a
+// loop wants storage that comes BACK each turn, which is a `pool`; allocating a set of things and
+// freeing them once wants the whole block released at once, which is a `bump`.
+//
+// Prints:
+//   flat=10 looped=36
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int n;
+            public constructor Box(int n) { this.n = n; }
+        }
+        public class Main {
+            // Four pairs, none in a loop -> a bump region.
+            static method flat() returns int {
+                Box* a = new Box(1) on heap;
+                Box* b = new Box(2) on heap;
+                Box* c = new Box(3) on heap;
+                Box* d = new Box(4) on heap;
+                int sum = a.n + b.n + c.n + d.n;
+                delete a; delete b; delete c; delete d;
+                return sum;
+            }
+            // Three pairs, allocated and freed every turn -> a pool region.
+            static method looped() returns int {
+                mutable int total = 0;
+                for (mutable int i = 1; i <= 3; i++) {
+                    Box* a = new Box(i) on heap;
+                    Box* b = new Box(i * 2) on heap;
+                    Box* c = new Box(i * 3) on heap;
+                    total = total + a.n + b.n + c.n;
+                    delete a; delete b; delete c;
+                }
+                return total;
+            }
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("flat=%d looped=%d\n", Main.flat(), Main.looped());
+                return;
+            }
+        }
+    }
+}

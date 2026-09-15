@@ -31,7 +31,7 @@ public bundle Main {
                 System.IO.Console.printf("sum=%lld ", Parallel.sumInts(src));
 
                 mutable int[] dst = new int[n]();
-                Parallel.mapInts(src, dst, lambda(int x) returns int { return x * 2; });
+                Parallel.mapInts(src, dst, command (int x) returns int { return x * 2; });
                 System.IO.Console.printf("mapped=%lld ", Parallel.sumInts(dst));
 
                 // The two edges every hand-written pool gets wrong: nothing to do, and one item --

@@ -1,0 +1,63 @@
+import System.IO.Console;
+program RecordEnumFieldIsIdentity;
+
+// AN ENUM FIELD IS PART OF WHAT A VALUE IS, and the generated equality used to drop it.
+//
+// The rule said a field with no "structural value" is left out of `equalsKey`, `hash` and
+// `compareTo` -- a pointer, an array, a reference -- and it counted an enum among them, on the
+// grounds that a reference to another type is an identity of its own rather than part of this one.
+// That is true of a class. An ordinal enum is a small integer with names on it.
+//
+// FOUND IN A PROGRAM THAT READS COMPOUND FILES. `record Entry(String path, String name, EntryKind
+// kind, int start, int size)` opens with a comment saying two entries with the same name, KIND,
+// start and size are the same entry -- and the compiler quietly built an equality that ignored the
+// kind, so a storage and a stream that agreed on everything else were EQUAL. Nothing in the
+// declaration showed it; the type's own documentation contradicted its behaviour.
+//
+// A SUM IS THE CASE THE OLD SENTENCE WAS REALLY ABOUT, and it never reaches this rule: a case that
+// carries a payload desugars into a sealed hierarchy at the parse site, so such a field names a
+// class and is excluded as one.
+//
+// The enum writes its own `toString` because a record generates one that asks every field to
+// describe itself, and an enum that writes none has none to be asked.
+//
+// Prints:
+//   kinds differ: false
+//   same kind:    true
+//   ordered:      -1
+//   hashes differ: true
+public bundle Main {
+    public namespace App {
+        public sealed enum Kind {
+            storage,
+            stream
+            ;
+            public method toString() returns String {
+                match (this) {
+                    case storage { return "storage"; }
+                    case stream { return "stream"; }
+                }
+                return "?";
+            }
+        }
+
+        public record Entry(String name, Kind sort, int size) { }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Entry a = new Entry("Contents", Kind.storage, 12);
+                Entry b = new Entry("Contents", Kind.stream, 12);
+                Entry c = new Entry("Contents", Kind.storage, 12);
+                System.IO.Console.println($"kinds differ: {a.equalsKey(b)}");
+                System.IO.Console.println($"same kind:    {a.equalsKey(c)}");
+                // ...AND THE ORDER AGREES WITH THE IDENTITY. An enum cannot be compared with `<`
+                // (0801), which is why booleans sit out of the ordering -- but it CAN be cast, so
+                // the generated `compareTo` casts, and two values the equality calls different are
+                // not reported as equally ordered.
+                System.IO.Console.println($"ordered:      {a.compareTo(b)}");
+                System.IO.Console.println($"hashes differ: {a.hash() != b.hash()}");
+                return;
+            }
+        }
+    }
+}

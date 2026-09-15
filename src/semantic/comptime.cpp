@@ -168,6 +168,16 @@ bool evalMemberConst(const ast::MemberExpr& mem, Num& out, Context& ctx) {
     if (ctx.consts != nullptr) {
         if (auto it = ctx.consts->find(key); it != ctx.consts->end()) { out = Num::I(it->second); return true; }
     }
+    // ...AND AN ENUM MEMBER, a constant by exactly the argument `count()` rests on: the set is
+    // written out in the source, so which number a member is was settled the moment it was parsed.
+    // Asked last, so a class const of the same spelling keeps winning as it always did.
+    if (ctx.enumOrdinal) {
+        long long ordinal = 0;
+        if (ctx.enumOrdinal(oid->name, mem.member, ordinal)) {
+            out = Num::I(ordinal);
+            return true;
+        }
+    }
     return false;
 }
 
@@ -198,6 +208,21 @@ bool eval(const ast::Expr& e, Num& out, Context& ctx, const Env& env) {
 
     if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(&e)) {
         if (auto it = env.find(id->name); it != env.end()) { out = it->second; return true; }
+        // WHICH MACHINE THIS BUILD IS FOR -- a fact the compiler supplies, exactly like `sizeof`.
+        //
+        // Checked before the constant tables rather than after: `__target_arch` is not a name any
+        // program declares, so a table hit on it would mean something had shadowed the one fact
+        // that decides which half of a hardware library compiles.
+        if (id->name == kTargetArchName) {
+            long long arch = 0;
+            if (ctx.targetArch != nullptr && ctx.targetArch(arch)) {
+                out = Num::I(arch);
+                return true;
+            }
+            // Unset, by a stage that does not know the triple. Not constant -- and never guessed,
+            // because a guess here selects the wrong half of a library that talks to hardware.
+            return false;
+        }
         if (ctx.dconsts != nullptr) {
             if (auto it = ctx.dconsts->find(id->name); it != ctx.dconsts->end()) { out = Num::D(it->second); return true; }
         }
@@ -626,6 +651,54 @@ bool exec(const ast::Stmt& st, Context& ctx, Env& env, Num& ret, bool& returned)
 }
 
 }  // namespace
+
+// THE ONE PLACE THE NUMBERING LIVES, on this side. The other is `Machine/Target.pol`, which
+// declares the same values as `fixed int` with a comment pointing here -- two places have to agree
+// about what 1 means and there is no way to make it one, so both say so.
+//
+// x86_64 AND i686 ARE BOTH `X86`, deliberately. The register file and the ABI differ, which is why
+// `archFamily` keeps them apart -- but the I/O address space and the `in`/`out` instructions are the
+// same on both, and that is what `Machine.Port` is about. A library partitioned finer than the
+// hardware differs would be partitioned for the compiler's convenience.
+long long archCode(const std::string& family) {
+    if (family == "x86_64" || family == "x86") {
+        return static_cast<long long>(TargetArch::X86);
+    }
+    if (family == "aarch64") {
+        return static_cast<long long>(TargetArch::Arm64);
+    }
+    if (family == "arm") {
+        return static_cast<long long>(TargetArch::Arm32);
+    }
+    if (family == "wasm") {
+        return static_cast<long long>(TargetArch::Wasm);
+    }
+    if (family == "riscv") {
+        return static_cast<long long>(TargetArch::Riscv);
+    }
+    if (family == "m68k") {
+        return static_cast<long long>(TargetArch::M68k);
+    }
+    if (family == "ppc") {
+        return static_cast<long long>(TargetArch::PowerPc);
+    }
+    return static_cast<long long>(TargetArch::Other);
+}
+
+// 64 unless the family is one of the narrow ones. Written that way round deliberately: a target
+// added later is 64-bit far more often than not, and a wrong 32 here would have a kernel writing
+// half of every pointer it stores.
+long long archBits(const std::string& family) {
+    if (family == "x86" || family == "arm" || family == "wasm" || family == "m68k" ||
+        family == "mips") {
+        return 32;
+    }
+    // riscv and ppc come in both widths and the FAMILY does not say which; the triple does
+    // (`riscv32` / `riscv64`), and this function is not given it. Answering 64 for `riscv32` would
+    // be a confident wrong number, so those keep the default until somebody needs the distinction
+    // and threads the triple through -- at which point this comment is the place to start.
+    return 64;
+}
 
 bool evalInt(const ast::Expr& e, long long& out, Context& ctx) {
     Num n;

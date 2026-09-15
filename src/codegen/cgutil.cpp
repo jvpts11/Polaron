@@ -361,6 +361,24 @@ std::string archOfTriple(const std::string& triple) {
     return dash == std::string::npos ? triple : triple.substr(0, dash);
 }
 
+unsigned pointerBits(const std::string& triple) {
+    const std::string arch = archOfTriple(triple);
+    // The 32-bit machines, BY NAME rather than by family. A family that contains both widths --
+    // `riscv`, `wasm`, `mips`, `ppc` -- cannot answer this, and answering it from one would be wrong
+    // for exactly the targets where being wrong is silent.
+    if (arch == "i386" || arch == "i486" || arch == "i586" || arch == "i686" || arch == "x86") {
+        return 32;
+    }
+    if (arch == "arm" || arch == "thumb" || arch.rfind("armv", 0) == 0) {
+        return 32;   // 64-bit ARM spells itself aarch64 or arm64, and falls through below
+    }
+    if (arch == "riscv32" || arch == "wasm32" || arch == "mips" || arch == "mipsel" ||
+        arch == "m68k" || arch == "ppc" || arch == "powerpc" || arch == "sparc") {
+        return 32;
+    }
+    return 64;
+}
+
 // Array types are spelled with a trailing "[]" (e.g. "int[]", "char[]").
 bool isArrayType(const std::string& t) {
     return t.size() >= 2 && t.compare(t.size() - 2, 2, "[]") == 0;

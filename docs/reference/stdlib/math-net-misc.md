@@ -904,13 +904,13 @@ numbers the report needs.
 - `assertNear(double actual, double expected, double relativeTolerance)` — tolerance as a *fraction*
   of the expected value, for quantities whose scale varies. `0.05` means "within 5%". Falls back to
   an absolute comparison when the expected value is zero.
-- `assertThrows<E>(function<void> action)` — the action must throw `E`.
-- `assertDoesNotThrow(function<void> action)` — and this one must not. Without it, a test that
+- `assertThrows<E>(Action* action)` — the action must throw `E`.
+- `assertDoesNotThrow(Action* action)` — and this one must not. Without it, a test that
   swallows an unexpected exception higher up reads as a pass.
 
 **Output** — for code whose job is to produce text.
 
-- `captureOutput(function<void> action) returns String` — runs the action with its printing diverted
+- `captureOutput(Action* action) returns String` — runs the action with its printing diverted
   and returns that text.
 - `assertMatchesGolden(String actual, String goldenPath)` — compares against a file of expected text
   and reports the **first differing line**; `--update-golden` rewrites the file instead, which is how
@@ -921,7 +921,7 @@ numbers the report needs.
 
 **Memory** — the assertion only a manually-managed language can offer.
 
-- `assertNoLeaks(function<void> action)` — the action must give back everything it took. Measures the
+- `assertNoLeaks(Action* action)` — the action must give back everything it took. Measures the
   **calling thread**'s **net** live bytes, so work handed to another thread is not covered and a leak
   exactly balanced by a matching free reads as clean. The assertion machinery allocates too
   (`checking` stores its label as a `String`), so keep `Test.*` calls out of the measured action.

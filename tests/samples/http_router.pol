@@ -31,13 +31,13 @@ public bundle Main {
                                          req.header("host"));   // asked in any case
 
                 mutable Router router = new Router() on heap;
-                router.get("/users/{id}", lambda(ServerRequest* r) returns ServerResponse* {
+                router.get("/users/{id}", command (ServerRequest* r) returns ServerResponse* {
                     mutable Json body = Json.object();
                     body.put("id", Json.ofNum(cast<long>(r.param("id").toInt())));
                     body.put("full", Json.ofStr(r.query("full")));
                     return ServerResponse.json(body.toString());
                 });
-                router.post("/users", lambda(ServerRequest* r) returns ServerResponse* {
+                router.post("/users", command (ServerRequest* r) returns ServerResponse* {
                     return ServerResponse.of(201, "created");
                 });
 

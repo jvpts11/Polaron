@@ -1,0 +1,22 @@
+import System.IO.Console;
+program SurveyedDestructorBad;
+
+// NOT ON A DESTRUCTOR.
+//
+// The destructor is where ownership is DECLARED -- the analysis reads what a class owns out of it,
+// and that is where the difference between an owner and a borrower comes from. A surveyed
+// destructor would erase the language's own source of truth about who frees what. It is not a risk
+// to be weighed; it is a sentence with no meaning.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Owner {
+        public mutable Leaf* leaf;
+        public constructor Owner() { this.leaf = new Leaf(1) on heap; }
+        public surveyed destructor ~Owner() returns void { delete this.leaf; return; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Owner* o = new Owner() on heap; delete o; return;
+        }
+    }
+} }

@@ -22,11 +22,11 @@ public bundle main {
                 nums.add(10);
                 nums.add(50);
                 nums.add(20);
-                Option<int> firstBig = nums.find(lambda(int x) returns boolean { return x > 25; });
-                Option<int> lo = nums.min(lambda(int a, int b) returns int { return a - b; });
-                Option<int> hi = nums.max(lambda(int a, int b) returns int { return a - b; });
+                Option<int> firstBig = nums.find(command (int x) returns boolean { return x > 25; });
+                Option<int> lo = nums.min(command (int a, int b) returns int { return a - b; });
+                Option<int> hi = nums.max(command (int a, int b) returns int { return a - b; });
                 mutable ArrayList<int> empty = new ArrayList<int>();
-                Option<int> none = empty.find(lambda(int x) returns boolean { return true; });
+                Option<int> none = empty.find(command (int x) returns boolean { return true; });
                 System.IO.Console.printf("find=%d min=%d max=%d none=%d\n",
                     Main.show(firstBig), Main.show(lo), Main.show(hi), Main.show(none));
                 return;

@@ -3,11 +3,13 @@ program LayoutPacked;
 
 // A `layout` is an interface for MEMORY. An interface says what a type does; a layout says how a
 // type arranges itself. Being a separate question, it does not compete with struct/record/union --
-// it crosses them, which is why `implements` needed no new grammar to carry one.
+// it crosses them, which is why one type can be arranged and be anything.
 //
-// Implementing a layout authorizes the compiler to ORDER THE FIELDS, and that is the point: a check
-// that only refuses is a guard against a problem that could have been solved. Here it can be solved,
-// because the compiler knows every size and alignment and Polaron exposes no offsets.
+// THE LAYOUT CONSTRAINS AND THE LAYOUT CONCEDES, and those are two clauses because they are two
+// decisions. `onArrange` says what must be TRUE of the bytes; `permits` says what the compiler may
+// DO to get there. Granting `reorder` is what turns a check that only refuses -- a guard against a
+// problem that could have been solved -- into one the compiler solves: it knows every size and
+// alignment, and Polaron exposes no offsets, so the order of the fields is its to choose.
 //
 // Nothing below names a library type, so this holds in freestanding too -- not by a rule against the
 // library, but because there is no place a library would appear.
@@ -16,7 +18,7 @@ public bundle main {
 
     public namespace app {
 
-        public layout Packed {
+        public layout Packed permits reorder {
             onArrange {
                 itself.fitWithin(12 bytes);
                 itself.refuse("a tick must stay five to a cache line");
@@ -27,9 +29,10 @@ public bundle main {
         // ones, twice. As declared that is 1 + 3 padding + 4 + 1 + 3 padding + 4 = 16 bytes, over
         // the budget. Ordered widest-first it is 4 + 4 + 1 + 1 = 10, rounded up to 12.
         //
-        // So the number this prints is the proof: 12 is unreachable without the reordering, and 16
-        // would not have compiled at all.
-        public struct Tick implements Packed {
+        // So the number this prints is the proof, and it proves BOTH halves: 12 is unreachable
+        // without the reordering, 16 would not have compiled at all -- and with `permits reorder`
+        // struck off the line above, 16 is what this would measure and the build would stop.
+        public struct Tick arranges Packed {
             public mutable byte kind;
             public mutable int  at;
             public mutable byte flags;

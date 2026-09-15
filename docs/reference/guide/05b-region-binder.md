@@ -436,11 +436,76 @@ delete subject;           // ...and that is what it was pointing at
 watcher.read();           // 1724: use of 'watcher' after 'subject' was emptied
 ```
 
-Two things establish the borrow: a call that **keeps** an argument (above), and a method that
-**returns a borrow of its parameter** (`var view = Query.over(table);`). Two things break it:
-`delete`, and any method that frees the **contents** of one of its own fields — a `clear()` that
-deletes each element invalidates every borrow taken out of that object. That last one is `DELETE
-FROM people` arriving while an earlier `SELECT` is still holding the rows.
+**What establishes a borrow.** Six shapes, and they were closed one at a time, each by writing the
+wrong program and finding that the analysis said nothing:
+
+| shape | example |
+|---|---|
+| a call that **keeps** an argument | `watcher.watch(subject)` |
+| a method that returns a borrow of a **parameter** | `var view = Query.over(table);` |
+| a method that returns a borrow of its **receiver** | `byte[] raw = owner.record();` |
+| ...including **through one call**, or out of a field whose contents the class owns | `return this.items.get(i);` |
+| a **field path** read directly | `Leaf* deep = tree.branch.leaf;` |
+| an **alias**, of an object or of a borrow | `Box* q = p;` |
+
+The receiver half is the one that matters most in practice, because an accessor is the commonest
+method a class has. It was also the last to be written: for a long time the analysis knew that
+`view.of(table)` kept a borrow of its ARGUMENT and did not know that `owner.record()` handed back a
+borrow of the OWNER. A compound-file reader kept a directory record past the file that owned it
+exactly that way — read the record, delete the file, lay out a new one from what was read — and the
+program ran for months before a value type of a different size passed through the same allocator and
+turned it into a crash two frames away.
+
+**What breaks a borrow.** `delete` — including `delete this`, which frees the one name every other
+line in the method reads. Any method that frees the **contents** of one of its own fields: a
+`clear()` that deletes each element invalidates every borrow taken out of that object, which is
+`DELETE FROM people` arriving while an earlier `SELECT` is still holding the rows. Any method that
+frees **the field itself** and puts a fresh value there — `reset()` leaves the object perfectly
+healthy and everybody holding a reference out of it holding the old one. And `release region`, which
+is the same sentence with a different keyword.
+
+**Freeing a borrow is the same fact, used the other way round.** `b` is `o`'s, `o`'s destructor
+frees it, so `delete b` frees it twice — a double free written as ordinary cleanup, with nothing
+above it for the author to notice and the second free happening in a destructor, possibly in another
+file. Refused with the same code. It applies to what a **call handed back**, and deliberately not to
+the other two things the table above records: an **alias** is a second name for what this frame owns
+(deleting through either name is right; deleting through both is the plain use-after-free rule), and
+a **field path** read out of an object is half of grow-and-replace — `oldK = this.keys`, `this.keys =
+new K[...]`, `delete oldK` — where the object handed ownership over in between. Both are in the
+standard library, fourteen times between them, and both are correct.
+
+**A lambda is a body that runs somewhere else.** It captures by reference, so what it holds is what
+the enclosing frame holds — and it is analysed where it is *written*, with the state that holds
+there, where everything is always still alive. Only the call site knows what has been freed since, so
+the body is analysed **at the call**, with the state that holds at the call. The call above a
+`delete` stays silent and the one below it does not, which is the whole difference between this and a
+rule about lambdas capturing pointers.
+
+**Two owners for one object** is the one shape reported as advice rather than refused (`0B53`):
+`this.buf = other.buf`, where both classes free that field in their destructors, makes two owners of
+one object, and whichever is destroyed second frees what the first already freed. It stays advice
+only because the cure — `this.buf = move other.buf` — is refused today for a non-partitionable class,
+and a compiler that refuses a shape has to leave a way to write it.
+
+**A borrow taken on any path is taken, and so is a `delete`.** Obligations survive control flow the
+way `moved`, `deleted` and `freed` do — taken in one arm of an `if`, or inside a loop body, they are
+live afterwards. Both joins used to lose them: a branch kept a borrow only where both arms agreed, so
+one `if` walked out of the rule, and a loop restored the state from before its body, so one `for`
+walked out of the plain use-after-free rule as well. A loop may run zero times, so a PROOF made
+inside it does not survive; an obligation is the other way round, because the body can run.
+
+**...and it is taken again on the next iteration.** A loop body used to be analysed once, with the
+state that holds at the TOP — so a body that frees at the bottom and reads at the top was checked in
+the only order where it is innocent. The body is now replayed with the state the previous iteration
+left, which is what a second iteration *is*: no new rule, and every obligation the analysis tracks
+crosses the back edge, including the ones added after this was written. A path that frees and then
+LEAVES (`if (done) { delete this; return; }`) never reaches the end of an iteration, so it carries
+nothing back and stays silent — which is why this is a replay of the flow rather than a search for a
+shape.
+
+**A copy is not a borrow.** `String name()` reading a field still gives the caller a copy —
+assignment copies in this language, and `T*`, `T&` and `T[]` are how you ask to share instead. The
+rule reads the shape of what is handed back, so an accessor returning a value is not in it.
 
 **Fix:** read before the mutation, or hold copies (`record`) so emptying the source leaves the
 result intact. `Slice<T>` is the opposite choice said out loud — a window that does not own what it
@@ -549,18 +614,120 @@ The analysis does not choose. It refuses to let the question go unanswered.
 
 ---
 
+## 5b.9b Regions are part of the analysis, not a thing you remember to use
+
+A region is the answer to a shape the compiler can see, so the compiler is the one that should
+mention it. Three ways it takes part:
+
+**It names the flavour.** A refusal that says "region r" hands the reader a name and keeps the fact.
+Which kind of region it is decides what to do about the value: a `bump` region gives everything back
+at once when it is released, a `pool` hands a slot back the moment an element is freed, a `ring`
+overwrites its oldest, and a `fixedslot` refuses rather than growing. So the diagnostics say *the
+bump region 'r'*, and the advice differs accordingly — a pool or a ring can leave a reference stale
+with nothing released at all, and "release it later" is no answer there.
+
+**It asks for one.** `Polaron-0B52` fires on a method that allocates and frees three or more things
+by hand:
+
+```
+warning[Polaron-0B52]: this method allocates and frees 4 things by hand, which is a bump
+region written out longhand
+```
+
+One `new ... on heap` with its `delete` in the same block is a stack object that took the long way,
+and `Polaron-0B1A` says so. Three of them is a different fact: the method is keeping a manual ledger,
+every entry has to stay in step with its partner, and every exit anybody adds later has to remember
+all of them. A region does not make that safer — it makes the safety unconditional. The flavour in
+the message is chosen from what the method does: pairs inside a loop want storage that comes back
+each turn, which is a `pool`; pairs freed once at the end want the block released at once, which is
+a `bump`.
+
+**It refuses the misuse.** A value from a region outliving its release, a region-allocated value
+stored where the region does not reach, `mark`/`rollback` on a flavour that has no such thing,
+`extract` of an object whose field is still inside — all errors, not advice. A region is a lifetime
+with a name, and the whole point of naming it is that the name can be checked.
+
+---
+
+## 5b.9c `surveyed`: the one escape, and why it is not an `unsafe`
+
+Everything above rests on the analysis covering the whole program. That is also why the only escape
+this language had — `--no-region-binder`, which turns it off everywhere — was never really an escape:
+a partition that stops covering part of the program makes every proof about the rest unavailable.
+
+`surveyed` is the escape that keeps the cover.
+
+```polaron
+extern cdecl static method csDecrypt(byte* buf, int len) returns int;
+
+public surveyed method decrypt(byte[] into, int count) returns boolean {
+    return Cslibu.csDecrypt(&into[0], count) == 0;
+}
+```
+
+**Inside, exactly one refusal is suspended:** `Polaron-1723`, the one about a value the analysis
+cannot *place*. That is the refusal a foreign call earns — nothing in this program can say whether a
+C function keeps the pointer it was handed — and it is the only one that has to go. The other three
+stay: if the analysis can still prove that a line is wrong, proving it is right whether or not the
+method is marked. A `surveyed` method that frees an object and then reads a borrow of it is refused
+like any other.
+
+**Outside, the boundary goes to the worst case.** The word carries no content, so the compiler cannot
+know what the method lends; the only sound reading of *"I cannot tell you what this does"* is that it
+does everything it could. Every reference parameter is treated as kept, and a reference result as a
+borrow of everything in reach:
+
+```
+error[Polaron-1721]: 'decrypt' keeps that argument, and what 'file' belongs to outlives
+this call, so what it keeps is freed first
+```
+
+That inversion is the whole design:
+
+> **The freedom is local. The suspicion is exported.**
+
+An `unsafe` block frees its own body and tells the callers nothing. `surveyed` frees its own body and
+makes every caller stricter — so marking a method has a price, paid by the code that uses it, and
+nobody reaches for the word to make a diagnostic go away. It also explains the name: `unsafe` says
+*this may be rotten*; `surveyed` says *this ground was walked and written down*.
+
+**It is inherited.** An override may only be `surveyed` if the method it overrides is. The binder
+already unions an override's summary into its base — a call through a base reference is checked
+against every override that could run — so a surveyed override does make the base conservative,
+soundly. What it does not do is let a reader *see* it: `Sink.take` would look like an ordinary method
+and be conservative because a subclass in another file said so. A conservative summary nobody can
+see is the thing the word exists to prevent.
+
+**Not on a destructor.** §5b.4 says ownership is declared in the destructor, and the analysis reads
+what a class owns out of it. A surveyed destructor would erase the language's own source of truth
+about who frees what — not a risk to be weighed, a sentence with no meaning.
+
+**Not on an `extern` either.** It has no body, so there is nothing to not-derive, and marking it
+would make every call site conservative with no line of Polaron to point at. Write the wrapper: the
+foreign boundary gets a name, a file and a line.
+
+**`--no-region-binder` stays.** Whoever wants no guarantee at all keeps the whole-program switch.
+What changes is that it is no longer the only door.
+
+---
+
 ## 5b.10 What it does not do
 
 Stated plainly, because a guarantee is only as good as its boundary.
 
 - **It does not prove exclusivity.** Two live references to the same mutable object are fine here.
-  That is the borrow checker's stronger claim, and it is not made.
+  That is the borrow checker's stronger claim, and it is not made. The one place it would have been
+  needed and is not — changing a collection while walking it — is answered directly instead: the
+  collection is named in the loop header, and a method that writes a field of its own receiver is
+  one the walk cannot survive.
 - **It does not prevent data races.** Concurrency safety is a separate rule with its own mechanisms
   — `atomic<T>`, `Mutex<T>`, `Channel<T>`, and a check on what a thread closure captures (ch. 9).
   It arrives by decision, not as a side effect.
 - **It does not track values through arbitrary calls.** A call result is placed when the callee is
-  a one-line accessor returning a field, or is known to return fresh storage. Anything else is
-  unplaceable, and unplaceable is refused. The fix is usually to name the value at its source.
+  an accessor returning something the receiver holds, when it hands back a borrow of a parameter,
+  when it reads an element out of a field whose contents the class owns, or when it is known to
+  return fresh storage. Anything else is unplaceable, and unplaceable is refused. The fix is usually
+  to name the value at its source.
 - **It does not free anything.** It is entirely a compile-time analysis; `delete`, destructors and
   `release` do the freeing, and the runtime's own liveness check (§5.4) catches what gets past.
 

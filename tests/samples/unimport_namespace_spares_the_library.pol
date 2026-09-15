@@ -1,0 +1,88 @@
+import System.IO.Console;
+import System.Runtime.UnimportedTypeException;
+import System.Collections.ArrayList;
+program UnimportNamespaceSparesTheLibrary;
+
+// `unimport namespace N` TAKES AWAY N, AND NOT THE STANDARD LIBRARY WITH IT.
+//
+// The statement's meaning is *every type in this namespace*, so the set is expanded rather than
+// written -- and two separate lines used to put things in that set which the author never named:
+//
+//   1. THE NAMESPACE WAS MATCHED BY NAME ACROSS EVERY BUNDLE, and the prelude is a bundle in the
+//      program. It has a namespace called `App` (`src/prelude/lib/App.pol`), so a user program with
+//      its own `App` unimported both.
+//
+//   2. EVERY GENERIC INSTANTIATION IN THE PROGRAM LIVED IN ONE ARBITRARY NAMESPACE -- the first one
+//      the monomorphiser happened to see, which for a user program is the user's. `ArrayList$String`
+//      and forty more of the library's types were therefore *in* whatever namespace the author was
+//      unimporting, and went with it.
+//
+// AND SECTION 30 MEANS `unimport` LITERALLY: the class's vtable is poisoned to a trap AND its machine
+// code is overwritten with `int3` in RAM. So this was not a bookkeeping mistake with a bookkeeping
+// consequence -- the standard library's code was being erased out from under a running program, and
+// the next `println` ran into it.
+//
+// WHAT THE TEST HAS TO DO, and why it is written this way. It cannot check the numbers: whether the
+// library is still there is not a size or a count, it is whether calling it works. So the shape is
+// *use the library, take the namespace away, use the library again*. If the second call prints, the
+// library survived; if the old defect is back, the process dies at the `unimport` with no output at
+// all -- which is itself worth knowing, because stdout is a pipe under a harness and the buffered
+// lines die with it. A silent death is what this looked like, and it is why it read as a crash
+// somewhere else entirely.
+//
+// The third line is the other half: the namespace really was unimported. A test that only proved the
+// library survived would also pass if `unimport` had quietly stopped doing anything.
+//
+// Prints:
+//   before 3
+//   after 3
+//   gone caught
+
+public bundle Main {
+
+    public namespace App {
+
+        public class Dog { public constructor Dog() {} }
+
+        public class Main {
+            // A LIBRARY GENERIC, exercised on both sides of the statement. `ArrayList<String>`
+            // because it is the instantiation the monomorphiser was misplacing, and because a
+            // collection is several classes deep -- the list, its iterator, its `Option` -- so one
+            // call reaches more of the library than a `String` method would.
+            public static method countThings() returns int {
+                ArrayList<String> xs = new ArrayList<String>() on heap;
+                xs.add("a");
+                xs.add("b");
+                xs.add("c");
+                int n = xs.size();
+                delete xs;
+                return n;
+            }
+
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("before " + Main.countThings().toString());
+
+                // `App` HOLDS `Main` ITSELF, and that is deliberate rather than incidental: the
+                // expanded set contains the class this statement is written in. The code of a method
+                // that is executing cannot be ripped out from under it, so the compiler keeps that
+                // one class's bytes and unimports everything else about it -- see `physicalCodeOp`.
+                unimport namespace App;
+
+                // THE LIBRARY IS STILL THERE. This is the whole assertion, and it is a call rather
+                // than a measurement because a poisoned vtable and an int3'd body both answer a size
+                // question correctly and neither answers this one.
+                System.IO.Console.println("after " + Main.countThings().toString());
+
+                // ...AND THE NAMESPACE REALLY WENT. Otherwise the line above proves only that
+                // nothing happened at all.
+                try {
+                    Dog d = new Dog() on heap;
+                    System.IO.Console.println("gone no");
+                } catch (UnimportedTypeException e) {
+                    System.IO.Console.println("gone caught");
+                }
+                return;
+            }
+        }
+    }
+}

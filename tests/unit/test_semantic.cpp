@@ -18,6 +18,7 @@ bool checkSrc(const std::string& src, std::string* entryOut = nullptr) {
     if (parser.hasErrors()) return false;
     resolveTypeAliases(prog);  // expand `typealias` first, as the real pipeline does
     qualifyNamespaces(prog);  // matches the real pipeline (run before monomorphize)
+    expandCommands(prog);     // ...and `command` becomes a class, as it does there too
     if (!monomorphize(prog)) return false;
     SemanticAnalyzer sema;
     const bool ok = sema.analyze(prog);
@@ -33,6 +34,7 @@ int warningCount(const std::string& src) {
     if (parser.hasErrors()) return -1;
     resolveTypeAliases(prog);
     qualifyNamespaces(prog);
+    expandCommands(prog);
     if (!monomorphize(prog)) return -1;
     SemanticAnalyzer sema;
     sema.analyze(prog);
@@ -49,6 +51,7 @@ int warningCountOf(const std::string& src, diag::Code code) {
     if (parser.hasErrors()) return -1;
     resolveTypeAliases(prog);
     qualifyNamespaces(prog);
+    expandCommands(prog);
     if (!monomorphize(prog)) return -1;
     SemanticAnalyzer sema;
     sema.analyze(prog);
@@ -1367,9 +1370,13 @@ TEST_CASE("semantic accepts a self-referential generic class, declared and insta
 
 // ---- Null safety (spec 3.7) ----
 namespace {
-// Wraps a method body with a Dog class (has bark()) + Main, for the nullable tests.
+// Wraps a method body with a Dog class (has bark()) + Main, for the nullable tests. Two command
+// types come with it, for the `methodref` cases below: `Barker` is the shape `bark` has and
+// `Silencer` deliberately is not.
 std::string withDog(const std::string& body) {
     return "program P; public bundle b { public namespace n {"
+           " public command Barker() returns int;"
+           " public command Silencer() returns void;"
            " public class Dog { public constructor Dog() {}"
            " public method bark() returns int { return 1; } }"
            " public class Main { public static method main(string[] args) returns void { " +
@@ -1398,18 +1405,20 @@ TEST_CASE("semantic allows a member access on a nullable inside a null check too
         "nullable Dog d = new Dog() on heap; if (d != null) { int x = d.bark(); } return;")));
 }
 
-// First-class functions (spec 22): methodref binds a function value to obj.method.
-TEST_CASE("semantic infers a function type for methodref") {
+// `methodref obj.method` binds a receiver to one of its methods -- which is a command carrying that
+// receiver, and is compiled as one. Its type is the generated binding class, and a role of the same
+// shape accepts it structurally.
+TEST_CASE("semantic types a methodref as a command that plays a matching role") {
     CHECK(checkSrc(withDog(
-        "Dog d = new Dog() on heap; function<int> f = methodref d.bark; int x = f(); return;")));
+        "Dog d = new Dog() on heap; Barker* f = methodref d.bark; int x = f(); return;")));
 }
 TEST_CASE("semantic rejects methodref to a missing method") {
     CHECK_FALSE(
-        checkSrc(withDog("Dog d = new Dog() on heap; function<int> f = methodref d.woof; return;")));
+        checkSrc(withDog("Dog d = new Dog() on heap; Barker* f = methodref d.woof; return;")));
 }
-TEST_CASE("semantic rejects methodref assigned to the wrong function type") {
-    CHECK_FALSE(checkSrc(
-        withDog("Dog d = new Dog() on heap; function<void> f = methodref d.bark; return;")));
+TEST_CASE("semantic rejects methodref assigned to a role of the wrong shape") {
+    CHECK_FALSE(
+        checkSrc(withDog("Dog d = new Dog() on heap; Silencer* f = methodref d.bark; return;")));
 }
 
 // Type aliases and newtype (spec 24).

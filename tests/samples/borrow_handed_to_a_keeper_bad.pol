@@ -1,0 +1,37 @@
+import System.IO.Console;
+program BorrowHandedToAKeeperBad;
+
+// A BORROW PASSED STRAIGHT INTO SOMETHING THAT KEEPS IT.
+//
+// `k.put(o.borrow())` is two facts the analysis already had, meeting for the first time: the call
+// lends the receiver's storage, and the keeper keeps what it is given. Neither said anything alone,
+// because the argument is a CALL -- there is no path to name -- so the keeper was recorded as
+// borrowing from nothing and `delete o` reached it by no route at all.
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Owner {
+        public mutable Leaf* leaf;
+        public constructor Owner() { this.leaf = new Leaf(3) on heap; }
+        public destructor ~Owner() returns void { delete this.leaf; return; }
+        public method borrow() returns Leaf* { return this.leaf; }
+    }
+    public class Keeper {
+        public mutable nullable Leaf* held;
+        public constructor Keeper() { this.held = null; }
+        public method put(Leaf* l) returns void { this.held = l; return; }
+        public method read() returns int { return cast<Leaf*>(this.held).n; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Keeper* k = new Keeper() on heap;
+            Owner* o = new Owner() on heap;
+            k.put(o.borrow());                        // o keeper guarda um empréstimo do owner
+            delete o;
+            System.IO.Console.println($"{k.read()}");
+            delete k;
+            return;
+        }
+    }
+} }

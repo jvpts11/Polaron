@@ -25,7 +25,7 @@ public bundle Main {
             [Test]
             public static method clean_round_trip_leaves_nothing() returns void {
                 Test.checking("allocate and free gives everything back");
-                Test.assertNoLeaks(lambda() returns void {
+                Test.assertNoLeaks(command () returns void {
                     Node* n = new Node(7) on heap;
                     delete n;
                 });

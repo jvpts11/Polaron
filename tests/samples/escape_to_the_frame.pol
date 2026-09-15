@@ -1,0 +1,87 @@
+import System.IO.Console;
+program EscapeToTheFrame;
+
+// §11.5: AN OBJECT THAT DOES NOT OUTLIVE ITS FRAME IS GIVEN THE FRAME.
+//
+// Four methods, and the pass has to get all four right -- two where it must act and two where it
+// must not. The two refusals are the half with something to lose: a `noalias` that is not true is a
+// miscompile at -O2, and an object moved onto the stack while somebody still holds its address is
+// worse than that, because it reads fine for as long as the frame happens to be untouched.
+//
+// The shape of the thing being proved is worth stating, because a naive walk finds an escape in
+// every one of these:
+//
+//     %6 = alloca %Point [heap]        the allocation
+//     call @Point.Point %6, ...        handed to the constructor  -- a CALL
+//     store %6, %7:p                   put in a local             -- a STORE
+//     %9 = load ptr %7:p               and every later use comes back through it
+//
+// The constructor is answered by a module-wide summary (does parameter i escape), and the local by
+// asking whether the SLOT's own address stays in the function. Neither is optional: without the
+// first, every allocation escapes into its own constructor; without the second, into its own name.
+
+public bundle Main {
+    public namespace App {
+
+        public class Point {
+            public mutable int x;
+            public mutable int y;
+            public constructor Point(int x, int y) {
+                // `this` is the ADDRESS written through, never the value written -- which is why a
+                // constructor does not leak its subject and why the summary can prove it.
+                this.x = x;
+                this.y = y;
+            }
+            public method sum() returns int { return this.x + this.y; }
+        }
+
+        public class Keeper {
+            // ...AND THE ONE THAT DOES LEAK IT. `this.held = p` stores the POINTER, so anything
+            // passed here outlives the call and stays on the heap.
+            public mutable nullable Point* held;
+            public constructor Keeper() { this.held = null; }
+            public method keep(Point* p) returns void {
+                this.held = p;
+                return;
+            }
+        }
+
+        public class Main {
+            // MOVES. Allocated, used through a local, deleted here. Nothing carries the pointer out.
+            public static method contained(int n) returns int {
+                Point* p = new Point(n, n + 1) on heap;
+                p.x = p.x + 5;
+                int answer = p.x + p.y;
+                delete p;
+                return answer;
+            }
+
+            // STAYS -- it is returned, which is the plainest escape there is, and the one a frame
+            // slot would turn into a pointer to memory the caller does not own any more.
+            public static method handedBack(int n) returns Point* {
+                return new Point(n, n * 2) on heap;
+            }
+
+            // STAYS -- stored into another object. The `store` is not into a frame slot this method
+            // keeps to itself, so the address is reachable from somewhere the frame does not end.
+            public static method givenAway(int n) returns int {
+                Keeper* k = new Keeper() on heap;
+                Point* p = new Point(n, n) on heap;
+                k.keep(p);
+                int answer = p.x + p.y;
+                delete k;
+                delete p;
+                return answer;
+            }
+
+            public static method main(string[] args) returns void {
+                int n = args.length();
+                Point* out = Main.handedBack(n);
+                System.IO.Console.printf("contained=%d given=%d handed=%d\n",
+                                         Main.contained(n), Main.givenAway(n), out.x + out.y);
+                delete out;
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,25 @@
+import System.IO.Console;
+import DevirtHiddenLib.Feed.Source;
+import DevirtHiddenLib.Feed.Factory;
+program DevirtHiddenApp;
+
+// The consumer's side of the question. It can see `Source` and `Visible`; it cannot see `Internal`.
+//
+// `origin(1)` hands back an `Internal`, so `rate()` is 9. A devirtualisation that counted only the
+// implementations this compilation can name would compile the call as `Visible.rate` and print 3 --
+// a plausible number, from a program that links and runs, which is the only way this class of
+// defect ever presents itself.
+//
+// Prints: rate = 9
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                Source* s = Factory.origin(1);
+                System.IO.Console.printf("rate = %d\n", s.rate());
+                delete s;
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,32 @@
+import System.IO.Console;
+program BorrowOfAParameterViaAccessorBad;
+
+// A METHOD THAT LENDS OUT ITS PARAMETER'S STORAGE.
+//
+// `peek(Owner* o)` returning `o.borrow()` hands the caller something `o` frees. The receiver rule is
+// about `this` and the parameter rule was only ever fed by a local bound to a parameter-borrowing
+// call, so this composition -- the commonest way a helper is written -- fell between them.
+//
+// The parameter's DECLARED type is what identifies the lender: this pass runs before a method's
+// parameters are locals, so asking the type checker answers nothing, and a lookup keyed on an empty
+// class name finds nothing and says nothing -- a silence that reads exactly like "no borrow here".
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Owner {
+        private mutable byte[] bytes;
+        public constructor Owner() { this.bytes = new byte[64](); }
+        public destructor ~Owner() returns void { delete this.bytes; return; }
+        public method borrow() returns byte[] { return this.bytes; }
+    }
+    public class Main {
+        static method peek(Owner* o) returns byte[] { return o.borrow(); }   // empréstimo do parâmetro
+        public static method main(string[] args) returns void {
+            Owner* o = new Owner() on heap;
+            byte[] got = Main.peek(o);
+            delete o;
+            System.IO.Console.println($"{got.length()}");
+            return;
+        }
+    }
+} }

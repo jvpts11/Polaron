@@ -65,7 +65,7 @@ public bundle Main {
                                              Ledger.balance(log));
                 }
                 if (op == 2) {
-                    int changed = log.migrate(2, lambda(int k, int from) returns int {
+                    int changed = log.migrate(2, command (int k, int from) returns int {
                         if (k == 2) { return 3; }
                         return k;
                     });
@@ -81,7 +81,7 @@ public bundle Main {
             // A deposit adds and anything else takes away, whichever kind the withdrawals are
             // currently called -- which is why the migration does not change the answer.
             private static method balance(EventLog log) returns int {
-                return log.replay(lambda(int state, int kind, int amount) returns int {
+                return log.replay(command (int state, int kind, int amount) returns int {
                     if (kind == 1) { return state + amount; }
                     return state - amount;
                 }, 0);

@@ -1,0 +1,82 @@
+import System.IO.Console;
+program CommandInline;
+
+// THE INLINE FORM -- a command written where the value is wanted, which is the lambda's job done
+// without the lambda's silence.
+//
+// The one difference from the declared form is where the baggage's VALUES are written. Declared, the
+// two are apart on purpose -- `carries (int floor)` at the command, `Gate.aboveFloor(10)` at the use
+// -- because there they happen in different files, methods and minds. Inline, the declaration IS the
+// use, so there is no second place for the values to come from and they are written on the line:
+// `carries (int limit = floor)`.
+//
+// What it is NOT is a second construct. The parser lifts it onto the class the expression sits in,
+// as an ordinary `command` member with a name nobody can write, and leaves behind the ordinary call
+// that builds one. So `expandCommands` sees one shape, the analyzer sees one shape, and the rule
+// that refuses a loose method covers the one place an expression could have smuggled one in.
+//
+// Prints: above6=3 isSeven=1 sum=58
+
+public bundle Main {
+    public namespace App {
+
+        public command IntTest(int x) returns boolean;
+
+        public class Numbers {
+            public static method count(int[] xs, IntTest* test) returns int {
+                mutable int n = 0;
+                for (mutable int i = 0; i < xs.length(); i = i + 1) {
+                    if (test(xs[i])) {
+                        n = n + 1;
+                    }
+                }
+                return n;
+            }
+
+            public static method sumWhere(int[] xs, IntTest* test) returns int {
+                mutable int total = 0;
+                for (mutable int i = 0; i < xs.length(); i = i + 1) {
+                    if (test(xs[i])) {
+                        total = total + xs[i];
+                    }
+                }
+                return total;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                int[] xs = new int[5]();
+                xs[0] = 3;
+                xs[1] = 11;
+                xs[2] = 7;
+                xs[3] = 40;
+                xs[4] = 1;
+
+                // The carried value is an ordinary expression, evaluated here, copied in.
+                int floor = 6;
+                int above6 = Numbers.count(xs,
+                    command (int x) carries (int limit = floor) into pack returns boolean {
+                        return x > pack.limit;
+                    });
+
+                // ...and the stateless inline form carries nothing, so it has no `into` either.
+                int isSeven = Numbers.count(xs,
+                    command (int x) returns boolean { return x == 7; });
+
+                // Two of them in one call site, each with its own baggage: the names the compiler
+                // gives them are its own business, and nothing here can collide.
+                int sum = Numbers.sumWhere(xs,
+                    command (int x) carries (int lo = 5, int hi = 39) into band returns boolean {
+                        return x >= band.lo && x <= band.hi;
+                    }) + Numbers.sumWhere(xs,
+                    command (int x) carries (int only = 40) into pick returns boolean {
+                        return x == pick.only;
+                    });
+
+                System.IO.Console.printf("above6=%d isSeven=%d sum=%d\n", above6, isSeven, sum);
+                return;
+            }
+        }
+    }
+}

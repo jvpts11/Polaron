@@ -1,0 +1,26 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+program ForeachBuildsAnotherList;
+
+// THE CONTROL FOR THE RULE NEXT DOOR. Reading one collection to build another is the commonest loop
+// in the language, and a rule about mutation during a walk that could not tell the two apart would
+// refuse most programs. Only calls on the thing being walked are the walk's business.
+//
+// Prints:
+//   4 doubled
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int>* src = new ArrayList<int>() on heap;
+                ArrayList<int>* dst = new ArrayList<int>() on heap;
+                for (mutable int i = 0; i < 4; i++) { src.add(i); }
+                foreach (int v in src) { dst.add(v * 2); }
+                System.IO.Console.printf("%d doubled\n", dst.size());
+                delete src;
+                delete dst;
+                return;
+            }
+        }
+    }
+}

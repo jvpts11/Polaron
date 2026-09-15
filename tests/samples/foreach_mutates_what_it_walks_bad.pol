@@ -1,0 +1,33 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+program ForeachMutatesWhatItWalksBad;
+
+// CHANGING A COLLECTION WHILE WALKING IT.
+//
+// `add` frees nothing, so no use-after-free rule saw this. What it does is REALLOCATE: the block the
+// walk is holding is replaced, and every element the loop has not reached yet is in the old one.
+// This is the guarantee a borrow checker gets from exclusivity, which this analysis does not claim
+// -- and does not need in order to answer the case that matters, because the collection is named in
+// the loop header and the call is on that same name.
+//
+// A method that WRITES A FIELD OF ITS OWN RECEIVER is one a walk cannot survive. A method that only
+// reads its fields is not, which is what keeps this off every accessor in the language -- and
+// reading one collection to build another, the commonest shape there is, stays quiet.
+//
+// Refused with Polaron-1721.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<int>* xs = new ArrayList<int>() on heap;
+                for (mutable int i = 0; i < 4; i++) { xs.add(i); }
+                foreach (int v in xs) {
+                    if (v == 1) { xs.add(99); }
+                    System.IO.Console.println($"{v}");
+                }
+                delete xs;
+                return;
+            }
+        }
+    }
+}

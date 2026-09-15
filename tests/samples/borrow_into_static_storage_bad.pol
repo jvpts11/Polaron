@@ -1,0 +1,23 @@
+import System.IO.Console;
+program BorrowIntoStaticStorageBad;
+
+// A FRAME-LOCAL KEPT IN STATIC STORAGE, which is the longest-lived place a program has.
+//
+// Already refused before this pass, and kept as a sample because it is the top of the ordering: if
+// anything may be stored in a static, everything may. Refused with Polaron-1721.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Registry {
+        public static mutable nullable Leaf* current;
+        public static method keep(Leaf* l) returns void { Registry.current = l; return; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            for (mutable int i = 0; i < 1; i++) {
+                Leaf* brief = new Leaf(1);            // frame do ciclo
+                Registry.keep(brief);                 // guardado no armazenamento mais longo que há
+            }
+            return;
+        }
+    }
+} }

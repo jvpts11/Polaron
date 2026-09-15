@@ -1,0 +1,28 @@
+program ConstGenericsBareValueBad;
+
+// `fixed` MARKS THE MOMENT A PARAMETER BINDS, and a bare value parameter is RESERVED rather than
+// spent.
+//
+// `<fixed int R>` binds at stamping: R is part of the type, monomorphized, and a literal in the
+// body. `<int a>` is the other thing -- a dimension supplied when the object is BUILT, outside the
+// type's identity, which is what the old runtime-dimension `Matrix` does by hand and what C++23's
+// `mdspan` spells with mixed extents. That arrives in a later version.
+//
+// So it is refused with a message rather than quietly given the stamped meaning. A spelling that
+// silently means the wrong thing today is a spelling nobody can give the right meaning tomorrow --
+// which is the same rule the migration note applies to a bare `<T>`.
+//
+// Refused with Polaron-010B.
+
+public bundle Main {
+    public namespace App {
+        public struct Buffer<fixed T, int n> {
+            private mutable T one;
+            public constructor Buffer(T one) { this.one = one; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

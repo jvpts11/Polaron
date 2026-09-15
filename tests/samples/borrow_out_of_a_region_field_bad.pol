@@ -1,0 +1,32 @@
+import System.IO.Console;
+program BorrowOutOfARegionFieldBad;
+
+// A BORROW OUT OF AN OBJECT'S OWN REGION.
+//
+// `Arena` holds a region and hands out something allocated in it. Deleting the arena takes the
+// region with it, and the borrow is left pointing into storage that no longer exists. Kept as a
+// sample because it is the composition the chapter is about -- an object's region is its lifetime,
+// and a reference out of it inherits that and nothing longer.
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Arena {
+        private eternal mutable region store;
+        public mutable Leaf* made;
+        public constructor Arena() {
+            this.store = itself.allocate(cast<address>(4096));
+            this.made = new Leaf(1) in region this.store;
+        }
+        public method borrow() returns Leaf* { return this.made; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Arena* a = new Arena() on heap;
+            Leaf* p = a.borrow();
+            delete a;                                  // a região vai com o objecto
+            System.IO.Console.println($"{p.n}");
+            return;
+        }
+    }
+} }

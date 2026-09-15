@@ -1,0 +1,23 @@
+program CommandInlineNoValueBad;
+
+// The inline form is written AT the use, so there is no second place for the carried values to come
+// from -- `carries (int limit)` with nothing behind it is a field that stays empty forever. The
+// declared form separates the two because there the declaration and the use are in different places;
+// here they are the same place.
+//
+// Refused with Polaron-010A.
+
+public bundle Main {
+    public namespace App {
+        public command IntTest(int x) returns boolean;
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                IntTest* t = command (int x) carries (int limit) into pack returns boolean {
+                    return x > pack.limit;
+                };
+                return;
+            }
+        }
+    }
+}

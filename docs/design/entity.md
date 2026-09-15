@@ -126,7 +126,10 @@ A method's body is identical whichever representation the receiver has; only the
 Since an entity is never `dynamic` (§10), there is no dispatch, so the body inlines — which is what
 lets the loop vectorise.
 
-**Open:** whether a `Particle&` may be stored in a field or returned. See §15.3.
+**Decided (§15.3):** in a dense entity a `Particle&` **does not escape** — local, `foreach` binding
+and parameter, never a field, a return or a capture — which is the rule §8 already gives for storing
+an index. In a `stable` entity all of it is legal, because the address does not change. One rule for
+both, answered by escape analysis (§11.5, built in Wave 3) rather than by a borrow checker.
 
 ## 5. `pass` — the member kind — **DECIDED**
 
@@ -282,10 +285,15 @@ Three things this pays for:
 
 ### `stable` and `movable`
 
-**Open.** Whether `stable movable` is a contradiction under §19.9 needs checking rather than
-assuming: `movable` is about transferring ownership and `stable` is about the address, and moving
-ownership of a heap object need not move it. If they are not contradictory the rule must let them
-coexist.
+**Decided (§15.9): not a contradiction, and it is the useful combination.** The check was made rather
+than assumed, and the two words turn out to be about different subjects — which the table above
+already says: `movable` is about transferring **ownership**, `stable` about the **address**, and
+moving ownership of a heap object need not move it.
+
+`stable movable entity` means the rows never move **and** the block is moved rather than copied when
+it changes hands: a page-frame database handed from the boot allocator to the kernel, whose entries
+are referenced by permanent index throughout. Refusing the pair would refuse that, by reading two
+words as one.
 
 ## 9. `layout` on an entity — **DECIDED that it applies; the verbs are OPEN**
 
@@ -307,8 +315,14 @@ The verbs an entity needs beyond `fitWithin` and `refuse`:
 `alignTo` and `apart` are wanted independently: AP-09 measured that C constructs false sharing with
 `_Alignas(64)` and verifies it with `_Static_assert` on `offsetof`, and that Polaron can state neither.
 
-**Open, and it affects AP-09 as much as it affects entities:** `layout` is a **named, reusable
-declaration** that types `implements` —
+**Decided (§15.10, and it affects AP-09 as much as it affects entities).** The answer is that the
+field-naming verbs do not live in the shared contract at all: **the layout declares a resolver and
+the target implements it**, naming its own fields because they are its own (`layout.md` §7). A
+reusable layout says what must be true (`fitWithin`, `refuse`) and what it permits (`reorder`,
+`padding`); the type says how. `layout.md` §13.5 then gives every verb its entity meaning, `together`
+included. The problem, as it was originally posed:
+
+`layout` is a **named, reusable declaration** that types `implements` —
 
 ```polaron
 public layout WireRecord {
@@ -321,8 +335,9 @@ public struct Packet implements WireRecord { ... }
 ```
 
 — so a layout does not know the implementing type's field names. `fitWithin(32 bytes)` names no
-fields; `together(x, y)` names two. Either the field-naming verbs need a form that works in a shared
-contract, or they belong somewhere other than a `layout`. This is not decided.
+fields; `together(x, y)` names two. **Resolved by the third role**: the verbs belong to the
+*resolver*, which the target writes, and the three earlier proposals — roles bound on the clause, an
+inline block in the type, a modifier on the field — are all withdrawn.
 
 ## 10. Restrictions, and where each comes from — **DECIDED**
 
@@ -427,7 +442,10 @@ Three routes, together:
 > assert. If it is ever revisited, `columnar` is the better word: it failed as a *type* name because
 > the family names natures, and a modifier is exactly where an arrangement adjective belongs.
 
-## 15. Still to design — named rather than silently omitted
+## 15. Decided (Wave 4.5) — one debt kept, and it is named
+
+Everything in §15.2 is now decided. **15.1 alone remains parked**, deliberately and with its
+condition written down: it opens onto the ML work, and a construct is not designed by being wanted.
 
 ### 15.1 The transposition operator — **a debt taken on purpose**
 
@@ -461,17 +479,23 @@ B>`, and the keywords that would make backpropagation expressible, with full ML/
 goal. That is its own design and this one should not pre-empt it. Until then, §14's three routes
 carry the guarantee, which is what the operator was originally reached for and is not what it does.
 
-### 15.2 Everything else left open
+**And "parked" is now a state with a way out, which it was not before.** A parked item that names no
+condition is an open item wearing a better word. This one's condition: **`<^>` is designed with the
+ML work or not at all** — the same document that decides `tensor<float, A, B>` and native
+`brainfloat` decides the transposition operator, because two of its three unresolved points (the AoS
+row type, and rank above 2) are answered there or nowhere.
+
+### 15.2 Everything else — now decided
 
 | | question |
 |---|---|
 | ~~15.3~~ | **DECIDED — a row reference obeys the rule the index already obeys.** In a dense entity a `Particle&` **does not escape**: it may be a local, a `foreach` binding and a parameter, but it may not be stored in a field, returned, or captured by a closure — the same refusal, for the same reason, that §8 already gives for storing an index. In a `stable` entity all of that is legal, because `stable` already means the address does not change and the language already permits a pointer to a `stable` field. One rule for both representations, and **no borrow checker**: the question is *"does this outlive what it points into"*, which is escape analysis (§11 pass 5) and which the region binder already answers |
-| 15.4 | is a lone entity legal — `Particle p = new Particle(1, 2) on stack;` outside any array? It follows from value semantics, but it creates a second representation of one type and should be deliberate |
-| 15.5 | do nested `struct` and `entity` fields **flatten** into columns? Assumed yes; not decided |
-| 15.6 | does `together(...)`/AoSoA enter now, or after the simple case is measured? |
-| 15.7 | how does a `pass` name **the index of the row it is on**, when it needs it? `index` is already a keyword — reportedly part of `foreach` — and must be read before anything near it is proposed |
-| 15.8 | parallel execution: asked for at the **call site** (the schedule depends on N, which the caller knows and the type does not), or derived? The *safety* needs no word either way |
-| 15.9 | `stable movable` — contradiction or not (§8) |
+| ~~15.4~~ | **DECIDED — yes, and it is not a second representation, because §4 already creates one.** `Particle p = swarm[i];` *"materialises: copies 4 floats out of 4 columns into a local"* — that local **is** a lone entity. The two representations (`Particle` materialised, `Particle&` as block-and-index) are §4's decision, already taken; 15.4 only asks whether the first may be constructed directly rather than only extracted. Refusing `new Particle(1, 2) on stack` while permitting the line above would refuse one spelling of a value the language already makes, which is the worse kind of restriction: it does not remove the representation, it removes the way of getting one that does not need an array to exist first |
+| ~~15.5~~ | **DECIDED — yes, flatten, recursively, to leaves.** §3's *"no padding, ever"* is the whole claim, and it holds only because every column is homogeneous. A nested `struct` kept as a struct-column re-introduces **exactly AP-08's holes**, inside the column, where nobody would think to look — the defect this construct is supposed to make inexpressible, smuggled back in by a field. So a nested `struct` or `entity` field becomes its own columns, by leaf: `Body { Vec3 pos; Vec3 vel; }` is six float columns. **Three things do not flatten and each for its own reason:** a pointer field is a leaf (it *is* one word); a dynamic array field has no fixed width, so it is one column of slices; and a `sparse` field (§7) has its own storage rule, which flattening would silently override |
+| ~~15.6~~ | **DECIDED — after, and the design is nonetheless closed.** The *meaning* of `together` is settled in `layout.md` §13.5, so nothing is left undesigned; what is deferred is only building it. **Wave 4 is why.** The largest performance target in the ledger was planned around for months and turned out to be a benchmark artefact — four findings agreeing, all four downstream of one shape. AoSoA's value depends on the target's vector width and on the access pattern, and the pure-SoA case has not been measured once. Building the harder arrangement before measuring the simpler one is the same mistake with a different subject |
+| ~~15.7~~ | **DECIDED — `index i`, the same word in the same position `foreach` puts it.** `lexer.cpp:165` makes `index` a keyword and `parser.cpp:4192` uses it for exactly this: *"optional index variable: `foreach (index i, T v in coll)`"*. It is a **binder**, not a value — it introduces a name for the position of the current element. A `pass` is an iteration, so it takes the same clause: `pass advance(float dt) index i reads (vx) writes (x)`. Optional, because most passes never ask. Not a parameter, because the caller does not supply it — which is why it sits outside the parameter list rather than inside it, where it would read as one |
+| ~~15.8~~ | **DECIDED — the call site, spelled `in parallel`.** The item's own reasoning is right and decisive: the schedule depends on N, the caller knows N and the type does not, and the *safety* is derived from `reads`/`writes` (§6) either way. So the declaration says nothing and `swarm.advance(dt) in parallel;` asks. It reuses the `in` clause the language already has for placement (`in region r`) — same word, same position, a modifier on the expression — so `parallel` is a soft keyword in one clause and nothing else. **The reason it is not derived:** a compiler choosing to parallelise from N alone would be choosing for a caller that may already be inside a parallel region, on a machine whose other cores are busy, in a program where the pass is the cheap part. That is a scheduling decision, and scheduling decisions belong to whoever has the schedule |
+| ~~15.9~~ | **DECIDED — not a contradiction, and it is the useful combination.** They are about different subjects: `stable` is about the **address** and `movable` about the **ownership** — which §8's own table already says (*"a promise about the address, distinct from `movable`, which is about ownership"*). `stable movable entity` means the rows never move **and** the block is moved rather than copied when it changes hands: a page-frame database handed from the boot allocator to the kernel, whose entries are referenced by permanent index throughout. Refusing the pair would refuse that, and would do it by reading two words as one |
 
 **15.10 is closed.** It asked how the field-naming `layout` verbs could live in a reusable layout
 contract that does not know the implementing type's field names. They do not: the layout declares a

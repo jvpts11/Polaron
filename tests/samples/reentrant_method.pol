@@ -1,0 +1,68 @@
+import System.IO.Console;
+program ReentrantMethod;
+
+// `reentrant` — THIS MAY BE ENTERED AGAIN WHILE AN EARLIER ENTRY IS STILL RUNNING.
+//
+// The language had one special case of this and no general form: `interrupt` carried a bespoke list
+// of prohibitions — must not allocate, must not free, must not reach shared mutable state — checked
+// over the call graph. Every entry on that list is an implication of one sentence, and naming the
+// sentence buys three things a "does not allocate" marker would not:
+//
+//   1. `interrupt` stops having rules of its own — a handler is *implicitly `reentrant`*, and the
+//      list collapses into one property with one checker;
+//   2. **it catches the lock.** A `reentrant` method that takes a `Mutex` deadlocks against itself,
+//      which is a real kernel bug class no allocation rule can see. `atomic<T>` stays legal: a
+//      single atomic instruction has no half-done state to interrupt;
+//   3. a method that is NOT a handler but must be equally careful — a scheduler entry, a page-fault
+//      path, a destructor during teardown — gains a way to say so, which it had not.
+//
+// AND IT IS VIRAL, which is what closes AP-12's hole for nothing: everything the method calls
+// carries the obligation, including the destructor that runs at the end of a scope, because that is
+// a call and calls are checked.
+//
+// Prints: pushed=3 head=3
+
+public bundle Main {
+    public namespace App {
+
+        // A ring buffer written the way a handler needs one: fixed storage decided at construction,
+        // and the only mutable state is `volatile`, which is what the rule asks for when the other
+        // end is hardware.
+        public class Ring {
+            private volatile mutable int head;
+            // NOT `mutable`, and that is the shape rather than a way past the check. A ring's
+            // storage is decided at construction and never replaced; only its CONTENTS move. The
+            // rule asks about the fields two live entries could both write, and the reference is
+            // not one of them -- which is why *"everything in Polaron is immutable by default"* is
+            // what makes this rule livable instead of theoretical.
+            private int[] slots;
+
+            public constructor Ring() {
+                this.slots = new int[8]();
+                this.head = 0;
+            }
+
+            // REENTRANT, and it holds: no allocation, no free, no lock, and the one mutable field
+            // it touches says `volatile`. Everything it calls carries the same obligation.
+            public reentrant method push(int v) returns void {
+                this.slots[this.head & 7] = v;
+                this.head = this.head + 1;
+                return;
+            }
+
+            public method depth() returns int { return this.head; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Ring r = new Ring() on heap;
+                r.push(10);
+                r.push(20);
+                r.push(30);
+                System.IO.Console.printf("pushed=%d head=%d\n", 3, r.depth());
+                delete r;
+                return;
+            }
+        }
+    }
+}

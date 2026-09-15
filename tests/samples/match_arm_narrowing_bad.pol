@@ -1,0 +1,40 @@
+import System.IO.Console;
+program MatchArmNarrowingBad;
+
+// A GUARD IN ONE ARM OF A `match` SAYS NOTHING ABOUT ANOTHER ARM. The arms were analyzed one after the
+// other on shared state, so `if (box == null) { return; }` in `case first` narrowed `box` in `case
+// second` too, and the call below compiled with a value that is null whenever `second` is the one
+// taken. Each arm now starts from the state before the `match`.
+//
+// Refused: "argument 1 to 'weigh' is 'nullable Box*', which is nullable".
+public bundle Main {
+    public namespace App {
+        public sealed enum Pick { first, second }
+        public class Box {
+            private mutable int held;
+            public constructor Box(int held) { this.held = held; }
+            public method value() returns int { return this.held; }
+        }
+        public class Main {
+            public static method weigh(Box* b) returns int { return b.value(); }
+            public static method pick(int n) returns nullable Box* {
+                if (n == 0) { return null; }
+                return new Box(n) on heap;
+            }
+            public static method main(string[] args) returns void {
+                nullable Box* box = Main.pick(0);
+                Pick which = Pick.second;
+                match (which) {
+                    case first {
+                        if (box == null) { return; }
+                        System.IO.Console.println($"{Main.weigh(box)}");
+                    }
+                    case second {
+                        System.IO.Console.println($"{Main.weigh(box)}");
+                    }
+                }
+                return;
+            }
+        }
+    }
+}

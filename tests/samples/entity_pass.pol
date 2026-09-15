@@ -1,0 +1,80 @@
+import System.IO.Console;
+program EntityPass;
+
+// `pass` -- A MEMBER WRITTEN FOR ONE ROW AND RUN OVER THE WHOLE POPULATION (entity.md 5).
+//
+//     public pass advance(int dt) reads (vx, vy) writes (x, y) {
+//         x = x + vx * dt;
+//     }
+//
+// The body says `x` and `vx`, with no subscript anywhere, because it is written for one row -- and
+// `swarm.advance(2)` runs it over every row. Three things that buys over a method:
+//
+//   1. The population gets MEMBERS. Without `pass`, "advance every particle" is
+//      `static method advance(Particle[] ps)`, which is a free function in a hat; this repository
+//      has written one by accident twice and recorded it as a lesson.
+//   2. The loop is INSIDE the callee, with the body lowered into it, so what runs is a walk down
+//      three columns with a constant stride rather than a call per element.
+//   3. `reads` / `writes` state what the pass touches, which is what makes "these two passes can
+//      run at the same time" a proof over columns rather than a hope about pointers.
+//
+// `index i` binds the row's position by the same word `foreach` uses, in the same position -- a
+// binder and not a parameter, because the caller does not supply it.
+//
+// Prints:
+//   x0 0
+//   x1 12
+//   x9 108
+//   tagged 45
+public bundle Main {
+    public namespace Swarm {
+
+        public entity Particle {
+            public mutable int x;
+            public mutable int y;
+            public mutable int vx;
+            public mutable int vy;
+            public mutable int tag;
+
+            // Two steps of the same pass, so a body that runs once per row and a body that runs
+            // once are told apart: after `advance(2)` twice, `x[1]` is 12 and not 6.
+            public pass advance(int dt) reads (vx, vy) writes (x, y) {
+                x = x + vx * dt;
+                y = y + vy * dt;
+            }
+
+            // The index form. `tag = i` is only meaningful if the pass knows which row it is on.
+            public pass stamp() index i writes (tag) {
+                tag = i;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Particle[] swarm = new Particle[10]();
+                mutable int i = 0;
+                while (i < 10) {
+                    swarm[i].vx = i * 3;
+                    swarm[i].vy = i;
+                    i = i + 1;
+                }
+
+                swarm.advance(2);
+                swarm.advance(2);
+
+                System.IO.Console.println("x0 " + swarm[0].x.toString());
+                System.IO.Console.println("x1 " + swarm[1].x.toString());
+                System.IO.Console.println("x9 " + swarm[9].x.toString());
+
+                swarm.stamp();
+                mutable int total = 0;
+                mutable int k = 0;
+                while (k < 10) {
+                    total = total + swarm[k].tag;
+                    k = k + 1;
+                }
+                System.IO.Console.println("tagged " + total.toString());
+            }
+        }
+    }
+}

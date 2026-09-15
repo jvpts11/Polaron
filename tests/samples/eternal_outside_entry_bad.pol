@@ -1,0 +1,33 @@
+import System.IO.Console;
+program EternalOutsideEntryBad;
+
+// `eternal` DOES NOT MAKE A FRAME LAST. In a method that returns, an `eternal ... on stack` object is
+// still in that method's frame -- its destructor never runs, but its storage goes back when the call
+// does -- so handing its address to something that outlives the call stays refused.
+//
+// Refused: "region-binder: 'register' keeps that argument".
+public bundle Main {
+    public namespace App {
+        public class Kind {
+            private mutable int id;
+            public constructor Kind(int id) { this.id = id; }
+        }
+        public class Registry {
+            private mutable nullable Kind*[] known;
+            public constructor Registry() { this.known = new nullable Kind*[4](); }
+            public method register(Kind* k) returns void { this.known[0] = k; return; }
+        }
+        public class Main {
+            public static method wire(Registry* into) returns void {
+                eternal Kind kind = new Kind(7) on stack;
+                into.register(&kind);
+                return;
+            }
+            public static method main(string[] args) returns void {
+                Registry* r = new Registry() on heap;
+                Main.wire(r);
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,52 @@
+import System.IO.Console;
+program MethodPtrCalls;
+
+// A CODE ADDRESS, TAKEN AND CALLED -- and until now the second half did not happen.
+//
+// `methodptr<Ret, Params...>` is the near side of the FFI: one machine word, no environment, the
+// plain C ABI, and a typed signature. It is what a driver's dispatch slot holds, what
+// `GetProcAddress` answers with, and what a region's destructor registry stores against a bare
+// pointer -- the case that found this.
+//
+// THE TYPE WORKED AND THE CALL DID NOT, which is the worst of the two ways to be broken. The
+// predicate that decides whether a value is callable knew only the closure spelling, and carried a
+// comment naming both. So a call through a code address never reached a callable path at all: it
+// fell through to method resolution by name, and `f(21)` came out as `call i32 %21()` -- the first
+// ARGUMENT called, with no arguments, returning an i32 nobody asked for. It compiled clean every
+// time, and there was not one test of the type anywhere in the repository.
+//
+// `Class.method` without a call is that method's address (static only -- an instance method's
+// receiver is not named by the expression). That is where these come from without a foreign symbol.
+//
+// Prints:
+//   42 30 done
+public bundle Main {
+    public namespace App {
+        public class Maths {
+            public static method twice(int n) returns int { return n * 2; }
+            public static method plus(int a, int b) returns int { return a + b; }
+            // A `void` return is a different path through the call lowering -- the instruction has
+            // no type to carry -- so it is pinned here rather than assumed.
+            public static method announce(int n) returns void {
+                System.IO.Console.printf("%d ", n);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                methodptr<int, int> twice = Maths.twice;
+                methodptr<int, int, int> plus = Maths.plus;
+                methodptr<void, int> announce = Maths.announce;
+
+                // The argument order is the caller's, with nothing inserted in front of it: a
+                // closure would have put its environment first, and every argument would have moved
+                // one place to the right.
+                announce(twice(21));
+                announce(plus(10, 20));
+                System.IO.Console.println("done");
+                return;
+            }
+        }
+    }
+}

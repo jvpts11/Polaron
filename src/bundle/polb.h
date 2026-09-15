@@ -68,6 +68,28 @@ struct PolbBundle {
     std::array<std::uint8_t, 32> fingerprint{};  // SHA-256 of the canonical public API
     std::string polh;                       // public API as Polaron declaration text (the .polh)
     std::string code;                      // compiled code (LLVM bitcode)
+    // THE MODULE ITSELF, in PIR's text form -- the third artefact, and what makes a consumer's
+    // choice real rather than nominal.
+    //
+    // `polh` lets a consumer skip PARSING AND ANALYSIS; `code` lets it skip EMISSION. Neither skips
+    // the part in between, which is where the work now is: lowering to PIR and the passes over it.
+    // A consumer that only calls in needs the first two and is unchanged. A consumer that wants to
+    // INLINE ACROSS THE BOUNDARY -- which is the whole point of a precompiled prelude, since
+    // `String.length()` must inline or the library is a call per character -- needs this.
+    //
+    // PIR AND NOT BITCODE, and that is not a preference. Bitcode would inline too, and it is the
+    // wrong level: devirtualisation needs `Module::classes`, `slotMethod` and `replaceableMethods`,
+    // none of which survive the drop to LLVM. A bundle carrying only bitcode can be inlined into and
+    // not reasoned about.
+    //
+    // AND IT IS NOT A REPLACEMENT FOR `code`. Shipping only PIR would make every consumer re-run the
+    // backend over the whole bundle, turning a link into a compile -- the toll this exists to
+    // remove, paid twice.
+    //
+    // EMPTY IS NOT AN ERROR. A bundle without it was built by an older `polc`; the consumer links its
+    // `code` and does not inline through it, which is exactly today's behaviour. That is what makes
+    // this additive rather than a format break, and it is the shape `vtableSlots` already has.
+    std::string pir;
     std::vector<PolbDep> deps;              // required bundles
     std::vector<std::string> capabilities; // required capabilities
     // The bundle's global vtable slot layout: vtableSlots[i] is the virtual method name at slot i.

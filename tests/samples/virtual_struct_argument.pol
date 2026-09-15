@@ -1,0 +1,43 @@
+import System.IO.Console;
+program VirtualStructArgument;
+
+// A VALUE STRUCT HANDED TO AN OVERRIDDEN METHOD, called through the base class.
+//
+// A direct call loaded the struct and passed it by value, as the signature says; the dispatched call
+// pushed the arguments as they came, so a struct still held in storage went across as its ADDRESS.
+// The callee, declared to take the struct in registers, read that address as the first field and
+// whatever was in the next register as the second -- in the Horizon VFS, a name whose length was
+// garbage, copied until it ran off the end of a 256-byte buffer.
+//
+// Must print `7 7 15`.
+public bundle Main {
+    public namespace App {
+        public struct Pair {
+            public mutable int left;
+            public mutable int right;
+            public constructor Pair(int a, int b) { this.left = a; this.right = b; }
+        }
+        public class Shape {
+            public constructor Shape() { }
+            public method sum(Pair p) returns int { return 0; }
+            public method scaled(int by, Pair p) returns int { return 0; }
+        }
+        public class Box extends Shape {
+            public constructor Box() { super(); }
+            public override method sum(Pair p) returns int { return p.left + p.right; }
+            public override method scaled(int by, Pair p) returns int { return by * (p.left + p.right); }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Shape* s = new Box() on heap;
+                Pair held = new Pair(3, 4);
+                int viaLocal = s.sum(held);
+                int viaTemporary = s.sum(new Pair(5, 2));
+                int second = s.scaled(3, new Pair(2, 3));
+                System.IO.Console.println($"{viaLocal} {viaTemporary} {second}");
+                delete s;
+                return;
+            }
+        }
+    }
+}

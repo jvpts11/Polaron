@@ -1,0 +1,40 @@
+import System.IO.Console;
+import System.Runtime.ClassCastException;
+program DataEnumFromOrdinal;
+
+// A NUMBER BACK TO AN ENUM WITH DATA. `cast<int>(p)` gave the ordinal and nothing gave the constant
+// back: the analyzer found the enum's twin class first and read `cast<Pair>(i)` as "a number made into
+// a class", and refused it -- and past that, the lowering turned the ordinal into an address, so the
+// first method call on the "constant" read its fields out of page zero. A number outside the declared
+// set is refused where the cast was written, as a refuted downcast is. Prints `37 1 refused`.
+public bundle Main {
+    public namespace App {
+        public sealed enum Pair {
+            low(1, 2), high(3, 4);
+            private int first;
+            private int second;
+            public constructor Pair(int first, int second) {
+                this.first = first;
+                this.second = second;
+            }
+            public method sum() returns int { return this.first + this.second; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int total = 0;
+                for (mutable int i = 0; i < Pair.count(); i = i + 1) {
+                    Pair p = cast<Pair>(i);
+                    total = total * 10 + p.sum();
+                }
+                System.IO.Console.println($"{total} {cast<int>(Pair.high)}");
+                try {
+                    Pair none = cast<Pair>(Pair.count());
+                    System.IO.Console.println($"no exception {none.sum()}");
+                } catch (ClassCastException e) {
+                    System.IO.Console.println("refused");
+                }
+                return;
+            }
+        }
+    }
+}

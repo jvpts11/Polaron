@@ -1,0 +1,69 @@
+import System.IO.Console;
+program VirtualStructReturn;
+
+// A VALUE STRUCT RETURNED FROM AN OVERRIDDEN METHOD, called through the base class, carrying a
+// Java-style enum and a pointer -- the shape of the Horizon VFS's `Outcome` from `makeDirectory`.
+//
+// A direct call gave the returned bytes a home and passed the home's address on; the dispatched call
+// did not, so REASSIGNING a struct local from one stored sixteen bytes into the local's pointer-sized
+// slot, and the next read took the first field for the struct's address -- an access violation.
+//
+// Must print `perm 1 | none 0 7 | 0 5`.
+public bundle Main {
+    public namespace App {
+        public sealed enum Failure {
+            none(0), perm(1), noEnt(2);
+            private int code;
+            public constructor Failure(int code) { this.code = code; }
+            public method number() returns int { return this.code; }
+        }
+        public class Node {
+            public mutable int value;
+            public constructor Node(int v) { this.value = v; }
+        }
+        public struct Answer {
+            private mutable Failure failure;
+            private mutable nullable Node* made;
+            public constructor Answer(Failure failure, nullable Node* made) {
+                this.failure = failure;
+                this.made = made;
+            }
+            public static method of(Node* n) returns Answer { return new Answer(Failure.none, n); }
+            public static method refused(Failure why) returns Answer { return new Answer(why, null); }
+            public method error() returns Failure { return this.failure; }
+            public method node() returns nullable Node* { return this.made; }
+        }
+        public class Maker {
+            public constructor Maker() { }
+            public method make(int v) returns Answer { return Answer.refused(Failure.perm); }
+        }
+        public class NodeMaker extends Maker {
+            public constructor NodeMaker() { super(); }
+            public override method make(int v) returns Answer {
+                if (v < 0) { return Answer.refused(Failure.perm); }
+                return Answer.of(new Node(v) on heap);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Maker* m = new NodeMaker() on heap;
+                Answer bad = m.make(0 - 1);
+                Answer good = m.make(7);
+                nullable Node* n = good.node();
+                int value = n == null ? 0 - 1 : n.value;
+                // REASSIGNED, in an arm of a `match` over an enum -- the shape `VirtualFs.makeIn` has.
+                mutable Answer later = Answer.refused(Failure.noEnt);
+                match (Failure.none) {
+                    case none { later = m.make(5); }
+                    case perm { later = m.make(0 - 1); }
+                    case noEnt { later = m.make(0 - 1); }
+                }
+                nullable Node* ln = later.node();
+                int lv = ln == null ? 0 - 1 : ln.value;
+                System.IO.Console.println($"{bad.error() == Failure.perm ? "perm" : "wrong"} {bad.error().number()} | {good.error() == Failure.none ? "none" : "wrong"} {good.error().number()} {value} | {later.error().number()} {lv}");
+                delete m;
+                return;
+            }
+        }
+    }
+}

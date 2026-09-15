@@ -1,0 +1,34 @@
+// Dentro de um corpo marcado, o que a análise AINDA consegue provar continua recusado.
+import System.IO.Console;
+program SurveyedStillRefusesTheProvableBad;
+
+// A `surveyed` METHOD IS NOT AN UNCHECKED ONE.
+//
+// Exactly one refusal is suspended inside: the one about a value the analysis cannot PLACE. This
+// body frees an object and then reads a borrow of it -- which the analysis can still place, and
+// still prove wrong. If it can prove a line is wrong, proving it is right whether or not the method
+// is marked.
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Owner {
+        public mutable Leaf* leaf;
+        public constructor Owner() { this.leaf = new Leaf(3) on heap; }
+        public destructor ~Owner() returns void { delete this.leaf; return; }
+        public method borrow() returns Leaf* { return this.leaf; }
+    }
+    public class Main {
+        // marcado -- e mesmo assim isto é um uso depois de invalidado, provável e provado
+        public static surveyed method oops() returns int {
+            Owner* o = new Owner() on heap;
+            Leaf* kept = o.borrow();
+            delete o;
+            return kept.n;
+        }
+        public static method main(string[] args) returns void {
+            System.IO.Console.println($"{Main.oops()}");
+            return;
+        }
+    }
+} }

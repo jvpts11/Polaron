@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -77,6 +78,18 @@ private:
     ast::EnumDecl parseEnum();
     // Methods alone never make an enum java-style. Shared by both spellings of its body.
     static void normalizeEnumStyle(ast::EnumDecl& e);
+    // `RED(255)` gives A constant its data; `Circle(double r)` says each construction brings its
+    // own. Same shape, opposite meanings; this decides which is ahead without consuming anything.
+    bool payloadCaseAhead() const;
+    // `entity`, `pass`, `sparse`, `stable` -- soft keywords, each legal in exactly one position.
+    bool atSoftWord(const char* word, int ahead = 0) const;
+    // A sum enum IS the sealed hierarchy that `Result`/`Option` are written out as by hand: the
+    // base, one class per case, and the case names recorded so `Circle(r)` resolves against an
+    // expected `Shape` the way `Ok(x)` resolves against an expected `Result`.
+    void desugarSumEnum(ast::EnumDecl& e, ast::Namespace& ns);
+    // `Circle(r)` written where a `Shape` is expected is a CONSTRUCTION, not a call to a method
+    // named Circle. Consults `sumCases_`, so it had to stop being a free function.
+    void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected);
     // SOFT KEYWORDS: a word that means something in exactly one position and is an ordinary name
     // everywhere else. `within`, `get`/`set`/`init` and `expecting` are the ones; each costs the
     // language nothing and gives every program its word back.
@@ -89,6 +102,11 @@ private:
     void parseExternInto(std::vector<ast::ExternDecl>& out);  // single method or a `library { }` block
     ast::ExternDecl parseExternMethod(const std::string& convention);
     ast::ConstDecl parseConstDecl();
+    // One type argument, which may be a NUMBER filling a `fixed int` parameter (A.3).
+    void parseTypeArgInto(std::vector<std::string>& out);
+    // `command DogTest(Dog& d) returns boolean;` at namespace level -- the ROLE, so an API can name
+    // what it takes. Yields a one-method interface; see ClassDecl::isCommandType.
+    ast::ClassDecl parseCommandType();
     ast::TypeAliasDecl parseTypeAlias();
     std::vector<ast::AnnotationUse> parseAnnotationUsesOpt();
     ast::AnnotationDecl parseAnnotationDecl(const std::vector<ast::AnnotationUse>& leading);
@@ -99,22 +117,41 @@ private:
     bool atAffinityBlock() const;
     void parseAffinityBlock(ast::ClassDecl& c);
     std::unique_ptr<ast::MethodDecl> parseMethod(std::string visibility, bool isStatic,
-                                                 bool isAbstract, bool isOverride, bool isFinal,
+                                                 bool isAbstract, bool isOverride, bool isSurveyed, bool isFinal,
                                                  bool inInterface, bool isComptime = false,
                                                  bool isAsync = false, bool isVolatile = false,
                                                  bool isExtern = false,
                                                  std::string externConvention = "",
-                                                 bool isDeprecated = false, bool isNaked = false);
+                                                 bool isDeprecated = false, bool isNaked = false,
+                                                 // `reentrant` -- docs/design/reentrant.md
+                                                 bool isReentrant = false,
+                                                 // `pass` -- docs/design/entity.md 5. Written for
+                                                 // one row and run over the population, so it is a
+                                                 // method plus a synthesised driver over the array.
+                                                 bool isPass = false,
+                                                 // `command` -- portable behaviour, with what it
+                                                 // carries declared. The same parse as a method plus
+                                                 // a baggage list; what differs is what it BECOMES.
+                                                 bool isCommand = false, bool isReadonly = false,
+                                                 bool isCold = false, bool isMustUse = false);
     ast::MemberPtr parseField(std::string visibility, bool isStatic, bool isMutable,
                               bool isPersistent, bool isEternal, bool isTransient,
                               bool isVolatile = false, bool isLazy = false, bool isComptime = false,
                               bool isExternal = false, bool isDelegate = false, bool isMovable = false,
                               bool isUnique = false, bool isWeak = false, bool isAbstract = false,
                               bool isOverride = false, bool isFinal = false,
-                              bool inInterface = false);
+                              bool inInterface = false,
+                              // entity.md 7 and 8: this column is stored by presence rather than
+                              // per row; a pointer to this field stays valid.
+                              bool isSparse = false, bool isStableField = false);
     // Optional `cascade(...)` parameters (spec 37.1): `(depth: N)`, `(unlimited)`,
     // `(types: {A,B})`, `(except: {A,B})`, or combinations. Returns defaults if no `(`.
     ast::CascadeParams parseCascadeParamsOpt();
+    // ONE `asm` OPERAND, with or without a place. `out ("ax": value)` says where it must be;
+    // `out (value)` says nothing, which is what every block written before this feature said.
+    // Pushes to both lists on every operand, so `where[i]` always exists for `list[i]` -- see
+    // `ast::AsmStmt::outputWhere` for why the two are parallel vectors and why that is safe here.
+    void parseAsmOperand(std::vector<ast::ExprPtr>& list, std::vector<std::string>& where);
     // Parses a label reference `label` (spec 7.9-7.11). The chaos tetrad is intra-method only, so a
     // method-qualified `method.label` form is rejected.
     void parseLabelRef(std::string& name);
@@ -131,8 +168,43 @@ private:
     std::unique_ptr<ast::MethodDecl> parseInterrupt(std::string visibility);
     bool inTransformer_ = false;                // inside a transformer body, `itself` is the receiver
     bool inProcedure_ = false;                  // ...and inside a `procedure` written on a type too
+    // Inside a `layout`'s body. What it buys is one rule: a member declared there with no body is an
+    // OBLIGATION on whatever type the layout arranges, exactly as a bodyless `procedure` is on
+    // whatever type applies a transformer. Both are the same idea -- a declaration that names a part
+    // of an algorithm somebody else has to supply -- so both are spelled the same way.
+    bool inLayout_ = false;
     // `call T.p()` sites seen while parsing the current declaration; drained into its `procCalls`.
     std::vector<ast::ClassDecl::ProcCall> pendingProcCalls_;
+    /* INLINE COMMANDS, LIFTED. `command (int x) carries (int floor = 10) into pack returns boolean
+       { ... }` written in the middle of an expression becomes an ordinary `command` MEMBER of the
+       class it was written in, and the expression becomes the call to the factory that member
+       generates -- `Gate.command$0(10)`, which is what an author would have written by hand.
+
+       Lifting here, in the parser, rather than in a later pass, is what keeps the inline form from
+       being a second construct: after this the tree holds one shape, `expandCommands` sees one
+       shape, and nothing downstream learns that commands come two ways. It also means the reference
+       to the generated thing is an ordinary qualified static call, so `qualifyNamespaces` renames it
+       along with everything else -- a synthesized `new Gate$command$0(...)` would not have been
+       renamed, because the class it names does not exist yet when that pass runs.
+
+       The lifted member rides `extraMembers_`, which a property's synthesized setter already uses:
+       one place where the parser hands a class a member the author did not write, drained in the
+       one loop that collects them. */
+    std::string currentClassName_;   // the class being parsed; "" outside one
+    int inlineCommandCount_ = 0;     // per class, so the synthesized names are unique within it
+    // Every method name a `methodref` named, drained into the program -- see
+    // ast::Program::methodRefNames for why the parser is the one that collects them.
+    std::set<std::string> methodRefNames_;
+    // Every case of every sum enum parsed so far, by case name. `Circle(r)` written where a `Shape`
+    // is expected has to become `new Circle<...>(r)`, and the only thing that tells the parser
+    // `Circle` is a case rather than a method call is this table -- which is the general form of the
+    // four names `Ok`/`Err`/`Some`/`None` that were built into `rewriteVariantCtor`.
+    struct SumCase {
+        std::string sum;        // the enum it belongs to
+        std::size_t typeParams; // how many type arguments its construction needs
+        std::size_t arity;      // how many payload fields it declares
+    };
+    std::map<std::string, SumCase> sumCases_;
     ast::ClassDecl parseTransformer();          // `public [mutual|explicit|collective|freestanding] transformer N { }`
     void parseAppliesOpt(ast::ClassDecl& c);    // the `applies A, B` clause on a declaration line
     // The same clause over any declaration's two vectors -- an enum takes it as well as a class.

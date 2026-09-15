@@ -32,7 +32,7 @@ DOCS = [
     ("Systems Programming", "guide/11-systems-programming.md"),
     ("Keyword Reference", "guide/12-keyword-reference.md"),
     ("Diagnostics", "guide/13-diagnostics.md"),
-    ("Functions, Lambdas & Tuples", "guide/14-functions-and-lambdas.md"),
+    ("Commands, Method References & Tuples", "guide/14-functions-and-lambdas.md"),
     ("The Toolchain & Projects", "guide/15-toolchain.md"),
     ("Testing", "guide/16-testing.md"),
     ("How the Pieces Fit Together", "guide/17-how-the-pieces-fit.md"),

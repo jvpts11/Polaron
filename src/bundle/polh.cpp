@@ -339,15 +339,16 @@ void emitClass(Emitter& e, const ClassDecl& c) {
     if (c.isInterface) {
         kind = "interface";
     } else if (c.isLayout) {
-        // A layout must cross, because IMPLEMENTING ONE REORDERS THE FIELDS -- widest alignment first,
-        // in codegen's `orderForLayout`. A consumer that did not know a struct was arranged would lay
-        // it out in declaration order and disagree with the bundle's own code about every offset after
-        // the first: the same silent divergence private fields used to cause, arrived at from a
+        // A layout must cross, because ONE THAT PERMITS REORDERING REORDERS THE FIELDS -- widest
+        // alignment first. A consumer that did not know a struct was arranged would lay it out in
+        // declaration order and disagree with the bundle's own code about every offset after the
+        // first: the same silent divergence private fields used to cause, arrived at from a
         // different direction.
         //
-        // Only the FACT of it needs to travel. The reordering is triggered by there being a layout at
-        // all, not by what that layout asks for, so the header carries an empty arrangement rather than
-        // a copy of a budget the library has already satisfied.
+        // The FACT of it and its CONCESSIONS travel; its constraints do not. Which arrangement gets
+        // built is decided by `permits`, so that has to cross (see the `permits` line below). What
+        // `fitWithin` asks is a budget the library has already met and the consumer cannot fail --
+        // it declares no fields of its own here -- so the header carries an empty `onArrange`.
         kind = "layout";
     } else if (c.isStruct) {
         kind = "struct";
@@ -395,25 +396,28 @@ void emitClass(Emitter& e, const ClassDecl& c) {
     if (!c.superclass.empty()) {
         head += " extends " + c.superclass;
     }
-    // Layouts travel back in the same `implements` clause they arrived in. `layouts.cpp` moves them out
-    // of `interfaces` before the analyser runs, so re-joining them here is not a merge of two ideas --
-    // it is putting back the one clause the author wrote.
-    if (!c.interfaces.empty() || !c.layouts.empty()) {
+    // Interfaces travel in `implements`; layouts travel in `arranges`, which is the clause they are
+    // now written in. They used to be re-joined into one `implements` here, because `layouts.cpp`
+    // had moved them out of `interfaces` and putting them back was putting back what the author
+    // wrote. What the author writes is two clauses, so the header emits two -- and a header that
+    // spelled a layout `implements` would hand every consumer of the library a warning about a line
+    // nobody on that side can edit.
+    if (!c.interfaces.empty()) {
         head += " implements ";
-        bool first = true;
-        for (const std::string& name : c.interfaces) {
-            if (!first) {
+        for (std::size_t i = 0; i < c.interfaces.size(); ++i) {
+            if (i) {
                 head += ", ";
             }
-            head += name;
-            first = false;
+            head += c.interfaces[i];
         }
-        for (const std::string& name : c.layouts) {
-            if (!first) {
+    }
+    if (!c.layouts.empty()) {
+        head += " arranges ";
+        for (std::size_t i = 0; i < c.layouts.size(); ++i) {
+            if (i) {
                 head += ", ";
             }
-            head += name;
-            first = false;
+            head += c.layouts[i];
         }
     }
     if (!c.permits.empty()) {
@@ -424,6 +428,25 @@ void emitClass(Emitter& e, const ClassDecl& c) {
             }
             head += c.permits[i];
         }
+    }
+    // A LAYOUT'S CONCESSIONS MUST CROSS, and this is the line that makes the note below true again.
+    //
+    // That note says only the FACT of a layout needs to travel, because the reordering is triggered
+    // by there being a layout at all. That was accurate under the first design and is exactly wrong
+    // under the second: reordering is now triggered by `permits reorder`, so a header that dropped
+    // the word would tell the consumer *this type is arranged* and leave it to lay the fields out in
+    // declaration order -- reintroducing, from the one direction nothing local can see, the offset
+    // disagreement the whole redesign was written to remove.
+    //
+    // `c.permits` is empty for a layout: the parser reads the two words off it into flags, because
+    // they are not subtype names and a layout can have no subtypes. So they are spelled back here.
+    if (c.isLayout && (c.permitsReorder || c.permitsPadding)) {
+        head += " permits ";
+        head += c.permitsReorder ? "reorder" : "";
+        if (c.permitsReorder && c.permitsPadding) {
+            head += ", ";
+        }
+        head += c.permitsPadding ? "padding" : "";
     }
     // A layout's body is its `onArrange` budget, which belongs to the library that had to meet it. The
     // consumer needs the name to bind an `implements` to, and nothing else.

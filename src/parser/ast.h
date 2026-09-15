@@ -72,6 +72,14 @@ struct TypeRef {
     // spelling is `int[16]`, which no existing check mistakes for `int[]` because they test for the
     // literal "[]".
     int arrayExtent = 0;
+    /* ...AND THE EXTENT BEFORE IT IS A NUMBER (A.3). `T[R * C]` inside `Matrix<fixed T, fixed int R,
+     * fixed int C>` states an extent the type knows and the compiler cannot fold until R and C are
+     * bound. Held as the text between the brackets ("R*C"), substituted with everything else when
+     * the class is stamped, and folded to `arrayExtent` there.
+     *
+     * Empty for every ordinary array, which is every array written before this existed: a stated
+     * extent that is already a literal fills `arrayExtent` at the parse and never comes here. */
+    std::string arrayExtentExpr;
     bool isRef = false;      // T&
     bool isNullable = false;  // `nullable T` (spec 3.7): may hold null; canonical form is "T?"
     bool isMove = false;      // `move T` (spec 19.6): ownership-transfer param/return; transparent
@@ -115,30 +123,56 @@ inline std::string canonicalType(const TypeRef& t) {
     // called, so the two can never end up disagreeing about it. (It was tried as a `typealias` in the
     // prelude first; adding one to `namespace Memory` breaks `System.Memory.Units.kilobytes`.)
     const std::string base = t.name == "RegionSnapshot" ? std::string("address") : t.name;
+    // An extent that is still an expression renders as the expression: `float[R*C]` is a stable name
+    // for a template, and stamping rewrites it to `float[16]` the same way it rewrites `T`.
+    const std::string extent = t.arrayExtent > 0 ? "[" + std::to_string(t.arrayExtent) + "]"
+                               : !t.arrayExtentExpr.empty() ? "[" + t.arrayExtentExpr + "]"
+                                                            : arrayDimsSuffix(t.arrayDims);
     const std::string core = mangleGeneric(base, t.typeArgs) + (t.arrayElemPointer ? "*" : "") +
-                             (t.arrayExtent > 0 ? "[" + std::to_string(t.arrayExtent) + "]"
-                                                : arrayDimsSuffix(t.arrayDims)) +
-                             std::string(t.pointerDepth, '*') + (t.isRef ? "&" : "");
+                             extent + std::string(t.pointerDepth, '*') + (t.isRef ? "&" : "");
     return t.isNullable ? makeNullable(core) : core;
 }
 
-// [unknown-abi] A `funcptr<...>` type may carry a foreign-world calling convention as a leading
-// "$<conv>" element inside its brackets: "funcptr<$unknown:pe,Ret,P0,...>" (from `unknown pe
-// funcptr<...>`). These recover / strip it so every substring-splitter (codegen + sema) stays in
-// sync; a plain funcptr (no leading '$') is returned unchanged. `inner` = text between funcptr< and >.
-inline std::string funcptrWorld(const std::string& inner) {  // "" if none; else e.g. "unknown:pe"
+// THE TEXT BETWEEN THE BRACKETS, cut by finding them rather than by counting the prefix.
+//
+// Every caller used to write `t.substr(8, t.size() - 9)`, where 8 is the length of "funcptr<". That
+// held for exactly as long as the word did: the type has been renamed twice, and "methodptr<" is ten
+// characters. A hardcoded 8 does not fail to compile -- it silently cuts two characters off the
+// return type, which is the kind of wrong that reaches a machine.
+inline std::string bracketedInner(const std::string& type) {
+    const std::size_t open = type.find('<');
+    if (open == std::string::npos || type.empty() || type.back() != '>') {
+        return std::string();
+    }
+    return type.substr(open + 1, type.size() - open - 2);
+}
+
+// [unknown-abi] A `methodptr<...>` type may carry a foreign-world calling convention as a leading
+// "$<conv>" element inside its brackets: "methodptr<$unknown:pe,Ret,P0,...>" (from `unknown pe
+// methodptr<...>`). These recover / strip it so every substring-splitter (codegen + sema) stays in
+// sync; a plain methodptr (no leading '$') is returned unchanged. `inner` = the bracketed text.
+inline std::string methodptrWorld(const std::string& inner) {  // "" if none; else e.g. "unknown:pe"
     if (inner.empty() || inner[0] != '$') {
         return "";
     }
     std::size_t c = inner.find(',');
     return inner.substr(1, (c == std::string::npos ? inner.size() : c) - 1);
 }
-inline std::string funcptrBody(const std::string& inner) {   // `inner` with any "$<conv>," removed
+inline std::string methodptrBody(const std::string& inner) {  // `inner` with any "$<conv>," removed
     if (inner.empty() || inner[0] != '$') {
         return inner;
     }
     std::size_t c = inner.find(',');
     return c == std::string::npos ? std::string() : inner.substr(c + 1);
+}
+// A bare code address, `nullable` or not. It is spelled with brackets rather than a trailing '*', so
+// `isRefType` does not recognise it -- and every place that asks "may this be compared against null"
+// has to ask this too. A null code address is not an edge case in the C ABI: it is how "there is no
+// callback" is written, which is why the nullable spelling has to answer yes here as well. Testing the
+// declared type against the bare prefix said no, and a `nullable methodptr` field then had no way to
+// be either called or checked.
+inline bool isMethodPtrType(const std::string& t) {
+    return stripNullable(t).rfind("methodptr<", 0) == 0;
 }
 
 // ---- Expressions ----
@@ -341,15 +375,24 @@ inline bool isUnsignedIntName(const std::string& t) {
 // field count?" would eventually disagree, and here they would disagree about where state lives.
 //
 // Excluded on purpose: a pointer, array, reference or nullable field has no structural value to compare,
-// and a class or enum reference is an identity of its own rather than part of this one. A field left out
+// and a class reference is an identity of its own rather than part of this one. A field left out
 // is warned about at the declaration, never silently dropped.
+//
+// AN ENUM IS NOT ONE OF THOSE, and saying it was cost Stone Reports a real bug. `record Entry(String
+// path, String name, EntryKind kind, int start, int size)` says in its own header comment that two
+// entries with the same name, KIND, start and size are the same entry -- and the generated equality
+// dropped `kind`, so a storage and a stream that agreed on everything else compared EQUAL. An ordinal
+// enum is a small integer with names on it: it has exactly the structural value the exclusion says it
+// lacks. A SUM is the case that sentence was really about, and a sum never reaches here -- a case with
+// a payload desugars into a sealed hierarchy at the parse site, so its field names a class.
 enum class KeyFieldKind {
     None,    // not part of the identity
     Scalar,  // fixed-width: integers, boolean, char, floats -- compared and serialised as their bytes
     Text,    // String: variable-width, serialised as a length prefix then the contents
     Nested,  // a struct/record of the above: recurse in declaration order
 };
-inline KeyFieldKind keyFieldKind(const TypeRef& t, const std::set<std::string>& valueTypeNames) {
+inline KeyFieldKind keyFieldKind(const TypeRef& t, const std::set<std::string>& valueTypeNames,
+                                 const std::set<std::string>& ordinalEnumNames) {
     if (t.isArray || t.isPointer || t.isRef || t.isNullable) {
         return KeyFieldKind::None;
     }
@@ -358,6 +401,12 @@ inline KeyFieldKind keyFieldKind(const TypeRef& t, const std::set<std::string>& 
     }
     if (valueTypeNames.count(t.name) > 0) {
         return KeyFieldKind::Nested;
+    }
+    // Compared with `==`, folded into the hash through `cast<long>`, and left out of the ORDERING --
+    // `<` on an enum is refused (0801), the same shape booleans are already in. An order is a weaker
+    // contract than an identity, and the identity is what was wrong.
+    if (ordinalEnumNames.count(t.name) > 0) {
+        return KeyFieldKind::Scalar;
     }
     static const std::set<std::string> scalars = {
         "byte", "ubyte", "short", "ushort", "int", "uint", "long", "ulong", "address",
@@ -455,6 +504,26 @@ struct ExtractExpr : Expr {
 // `checkpoint` value. A later `rollback region R to m` destructs everything allocated after the mark
 // (newest first) and rewinds the cursor. `checkpoint` is a built-in value type (an opaque i64 cursor).
 struct MarkExpr : Expr {
+    std::string region;
+    void dump(std::string& out, int indent) const override;
+};
+
+// `capacity of region R` / `used of region R` / `room of region R` (spec 17) -- how big the arena is,
+// how much of it has been handed out, and how much is left, in bytes.
+//
+// WHY A REGION HAS TO BE ABLE TO ANSWER THIS. A fixed region that fills does not return null, it
+// panics -- deliberately, because a silent short allocation in an arena is worse. But that leaves a
+// caller who wants to STAY inside a budget with nothing to ask: the only way to know whether the next
+// object fits was to keep a byte counter beside the region and add up the sizes by hand, including
+// the per-array header, and hope that private arithmetic and the region's own never drifted apart.
+// That is a second allocator written next to the real one, and it is exactly the shape of thing this
+// language exists to delete.
+//
+// So the region answers. `room of region R` is the question an admission check actually asks, and it
+// is asked of the object that cannot be wrong about it.
+struct RegionSpaceExpr : Expr {
+    enum class Ask { Capacity, Used, Room };
+    Ask ask = Ask::Room;
     std::string region;
     void dump(std::string& out, int indent) const override;
 };
@@ -571,6 +640,33 @@ struct TupleExpr : Expr {
     void dump(std::string& out, int indent) const override;
 };
 
+// ---- Annotations (spec 14.3) ----
+//
+// HERE rather than beside the declarations they mostly apply to, because a LOCAL carries them now
+// and a local is a statement. A `std::vector<AnnotationUse>` in a statement needs the type complete
+// where the member is declared, and the alternative -- an incomplete element type -- is a rule about
+// which member functions may be instantiated where, which is not a rule this file should depend on.
+
+// One named argument of an annotation use: `value: 100`.
+struct AnnotationArg {
+    std::string name;   // the annotation field being set
+    ExprPtr value;
+    SourceLocation loc;
+};
+
+// An applied annotation `[Name(arg: val, ...)]`, attached to a declaration it precedes.
+struct AnnotationUse {
+    std::string name;
+    std::vector<AnnotationArg> args;
+    SourceLocation loc;
+    // ALREADY HONOURED, BEFORE THE ANALYSER RAN. A few rules are checked in the driver, while the
+    // AST is still being built -- the generated-key one, because it decides what to generate -- and
+    // an `[Allow]` they obey is invisible to the staleness check, which lives in the analyser and
+    // only sees the suppressions the analyser itself performed. Without this the author is told, in
+    // the same run, that the annotation silenced a warning and that it never silenced anything.
+    mutable bool honouredEarly = false;
+};
+
 // ---- Statements ----
 struct Stmt {
     SourceLocation loc;
@@ -581,6 +677,14 @@ using StmtPtr = std::unique_ptr<Stmt>;
 
 struct ExprStmt : Stmt {
     ExprPtr expr;
+    /* Written `discard <expr>;` -- THE ANSWER WAS SEEN AND NOT WANTED (B.2).
+     *
+     * `mustuse` warns when a result is thrown away, and a rule with no way to say "yes, on purpose"
+     * is a rule people learn to switch off. This is the valve, and it is a WORD rather than a
+     * suppression comment: it is in the code, at the line, and a reader sees the decision instead of
+     * a missing diagnostic. Nothing else about the statement changes -- the expression is evaluated
+     * and its value dropped, exactly as before. */
+    bool isDiscard = false;
     void dump(std::string& out, int indent) const override;
 };
 
@@ -608,6 +712,22 @@ struct AsmStmt : Stmt {
     std::vector<ExprPtr> outputs;       // lvalues the asm writes  -> "=r" constraints
     std::vector<ExprPtr> inputs;        // values the asm reads    -> "r"  constraints
     std::vector<std::string> clobbers;  // registers the asm destroys -> "~{reg}"
+    // WHERE EACH OPERAND MUST BE (docs/design/asm-constraints.md), parallel to the two lists above
+    // and empty where the author said nothing -- which is every block written before this existed.
+    //
+    // `asm("x86_64") { in $0, dx } out ("ax": value) in ("dx": port)`. The vocabulary is the
+    // ARCHITECTURE'S OWN register names, not C's letter codes: `"ax"`, not `"a"`. A private alphabet
+    // is a second thing to learn for a fact the machine already has a word for, and it runs out --
+    // C spells the `edx:eax` pair `"A"` and has no letter left for another pair.
+    //
+    // A SECOND VECTOR INDEXED BY THE SAME INTEGER IS THE SHAPE THAT HIDES A TYPE, and it is here
+    // anyway rather than as a field on a new `AsmOperand`. `outputs` and `inputs` are `ExprPtr`
+    // lists that the parser, the analyzer, the cloner and the emitter all walk by index; giving them
+    // an element type would touch five files to carry a string. What the ban protects against is
+    // parallel arrays that can DISAGREE about their length, and these cannot: `parseAsm` pushes to
+    // both on every operand, and `""` is what "nothing said" looks like.
+    std::vector<std::string> outputWhere;   // per outputs[i]: "ax", "edx:eax", "memory", ""
+    std::vector<std::string> inputWhere;    // per inputs[i], the same vocabulary
     void dump(std::string& out, int /*indent*/) const override { out += "asm"; }
 };
 
@@ -740,6 +860,16 @@ struct VarDeclStmt : Stmt {
     TypeRef type;        // used when !isVar
     std::string name;
     ExprPtr init;        // M2: an initializer is required
+    // `[Allow(code: "...", why: "...")]` written on the DECLARATION. Every other place a warning is
+    // reported has somewhere to put one -- a class, a method, a field -- and a local did not, so the
+    // one kind of advice that is ABOUT a local could not be answered at all: the author's only move
+    // was to change code that was right, or to put an `[Allow]` on the whole method and switch the
+    // rule off for every other local in it.
+    //
+    // Read by NAME at the warn site rather than pushed as a frame, and that is the difference
+    // between this and every other `[Allow]` here: a frame would cover the rest of the method, so
+    // one local's exemption would quietly cover the next one's.
+    std::vector<AnnotationUse> annotations;
     void dump(std::string& out, int indent) const override;
 };
 
@@ -846,6 +976,17 @@ struct Param {
 // closures (a function value that carries an environment) is the next step.
 struct Capture {
     bool byRef = false;
+    // `move x` -- THE FOURTH WAY ACROSS A THREAD BOUNDARY (docs/design/ownership.md §11).
+    //
+    // `atomic<T>`, `Mutex<T>` and `Channel<T>` are three ways to SHARE. None of them is the obvious
+    // one, which is **not to share** -- to hand it over. A thread that receives its chunk by `move`
+    // is its sole holder, so no race is possible because there is no second holder: safe by
+    // construction rather than by a lock, and it costs nothing.
+    //
+    // It is the common case -- one worker, one chunk -- and expressing it needed no relaxation of
+    // the rule that protects the dangerous case. What it needed was a third capture mode: `byvalue`
+    // copies, `byref` shares, and neither says *the outer scope no longer has this*.
+    bool isMove = false;
     std::string name;
     SourceLocation loc;
 };
@@ -864,6 +1005,10 @@ struct LambdaExpr : Expr {
 struct MethodRefExpr : Expr {
     ExprPtr object;       // the receiver expression
     std::string method;   // the method name
+    // The generated command class that expresses this binding -- `Animal$bound$speak`, carrying the
+    // receiver and forwarding to the method. Filled in by the analyzer, which is where the receiver's
+    // type is known; empty until then, and empty for good if the reference did not resolve.
+    std::string boundClass;
     void dump(std::string& out, int /*indent*/) const override { out += "methodref"; }
 };
 
@@ -1005,20 +1150,9 @@ struct ForeachStmt : Stmt {
 };
 
 // ---- Annotations (spec 14.3) ----
-
-// One named argument of an annotation use: `value: 100`.
-struct AnnotationArg {
-    std::string name;   // the annotation field being set
-    ExprPtr value;
-    SourceLocation loc;
-};
-
-// An applied annotation `[Name(arg: val, ...)]`, attached to a declaration it precedes.
-struct AnnotationUse {
-    std::string name;
-    std::vector<AnnotationArg> args;
-    SourceLocation loc;
-};
+//
+// The two types themselves are declared ABOVE the statements, because a local declaration carries
+// them now -- see `VarDeclStmt::annotations` for what that is for.
 
 // A field of a custom annotation: `int value;` (required) or `String msg default "...";` (optional).
 struct AnnotationField {
@@ -1071,6 +1205,14 @@ struct MethodDecl : MemberDecl {
     bool isStatic = false;
     bool isAbstract = false;  // no body; must be overridden
     bool isOverride = false;  // overrides an inherited/interface method
+    // `surveyed`: the region binder does not derive this method's lifetime summary from its body.
+    // Inside, the one refusal about values it cannot PLACE is suspended -- everything it can still
+    // prove wrong stays refused. Outside, the boundary goes to the worst case: every reference
+    // parameter is treated as kept, and a reference result as a borrow of everything in reach.
+    //
+    // The freedom is local and the suspicion is exported, which is the opposite of what `unsafe`
+    // does -- and it is what makes marking a method cost its callers rather than nobody.
+    bool isSurveyed = false;
     bool isFinal = false;     // cannot be overridden
     bool isProperty = false;  // computed get-only property: read as obj.name (no parens)
     std::string propertySetter;  // spec 8.4: setter method when this getter also has a custom set { }
@@ -1091,6 +1233,75 @@ struct MethodDecl : MemberDecl {
     // entirely at the edges: nothing may call it, and codegen emits a second function beside it
     // carrying `x86_intrcc` so LLVM writes the register save/restore and the `iretq`.
     bool isInterrupt = false;
+    // `reentrant method m()` (docs/design/reentrant.md): THIS MAY BE ENTERED AGAIN WHILE AN EARLIER
+    // ENTRY IS STILL RUNNING.
+    //
+    // Two things follow from that one sentence, and the `interrupt` rule already checks both: it
+    // reaches no storage another activation could be inside (the allocator has global mutable state
+    // you may have interrupted mid-update), and it touches no shared mutable state. Naming the
+    // REASON rather than one of the mechanisms is what makes it wider than a "does not allocate"
+    // marker -- it also catches the lock, because a `reentrant` method that takes a `Mutex`
+    // deadlocks against itself, which no allocation rule can see.
+    //
+    // `interrupt` is IMPLICITLY reentrant (§4, §7), so its bespoke list of prohibitions becomes one
+    // implication of a property anything can declare -- and a method that is not a handler but must
+    // be equally careful (a scheduler entry, a page-fault path, a destructor during teardown) gains
+    // a way to say so, which it did not have.
+    //
+    // VIRAL, which is the half that closes AP-12's hole for free: the obligation is inherited by
+    // everything the method calls, including the implicit destructor at scope exit, because that is
+    // a call and calls are checked.
+    bool isReentrant = false;
+    /* `readonly` -- THIS METHOD WRITES NOTHING, declared and then checked.
+     *
+     * Strict: no field of its own, no field of anything it was handed, no static, no output. The
+     * analysis already existed -- `methodFacts_` computes what a body writes and composes it by
+     * fixpoint over the call graph -- and what was missing was the DECLARATION. With it, an
+     * inference becomes a promise: the compiler refuses the word over a body that writes, so a
+     * reader who sees it does not have to go and check.
+     *
+     * It is what makes a method callable from a contract, which is the rule that needed it most: a
+     * `requires` that could change state would make the check part of the program's behaviour.
+     */
+    bool isReadonly = false;
+    /* `cold` -- THIS PATH IS RARELY TAKEN (B.3).
+     *
+     * The inliner costs a method by its SIZE, which is a poor proxy when the bulk of one runs once
+     * in a thousand calls -- `ArrayList.ensureCapacity` is the case that asked for it. Marked cold,
+     * the body moves off the hot line and stops being inlined into one.
+     *
+     * There is no `hot`. Hot is what the optimizer already assumes, so the word would spend a token
+     * and tell the compiler nothing it did not have. It composes with `throw`: a path that ends in
+     * one is already implicitly cold, and the keyword is for what cannot be inferred.
+     */
+    bool isCold = false;
+    // `mustuse` on a METHOD (B.2): this one's answer is the point, so dropping it is a mistake.
+    // The refinement beside the type-level default -- `Result` and `Option` carry it by nature, and
+    // this is for the occasional method whose answer matters on a type that is otherwise ordinary.
+    bool isMustUse = false;
+    // Written `pass` rather than `method` (entity.md 5). The body is written for ONE ROW and runs
+    // over the whole population: `swarm.advance(dt)` iterates. It is an ordinary instance method of
+    // the entity -- the body says `x = x + vx * dt` and `x` is this row's -- plus a driver the
+    // compiler synthesises over the array, so the two never disagree about what the body means.
+    //
+    // Without it, "advance every particle" becomes `static method advance(Particle[] ps)`, which is
+    // a free function in a hat; this repository has written one by accident twice.
+    bool isPass = false;
+    // `pass advance(float dt) reads (vx, vy) writes (x, y)` -- the access sets (entity.md 6), in
+    // the grammatical slot `returns`/`throws`/`requires`/`ensures` occupy.
+    //
+    // What they are FOR: two passes whose write sets are disjoint can run concurrently, PROVABLY,
+    // and the proof is over columns rather than over pointer aliasing -- which is why it succeeds
+    // where the object case cannot. `pure` is deliberately absent: it is a claim about a function,
+    // from a paradigm whose unit is the function, and its content here is the degenerate case
+    // `reads () writes ()`.
+    std::vector<std::string> readsFields;
+    std::vector<std::string> writesFields;
+    // `pass advance(float dt) index i` -- the row's position, bound by the same word `foreach` uses
+    // and in the same position. A BINDER, not a parameter: the caller does not supply it, which is
+    // why it sits outside the parameter list where it would otherwise read as one. Empty when the
+    // pass never asks, which is most of them.
+    std::string indexBinding;
     // Written `procedure` rather than `method`. A METHOD's signature is fixed where it is declared;
     // a PROCEDURE's is completed at the type that applies it, which is the whole distinction and the
     // reason the second word exists. Checked in BOTH directions at the applying type -- `method` for
@@ -1098,6 +1309,32 @@ struct MethodDecl : MemberDecl {
     // declares is too -- so provenance survives a terminal, a diff and a review, which is what
     // Java's `@Override` tries to be and fails at because it can be left out.
     bool isProcedure = false;
+    /* Written `command` rather than `method`: PORTABLE behaviour, the third member kind beside
+       `method` (an instance's) and `procedure` (a relation's). A command is a thing you hand to
+       whoever knows WHEN to run it -- what a lambda is for, said with a subject and a name.
+
+       `carries (...)` IS THE CAPTURE, DECLARED. Nothing is closed over implicitly: naming an outer
+       local that is not on this list is a compile error, so what a command holds is its declaration
+       and the region binder reads the list rather than discovering it. `into <pack>` names where
+       that baggage lives, and inside the body it is reached qualified (`pack.minAge`) -- no language
+       gives the environment of a closure a name, and this one does.
+
+       `this` is never captured either. If the instance has to travel it goes on the list like any
+       other value, so a command WITHOUT it provably does not hold its declaring object. */
+    bool isCommand = false;
+    std::vector<Param> carries;   // the baggage, in declaration order: the generated class's fields
+    std::string packName;         // what the baggage is called inside the body; empty when there is none
+    SourceLocation packLoc;
+    // THE MEMBER A LAYOUT'S `resolvedBy` NAMES -- set by `resolveLayouts`, before the analyser runs,
+    // on the target's own and on the layout's default alike.
+    //
+    // What it buys is one exemption, and it is the same one `onArrange` has: the body is READ and
+    // never analysed as ordinary code. Inside it `itself` is the arrangement being decided rather
+    // than any value the program can hold, and `itself.place(head)` names a FIELD where the analyser
+    // would look for a variable -- so analysing it reports *use of undeclared variable 'itself'* on
+    // a line whose whole purpose is to be read at build time. It is validated instead by
+    // `readResolver`, which knows what the four verbs are and what they take.
+    bool isLayoutResolver = false;
     // `procedure into<each Other>() returns Other;` -- a socket that names a FAMILY of procedures
     // indexed by the target type, one implementation per target, instead of one body over every T.
     //
@@ -1139,6 +1376,10 @@ struct MethodDecl : MemberDecl {
     std::string externSymbol;
     std::string name;
     std::vector<std::string> typeParams;  // generic method parameters: identity<T> -> ["T"]
+    // A.3, per parameter: `fixed` binds at stamping, and a non-empty value type makes it a hole
+    // where a NUMBER goes rather than a type -- `timesShape<fixed int N>`.
+    std::vector<bool> typeParamFixed;
+    std::vector<std::string> typeParamValueType;
     // spec 15.2: constraints on those parameters -- `clamp<T extends Numeric>` -> [{"T","Numeric"}].
     // Checked against the type arguments at monomorphization, like the class-level ones.
     std::vector<TypeBound> typeParamBounds;
@@ -1207,6 +1448,13 @@ struct FieldDecl : MemberDecl {
     bool isMovable = false;     // spec 19.9: `movable` field -- movable separately (partitionable class)
     bool isUnique = false;      // spec 19.9: `unique` field -- single live reference, movable separately
     bool isWeak = false;        // `weak T*` field -- non-owning; auto-nulled when the pointee dies (intrusive)
+    // `sparse` (entity.md 7): this column is stored BY PRESENCE rather than per row. The two ways
+    // out without it are both bad -- a dense column of a million slots for the three thousand that
+    // exist, or a side table beside the entity, and a side table is the type dissolving again,
+    // which is the exact failure the construct answers.
+    bool isSparse = false;
+    // `stable` on a field: a pointer to it stays valid. The universal prefix's field spelling.
+    bool isStableField = false;
     // spec 32.9: "hot" / "cold" when the field was declared inside an `affinity` block; "" otherwise.
     // A layout hint only: hot fields are packed first in the object and cold ones last, so a loop that
     // touches only the hot ones touches fewer cache lines.
@@ -1244,9 +1492,47 @@ struct ClassDecl {
     std::vector<std::string> typeParams;  // generic parameters, e.g. Box<T> -> ["T"]
     // Variance per type param (spec 15.3): "out" covariant, "in" contravariant, "" invariant.
     std::vector<std::string> typeParamVariance;
+    /* CONST GENERICS (A.3): what each parameter is, and WHEN it binds.
+     *
+     * `class Matrix<fixed T, fixed int R, fixed int C>` has three parameters and two kinds. `T` is a
+     * hole where a TYPE goes; `R` and `C` are holes where a NUMBER goes -- which is the thing the
+     * language had no way to write, and why `Math.Matrix` carries its dimensions as runtime fields:
+     * `get(r, c)` computes an index with a load, the type cannot be embedded in another, and
+     * `multiply` accepts any matrix at all, so a 4x3 times a 7x9 compiles and fails at run time.
+     *
+     * `typeParamValueType` is empty for a type parameter and holds the value's type ("int") for a
+     * value parameter. `typeParamFixed` says the parameter binds at STAMPING -- it participates in
+     * the type's identity and is monomorphized.
+     *
+     * `fixed` is per parameter and does not spread: `<fixed T, int a>` means T is stamped and `a` is
+     * not, which is the anti-modifier-infection rule. What a BARE parameter means is reserved rather
+     * than spent -- a bare value parameter is runtime-bound (`mdspan`'s mixed extents) and a bare
+     * type parameter is a runtime generic over a type descriptor -- and v1 refuses a bare value
+     * parameter with a message saying so, so nobody spends the spelling on something else.
+     */
+    std::vector<bool> typeParamFixed;
+    std::vector<std::string> typeParamValueType;
     // Constraint per type param, if any, from `<T extends X>` / `<T implements I>` / `<T applies T2>`.
     std::vector<TypeBound> typeParamBounds;
     bool isInterface = false;             // declared with `interface`
+    // Declared with the namespace-level form `command Name(args) returns T;` -- the ROLE a command
+    // plays, written where an API needs to name it. It is an interface with exactly one method, and
+    // it is `isInterface` too, so everything downstream treats it as the interface it is; the flag
+    // exists so `expandCommands` can find the roles a generated command class fits, and so a
+    // diagnostic can say "command type" where the author wrote one.
+    //
+    // A ROLE, NOT A FORM: nothing implements it by name. `expandCommands` adds it to every command
+    // class whose signature matches, which is what makes `Kennel.aboveAge(21)` usable as a
+    // `DogTest*` without the command's author having heard of `DogTest`.
+    bool isCommandType = false;
+    /* `mustuse` on a TYPE (B.2): a value of it is the point of the call that produced it, so a
+     * caller who drops one has almost certainly forgotten something.
+     *
+     * The DEFAULT belongs here rather than on each method. `Result` and `Option` are must-use by
+     * nature -- a `Result` whose answer is thrown away is an error nobody handled, which is the
+     * commonest bug this language's error model exists to prevent -- and stating it once on the
+     * type covers every method that ever returns one, including the ones written next year. */
+    bool isMustUse = false;
     // VALUE AGGREGATE. Set by `struct`, and ALSO by `record` and `union`, which are the same thing
     // under three field-arrangement policies: in sequence, in sequence with generated identity, and
     // overlapping. The name says `struct` for history; what it means is "a value aggregate", which is
@@ -1254,6 +1540,16 @@ struct ClassDecl {
     bool isStruct = false;
     bool isRecord = false;                // declared with `record` -- immutable value type
     bool isUnion = false;                 // declared with `union` -- fields share one storage
+    // Declared with `entity` (docs/design/entity.md) -- a value type whose ARRAYS are transposed. A
+    // lone entity is a struct and is laid out as one; what the word changes is `T[]`, which becomes
+    // one block of columns rather than a run of rows. It sets `isStruct` too, because everything
+    // about a single one -- value semantics, no vtable, no inheritance -- is what `struct` means.
+    bool isEntity = false;
+    // `stable entity` -- the rows never move, so an index into one is a permanent reference and
+    // deletion leaves a hole rather than swapping the last row down. On any other declaration the
+    // word means the same thing about that thing's address; the entity case is the one where it
+    // changes what the compiler emits.
+    bool isStable = false;
     // Declared with `layout` -- an interface for memory (not a species): it says how an implementing
     // value aggregate arranges itself, and is consumed entirely by the compiler. Never a type: no
     // variable has a layout type, no value is ever one, and nothing of it reaches the executable.
@@ -1346,16 +1642,62 @@ struct ClassDecl {
     bool isRegionClass = false;
     bool isHeap = false;
     bool isUnique = false;                // `unique class` -- single live reference
+    // `dynamic class X` (docs/design/dynamic.md): the instance CARRIES ITS TYPE at run time -- a
+    // vtable pointer as field zero, eight bytes on every instance, and membership of the `Object`
+    // root so it can be held as one, asked `is`, and dispatched through.
+    //
+    // Without it a class is its fields, and that is the whole of AP-02: `class Tag`, which nothing
+    // extends and nothing overrides, was eight bytes wide because nobody had written anything. C++
+    // hangs the same cost on a per-method `virtual` and lets the header appear as a side effect the
+    // declaration does not mention; here one word says both which bodies are chosen at run time and
+    // which types are known at run time, and a class that does neither pays for neither.
+    //
+    // NOT INFERRED (§7.1). A class used as an `Object*` without the word is a compile error naming
+    // the word and the eight bytes, rather than being marked dynamic because the use was seen --
+    // inference needs whole-program knowledge, breaks across a bundle boundary, and moves the cost
+    // away from the declaration, which is the one property the design rests on.
+    bool isDynamic = false;
+    // `shareable class X` / `shareable struct X` (ownership.md §13a, §14, §20.4): safe to reach from
+    // several threads at once, so the region binder may hand it to a thread.
+    //
+    // A MODIFIER rather than the `implements Shared` marker it started as. Three reasons, and the
+    // third forces it: it is an adjective, not a contract with methods; `implements` reads as
+    // *dispatches something* and it dispatches nothing; and under `dynamic` a class that implements
+    // an interface carries a header -- so a value type declaring itself shareable would acquire
+    // eight bytes and an indirection for a property that generates no calls. That cost is invisible
+    // at the declaration, which is the one thing this language's cost story forbids.
+    //
+    // CHECKED, NOT TRUSTED (§14), and the rule is local: legal when every mutable field is
+    // `atomic<T>` or itself shareable, or when the type is entirely immutable. A bare permission
+    // would be a one-word hole in the no-UB principle, and trading the refusal for a password hands
+    // AP-33 back after winning it.
+    bool isShareable = false;
     bool isPartitionable = false;         // `partitionable class` -- fields movable separately (spec 19.9)
     std::string superclass;               // "" when none (from `extends`)
     std::vector<std::string> superclassTypeArgs;  // type args on `extends Base<...>` (generics)
     std::vector<std::string> interfaces;  // from `implements`
-    // The layouts named in `implements`, moved out of `interfaces` before the analyser runs so that
-    // everything downstream keeps seeing a list of interfaces only. A layout has no methods to
-    // implement and no vtable slot; it decides how the fields are arranged and then is gone.
+    // The layouts this type is arranged by -- written `arranges L`, and still read out of
+    // `implements L`, from which they are moved before the analyser runs so that everything
+    // downstream keeps seeing a list of interfaces only. A layout has no methods to implement and
+    // no vtable slot; it decides how the fields are arranged and then is gone.
     std::vector<std::string> layouts;
     std::vector<std::vector<std::string>> interfaceTypeArgs;  // type args per interface (generics)
     std::vector<std::string> permits;     // sealed permits list (subtypes)
+    // WHAT A LAYOUT CONCEDES -- `layout Compact permits reorder, padding`. Read off the same
+    // `permits` list a `sealed` class uses, because it is the same sense of the word about a
+    // different noun: there it is the closed set of what may extend, here the closed set of what
+    // the compiler is allowed to DO to reach an arrangement.
+    //
+    // BOTH DEFAULT TO FALSE, AND THAT IS THE WHOLE POINT OF THE SECOND DESIGN. Reordering used to
+    // be granted by the act of naming a layout at all, which made a wire format -- the case the
+    // repository's own `WireRecord` sample is written for, whose comment says *both ends index it*
+    // -- silently reorderable. Two declarations of the same record with the fields written in
+    // different orders both measured 32 bytes, both compiled, and disagreed on every offset.
+    bool permitsReorder = false;
+    // `padding`: bytes beyond what alignment requires. `isolate` and `align` are both spellings of
+    // inserting them deliberately, so both need this and neither is free (docs/design/layout.md
+    // 13.4) -- a layout that concedes nothing must come back with the bytes it was written for.
+    bool permitsPadding = false;
     std::vector<ExprPtr> invariants;      // class invariants (spec 29), checked per method
     std::unique_ptr<Block> onClassLoad;   // spec 32.5: hook run once at program start, before main
     std::unique_ptr<Block> onFirstInstance;          // spec 32.5: before the first instance is created
@@ -1380,8 +1722,29 @@ struct EnumDecl {
     std::string name;
     std::vector<std::string> constants;            // names, in declaration order (own then byCatalog)
     std::vector<std::vector<ExprPtr>> constantArgs;  // java-style: ctor args, parallel to constants
+    // The PAYLOAD of each case (spec 16, enum-variants 10.1): `enum Shape { Circle(double r), ... }`.
+    // Parallel to `constants`, empty for a case that carries nothing. This is what separates a sum
+    // from an ordinal enum: a java-style constant carries the same data for every use of that
+    // constant -- `RED(255)` is one red -- where a case with a payload carries data chosen at each
+    // construction, so `Circle(r)` is a different circle each time. The two spellings look alike,
+    // both being `NAME(...)`, and are told apart by what is inside the parentheses: expressions for
+    // one, `Type name` declarations for the other. See `payloadCaseAhead`.
+    std::vector<std::vector<Param>> constantPayloads;
+    // `enum Option<T> { Some(T value), None }`. The parameters are what make the payload SIZED:
+    // `Option<T>` has no known width, `Option<int>` is four bytes and a tag, decided by the same
+    // monomorphisation that decides `Box<int>`'s layout (enum-variants 10.1).
+    //
+    // The variance and bounds grammar comes over from the class line unchanged, because a sum's
+    // parameters constrain exactly as a class's do: `enum Sorted<T extends Comparable<T>>` means
+    // what it looks like. They are carried straight onto the desugared base and each case.
+    std::vector<std::string> typeParams;
+    std::vector<std::string> typeParamVariance;
+    std::vector<TypeBound> typeParamBounds;
     std::vector<MemberPtr> members;                // java-style: fields/constructor/methods
     bool isJavaStyle = false;
+    // Set when any case declares a payload: the enum is a SUM, and the desugaring at the parse site
+    // turns it into the sealed hierarchy that `Result`/`Option` are written out as by hand.
+    bool isSum = false;
     // `sealed enum E permits A, B, C;` (spec 12/16). An enum's constants are a closed list either
     // way -- what the word buys is that a `match` over it must COVER them, with the compiler naming
     // the ones that were forgotten, instead of quietly requiring a `default` that swallows the
@@ -1505,6 +1868,11 @@ struct Bundle {
     SourceLocation nameLoc;
     bool isFreestanding = false;  // `bundle X freestanding { ... }` (spec 36)
     bool isPrelude = false;       // from the embedded prelude, not user source; excluded from the .polh
+    // Appended by the compiler as part of the runtime -- the region core, the freestanding seed. Its
+    // `unknown c` methods carry a C ABI because the compiler emits calls to them by name, but every
+    // one of those calls is in this same module: they are not a boundary, and internalization must
+    // not keep them alive on a program that never reaches one. See `Function::appendedRuntime`.
+    bool isAppendedRuntime = false;
     bool isImported = false;      // from a depended-on .polb (parsed from its .polh): types are visible,
                                   // but bodies live in the .polb -- sema skips them, codegen externs them
     bool isDynamic = false;       // imported via --use-dynamic: loaded at runtime; codegen emits thunks
@@ -1540,8 +1908,33 @@ struct Program {
     // first -- so the checker told an author to import a type they had declared themselves. Both
     // exist; which one a use means is decided by where the use is, and that decision needs both.
     std::map<std::string, std::vector<std::string>> genericNamespaces;
+    /* EVERY METHOD NAME A `methodref` IN THIS PROGRAM NAMES.
+     *
+     * `methodref cat.speak` is a receiver bound to a method, which is a command carrying one thing.
+     * The class that expresses it is generated -- see `expandCommands` -- and generating one per
+     * (class, method) pair in the program would be an explosion for a construct most programs use
+     * nowhere. The parser is already walking every expression, so it writes down the handful of
+     * names that are actually referenced and the generator works from that list.
+     *
+     * Collected in the PARSER rather than by a later walk, for the reason every rewrite in this
+     * pipeline is: a second visitor over the tree goes out of date the first time a node kind is
+     * added, quietly, and only here. */
+    std::set<std::string> methodRefNames;
     SourceLocation loc;
     void dump(std::string& out, int indent) const;
 };
 
 }  // namespace polaron::ast
+
+namespace polaron {
+
+// THE METHOD EVERY COMMAND CLASS ANSWERS TO. One name for all of them, so a value of a command type
+// is callable without the caller knowing which command it holds -- the same role a single-method
+// interface plays, with the name chosen so nothing an author writes can collide with it.
+//
+// A HEADER CONSTANT, because the parser needs it and the language server links the parser WITHOUT
+// the expansion pass: defined in a .cpp it was an unresolved symbol in one binary out of five, and
+// that binary is the one nobody builds while working on the compiler.
+inline constexpr const char* kCommandMethod = "__command";
+
+}  // namespace polaron

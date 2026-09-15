@@ -1,0 +1,789 @@
+program PolaronRegionCore freestanding;
+
+/* THE ONE IMPLEMENTATION OF FLAVORED REGIONS (§17), IN POLARON.
+
+   It was a C++ header included twice -- once by the hosted runtime, once by a shim `polaron build`
+   wrote out and handed to clang. That arrangement existed to stop the allocator having two bodies,
+   and it worked, at the price of the one file the language cannot afford to have two of being the
+   file the language could not read.
+
+   It is one Polaron source now, and the compiler appends it to every program it builds -- hosted and
+   bare metal alike, the same way `polaron_fs_seed.pol` and `polaron_fs_region.pol` are appended. So
+   there is still exactly one body, and it is now in the same module as the code that calls it, which
+   the C++ arrangement could only manage on the hosted side (by including the header into
+   `polaron_rt.cpp`) and never on the other.
+
+   WHAT DIFFERS BETWEEN THE TWO WORLDS is where a block's bytes come from, and nothing else. Four
+   symbols say it, and both worlds already exported the first two before this file existed:
+
+       __polaron_region_acquire / __polaron_region_release       a block, and giving it back
+       __polaron_region_meta_resize / __polaron_region_meta_free the destructor registry's own array
+
+   Bare metal answers them from static arenas (`polaron_fs_region.pol`); a hosted program answers them
+   from the pooled allocator with a block cache in front (`polaron_rt.cpp`). Two more, the allocation
+   profiler's counters, are empty in a production build on both sides -- and being in this module,
+   empty is what they cost.
+
+   ADDRESSES AND NOT REFERENCES, for every link inside a block. `freelists`, `track`, `growNext` and
+   `growTail` are `address` rather than pointers-to-something, and that is not a shortcut around the
+   region binder: it is what they are. This is the layer that MANUFACTURES the references the binder
+   reasons about, and it holds none itself -- a free-list link is the first word of a slot the block
+   already owns, and saying so as a typed reference would be claiming a relationship that runs the
+   other way. `dataBase` is the exception and is a real pointer, because it is the one field the
+   COMPILER reads (see the lean header below).
+
+   THE DESTRUCTORS ARE `methodptr<void, byte*>` AND NOT `methodptr<void, address>`. A C destructor
+   takes a pointer, and `address` in this language means sixty-four bits whatever the machine is -- so
+   an `address` parameter is passed as two registers on a 32-bit target and every destructor call
+   would be one argument out of true. The same rule, and the same reason, as the pointers in
+   `polaron_fs_region.pol`. It is why the four backing methods below still take `byte*` where the
+   region binder would rather they took `address`: the boundary they cross is C's, and C's answer is
+   a pointer. */
+
+public bundle Runtime {
+    public namespace Regions {
+
+        /** One entry of a region's destructor registry: what to destruct, and with what. */
+        public struct RegionTrackEntry {
+            [Allow(code: "Polaron-0B3C", why: "the object this entry exists to destruct: it lives in the region's own block, which outlives the registry by construction -- the registry is freed during that block's teardown")]
+            public mutable address ptr;
+            [Allow(code: "Polaron-0B50", why: "two of these are never compared: the registry is a list walked by position, and an entry's identity is the object it names, which is the field above")]
+            public mutable nullable methodptr<void, byte*> dtor;
+        }
+
+        /** The header every slot in a pool/fixedslot/stack/ring region carries, just below the
+            payload. A `bump` region has none -- that absence is exactly what makes its allocation
+            cost what a hand-written arena costs. */
+        public struct RegionSlotHeader {
+            public mutable long magic;
+            public mutable int cls;
+            public mutable int pad;      // the payload size, so `free` need not be told it again
+        }
+
+        /* A FLAVORED REGION'S BLOCK STARTS WITH THIS.
+
+           The first three fields deliberately mirror the lean bump header ([used][cap][dataBase] at
+           0/8/16) so the inline bump cursor the compiler emits -- and `__polaron_region_release` --
+           read them the same way for every flavor. Those three are the whole of the contract with
+           the compiler; everything after them is this file's business, and the only thing said about
+           it elsewhere is that it fits inside `RegionCore.HeaderBytes`.
+
+           pool/fixedslot/stack allocate a slot per object: [16-byte header][payload], 16-aligned.
+           pool/fixedslot: a freed slot goes on `freelists[class]` and a later same-class allocation
+           pops it, so pointers never move. stack: pure bump plus mark/rollback. bump: no runtime call
+           at all -- the compiler bumps `used` in a register and the data carries no per-slot header.
+           Slots carry `Live` (distinct from the heap's own stamp) so a mistaken plain `delete` traps
+           instead of splicing a region-interior pointer onto the global heap free-list. */
+        public struct RegionDesc {
+            public mutable long used;         // +0   bump cursor over the data area, in bytes
+            public mutable long cap;          // +8   data-area capacity in bytes
+            [Allow(code: "Polaron-0B50", why: "two descriptors are never compared: a region is identified by the block it heads, and this field is that block's own interior")]
+            public mutable byte* dataBase;    // +16  = block + HeaderBytes
+            public mutable long flavor;       // +24  0=bump, 1=pool, 2=stack, 3=fixedslot, 4=ring
+            public mutable long entrySize;    // +32  fixedslot/ring slot stride (0 for a general pool)
+            public mutable long ringHead;     // +40  ring: index of the oldest entry
+            public mutable long ringCount;    // +48  ring: number of live entries
+            public mutable long ringCap;      // +56  ring: capacity in entries
+            // Objects with destructors, in allocation order (== address order, since both stack and
+            // bump bump upward). Rollback and teardown walk it newest-first. It is off the arena, so
+            // a region's declared capacity is entirely the user's, and only objects that HAVE a
+            // destructor are ever recorded. ONE array of pairs rather than two parallel arrays: half
+            // the growth steps, and a teardown walk that touches each cache line once.
+            [Allow(code: "Polaron-0B3C", why: "the registry array, which this descriptor owns outright: it is acquired by metaResize and given back by metaFree in teardown, so its lifetime is exactly this field's")]
+            public mutable address track;     // +64  RegionTrackEntry[]
+            public mutable long trackCount;   // +72
+            public mutable long trackCap;     // +80
+            public mutable long trackPad;     // +88  reserved; keeps what follows where it was
+            [Allow(code: "Polaron-0B50", why: "see `dataBase`: a descriptor is identified by its block, not compared field by field")]
+            public mutable nullable methodptr<void, byte*> ringDtor;  // +96 ring: the one element type's
+            // A growable region chains blocks on overflow. `growNext` links each block to the next,
+            // `growTail` (head only) is the block currently being bumped, `growable` is the flag. The
+            // free-list on the HEAD serves pool/fixedslot reuse across the whole chain.
+            [Allow(code: "Polaron-0B3C", why: "the next block of a chain this descriptor heads and frees: `__polaron_region_free_chain` walks these links and releases every one of them, so no link outlives its owner")]
+            public mutable address growNext;  // +104 next block in the chain (0 = last)
+            [Allow(code: "Polaron-0B3C", why: "a block already on the `growNext` chain above, named a second time so bumping need not walk it; it is freed exactly once, by the chain walk")]
+            public mutable address growTail;  // +112 head only: the block being bumped
+            public mutable long growable;     // +120 1 = chain a new block instead of trapping
+            [Allow(code: "Polaron-0B50", why: "see `dataBase`: a descriptor is identified by its block, not compared field by field")]
+            public mutable address[33] freelists;  // +128 per size class; [32] = large (>512)
+        }
+
+        /* A SNAPSHOT IS A COPY, NOT A MARK (§32.2).
+
+           A mark would be eight bytes and would restore a `stack` or `bump` region perfectly -- but
+           it says nothing about a `pool`, where freed slots return to free-lists and the cursor stops
+           describing the state. Snapshots are meant to work with any region, so they carry the bytes,
+           and that is why they need somewhere to live and have to be released by hand.
+
+           This header is followed by `used` bytes of the region's data area, contiguous, so the
+           caller owns and places ONE block. */
+        public struct RegionSnapshotHead {
+            public mutable long magic;
+            public mutable long used;
+            public mutable long trackCount;
+            public mutable long ringHead;
+            public mutable long ringCount;
+            public mutable long entrySize;
+            [Allow(code: "Polaron-0B50", why: "two snapshots are never compared: one is identified by the region and the moment it was taken, neither of which is in the bytes")]
+            public mutable address[33] freelists;
+        }
+
+        public class RegionCore {
+            /* WHERE A BLOCK'S BYTES COME FROM. The four symbols the two worlds answer differently,
+               and the whole of what they answer differently.
+
+               THEY TAKE `byte*` AND NOT `address`, which is what Polaron-1723 asks for at a foreign
+               boundary, and the reason is in this file's header: `address` is sixty-four bits on
+               every machine, so an `address` parameter is passed as two registers on a 32-bit target
+               and the C function on the other side reads the wrong ones. Taking 1723's advice here
+               would fix a proof by breaking the call.
+
+               So the methods that cross into these are `surveyed` instead, which is the other answer
+               the rule names and the honest one: somebody has read the far side. Both far sides are
+               in this repository -- `polaron_fs_region.pol` and the six methods at the end of
+               `polaron_rt.cpp` -- and neither keeps a pointer it is handed. `blockRelease` and
+               `metaFree` take ownership of theirs, which is the whole call; `metaResize` consumes
+               its argument and answers with the replacement, as realloc does. The guess does not
+               disappear, it moves: `surveyed` makes every caller of these stricter, and this file's
+               callers are the compiler's own emitted calls. */
+            private extern cdecl static method blockAcquire(long total) returns nullable byte*
+                symbol("__polaron_region_acquire");
+            private extern cdecl static method blockRelease(nullable byte* block) returns void
+                symbol("__polaron_region_release");
+            private extern cdecl static method metaResize(nullable byte* p, long oldBytes,
+                long newBytes) returns nullable byte* symbol("__polaron_region_meta_resize");
+            private extern cdecl static method metaFree(nullable byte* p, long bytes) returns void
+                symbol("__polaron_region_meta_free");
+
+            /* The allocation profiler's two counters. Compiled out of a production runtime on both
+               sides, and this file lands in the caller's own module, so what they cost there is what
+               the empty macros they replaced cost: nothing. */
+            private extern cdecl static method profileAlloc() returns void
+                symbol("__polaron_profile_alloc");
+            private extern cdecl static method profileFree() returns void
+                symbol("__polaron_profile_free");
+
+            /* Terminates the program with a message. Hosted: prints and exits. Bare metal: the weak
+               `cli; hlt` stub the driver assembles, which a kernel may override to say something
+               first. Every argument it is given below is a byte-string literal, part of the image
+               and outliving everything -- and the call does not come back, so there is no `after`
+               for a kept pointer to be wrong in. */
+            private extern cdecl static method panic(byte* message) returns void
+                symbol("__polaron_panic");
+
+            // A live slot inside a pool/fixedslot/stack/ring region...
+            public fixed long Live = 0x4C4450335247314E;
+            // ...and one sitting on its region's free-list, which is what makes a double free a trap
+            // rather than a splice.
+            public fixed long Freed = 0x4C4450335246524E;
+            public fixed long SnapMagic = 0x4C445033534E4150;
+
+            public fixed long PoolMax = 512;      // above this size a request is the "large" class
+            public fixed int Classes = 32;        // size classes 16, 32, ... 512 (step 16)
+            public fixed int Lists = 33;          // ...plus one for large
+            public fixed long SlotHeaderBytes = 16;
+            public fixed long Grain = 16;         // every payload is 16-aligned
+            public fixed long TrackEntryBytes = 16;
+            public fixed long SnapshotHeadBytes = 312;   // 6 longs + 33 addresses
+
+            // A fixed 16-aligned constant so the compiler and this file agree on the data offset
+            // without the compiler needing the size of a `RegionDesc`. It is `kFlavouredRegionHeader`
+            // in the lowering, and the two must not drift apart.
+            public fixed long HeaderBytes = 448;
+
+            public fixed long Bump = 0;
+            public fixed long Pool = 1;
+            public fixed long Stack = 2;
+            public fixed long FixedSlot = 3;
+            public fixed long Ring = 4;
+
+            /* THE DESCRIPTOR AT A BLOCK, and the slot header just below a payload. Both are plain
+               address arithmetic, because that is what they are: a block is bytes this file lays a
+               shape over, and the shape starts where the bytes do. */
+            private static method descAt(address block) returns RegionDesc* {
+                return cast<RegionDesc*>(block);
+            }
+            private static method headerOf(address payload) returns RegionSlotHeader* {
+                return cast<RegionSlotHeader*>(payload - cast<address>(RegionCore.SlotHeaderBytes));
+            }
+            private static method payloadOf(address header) returns address {
+                return header + cast<address>(RegionCore.SlotHeaderBytes);
+            }
+            /** The first word of a slot's payload, which is where a free-list link lives while the
+                slot is on a list. It is the slot's own memory, borrowed for as long as it is dead. */
+            private static method linkAt(address slot) returns address* {
+                return cast<address*>(slot);
+            }
+
+            /* ROUND A REQUEST UP TO THE ALLOCATION GRAIN, and never to nothing: a zero-byte object
+               still needs an address distinguishable from the next one's.
+
+               A MASK AND A SHIFT, not a division and a multiplication, in this method and in
+               `classOf` below. Sixteen is a power of two, so the two forms compute the same number --
+               but a division by a value the compiler cannot prove non-zero carries a guard, and in a
+               freestanding image that guard reports by THROWING, which needs the exception machinery,
+               the string runtime and an allocator. Two arithmetic operators in a method nobody reads
+               twice were dragging all three into kernels. The C++ this was ported from wrote the mask
+               for the same reason and did not say so; it says so now.
+
+               `ensures` for the same reason one step further out: it is what lets `__polaron_ring_new`
+               divide by this answer without a guard of its own. */
+            private static method rounded(long size) returns long
+                ensures result >= RegionCore.Grain
+            {
+                long payload = (size + RegionCore.Grain - 1) & ~(RegionCore.Grain - 1);
+                if (payload <= 0) { return RegionCore.Grain; }
+                return payload;
+            }
+
+            /* HOW MANY ENTRIES FIT, and the one division left in this file.
+
+               A division by a value the compiler cannot prove non-zero carries a guard, and that
+               guard reports by THROWING -- which materialises DivideByZeroException, its vtable and
+               its `message`, and `message` calls the string runtime. A freestanding image has none
+               of those, and `codegen_freestanding_has_no_string_runtime` says so by name. So the
+               divisor's floor is stated where the division is, as a precondition the caller has
+               already established: `rounded` never answers less than the grain.
+
+               Everywhere else the ring wraps by SUBTRACTING rather than by `%`. An index that is at
+               most one lap past the end comes back with one comparison, which is what a modulo by a
+               runtime value costs anyway once its guard is counted. */
+            private static method entriesIn(long room, long stride) returns long
+                requires stride >= 1
+            {
+                return room / stride;
+            }
+
+            /** A position at most one lap past the end, brought back inside without a modulo.
+                (`index` is a keyword, so the parameter is `at`.) */
+            private static method wrapped(long at, long cap) returns long {
+                if (at >= cap) { return at - cap; }
+                return at;
+            }
+
+            /** The size class of a payload: 0..31 for anything up to 512 (step 16), 32 for large,
+                which is reused only on an exact-size match. */
+            private static method classOf(long payload) returns int {
+                if (payload <= RegionCore.PoolMax) {
+                    return cast<int>((payload + 15) >> 4) - 1;
+                }
+                return RegionCore.Classes;
+            }
+
+            /** Initialize a freshly acquired flavored region block. Codegen calls this right after
+                the acquire, so every field below is set here or is not set at all. */
+            [Allow(code: "Polaron-0B24", why: "the call is emitted by codegen, not written by anyone: `__polaron_region_init(block, flavor, cap, growable)` is the shape a region declaration compiles to, and the three numbers arrive in the order the compiler put them in")]
+            public unknown c static method __polaron_region_init(nullable byte* block, long flavor,
+                long cap, long growable) returns void {
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                d.used = 0;
+                d.cap = cap;
+                d.dataBase = cast<byte*>(cast<address>(block) + cast<address>(RegionCore.HeaderBytes));
+                d.flavor = flavor;
+                d.entrySize = 0;
+                d.ringHead = 0;
+                d.ringCount = 0;
+                d.ringCap = 0;
+                d.track = 0;
+                d.trackCount = 0;
+                d.trackCap = 0;
+                d.trackPad = 0;
+                d.ringDtor = null;
+                d.growNext = 0;
+                d.growTail = cast<address>(block);   // the head is its own initial bump block
+                d.growable = growable;
+                for (mutable int i = 0; i < RegionCore.Lists; i = i + 1) {
+                    d.freelists[i] = cast<address>(0);   // every class starts with nothing on it
+                }
+                return;
+            }
+
+            /* POP A SAME-CLASS FREE SLOT, or answer nothing. Only pool and fixedslot keep free-lists
+               (shared on the head across every block of a growable chain): a bump region frees all at
+               once on release, and a stack reclaims last-in-first-out through mark/rollback. */
+            private static method popFree(address block, int cls, long payload) returns address {
+                RegionDesc* d = RegionCore.descAt(block);
+                if (d.flavor != RegionCore.Pool && d.flavor != RegionCore.FixedSlot) { return 0; }
+                if (cls < RegionCore.Classes) {
+                    address n = d.freelists[cls];
+                    if (n == 0) { return 0; }
+                    // The [16-byte header][payload] is still just below the node, so reusing it is
+                    // stamping it live again and nothing else.
+                    d.freelists[cls] = RegionCore.linkAt(n)[0];
+                    RegionCore.headerOf(n).magic = RegionCore.Live;
+                    return n;
+                }
+                /* LARGE: a first-fit exact-size match, walked with a previous rather than with a
+                   pointer to a pointer. Homogeneous churn -- which is what a large-object pool sees
+                   -- hits the head on the first look. */
+                mutable address prev = 0;
+                mutable address at = d.freelists[RegionCore.Classes];
+                while (at != 0) {
+                    RegionSlotHeader* h = RegionCore.headerOf(at);
+                    address next = RegionCore.linkAt(at)[0];
+                    if (cast<long>(h.pad) == payload) {
+                        if (prev == 0) {
+                            d.freelists[RegionCore.Classes] = next;
+                        } else {
+                            RegionCore.linkAt(prev)[0] = next;
+                        }
+                        h.magic = RegionCore.Live;
+                        return at;
+                    }
+                    prev = at;
+                    at = next;
+                }
+                return 0;
+            }
+
+            /* WHICH BLOCK OF THE CHAIN IS BEING BUMPED, growing it by one when the current tail is
+               full. A fixed region traps here instead, because the alternative is handing back an
+               address past the end of the block and calling it an allocation. */
+            private surveyed static method tailWithRoom(address block, long slotBytes)
+                returns RegionDesc* {
+                RegionDesc* d = RegionCore.descAt(block);
+                mutable RegionDesc* tail = d;
+                if (d.growable != 0) { tail = RegionCore.descAt(d.growTail); }
+                if (tail.used + slotBytes <= tail.cap) { return tail; }
+                if (d.growable == 0) {
+                    RegionCore.panic(b"region out of memory: this fixed region is full -- give itself.allocate a bigger size, delete/extract objects to reclaim slots, or make it a `growable` region");
+                }
+                mutable long newcap = tail.cap;   // grow by at least the previous block's size
+                if (newcap < slotBytes) { newcap = slotBytes; }
+                nullable byte* nb = RegionCore.blockAcquire(RegionCore.HeaderBytes + newcap);
+                if (nb == null) {
+                    RegionCore.panic(b"out of memory growing a region");
+                }
+                /* `cast<address>` AND NOT `cast<byte*>`, here and in `track` below. Narrowing a
+                   `nullable byte*` to a `byte*` is verified at runtime, and the way it reports is by
+                   THROWING -- which drags NullReferenceException, and behind it the string runtime
+                   and the allocator that builds the exception object, into a freestanding image that
+                   has none of them. `codegen_freestanding_has_no_string_runtime` says so by name.
+                   Nothing here needs a checked pointer: the block is an address from the first line
+                   of this file to the last, and it has just been tested against null above. */
+                address grown = cast<address>(nb);
+                RegionCore.__polaron_region_init(nb, d.flavor, newcap, 1);
+                tail.growNext = grown;
+                d.growTail = grown;
+                return RegionCore.descAt(grown);
+            }
+
+            /** Allocate `size` bytes of object storage from a pool/fixedslot/stack region. */
+            public unknown c static method __polaron_region_new(nullable byte* block, long size)
+                returns byte* {
+                address at = cast<address>(block);
+                long payload = RegionCore.rounded(size);
+                int cls = RegionCore.classOf(payload);
+
+                address reused = RegionCore.popFree(at, cls, payload);
+                if (reused != 0) {
+                    // Region slots are sub-allocations inside a block the profiler already counted;
+                    // the block is freed en masse on release, so per-slot live accounting would
+                    // over-report. The same reasoning holds every other place this is called.
+                    RegionCore.profileAlloc();
+                    return cast<byte*>(reused);
+                }
+
+                long slotBytes = RegionCore.SlotHeaderBytes + payload;
+                RegionDesc* tail = RegionCore.tailWithRoom(at, slotBytes);
+                address slot = cast<address>(tail.dataBase) + cast<address>(tail.used);
+                tail.used = tail.used + slotBytes;
+                RegionSlotHeader* h = cast<RegionSlotHeader*>(slot);
+                h.magic = RegionCore.Live;
+                h.cls = cls;
+                h.pad = cast<int>(payload);
+                RegionCore.profileAlloc();   // block-level bytes were counted at the acquire
+                return cast<byte*>(RegionCore.payloadOf(slot));
+            }
+
+            /* DROP `ptr` FROM THE REGISTRY, so a later rollback or teardown never destructs an object
+               that has already been destructed by hand. Shifting keeps the registry in allocation
+               order, which is what lets rollback stop at the first entry older than its mark. */
+            public unknown c static method __polaron_region_untrack(nullable byte* block,
+                nullable byte* ptr) returns void {
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                RegionTrackEntry* track = cast<RegionTrackEntry*>(d.track);
+                address want = cast<address>(ptr);
+                mutable long i = d.trackCount;
+                while (i > 0) {
+                    if (track[i - 1].ptr == want) {
+                        mutable long j = i - 1;
+                        while (j + 1 < d.trackCount) {
+                            track[j] = track[j + 1];
+                            j = j + 1;
+                        }
+                        d.trackCount = d.trackCount - 1;
+                        return;
+                    }
+                    i = i - 1;
+                }
+                return;
+            }
+
+            /* RETURN A SLOT TO ITS REGION'S FREE-LIST. Traps on a double free, and on a pointer that
+               is not a live region slot, rather than corrupting the list.
+
+               `size` is unused -- the slot header remembers its own class -- and stays in the ABI for
+               symmetry with the heap's `free` and for the validation it would let a later version do. */
+            public unknown c surveyed static method __polaron_region_free(nullable byte* block,
+                nullable byte* ptr, long size) returns void {
+                if (ptr == null) { return; }
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                address at = cast<address>(ptr);
+                RegionSlotHeader* h = RegionCore.headerOf(at);
+                if (h.magic == RegionCore.Freed) {
+                    RegionCore.panic(b"double free of a region object (it was already deleted or extracted)");
+                }
+                if (h.magic != RegionCore.Live) {
+                    RegionCore.panic(b"region free of a pointer that this region did not allocate");
+                }
+                int cls = h.cls;
+                RegionCore.profileFree();
+                h.magic = RegionCore.Freed;
+                // Whatever the flavor: this object has just been destructed by hand, so the registry
+                // must forget it or teardown would destruct it again. A no-op when it was never
+                // tracked, which is every object that has no destructor.
+                RegionCore.__polaron_region_untrack(block, cast<byte*>(at));
+                if (d.flavor == RegionCore.Stack) {
+                    // No free-list: reclaim only if this was the top slot, which is what LIFO means.
+                    long slotBytes = RegionCore.SlotHeaderBytes + cast<long>(h.pad);
+                    if (cast<address>(h) + cast<address>(slotBytes)
+                            == cast<address>(d.dataBase) + cast<address>(d.used)) {
+                        d.used = d.used - slotBytes;
+                    }
+                    return;
+                }
+                mutable int idx = cls;
+                if (idx > RegionCore.Classes) { idx = RegionCore.Classes; }
+                RegionCore.linkAt(at)[0] = d.freelists[idx];
+                d.freelists[idx] = at;
+                return;
+            }
+
+            /** Free every block of a (possibly growable) region chain, after its objects'
+                destructors have run. A non-growable region has no `growNext`, so this frees its one
+                block -- which is release without the block cache in front. */
+            public unknown c surveyed static method __polaron_region_free_chain(nullable byte* block)
+                returns void {
+                mutable address at = cast<address>(block);
+                while (at != 0) {
+                    address next = RegionCore.descAt(at).growNext;
+                    RegionCore.blockRelease(cast<byte*>(at));
+                    at = next;
+                }
+                return;
+            }
+
+            /* RECORD AN OBJECT THAT HAS A DESTRUCTOR, so rollback and teardown can run it.
+
+               This is what makes a region's destructors correct rather than merely lexical. The
+               compiler can only see the objects created in the block that releases the region; a tree
+               built across method calls, or anything put into a FIELD region by some other method, is
+               invisible to it. The registry is the answer, and it is why regions can hold objects at
+               all. Only objects that HAVE a destructor reach here, so a region of plain data -- the
+               case where a region must match a hand-written arena instruction for instruction --
+               never allocates a registry and never calls this. */
+            public unknown c surveyed static method __polaron_region_track(nullable byte* block,
+                nullable byte* ptr, address dtor) returns void {
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                if (d.trackCount == d.trackCap) {
+                    mutable long ncap = d.trackCap * 2;
+                    if (d.trackCap == 0) { ncap = 16; }
+                    nullable byte* nt = RegionCore.metaResize(cast<byte*>(d.track),
+                        d.trackCap * RegionCore.TrackEntryBytes, ncap * RegionCore.TrackEntryBytes);
+                    if (nt == null) {
+                        RegionCore.panic(b"out of memory tracking a region object's destructor");
+                    }
+                    d.track = cast<address>(nt);   // `address`, not a checked pointer: see tailWithRoom
+                    d.trackCap = ncap;
+                }
+                RegionTrackEntry* track = cast<RegionTrackEntry*>(d.track);
+                track[d.trackCount].ptr = cast<address>(ptr);
+                track[d.trackCount].dtor = cast<methodptr<void, byte*>>(dtor);
+                d.trackCount = d.trackCount + 1;
+                return;
+            }
+
+            /* ROLL A STACK REGION BACK TO A MARK: destructors newest-first for every tracked object
+               allocated at or after `mark` (a byte offset into the data area), then the cursor. A
+               mark of nought destructs everything, which is what release wants. Objects without
+               destructors are not tracked; resetting the cursor reclaims their memory anyway. */
+            public unknown c static method __polaron_region_rollback(nullable byte* block, long mark)
+                returns void {
+                if (block == null) { return; }   // unallocated, or already released
+                RegionCore.rollbackTo(cast<address>(block), mark);
+                return;
+            }
+
+            /* THE SAME WORK, FOR A CALLER THAT HAS ALREADY LOOKED. The null test above is for the
+               compiler's own emitted calls, which reach a region that may never have been allocated;
+               teardown and restore have both tested the block and read its descriptor before they get
+               here, and repeating the test at each of them is a precondition living everywhere except
+               where it can be enforced. Split, so it lives in exactly one of the two places. */
+            private static method rollbackTo(address block, long mark) returns void {
+                RegionDesc* d = RegionCore.descAt(block);
+                RegionTrackEntry* track = cast<RegionTrackEntry*>(d.track);
+                address threshold = cast<address>(d.dataBase) + cast<address>(mark);
+                while (d.trackCount > 0) {
+                    address ptr = track[d.trackCount - 1].ptr;
+                    address slot = ptr - cast<address>(RegionCore.SlotHeaderBytes);
+                    if (slot < threshold) {
+                        // Older than the mark: keep it, and stop -- the registry is in allocation
+                        // order, so everything below this entry is older still. `break` and not
+                        // `return`: the cursor below still has to come back to the mark, and this
+                        // is the ordinary way out of the loop, not an early exit from the method.
+                        break;
+                    }
+                    RegionSlotHeader* h = cast<RegionSlotHeader*>(slot);
+                    d.trackCount = d.trackCount - 1;
+                    if (h.magic == RegionCore.Live) {   // still live: destruct it exactly once
+                        h.magic = RegionCore.Freed;
+                        nullable methodptr<void, byte*> dtor = track[d.trackCount].dtor;
+                        if (dtor != null) { dtor(cast<byte*>(ptr)); }
+                    }
+                }
+                d.used = mark;
+                return;
+            }
+
+            /* TEAR A REGION DOWN BEFORE ITS BLOCK IS FREED: every remaining destructor, newest-first,
+               and then the registry array back to whoever lent it.
+
+               A stack region goes through rollback, which reads each slot's stamp and so skips what an
+               explicit `delete ... from region` already destructed. A BUMP region has no per-slot
+               header to read -- the absence of one is precisely what keeps its allocation as cheap as
+               a hand-written arena's -- so its liveness IS the registry: an explicit delete untracks,
+               and nothing else can remove an entry. */
+            public unknown c surveyed static method __polaron_region_teardown(nullable byte* block)
+                returns void {
+                if (block == null) { return; }
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                if (d.flavor == RegionCore.Stack) {
+                    RegionCore.rollbackTo(cast<address>(block), 0);   // everything still live
+                } else {
+                    RegionTrackEntry* track = cast<RegionTrackEntry*>(d.track);
+                    while (d.trackCount > 0) {
+                        d.trackCount = d.trackCount - 1;
+                        nullable methodptr<void, byte*> dtor = track[d.trackCount].dtor;
+                        if (dtor != null) { dtor(cast<byte*>(track[d.trackCount].ptr)); }
+                    }
+                }
+                RegionCore.metaFree(cast<byte*>(d.track), d.trackCap * RegionCore.TrackEntryBytes);
+                d.track = 0;
+                d.trackCap = 0;
+                return;
+            }
+
+            /* ---- the ring flavor (§17): a fixed-capacity circular buffer of one element type ----
+
+               Every entry shares a single element type, so the region stores its one destructor. It is
+               set once, at the ring region's declaration, from its `.accepts({T})` type -- and is
+               absent when that type has no destructor. */
+            public unknown c static method __polaron_ring_set_dtor(nullable byte* block, address dtor)
+                returns void {
+                if (block == null) { return; }
+                RegionCore.descAt(cast<address>(block)).ringDtor =
+                    cast<methodptr<void, byte*>>(dtor);
+                return;
+            }
+
+            /** Allocate the next ring slot. When the ring is full a new allocation overwrites the
+                oldest entry: its destructor runs first, so nothing leaks, and then the memory is
+                reused in place. Answers the slot's payload, for the caller's constructor to write. */
+            public unknown c surveyed static method __polaron_ring_new(nullable byte* block, long size)
+                returns byte* {
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                if (d.entrySize == 0) {
+                    /* The first allocation fixes the entry size, and with it the capacity in entries.
+                       THROUGH A LOCAL, so the divisor is the value `rounded` just answered rather
+                       than a field read back: `rounded`'s `ensures` says the answer is at least the
+                       grain, which is what lets this division carry no guard. A guard here reports by
+                       throwing, and a ring region in a kernel would take the exception machinery with
+                       it -- see the note on `rounded`. */
+                    long stride = RegionCore.SlotHeaderBytes + RegionCore.rounded(size);
+                    d.entrySize = stride;
+                    d.ringCap = RegionCore.entriesIn(d.cap, stride);
+                    if (d.ringCap <= 0) {
+                        RegionCore.panic(b"ring region is too small to hold even one entry -- give itself.allocate a bigger size");
+                    }
+                }
+                // ...and the ring holds at least one entry from here on, which is what the panic
+                // above is for. Both indices below are at most one lap past the end.
+                long cap = d.ringCap;
+                long widx = RegionCore.wrapped(d.ringHead + d.ringCount, cap);
+                address slot = cast<address>(d.dataBase) + cast<address>(widx * d.entrySize);
+                if (d.ringCount < cap) {
+                    d.ringCount = d.ringCount + 1;
+                } else {
+                    // Full: evict the oldest, which is this same slot, running its destructor first.
+                    RegionSlotHeader* old = cast<RegionSlotHeader*>(slot);
+                    nullable methodptr<void, byte*> dtor = d.ringDtor;
+                    if (dtor != null && old.magic == RegionCore.Live) {
+                        old.magic = RegionCore.Freed;
+                        dtor(cast<byte*>(RegionCore.payloadOf(slot)));
+                    }
+                    d.ringHead = RegionCore.wrapped(d.ringHead + 1, cap);
+                }
+                RegionCore.profileAlloc();
+                long payload = d.entrySize - RegionCore.SlotHeaderBytes;
+                RegionSlotHeader* h = cast<RegionSlotHeader*>(slot);
+                h.magic = RegionCore.Live;
+                h.cls = RegionCore.classOf(payload);
+                h.pad = cast<int>(payload);
+                return cast<byte*>(RegionCore.payloadOf(slot));
+            }
+
+            /** Destruct a ring region's live entries, oldest to newest, before its block is freed. */
+            public unknown c static method __polaron_ring_teardown(nullable byte* block) returns void {
+                if (block == null) { return; }
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                nullable methodptr<void, byte*> dtor = d.ringDtor;
+                if (dtor == null || d.ringCap <= 0) { return; }   // no destructor, or never used
+                long cap = d.ringCap;
+                for (mutable long i = 0; i < d.ringCount; i = i + 1) {
+                    long idx = RegionCore.wrapped(d.ringHead + i, cap);
+                    address slot = cast<address>(d.dataBase) + cast<address>(idx * d.entrySize);
+                    RegionSlotHeader* h = cast<RegionSlotHeader*>(slot);
+                    if (h.magic == RegionCore.Live) {
+                        h.magic = RegionCore.Freed;
+                        dtor(cast<byte*>(RegionCore.payloadOf(slot)));
+                    }
+                }
+                d.ringCount = 0;
+                return;
+            }
+
+            /* ---- region snapshots (§32.2) ---- */
+
+            /** The payload size of a region slot, read from its own header -- what `snapshot region W
+                into k` has to pass as `room`, since k's block was sized when k was declared and the
+                region may have grown since. */
+            public unknown c surveyed static method __polaron_region_slot_size(nullable byte* ptr)
+                returns long {
+                if (ptr == null) { return 0; }
+                RegionSlotHeader* h = RegionCore.headerOf(cast<address>(ptr));
+                // A plain (bump) region has no per-slot header at all -- that absence is exactly what
+                // makes its allocation cost what a hand-written arena costs. So a snapshot placed in
+                // one has nothing to read here, and reading it anyway is sixteen bytes of whatever
+                // happened to precede it. Say so instead.
+                if (h.magic != RegionCore.Live && h.magic != RegionCore.Freed) {
+                    RegionCore.panic(b"this snapshot is not in a region that can hold one: a plain (bump) region has no per-slot header. Place snapshots in a `pool`, `fixedslot` or `stack` region.");
+                }
+                return cast<long>(h.pad);
+            }
+
+            /** How many bytes the caller must give `__polaron_region_snapshot`. Asked before the
+                capture so the caller can place the snapshot in a region of its own -- the storage is
+                the caller's, always, which is what makes a snapshot something the ownership tree can
+                see rather than something beside it. */
+            public unknown c static method __polaron_region_snapshot_size(nullable byte* block)
+                returns long {
+                if (block == null) { return 0; }
+                return RegionCore.SnapshotHeadBytes + RegionCore.descAt(cast<address>(block)).used;
+            }
+
+            /* `room` IS NOT DECORATION. Re-capturing into a snapshot taken earlier (`snapshot region
+               w into k`) reuses k's block, and the region may have grown since -- so the one
+               operation whose whole job is to make a faithful copy would be the one writing past the
+               end. */
+            public unknown c surveyed static method __polaron_region_snapshot(nullable byte* block,
+                nullable byte* into, long room) returns void {
+                if (block == null || into == null) { return; }
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                if (room < RegionCore.SnapshotHeadBytes + d.used) {
+                    RegionCore.panic(b"this snapshot does not fit: the region holds more than it did when the snapshot it is being written into was taken");
+                }
+                // A grown region is a CHAIN, and the blocks after the head were acquired after this
+                // snapshot would have been taken. Restoring would have to free them, which means
+                // owning them, which is a second question this does not answer. Refused with the
+                // reason rather than half-captured.
+                if (d.growable != 0 || d.growNext != 0) {
+                    RegionCore.panic(b"cannot snapshot a growable region: it is a chain of blocks, and a restore would have to decide what happens to the blocks acquired after the snapshot");
+                }
+                address intoAt = cast<address>(into);
+                RegionSnapshotHead* h = cast<RegionSnapshotHead*>(intoAt);
+                h.magic = RegionCore.SnapMagic;
+                h.used = d.used;
+                h.trackCount = d.trackCount;
+                h.ringHead = d.ringHead;
+                h.ringCount = d.ringCount;
+                h.entrySize = d.entrySize;
+                for (mutable int i = 0; i < RegionCore.Lists; i = i + 1) {
+                    h.freelists[i] = d.freelists[i];
+                }
+                byte* src = d.dataBase;
+                byte* dst = cast<byte*>(intoAt + cast<address>(RegionCore.SnapshotHeadBytes));
+                for (mutable long i = 0; i < d.used; i = i + 1) {
+                    dst[i] = src[i];
+                }
+                return;
+            }
+
+            /* PUT A REGION BACK THE WAY THE SNAPSHOT FOUND IT.
+
+               THE DESTRUCTORS RUN FIRST, and that is the whole difference between this and a memcpy.
+               Copying the old bytes back over a newer object does not merely lose it -- it leaves a
+               pointer to that object aiming at an address that now holds OLD CONTENT CARRYING A LIVE
+               STAMP, so the double-delete guard stays quiet and the program goes on holding what
+               looks like a valid object and is a different one. That is worse than a dangling
+               pointer, and it is the exact bug class this language exists to remove. */
+            public unknown c surveyed static method __polaron_region_restore(nullable byte* block,
+                nullable byte* from) returns void {
+                if (block == null || from == null) { return; }
+                RegionDesc* d = RegionCore.descAt(cast<address>(block));
+                address fromAt = cast<address>(from);
+                RegionSnapshotHead* h = cast<RegionSnapshotHead*>(fromAt);
+                if (h.magic != RegionCore.SnapMagic) {
+                    RegionCore.panic(b"restore of something that is not a region snapshot");
+                }
+                if (h.used > d.cap) {
+                    RegionCore.panic(b"restoring a snapshot into a region smaller than the one it was taken from");
+                }
+                // An object destructed BY HAND since the snapshot was untracked, and untracking
+                // SHIFTS the registry -- so the entries no longer line up with the ones the snapshot
+                // counted, and restoring the old count would name objects that are not there. Trap
+                // rather than resurrect a wrong entry.
+                if (d.trackCount < h.trackCount) {
+                    RegionCore.panic(b"a region object was deleted by hand after this snapshot was taken; restoring it would revive a destructor entry that no longer matches the object it names");
+                }
+
+                /* 1) Destructors, newest first, for everything allocated since the snapshot. A
+                      `stack` region goes through rollback, which reads each slot's stamp and so skips
+                      what an explicit delete already destructed; every other flavor keeps its
+                      liveness in the registry alone -- the same split teardown makes, for the same
+                      reason. */
+                if (d.flavor == RegionCore.Stack) {
+                    RegionCore.rollbackTo(cast<address>(block), h.used);
+                } else {
+                    RegionTrackEntry* track = cast<RegionTrackEntry*>(d.track);
+                    while (d.trackCount > h.trackCount) {
+                        d.trackCount = d.trackCount - 1;
+                        nullable methodptr<void, byte*> dtor = track[d.trackCount].dtor;
+                        if (dtor != null) { dtor(cast<byte*>(track[d.trackCount].ptr)); }
+                    }
+                }
+
+                // 2) The bytes.
+                byte* dst = d.dataBase;
+                byte* src = cast<byte*>(fromAt + cast<address>(RegionCore.SnapshotHeadBytes));
+                for (mutable long i = 0; i < h.used; i = i + 1) {
+                    dst[i] = src[i];
+                }
+
+                /* 3) The descriptor's VALUE fields only. `track`, `trackCap`, `dataBase`, `growNext`
+                      and `growTail` are addresses that may have moved since the capture -- the
+                      registry array in particular grows by reallocating -- and writing a stale one
+                      back would point the region at freed metadata. */
+                d.used = h.used;
+                d.trackCount = h.trackCount;
+                d.ringHead = h.ringHead;
+                d.ringCount = h.ringCount;
+                d.entrySize = h.entrySize;
+                for (mutable int i = 0; i < RegionCore.Lists; i = i + 1) {
+                    d.freelists[i] = h.freelists[i];
+                }
+                return;
+            }
+        }
+    }
+}

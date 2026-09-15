@@ -158,11 +158,11 @@
             public method isEmpty() returns boolean {
                 return this.count == 0;
             }
-            // Functional pipeline (spec 34): run over, and select from, the elements with a lambda.
-            public method forEach(function<void, T> action) returns void {
+            // Functional pipeline (spec 34): run over, and select from, the elements with a command.
+            public method forEach(Action1<T>* action) returns void {
                 for (mutable int i = 0; i < this.count; i++) { action(this.data[i]); }
             }
-            public method filter(function<boolean, T> keep) returns ArrayList<T> {
+            public method filter(Predicate<T>* keep) returns ArrayList<T> {
                 ArrayList<T> out = new ArrayList<T>() on heap;
                 out.ensureCapacity(this.count);  // at most `count` kept; size once instead of growing
                 for (mutable int i = 0; i < this.count; i++) {
@@ -170,30 +170,30 @@
                 }
                 return out;
             }
-            public method map<R>(function<R, T> transform) returns ArrayList<R> {
+            public method map<R>(Mapper<T, R>* transform) returns ArrayList<R> {
                 mutable ArrayList<R> out = new ArrayList<R>() on heap;
                 out.ensureCapacity(this.count);  // output is exactly `count`; size once, no growth
                 for (mutable int i = 0; i < this.count; i++) { out.add(transform(this.data[i])); }
                 return out;
             }
-            public method reduce<R>(R seed, function<R, R, T> combine) returns R {
+            public method reduce<R>(R seed, Folder<R, T>* combine) returns R {
                 mutable R acc = seed;
                 for (mutable int i = 0; i < this.count; i++) { acc = combine(acc, this.data[i]); }
                 return acc;
             }
-            public method any(function<boolean, T> pred) returns boolean {
+            public method any(Predicate<T>* pred) returns boolean {
                 for (mutable int i = 0; i < this.count; i++) {
                     if (pred(this.data[i])) { return true; }
                 }
                 return false;
             }
-            public method all(function<boolean, T> pred) returns boolean {
+            public method all(Predicate<T>* pred) returns boolean {
                 for (mutable int i = 0; i < this.count; i++) {
                     if (!pred(this.data[i])) { return false; }
                 }
                 return true;
             }
-            public method count(function<boolean, T> pred) returns int {
+            public method count(Predicate<T>* pred) returns int {
                 mutable int hits = 0;
                 for (mutable int i = 0; i < this.count; i++) {
                     if (pred(this.data[i])) { hits = hits + 1; }
@@ -207,7 +207,7 @@
             // it, which is right when the original is still wanted and is a full duplication when it
             // is not -- and "put this list in order" is the commoner of the two. Same stable merge
             // sort; only the copy is gone.
-            public method sort(function<int, T, T> compare) returns void {
+            public method sort(Comparer<T>* compare) returns void {
                 if (this.count > 1) {
                     T[] scratch = new T[this.count]();
                     this.mergeSortRange(scratch, 0, this.count - 1, compare);
@@ -237,7 +237,7 @@
                 }
                 return -1;
             }
-            public method sortedBy(function<int, T, T> compare) returns ArrayList<T> {
+            public method sortedBy(Comparer<T>* compare) returns ArrayList<T> {
                 ArrayList<T> out = new ArrayList<T>() on heap;
                 out.ensureCapacity(this.count);  // the copy is known-size; fill without reallocating
                 for (mutable int i = 0; i < this.count; i++) { out.add(this.data[i]); }
@@ -252,7 +252,7 @@
             // internal to the collection. Two standard refinements over the textbook version: small ranges
             // fall back to an in-place insertion sort (no recursion/merge overhead, cache-friendly), and a
             // range whose two sorted halves are already in order skips the merge and its copy-back entirely.
-            private method mergeSortRange(T[] tmp, int lo, int hi, function<int, T, T> compare) returns void {
+            private method mergeSortRange(T[] tmp, int lo, int hi, Comparer<T>* compare) returns void {
                 if (lo >= hi) { return; }
                 if (hi - lo < 16) {  // insertion sort; stable -- only shifts strictly-greater elements
                     for (mutable int p = lo + 1; p <= hi; p = p + 1) {
@@ -290,13 +290,13 @@
             // Search terminals (spec 34): find returns the first element a predicate accepts, min/max the
             // smallest/largest by a comparator. Each returns Option<T> -- Some on a hit, None when the list
             // is empty or nothing matches -- so the empty case is in the type, not a sentinel.
-            public method find(function<boolean, T> pred) returns Option<T> {
+            public method find(Predicate<T>* pred) returns Option<T> {
                 for (mutable int i = 0; i < this.count; i++) {
                     if (pred(this.data[i])) { return Some(this.data[i]); }
                 }
                 return None();
             }
-            public method min(function<int, T, T> compare) returns Option<T> {
+            public method min(Comparer<T>* compare) returns Option<T> {
                 if (this.count == 0) { return None(); }
                 mutable T best = this.data[0];
                 for (mutable int i = 1; i < this.count; i++) {
@@ -304,7 +304,7 @@
                 }
                 return Some(best);
             }
-            public method max(function<int, T, T> compare) returns Option<T> {
+            public method max(Comparer<T>* compare) returns Option<T> {
                 if (this.count == 0) { return None(); }
                 mutable T best = this.data[0];
                 for (mutable int i = 1; i < this.count; i++) {
@@ -353,18 +353,18 @@
         public abstract class Stream<T> implements Iterator<T> {
             public abstract method hasNext() returns boolean;
             public abstract method next() returns T;
-            public method filter(function<boolean, T> pred) returns Stream<T> {
+            public method filter(Predicate<T>* pred) returns Stream<T> {
                 return new FilterStream<T>(this, pred) on heap;
             }
-            public method map<R>(function<R, T> fn) returns Stream<R> {
+            public method map<R>(Mapper<T, R>* fn) returns Stream<R> {
                 return new MapStream<T, R>(this, fn) on heap;
             }
-            public method fold<R>(R init, function<R, R, T> combine) returns R {
+            public method fold<R>(R init, Folder<R, T>* combine) returns R {
                 mutable R acc = init;
                 while (this.hasNext()) { acc = combine(acc, this.next()); }
                 return acc;
             }
-            public method forEach(function<void, T> action) returns void {
+            public method forEach(Action1<T>* action) returns void {
                 while (this.hasNext()) { action(this.next()); }
             }
             public method count() returns int {
@@ -394,16 +394,16 @@
             // Up to the first element that fails the test, and no further. Different from `filter`
             // in the way that matters on an infinite or expensive source: filter keeps asking, this
             // stops.
-            public method takeWhile(function<boolean, T> pred) returns Stream<T> {
+            public method takeWhile(Predicate<T>* pred) returns Stream<T> {
                 return new TakeWhileStream<T>(this, pred) on heap;
             }
-            public method any(function<boolean, T> pred) returns boolean {
+            public method any(Predicate<T>* pred) returns boolean {
                 while (this.hasNext()) {
                     if (pred(this.next())) { return true; }
                 }
                 return false;
             }
-            public method all(function<boolean, T> pred) returns boolean {
+            public method all(Predicate<T>* pred) returns boolean {
                 while (this.hasNext()) {
                     if (!pred(this.next())) { return false; }
                 }
@@ -450,11 +450,11 @@
         // because deciding whether there IS a next one means pulling it.
         public class TakeWhileStream<T> extends Stream<T> {
             private Stream<T> src;
-            private function<boolean, T> pred;
+            private Predicate<T>* pred;
             private mutable boolean hasCached;
             private mutable boolean done;
             private mutable T cached;
-            public constructor TakeWhileStream(Stream<T> src, function<boolean, T> pred) {
+            public constructor TakeWhileStream(Stream<T> src, Predicate<T>* pred) {
                 this.src = src;
                 this.pred = pred;
                 this.hasCached = false;
@@ -488,10 +488,10 @@
         // can skip rejected elements without losing the accepted one.
         public class FilterStream<T> extends Stream<T> {
             private Stream<T> src;
-            private function<boolean, T> pred;
+            private Predicate<T>* pred;
             private mutable boolean hasCached;
             private mutable T cached;
-            public constructor FilterStream(Stream<T> src, function<boolean, T> pred) {
+            public constructor FilterStream(Stream<T> src, Predicate<T>* pred) {
                 this.src = src; this.pred = pred; this.hasCached = false;
             }
             public override method hasNext() returns boolean {
@@ -513,8 +513,8 @@
         // one thing this class exists to do, so it is written here and wins over the delegate.
         public class MapStream<T, R> extends Stream<R> {
             private delegate Stream<T> src;
-            private function<R, T> fn;
-            public constructor MapStream(Stream<T> src, function<R, T> fn) {
+            private Mapper<T, R>* fn;
+            public constructor MapStream(Stream<T> src, Mapper<T, R>* fn) {
                 this.src = src; this.fn = fn;
             }
             public override method next() returns R { return this.fn(this.src.next()); }
@@ -981,7 +981,7 @@
                 if (this.used[i] != 0) { return this.values[i]; }
                 return defaultValue;
             }
-            public method merge(K key, V value, function<V, V, V> combine) returns void {
+            public method merge(K key, V value, Combiner<V, V, V>* combine) returns void {
                 this.reserveOneMore();
                 int i = this.slotFor(key);
                 if (this.used[i] == 0) {
@@ -2246,23 +2246,27 @@
             }
             public method count() returns int { return this.size; }
         }
-        // Comparator combinators (spec 34.1) built on closures: naturalInt gives ascending int order,
-        // reversed flips a comparator, and thenComparing chains a tie-breaker after a primary comparator.
-        // Each returns a function<int,int,int> usable with ArrayList.sortedBy.
+        // Comparator combinators (spec 34.1), and each of them is a `command`: naturalInt gives
+        // ascending int order, reversed flips a comparator, thenComparing chains a tie-breaker after
+        // a primary one. Each is a `Comparer<int>` and so goes straight into `ArrayList.sortedBy`.
+        //
+        // WHAT THE BAGGAGE MADE VISIBLE. These were lambdas, and two of them reached the enclosing
+        // method's parameters with NO capture list at all -- `return lambda(int a, int b) returns int
+        // { return cmp(b, a); };` -- so what the returned value held was decided by the body and
+        // stated nowhere. Written as commands the holding is the declaration: `carries (Comparer<int>*
+        // cmp) into pack` is the whole of what a reversed comparator is.
         public class Comparators {
-            public static method naturalInt() returns function<int, int, int> {
-                return lambda(int a, int b) returns int { return a - b; };
+            public command naturalInt(int a, int b) returns int { return a - b; }
+
+            public command reversed(int a, int b) carries (Comparer<int>* cmp) into pack returns int {
+                return pack.cmp(b, a);
             }
-            public static method reversed(function<int, int, int> cmp) returns function<int, int, int> {
-                return lambda(int a, int b) returns int { return cmp(b, a); };
-            }
-            public static method thenComparing(function<int, int, int> first, function<int, int, int> second)
-                returns function<int, int, int> {
-                return lambda(int a, int b) returns int {
-                    int r = first(a, b);
-                    if (r != 0) { return r; }
-                    return second(a, b);
-                };
+
+            public command thenComparing(int a, int b)
+                carries (Comparer<int>* first, Comparer<int>* second) into pack returns int {
+                int r = pack.first(a, b);
+                if (r != 0) { return r; }
+                return pack.second(a, b);
             }
         }
         // A stack that also reports its minimum in O(1) (spec 34.1): a parallel stack carries the running

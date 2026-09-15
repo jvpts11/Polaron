@@ -1,0 +1,51 @@
+program IrqDtor freestanding;
+
+// THE LEDGER'S "the `interrupt` reachability walk does not follow the implicit destructor at scope
+// exit", re-measured -- and narrowed so that ONLY that question is being asked.
+//
+// The row: a handler that builds a stack object whose destructor FREES compiles clean, and "must not
+// free memory" is the rule's own second entry. It catches an explicit allocation in the handler, one
+// a call away, a `delete`, and shared mutable state -- every path except the implicit one.
+//
+// The first attempt at this probe conflated the two: it gave the handler mutable state as well, and
+// the rule refused it for THAT, which says nothing about the destructor. Here the handler touches no
+// field of anything, calls no method, and its own text contains no `delete`. The only free in the
+// program is the one the compiler inserts at the closing brace.
+public bundle Main {
+    public namespace App {
+        public heap class Bump {
+            public static method allocate(address n) returns address { return cast<address>(0x200000); }
+            public static method release(address p) returns void { return; }
+        }
+
+        public class Leaf {
+            public constructor Leaf() { }
+        }
+
+        public class Scratch {
+            private mutable Leaf* inner;
+            public constructor Scratch() { this.inner = new Leaf() on heap; }
+            // THE FREE. Written as a `delete`, which the rule catches when a handler writes one
+            // itself -- the question is whether it catches the same statement when the compiler is
+            // the one that runs it.
+            public destructor ~Scratch() returns void { delete this.inner; }
+        }
+
+        public class Timer {
+            public constructor Timer() { }
+            // Builds one and does nothing else. No field is read, no method is called, and the body
+            // contains no allocation and no `delete`.
+            public interrupt() returns void {
+                Scratch s = new Scratch() on stack;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Timer t = new Timer() on stack;
+                address entry = t.interrupt;
+                return;
+            }
+        }
+    }
+}

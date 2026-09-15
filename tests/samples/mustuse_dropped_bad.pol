@@ -1,0 +1,36 @@
+import System.IO.Console;
+program MustUseDroppedBad;
+
+// The same three calls as `mustuse.pol`, without the `discard` -- so the two that matter are
+// reported and the one that does not stays silent.
+//
+// A WARNING and not an error, deliberately: throwing an answer away is sometimes right, and a rule
+// that cannot be answered is a rule people learn to switch off. What the word buys is that the
+// decision is now visible either way -- as `discard` at the line, or as a diagnostic.
+//
+// Reported with Polaron-0B19, twice.
+
+public bundle Main {
+    public namespace App {
+        public mustuse class Ticket {
+            public int id;
+            public constructor Ticket(int id) { this.id = id; }
+        }
+
+        public class Gate {
+            public static method issue(int id) returns Ticket* { return new Ticket(id) on heap; }
+            public static mustuse method reading() returns int { return 7; }
+            public static method announce() returns int { return 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Gate.issue(1);      // the TYPE is mustuse
+                Gate.reading();     // the METHOD is mustuse
+                Gate.announce();    // ...and this one is nobody's business
+                System.IO.Console.println("done");
+                return;
+            }
+        }
+    }
+}

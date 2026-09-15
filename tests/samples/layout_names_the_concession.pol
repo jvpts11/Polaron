@@ -1,0 +1,56 @@
+import System.IO.Console;
+program LayoutNamesTheConcession;
+
+// A LAYOUT THAT REFUSES, AND THE DIAGNOSTIC IS THE FEATURE.
+//
+// Making the concessions explicit reintroduces, on its own, exactly what the construct was written
+// to avoid: *a check that merely refuses is a guard against a problem that could have been solved*.
+// A layout that says only `fitWithin(8 bytes)` now stops a build that used to pass, and if the
+// message were only the number then the second design would be strictly worse than the first for
+// every author who wanted the reordering and did not know a word had appeared.
+//
+// It is not, because the compiler can answer the question it is raising. It has the fields, it has
+// the target's data layout, and running the measurement a second time over them sorted widest-first
+// costs nothing and yields the real number. So the refusal names the word AND what the word buys:
+//
+//     `Tick` is arranged by `Small`, which arranges it within 8 bytes -- it measures 12
+//     (three to a cache line). `Small` does not permit reordering, and with `permits reorder`
+//     it measures 8, which fits
+//
+// The reader is told the concession, told the number they would get for it, and left to decide --
+// because `permits reorder` is the answer to *does anything outside this program index these bytes*
+// and nobody but the author knows that. Friction became guidance rather than a wall.
+//
+// Refused with Polaron-0813.
+
+public bundle Main {
+
+    public namespace App {
+
+        public layout Small {
+            onArrange {
+                itself.fitWithin(8 bytes);
+                itself.refuse("three to a cache line");
+            }
+        }
+
+        // 1 + 3 padding + 4 + 1 + 1 = 10, rounded to 12, as declared. Widest-first: 4 + 1 + 1 + 1 = 7,
+        // rounded to 8 -- which is the ceiling exactly. So this is the case where the concession is
+        // the whole difference between a build and a refusal, and where a message that did not name
+        // it would leave the author narrowing fields for no reason.
+        public struct Tick arranges Small {
+            public mutable byte tag;
+            public mutable int  body;
+            public mutable byte kind;
+            public mutable byte flags;
+            public constructor Tick() { this.tag = 0; this.body = 0; this.kind = 0; this.flags = 0; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println($"tick = {Tick.sizeof()}");
+                return;
+            }
+        }
+    }
+}

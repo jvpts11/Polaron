@@ -635,13 +635,25 @@
             }
         }
 
+        /* WHAT ANSWERS A REQUEST -- the role, named here rather than borrowed from `Commands`.
+         *
+         * Structurally it is a `Mapper<ServerRequest*, ServerResponse*>`, and a handler written as
+         * one satisfies both. It gets its own name for two reasons. The first is that it reads as
+         * what it is at every `router.get(...)`, which is the whole argument for naming a role. The
+         * second is mechanical and worth writing down: a generic's name is mangled from its type
+         * ARGUMENTS, so `Mapper<ServerRequest*, ServerResponse*>` mangles to a name ending in `*`,
+         * and one more `*` for the parameter is then a depth the pointer rules cannot count --
+         * `ast::TypeRef` says so itself ("N-level pointers are supported on non-generic base types
+         * only"). A role whose arguments are pointers wants a name of its own. */
+        public command RequestHandler(ServerRequest* request) returns ServerResponse*;
+
         // One route: a verb, a pattern and what answers it.
         public class Route {
             public String verb;
             public String pattern;
-            public function<ServerResponse*, ServerRequest*> handler;
+            public RequestHandler* handler;
             public constructor Route(String verb, String pattern,
-                                     function<ServerResponse*, ServerRequest*> handler) {
+                                     RequestHandler* handler) {
                 this.verb = verb;
                 this.pattern = pattern;
                 this.handler = handler;
@@ -660,15 +672,15 @@
                 this.routes = new ArrayList<Route>() on heap;
             }
             public method add(String verb, String pattern,
-                              function<ServerResponse*, ServerRequest*> handler) returns void {
+                              RequestHandler* handler) returns void {
                 this.routes.add(new Route(verb, pattern, handler) on heap);
             }
             public method get(String pattern,
-                              function<ServerResponse*, ServerRequest*> handler) returns void {
+                              RequestHandler* handler) returns void {
                 this.add("GET", pattern, handler);
             }
             public method post(String pattern,
-                               function<ServerResponse*, ServerRequest*> handler) returns void {
+                               RequestHandler* handler) returns void {
                 this.add("POST", pattern, handler);
             }
             public method size() returns int { return this.routes.size(); }

@@ -45,10 +45,16 @@ struct ToLlvmResult {
     int pureAttrs = 0;
     int coldAttrs = 0;
     int internalLinkage = 0;
+    int sweptInternal = 0;   // internal functions nothing referenced, erased rather than emitted
     int checkedArith = 0;
     int assumes = 0;
     int aliasTags = 0;   // loads and stores carrying `!tbaa`
     int speculated = 0;  // vtable calls given an inline cache
+    // ...AND THE ONES §11.8 REMOVED before the backend ever saw them, carried through from
+    // `Module::devirtualised` so the §12 row reports both mechanisms. Without it the row FALLS as
+    // the pass improves: every dispatch collapsed on the graph is one `speculate` no longer counts,
+    // and a number that drops when the thing it measures gets better is worse than no number.
+    int collapsed = 0;
     int mergedDefinitions = 0;  // `--lib` bodies published as ODR, for the consumer's own copy
 };
 

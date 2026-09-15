@@ -1,11 +1,12 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
+import System.Commands.Action;
 program ThreadUnsharedTypeBad;
 
 // The other side of `Shared` (spec 14): a type that does NOT declare itself shareable is still
 // refused, and it must be. This one holds a plain int and would lose counts to a race; the only
 // difference between it and the tally that compiles is the declaration -- which is the point.
-// Expected: region-binder rejects the capture.
+// Expected: the region binder refuses what the command carries across.
 
 public bundle main {
     public namespace app {
@@ -30,8 +31,8 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Loose* loose = new Loose() on heap;
-                function<void> work = lambda[captures: byvalue loose]() returns void {
-                    loose.add();
+                Action* work = command () carries (Loose* into = loose) into pack returns void {
+                    pack.into.add();
                 };
                 Thread t = new Thread(work) on heap;
                 t.start();

@@ -1,0 +1,25 @@
+program UnqualifiedStaticCallBad;
+
+// THE OTHER HALF OF `unqualified_self_call.pol`, and the reason this file exists separately: what a
+// rule ALLOWS is proved by a program that runs, and what it REFUSES is proved only by a program that
+// does not compile. A rule with only the first kind of test is a rule that can quietly stop working.
+//
+// `Numbers.sum` belongs to the class, not to an instance. Written bare it is an action with no
+// subject, and the compiler now says so instead of guessing that the enclosing class was meant.
+public bundle main {
+    public namespace app {
+        public class Numbers {
+            public static method sum(int a, int b) returns int { return a + b; }
+
+            public static method total() returns int {
+                return sum(3, 4);   // refused: write `Numbers.sum(3, 4)`
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Numbers.total();
+                return;
+            }
+        }
+    }
+}

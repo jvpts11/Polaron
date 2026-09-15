@@ -1,0 +1,54 @@
+import System.IO.Console;
+program ReadonlyMethods;
+
+// `readonly` -- THIS METHOD WRITES NOTHING, declared and then checked.
+//
+// The analysis already existed: the compiler records what every body writes and composes it over the
+// call graph, and used it for its own purposes. What was missing was the DECLARATION -- a way for an
+// author to say the thing and be held to it. With the word, an inference becomes a promise: a reader
+// who sees `readonly` does not have to go and check, because the build would have failed.
+//
+// COMPOSITIONAL, which is the half that makes it worth anything. `perimeter` writes nothing itself
+// and calls only readonly methods, so it is readonly too -- and if somebody adds a write to `width`
+// next year, the refusal lands on `perimeter` as well as on `width`. A promise about a body that
+// mostly calls other bodies is a promise about them.
+//
+// Prints: area=12 perimeter=14 grown=48
+
+public bundle Main {
+    public namespace App {
+        public class Rect {
+            private mutable int w;
+            private mutable int h;
+            public constructor Rect(int w, int h) { this.w = w; this.h = h; }
+
+            public readonly method width() returns int { return this.w; }
+            public readonly method height() returns int { return this.h; }
+
+            // Reads two fields and multiplies. Nothing leaves this method except the answer.
+            public readonly method area() returns int { return this.w * this.h; }
+
+            // ...and one that only CALLS readonly methods, which is what makes the word compose.
+            public readonly method perimeter() returns int {
+                return 2 * (this.width() + this.height());
+            }
+
+            // Not readonly, and does not claim to be: it changes the object.
+            public method scale(int by) returns void {
+                this.w = this.w * by;
+                this.h = this.h * by;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Rect r = new Rect(3, 4) on stack;
+                System.IO.Console.printf("area=%d perimeter=%d ", r.area(), r.perimeter());
+                r.scale(2);
+                System.IO.Console.printf("grown=%d\n", r.area());
+                return;
+            }
+        }
+    }
+}

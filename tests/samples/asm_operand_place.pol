@@ -1,0 +1,66 @@
+import System.IO.Console;
+program AsmOperandPlace;
+
+// `asm` OPERAND CONSTRAINTS — choosing the register (docs/design/asm-constraints.md).
+//
+// The mechanism was built and had exactly one constraint. Every output was `=r` and every input `r`
+// — *any general-purpose register* — so a block that needed a value somewhere specific had to move
+// it there itself. AP-18 measured what that costs: **C is 13 bytes tighter across three blocks**,
+// because its constraint language lets the allocator place the operands and Polaron's block paid a
+// `mov` at each end.
+//
+// The vocabulary is the ARCHITECTURE'S OWN register names, not C's letter codes. `"ax"`, not `"a"`.
+// A private alphabet is a second thing to learn for a fact the machine already has a word for — and
+// it runs out: C spells the `edx:eax` pair `"A"` and has no letter left for another pair.
+//
+//     out ("ax": value)      the result must be in `ax`
+//     in  ("dx": port)       the operand must be in `dx`
+//     out (value)            anywhere — what every block written before this said, and the default
+//
+// Prints: doubled=84 sum=30 free=7
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+
+            // A PLACE ON EACH SIDE. `lea` needs its source in a specific register to write the
+            // scaled form, and the answer must come back in another; without constraints the
+            // allocator picks two and the block moves them itself.
+            public static method doubled(int n) returns int {
+                mutable int r = 0;
+                asm("x86_64") {
+                    lea eax, [ecx + ecx]
+                } out ("ax": r) in ("cx": n) clobber ("rax");
+                return r;
+            }
+
+            // THE OTHER HALF OF THE VOCABULARY: `"immediate"` is not a register at all, which is
+            // exactly why it cannot be spelled as one. It says the operand is a constant folded
+            // into the instruction rather than loaded into anything.
+            public static method sum(int n) returns int {
+                mutable int r = 0;
+                asm("x86_64") {
+                    mov eax, ecx
+                    add eax, 20
+                } out ("ax": r) in ("cx": n) clobber ("rax");
+                return r;
+            }
+
+            // ...AND NOTHING SAID IS STILL NOTHING SAID. Every block written before this feature
+            // existed keeps compiling to exactly what it compiled to: `=r` and `r`.
+            public static method free(int n) returns int {
+                mutable int r = 0;
+                asm("x86_64") {
+                    mov $0, $1
+                } out (r) in (n);
+                return r;
+            }
+
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("doubled=%d sum=%d free=%d\n",
+                                         Main.doubled(42), Main.sum(10), Main.free(7));
+                return;
+            }
+        }
+    }
+}

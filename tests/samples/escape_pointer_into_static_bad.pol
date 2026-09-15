@@ -1,0 +1,33 @@
+import System.IO.Console;
+program EscapePointerIntoStaticBad;
+
+// THE OTHER HALF OF escape_number_into_static_ok.pol: the POINTER itself filed in a static field.
+//
+// Static storage outlives every frame, so keeping `&pool` there leaves a dead pointer once the
+// frame that made the pool is gone. Letting a number through a static store must not let this
+// through with it.
+//
+// Refused with Polaron-1721.
+public bundle Main {
+    public namespace App {
+        public class Pool {
+            public mutable int next;
+            public constructor Pool() { this.next = 4096; }
+        }
+        public class Keeper {
+            private static mutable nullable Pool* held;
+            public static method open(Pool* pool) returns boolean {
+                Keeper.held = pool;
+                return true;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Pool pool = new Pool() on stack;
+                Keeper.open(&pool);
+                System.IO.Console.println("opened");
+                return;
+            }
+        }
+    }
+}

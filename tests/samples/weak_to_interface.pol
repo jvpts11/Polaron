@@ -1,0 +1,108 @@
+import System.IO.Console;
+program WeakToInterface;
+
+// A `weak` REFERENCE WHOSE TYPE IS AN INTERFACE.
+//
+// `weak T*` is how this language spells "I point at it and I do not keep it alive", and it is what
+// the region binder demands whenever one object holds a pointer to another that nothing orders it
+// against. Every use of it so far named a CLASS. Naming an interface is the same sentence about a
+// different kind of type, and it is what a subsystem written against a contract rather than against
+// a part has to say -- Horizon's network stack holds the card it sends through exactly this way, and
+// the card is a `NetworkCard` because there are two of them.
+//
+// THE SHAPE, and each line of it is load-bearing:
+//   * `Sink` is an interface with a method.
+//   * `Base` is an abstract class that implements a DIFFERENT interface and defines its method.
+//   * `Card extends Base implements Sink` -- so the object reaches `Sink` sideways and `Base`'s
+//     definition upwards, which is the diamond a driver base class always makes.
+//   * `Holder` keeps a `weak Sink*` and calls through it.
+//
+// Prints:
+//   held 4
+//   name card
+//   sent 3
+//   tag 23
+//   high 20
+public bundle Main {
+    public namespace App {
+        // A SMALL VALUE TYPE, RETURNED BY VALUE FROM AN INTERFACE METHOD.
+        //
+        // This is the shape that is different from every other method on an interface: a struct
+        // return does not come back in a register, it comes back through a hidden pointer the caller
+        // passes in (`sret`). So the call has one more argument than the source shows, and a
+        // dispatch that gets that wrong does not fail like a wrong answer -- it writes through
+        // whatever was in the register that should have held the slot.
+        //
+        // Horizon's `NetworkCard.hardwareAddress()` returns one of these, and it is the ONLY method
+        // of that interface that returns a value type. Six other methods were probed through a live
+        // `weak NetworkCard*` in the kernel and all answered; the machine stopped on this one.
+        public struct Tag {
+            public mutable int high;
+            public mutable int low;
+            public constructor Tag(int a, int b) { this.high = a; this.low = b; }
+            public method sum() returns int { return this.high + this.low; }
+        }
+
+        public interface Sink {
+            method take(int n) returns int;
+            // The struct return, through the interface.
+            method tag() returns Tag;
+        }
+        public interface Named {
+            method label() returns String;
+        }
+
+        public abstract class Base implements Named {
+            private mutable int total;
+            public constructor Base() { this.total = 0; }
+            public override method label() returns String { return "base"; }
+            public method total() returns int { return this.total; }
+            protected method add(int n) returns void { this.total = this.total + n; return; }
+        }
+
+        public class Card extends Base implements Sink {
+            public constructor Card() { super(); }
+            public override method label() returns String { return "card"; }
+            public override method take(int n) returns int {
+                this.add(n);
+                return this.total();
+            }
+            public override method tag() returns Tag { return new Tag(20, 3) on stack; }
+        }
+
+        // THE HOLDER, and the field is the test. It does not own the card -- the caller does -- so
+        // the reference is `weak`, which is the only spelling the region binder accepts for a
+        // pointer between two objects neither of which is known to outlive the other.
+        public class Holder {
+            private mutable weak Sink* into;
+            public constructor Holder(Sink* s) { this.into = s; }
+            public method push(int n) returns int { return this.into.take(n); }
+            // THE STRUCT RETURN, THROUGH THE WEAK INTERFACE REFERENCE. Read a field of it and then
+            // ask it for a computed one, because a struct that came back through the wrong slot
+            // often has one plausible half.
+            public method tagSum() returns int { return this.into.tag().sum(); }
+            public method tagHigh() returns int { return this.into.tag().high; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Card c = new Card() on heap;
+                Holder h = new Holder(c) on heap;
+                // Through the weak interface reference, twice, so that the RECEIVER's own state has
+                // to have survived the first call -- a dispatch that reached the right body with the
+                // wrong `this` answers the first question correctly and the second one wrong.
+                System.IO.Console.println("held " + h.push(4).toString());
+                // ...and the object is still itself, asked through the OTHER interface it reaches by
+                // the other route.
+                Named* n = c;
+                System.IO.Console.println("name " + n.label());
+                System.IO.Console.println("sent " + (h.push(3) - 4).toString());
+                System.IO.Console.println("tag " + h.tagSum().toString());
+                System.IO.Console.println("high " + h.tagHigh().toString());
+                delete h;
+                delete c;
+                return;
+            }
+        }
+    }
+}

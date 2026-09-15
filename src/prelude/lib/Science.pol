@@ -267,7 +267,7 @@
         // secant's speed. A library with only one of these is a library that is wrong for most
         // problems.
         public class Roots {
-            public static method bisect(function<double, double> f, double lo, double hi,
+            public static method bisect(Mapper<double, double>* f, double lo, double hi,
                                         double tolerance) returns double {
                 mutable double a = lo;
                 mutable double b = hi;
@@ -281,7 +281,7 @@
                 }
                 return 0.5 * (a + b);
             }
-            public static method newton(function<double, double> f, function<double, double> df,
+            public static method newton(Mapper<double, double>* f, Mapper<double, double>* df,
                                         double start, double tolerance) returns double {
                 mutable double x = start;
                 for (mutable int i = 0; i < 100; i++) {
@@ -293,7 +293,7 @@
                 }
                 return x;
             }
-            public static method secant(function<double, double> f, double a, double b,
+            public static method secant(Mapper<double, double>* f, double a, double b,
                                         double tolerance) returns double {
                 mutable double x0 = a;
                 mutable double x1 = b;
@@ -311,7 +311,7 @@
             // Brent: inverse quadratic interpolation where it helps, the secant where it does not, and
             // bisection whenever either would step outside the bracket -- which is what makes it
             // impossible for it to be slower than bisection while usually being much faster.
-            public static method brent(function<double, double> f, double lo, double hi,
+            public static method brent(Mapper<double, double>* f, double lo, double hi,
                                        double tolerance) returns double {
                 mutable double a = lo;
                 mutable double b = hi;
@@ -364,11 +364,11 @@
         // evaluation and buys an order of accuracy; and the step is scaled to the point rather than
         // fixed, because a fixed 1e-8 is far too large near 1e6 and far too small near 1e-6.
         public class Calculus {
-            public static method derivative(function<double, double> f, double x) returns double {
+            public static method derivative(Mapper<double, double>* f, double x) returns double {
                 double h = Calculus.spacing(x);
                 return (f(x + h) - f(x - h)) / (2.0 * h);
             }
-            public static method secondDerivative(function<double, double> f, double x) returns double {
+            public static method secondDerivative(Mapper<double, double>* f, double x) returns double {
                 double h = Calculus.spacing(x);
                 return (f(x + h) - 2.0 * f(x) + f(x - h)) / (h * h);
             }
@@ -385,17 +385,17 @@
             // Adaptive Simpson: it splits where the estimate disagrees with itself and leaves smooth
             // stretches alone, so a function with one sharp feature does not pay for that feature
             // everywhere. The depth bound is what keeps a discontinuity from becoming a hang.
-            public static method integrate(function<double, double> f, double a, double b,
+            public static method integrate(Mapper<double, double>* f, double a, double b,
                                            double tolerance) returns double {
                 double c = 0.5 * (a + b);
                 double whole = Calculus.simpson(f, a, b);
                 return Calculus.adapt(f, a, b, tolerance, whole, 24);
             }
-            private static method simpson(function<double, double> f, double a, double b) returns double {
+            private static method simpson(Mapper<double, double>* f, double a, double b) returns double {
                 double c = 0.5 * (a + b);
                 return (b - a) / 6.0 * (f(a) + 4.0 * f(c) + f(b));
             }
-            private static method adapt(function<double, double> f, double a, double b,
+            private static method adapt(Mapper<double, double>* f, double a, double b,
                                         double tolerance, double whole, int depth) returns double {
                 double c = 0.5 * (a + b);
                 double left = Calculus.simpson(f, a, c);
@@ -413,7 +413,7 @@
         // than used: it is the one everybody writes by hand, and seeing its error beside RK4's on the
         // same problem is the fastest way to learn why nobody ships it.
         public class Ode {
-            public static method euler(function<double, double, double> f, double t0, double y0,
+            public static method euler(Combiner<double, double, double>* f, double t0, double y0,
                                        double t1, int steps) returns double {
                 double h = (t1 - t0) / cast<double>(steps);
                 mutable double t = t0;
@@ -425,7 +425,7 @@
                 return y;
             }
             // Classical fourth-order Runge-Kutta: four slopes per step, weighted 1/6, 1/3, 1/3, 1/6.
-            public static method rk4(function<double, double, double> f, double t0, double y0,
+            public static method rk4(Combiner<double, double, double>* f, double t0, double y0,
                                      double t1, int steps) returns double {
                 double h = (t1 - t0) / cast<double>(steps);
                 mutable double t = t0;
@@ -446,7 +446,7 @@
         // slowness, and the interval shrinks by a fixed ratio every step so the cost is known in
         // advance. Gradient descent is the multi-dimensional one and lives below it.
         public class Optimize {
-            public static method minimize(function<double, double> f, double lo, double hi,
+            public static method minimize(Mapper<double, double>* f, double lo, double hi,
                                           double tolerance) returns double {
                 double phi = 0.6180339887498949;
                 mutable double a = lo;
@@ -464,7 +464,7 @@
             // Gradient descent over a vector, with the gradient taken numerically so the caller
             // supplies only the objective. `rate` too large diverges and too small crawls, which is
             // the method's own nature rather than a defect of this one.
-            public static method descend(function<double, double[]> f, double[] start, double rate,
+            public static method descend(Mapper<double[], double>* f, double[] start, double rate,
                                          int steps) returns double[] {
                 int n = start.length();
                 double[] x = new double[n]();

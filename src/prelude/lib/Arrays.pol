@@ -9,8 +9,8 @@
         // ONE GENERIC METHOD PER OPERATION, taking a comparator, because Polaron has no overloading:
         // `sort(int[])` and `sort(String[])` cannot share a name. That turns out to be the better
         // design anyway -- one implementation, every element type, and the ordering is stated at the
-        // call site rather than assumed. The `Ints` helpers beside them exist because writing
-        // `lambda(int a, int b) returns int { return a - b; }` to sort numbers is ceremony.
+        // call site rather than assumed. The `Ints` helpers beside them exist because writing a
+        // `command (int a, int b) returns int { return a - b; }` to sort numbers is ceremony.
         //
         // IN PLACE, and the methods that reorder say so in their names' absence of a return value:
         // an array is a fixed run of storage, and returning a sorted copy would allocate a second
@@ -20,11 +20,11 @@
             // insertion sort under sixteen elements where its constant factor wins. Median-of-three
             // pivot, so an already-sorted array -- the input people actually pass -- does not hit the
             // quadratic case.
-            public static method sort<T>(T[] a, function<int, T, T> compare) returns void {
+            public static method sort<T>(T[] a, Comparer<T>* compare) returns void {
                 Arrays.sortRange<T>(a, 0, a.length() - 1, compare);
             }
 
-            public static method sortRange<T>(T[] a, int lo, int hi, function<int, T, T> compare) returns void {
+            public static method sortRange<T>(T[] a, int lo, int hi, Comparer<T>* compare) returns void {
                 if (hi - lo < 16) {
                     Arrays.insertion<T>(a, lo, hi, compare);
                     return;
@@ -48,7 +48,7 @@
                 Arrays.sortRange<T>(a, j + 1, hi, compare);
             }
 
-            private static method insertion<T>(T[] a, int lo, int hi, function<int, T, T> compare) returns void {
+            private static method insertion<T>(T[] a, int lo, int hi, Comparer<T>* compare) returns void {
                 for (mutable int i = lo + 1; i <= hi; i++) {
                     T key = a[i];
                     mutable int j = i - 1;
@@ -69,7 +69,7 @@
             // The index of `key`, or -1. The array must already be sorted by the same comparator --
             // which is a precondition rather than a check, because verifying it would cost more than
             // the search.
-            public static method binarySearch<T>(T[] a, T key, function<int, T, T> compare) returns int {
+            public static method binarySearch<T>(T[] a, T key, Comparer<T>* compare) returns int {
                 mutable int lo = 0;
                 mutable int hi = a.length() - 1;
                 while (lo <= hi) {
@@ -83,14 +83,14 @@
 
             // The first index whose element compares equal, by a linear scan. For an array that is
             // NOT sorted, which is most of them.
-            public static method indexOf<T>(T[] a, T key, function<int, T, T> compare) returns int {
+            public static method indexOf<T>(T[] a, T key, Comparer<T>* compare) returns int {
                 for (mutable int i = 0; i < a.length(); i++) {
                     if (compare(a[i], key) == 0) { return i; }
                 }
                 return -1;
             }
 
-            public static method contains<T>(T[] a, T key, function<int, T, T> compare) returns boolean {
+            public static method contains<T>(T[] a, T key, Comparer<T>* compare) returns boolean {
                 return Arrays.indexOf<T>(a, key, compare) >= 0;
             }
 
@@ -126,7 +126,7 @@
                 return out;
             }
 
-            public static method equal<T>(T[] a, T[] b, function<int, T, T> compare) returns boolean {
+            public static method equal<T>(T[] a, T[] b, Comparer<T>* compare) returns boolean {
                 if (a.length() != b.length()) { return false; }
                 for (mutable int i = 0; i < a.length(); i++) {
                     if (compare(a[i], b[i]) != 0) { return false; }
@@ -136,8 +136,8 @@
         }
 
         // THE NUMBERS, WITHOUT THE COMPARATOR. Sorting integers is the commonest thing anybody does
-        // to an array, and `lambda(int a, int b) returns int { return a - b; }` at every call site is
-        // noise for an order nobody disagrees about. These are the same algorithms with `<` inlined.
+        // to an array, and a `command (int a, int b) returns int { return a - b; }` at every call
+        // site is noise for an order nobody disagrees about. Same algorithms, with `<` inlined.
         public class Ints {
             public static method sort(int[] a) returns void {
                 Ints.sortRange(a, 0, a.length() - 1);

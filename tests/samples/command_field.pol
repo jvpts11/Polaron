@@ -1,0 +1,36 @@
+import System.IO.Console;
+program CommandField;
+
+// A command stored in a CLASS FIELD -- the strategy pattern, which is the thing this construct is
+// for. The field is declared as the role, filled in the constructor, and called as `this.op(x)`:
+// the receiver is the field, and the method behind it is the compiler's business.
+//
+// Prints: v=105 w=25
+
+public bundle Main {
+    public namespace App {
+        public command IntMap(int n) returns int;
+
+        public class Steps {
+            public command plus(int n) carries (int by) into pack returns int { return n + pack.by; }
+            public command square(int n) returns int { return n * n; }
+        }
+
+        public class Calc {
+            private IntMap* op;
+            public constructor Calc(IntMap* op) { this.op = op; }
+            public method apply(int x) returns int {
+                return this.op(x);
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Calc c = new Calc(Steps.plus(100));
+                Calc d = new Calc(Steps.square());
+                System.IO.Console.printf("v=%d w=%d\n", c.apply(5), d.apply(5));
+                return;
+            }
+        }
+    }
+}

@@ -1,16 +1,30 @@
 import System.IO.Console;
 program UnqualifiedSelfCall;
 
-// Polaron has no free functions, but the `this.` / `ClassName.` receiver on a *same-class* method call is
-// optional: a bare `name(...)` inside a class resolves to `this.name(...)` (instance) or
-// `ClassName.name(...)` (static), exactly as if the receiver were written. This covers the classic slip
-// for anyone coming from C -- `int a = sum(x, y);` next to `method sum(...)` -- which now just works.
+// WHICH RECEIVER MAY BE LEFT OUT, and it is one of the two.
+//
+// An INSTANCE method written bare is not missing a subject: `this` IS the subject and the language
+// puts it there, so `clamp(b)` inside the class reads as `this.clamp(b)` and is exactly as complete
+// as the long form. That covers the classic slip for anyone arriving from C -- `int a = sum(x, y);`
+// next to a method called `sum` -- and it works.
+//
+// A STATIC method may NOT. It belongs to the class, not to an instance; the class is its subject,
+// and a bare `sum(3, 4)` is an action with nothing it is about -- a loose verb, which is the shape
+// this language exists to refuse. `Main.sum(3, 4)` says whose action it is, at the call, where the
+// reader is. The reference already said so -- "Belongs to the class, not an instance. Called via
+// `ClassName.member`" -- and for a long time only the compiler disagreed.
+//
+// It settles ambiguity by construction as well: two classes may both declare `parse`, and the path
+// is what separates them. Written bare, the answer depended on which class the call sat inside.
+//
+// Prints:
+//   self=7 20 14
 public bundle main {
     public namespace app {
         public class Calc {
             private mutable int base;
             public constructor Calc(int b) {
-                this.base = clamp(b);            // ctor -> same-class instance method, unqualified
+                this.base = clamp(b);            // ctor -> same-class INSTANCE method, unqualified
             }
             public method clamp(int x) returns int {
                 if (x < 0) { return 0; }
@@ -18,15 +32,18 @@ public bundle main {
             }
             public method addToBase(int y) returns int { return this.base + y; }
             public method combine(int y) returns int {
-                return addToBase(y) + clamp(y);  // instance -> two same-class instance methods, unqualified
+                return addToBase(y) + clamp(y);  // instance -> two same-class instance methods, bare
             }
         }
         public class Main {
             public static method sum(int a, int b) returns int { return a + b; }
-            public static method twice(int a) returns int { return sum(a, a); }  // static -> static, unqualified
+            // A static calling a static OF ITS OWN CLASS still names it: the class is the subject
+            // whether or not the call happens to be written inside it.
+            public static method twice(int a) returns int { return Main.sum(a, a); }
             public static method main(string[] args) returns void {
                 Calc c = new Calc(-5) on stack;  // clamp(-5) -> 0
-                System.IO.Console.printf("self=%d %d %d\n", sum(3, 4), twice(10), c.combine(7));
+                System.IO.Console.printf("self=%d %d %d\n", Main.sum(3, 4), Main.twice(10),
+                                         c.combine(7));
                 return;
             }
         }

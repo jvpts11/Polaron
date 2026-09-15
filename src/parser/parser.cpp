@@ -1,4 +1,4 @@
-#include "parser/parser.h"
+﻿#include "parser/parser.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7,10 +7,22 @@
 #include <utility>
 
 #include "lexer/lexer.h"
+#include "parser/monomorphize.h"   // kCommandMethod -- the one name a command answers to
 
 namespace polaron {
 
 namespace {
+
+// THE WORD FOR A CODE ADDRESS, and there is exactly one.
+//
+// It was `funcptr`. The parser learned `methodptr` and nothing else did -- the canonical string
+// stayed `funcptr<`, and the word reached neither the documentation nor a test -- which is how a
+// rename half-lands and stays half-landed. `funcptr` is now gone from the grammar rather than kept
+// as a courtesy: no `.pol` in this repository or in the OS ever wrote it, so there is nobody to be
+// kind to, and a spelling nothing uses is a spelling that quietly becomes true again.
+bool isMethodPtrWord(const std::string& lexeme) {
+    return lexeme == "methodptr";
+}
 
 // The soft-keyword modifiers a `transformer` line may carry before the word itself. Soft because
 // each is an ordinary word a program may already be using as a name, and none of them needs to be
@@ -50,6 +62,17 @@ bool isRecordNumericField(const std::string& t) {
 bool isRecordFloatField(const std::string& t) {
     return t == "float" || t == "double" || t == "float32" || t == "float64";
 }
+// SIXTY-FOUR BITS DO NOT FIT IN THE MIX, and a record carrying one could not be DECLARED.
+//
+// The generated `hashCode` accumulates into an `int h`, so `h = h * 31 + this.stamp` over a `long`
+// field is a `long` assigned to an `int`: *"cannot assign a value of type 'long' to variable 'h' of
+// type 'int'"*, reported on the `public record` line, about an assignment its author never wrote.
+// The float fields were already folded down for exactly this reason and the wide integers are the
+// same problem one type across -- nothing in the corpus had put a `long` in a record until a
+// property set needed to hold a FILETIME.
+bool isRecordWideField(const std::string& t) {
+    return t == "long" || t == "int64" || t == "ulong" || t == "uint64";
+}
 
 // Builds `public method hashCode() returns int { mutable int h = 17; h = h*31 + this.f; ...;
 // return h; }` (spec 10: auto-generated hashCode). Combines the numeric fields; equal records have
@@ -87,7 +110,11 @@ ast::MemberPtr buildRecordHashCode(const std::string& typeName,
             continue;  // object/String/pointer fields are not hashed
         }
         ast::ExprPtr fieldVal = makeMember(makeIdent("this", loc), f.name, loc);
-        if (isRecordFloatField(f.type.name)) {  // fold a float field to int for the mix
+        // Fold anything that is not already an `int`-shaped value down to one: a float, and a 64-bit
+        // integer, which is the same fold for the same reason (see `isRecordWideField`). The cast
+        // loses the top half of a `long`, which is what a hash mix does to every field it takes --
+        // `equals` is what decides identity, and it compares the whole value.
+        if (isRecordFloatField(f.type.name) || isRecordWideField(f.type.name)) {
             auto cast = std::make_unique<ast::CastExpr>();
             cast->loc = loc;
             cast->targetType = "int";
@@ -132,6 +159,18 @@ ast::MemberPtr buildRecordHashCode(const std::string& typeName,
 // Builds `public method toString() returns String { return "Name(" + this.f0.toString() + ", " + ...
 // + ")"; }` for a record's fields (spec 10: auto-generated toString). Each field is rendered via its
 // own toString(); a field type without toString() is a compile error in the generated method.
+//
+// EXCEPT AN ARRAY, WHICH HAS NO `toString` AND IS NOT GOING TO GET ONE. `byte[]` answers `length()`
+// and nothing else, so a record holding one could not be DECLARED: the generated body called a
+// method that does not exist, the error landed on the `public record` line rather than on the field,
+// and writing a `toString` by hand was refused as a duplicate name. There was no way to have the
+// type at all.
+//
+// The key generation already knew this -- `equalsKey`, `hash` and `compareTo` leave arrays out,
+// because two arrays holding the same bytes are different arrays -- and this is the same fact
+// arriving at the other generated method. So an array renders as what it can honestly say about
+// itself, `byte[128]`, which is also what a reader wants: a record carrying an embedded picture
+// should not print four megabytes because somebody interpolated it into a line of output.
 ast::MemberPtr buildRecordToString(const std::string& typeName,
                                    const std::vector<ast::Param>& fields, SourceLocation loc) {
     auto m = std::make_unique<ast::MethodDecl>();
@@ -154,6 +193,26 @@ ast::MemberPtr buildRecordToString(const std::string& typeName,
         return bin;
     };
     auto fieldStr = [&](const ast::Param& f) -> ast::ExprPtr {
+        if (f.type.isArray) {
+            // `byte[128]` -- the element type from the declaration, the length from the value.
+            auto len = std::make_unique<ast::CallExpr>();
+            len->loc = loc;
+            len->callee = makeMember(makeMember(makeIdent("this", loc), f.name, loc), "length", loc);
+            auto text = std::make_unique<ast::CallExpr>();
+            text->loc = loc;
+            text->callee = makeMember(std::move(len), "toString", loc);
+            auto open = std::make_unique<ast::BinaryExpr>();
+            open->loc = loc;
+            open->op = "+";
+            open->lhs = makeStr(f.type.name + "[");
+            open->rhs = std::move(text);
+            auto shut = std::make_unique<ast::BinaryExpr>();
+            shut->loc = loc;
+            shut->op = "+";
+            shut->lhs = std::move(open);
+            shut->rhs = makeStr("]");
+            return shut;
+        }
         auto call = std::make_unique<ast::CallExpr>();
         call->loc = loc;
         call->callee = makeMember(makeMember(makeIdent("this", loc), f.name, loc), "toString", loc);
@@ -244,7 +303,7 @@ bool isTypeKeyword(TokenKind k) {
         case TokenKind::KwFloat32:
         case TokenKind::KwFloat64:
         case TokenKind::KwRegion:
-        case TokenKind::KwUnknown:  // [unknown-abi] `unknown <world> funcptr<...>` starts a type
+        case TokenKind::KwUnknown:  // [unknown-abi] `unknown <world> methodptr<...>` starts a type
             return true;
         default:
             return false;
@@ -428,6 +487,7 @@ ast::Program Parser::parse() {
         // Already recorded; stop here (panic mode for the walking skeleton).
     }
     program.hasQualifiedTypeRef = sawQualifiedType_;
+    program.methodRefNames = std::move(methodRefNames_);
     return program;
 }
 
@@ -463,6 +523,31 @@ ast::ImportDecl Parser::parseImportDecl() {
     }
     expect(TokenKind::Semicolon, "';'");
     return imp;
+}
+
+// ONE `asm` OPERAND, WITH OR WITHOUT A PLACE (docs/design/asm-constraints.md).
+//
+//   out ("ax": value)     the operand must be in `ax`
+//   out (value)           anywhere -- what every block written before this said, and the default
+//
+// The place is a string literal followed by `:`, which is the shape a NAMED ARGUMENT already has in
+// this language (`f(name: value)`) with a string where the name would be. It has to be a string
+// rather than a bare word because `in` and `ax` and `memory` are ordinary identifiers a program may
+// be using for something else -- and because `"edx:eax"` contains the very punctuation that
+// separates the two halves, which a bare form could not spell at all.
+//
+// The lookahead is two tokens and unambiguous: an operand expression may begin with a string
+// literal (`out ("done": ...)` is not valid Polaron, but `in ("a" + b)` is), so the `:` is what
+// decides. Without it the literal is the operand, and the operand list is unchanged from before.
+void Parser::parseAsmOperand(std::vector<ast::ExprPtr>& list, std::vector<std::string>& where) {
+    std::string place;
+    if (check(TokenKind::StringLiteral) && peek(1).kind == TokenKind::Colon) {
+        place = current().lexeme;
+        advance();  // the place
+        advance();  // ':'
+    }
+    list.push_back(parseExpression());
+    where.push_back(std::move(place));
 }
 
 ast::CascadeParams Parser::parseCascadeParamsOpt() {
@@ -622,7 +707,12 @@ void Parser::parseNamespaceInto(std::vector<ast::Namespace>& out, const std::str
         }
         if (kind == TokenKind::KwEnum) {
             ast::EnumDecl en = parseEnum();
-            if (en.isJavaStyle) {
+            if (en.isSum) {
+                // A case with a payload makes the whole enum a sum, and a sum is a sealed hierarchy.
+                // Nothing of the enum survives: there are no ordinals to keep, because a case that
+                // carries data is not a value the compiler can hand out -- it is a constructor.
+                desugarSumEnum(en, ns);
+            } else if (en.isJavaStyle) {
                 // Desugar: a class carries the fields/constructor/methods (reusing
                 // the whole class pipeline); a light enum keeps the constants and
                 // their constructor args so `Type.CONST` can materialize them.
@@ -672,6 +762,10 @@ void Parser::parseNamespaceInto(std::vector<ast::Namespace>& out, const std::str
             ns.classes.push_back(std::move(rec));
         } else if (kind == TokenKind::KwExtern) {
             parseExternInto(ns.externs);
+        } else if (kind == TokenKind::KwCommand) {
+            ast::ClassDecl role = parseCommandType();
+            role.annotations = std::move(anns);
+            ns.classes.push_back(std::move(role));
         } else if (kind == TokenKind::KwTypealias || kind == TokenKind::KwNewtype) {
             ns.typeAliases.push_back(parseTypeAlias());
         } else {
@@ -684,6 +778,103 @@ void Parser::parseNamespaceInto(std::vector<ast::Namespace>& out, const std::str
     // Into the slot reserved before the body was read, so `out` holds outer-then-inner and a nested
     // parse that appended children in the meantime did not displace this one.
     out[self] = std::move(ns);
+}
+
+/* `[visibility] command DogTest(Dog& d) returns boolean;` -- THE ROLE, named.
+
+   An API that takes a command has to be able to say so, and what it needs to say is the SHAPE it
+   will call: two parameters and an answer. Naming the command class itself would be the wrong thing
+   twice -- the class is generated, so its spelling is the compiler's business and not writable in
+   source, and a method that accepted one particular command would accept exactly one caller's.
+
+   So the declaration produces an INTERFACE with a single method, and the command classes that fit
+   are given it by `expandCommands` rather than declaring it themselves. The author of `aboveAge`
+   never hears of `DogTest`; the author of `filter` never hears of `aboveAge`; and the two meet
+   because their signatures agree, which is the whole of what "conformidade estrutural" asks for.
+
+   The one-method-ness is not a restriction that had to be imposed: a command IS one behaviour, so
+   the role of one is one signature. */
+/* ONE TYPE ARGUMENT, WHICH MAY BE A NUMBER (A.3).
+ *
+ * `Matrix<float, 4, 4>` fills a `fixed int` parameter, and what fills it is a value rather than a
+ * type -- so it is taken as the literal it is and carried in the same list. The mangled name has
+ * room for it with no new machinery: `Matrix$float$4$4` is as good a key as `Box$int`, and
+ * everything downstream keys on the name. A leading `-` is read too, because a dimension will not
+ * be the only thing a value parameter is ever used for.
+ *
+ * Written once and called from all three places type arguments are read -- a type, a `new`, and a
+ * generic method call -- because three copies of a rule like this is how two of them come to
+ * disagree. */
+void Parser::parseTypeArgInto(std::vector<std::string>& out) {
+    if (check(TokenKind::IntLiteral) ||
+        (check(TokenKind::Minus) && peek(1).kind == TokenKind::IntLiteral)) {
+        std::string literal;
+        if (match(TokenKind::Minus)) {
+            literal = "-";
+        }
+        literal += current().lexeme;
+        advance();
+        out.push_back(literal);
+        return;
+    }
+    ast::TypeRef arg = parseTypeRef();
+    out.push_back(ast::canonicalType(arg));
+}
+
+ast::ClassDecl Parser::parseCommandType() {
+    ast::ClassDecl role;
+    role.loc = current().loc;
+    role.visibility = parseVisibilityOpt();
+    expect(TokenKind::KwCommand, "'command'");
+    role.nameLoc = current().loc;
+    role.name = expect(TokenKind::Identifier, "the command type's name").lexeme;
+    role.isInterface = true;
+    role.isCommandType = true;
+    /* `command Comparer<T>(T a, T b) returns int;` -- A ROLE OVER A HOLE.
+
+       A comparison is the same role whatever it compares, and writing one per element type is the
+       thing generics exist to stop. The hole is filled by MATCHING rather than by anybody naming it:
+       a command answering `(int, int) -> int` fills `T` with `int`, and the same hole filled twice
+       has to agree, which is what makes `Comparer<T>` a statement about the command rather than a
+       shape with two independent blanks. */
+    if (match(TokenKind::Lt)) {
+        do {
+            role.typeParams.push_back(expect(TokenKind::Identifier, "a type parameter").lexeme);
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "'>' to close the command type's type parameters");
+    }
+
+    auto sig = std::make_unique<ast::MethodDecl>();
+    sig->loc = role.loc;
+    sig->visibility = "public";
+    sig->isAbstract = true;
+    sig->name = kCommandMethod;
+    expect(TokenKind::LParen, "'(' after the command type's name");
+    sig->params = parseParams();
+    expect(TokenKind::RParen, "')' to close the parameter list");
+    // A command that carries something carries it at INSTANTIATION, and a role is never instantiated
+    // -- so `carries` here would be describing baggage nobody supplies. Said plainly, because the
+    // author who writes it is copying the member form one line up and the two really are different.
+    if (check(TokenKind::KwCarries)) {
+        fail("a command TYPE says what will be called, not what it holds: the baggage belongs to the "
+             "command itself (`command " + role.name +
+                 "(...) carries (...) into pack returns T { ... }` inside a class), and a role that "
+                 "named it would be demanding that every command playing the role carry the same "
+                 "things. Drop the `carries` clause here",
+             current().loc);
+    }
+    if (match(TokenKind::KwThrows)) {
+        expect(TokenKind::LParen, "'(' after 'throws'");
+        do {
+            sig->throwsTypes.push_back(parseTypeRef());
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::RParen, "')' to close 'throws'");
+    }
+    expect(TokenKind::KwReturns, "'returns' -- a command type states what the call answers");
+    sig->returnType = parseTypeRef();
+    expect(TokenKind::Semicolon, "';' to close the command type");
+    role.members.push_back(std::move(sig));
+    return role;
 }
 
 // `[visibility] extern <cdecl|stdcall|fastcall> method name(params) returns T;` (spec 26), or the
@@ -926,6 +1117,32 @@ ast::EnumDecl Parser::parseEnum() {
     }
     expect(TokenKind::KwEnum, "'enum'");
     e.name = expect(TokenKind::Identifier, "the enum name").lexeme;
+    // `enum Option<T> { Some(T value), None }` -- the same grammar the class line takes, in the same
+    // position, because a sum's parameters constrain exactly as a class's do. They are also the
+    // mechanism that makes a payload SIZED: `Option<T>` has no width, `Option<int>` does, and the
+    // monomorphiser that already fixes `Box<int>`'s layout fixes this one (enum-variants 10.1).
+    if (match(TokenKind::Lt)) {
+        do {
+            std::string variance;
+            if (check(TokenKind::KwIn) && peek(1).kind == TokenKind::Identifier) {
+                advance();
+                variance = "in";
+            } else if (check(TokenKind::Identifier) && current().lexeme == "out" &&
+                       peek(1).kind == TokenKind::Identifier) {
+                advance();
+                variance = "out";
+            }
+            const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
+            e.typeParams.push_back(tp);
+            e.typeParamVariance.push_back(variance);
+            if (match(TokenKind::KwExtends) || match(TokenKind::KwImplements)) {
+                e.typeParamBounds.push_back({tp, parseBoundName(), false});
+            } else if (match(TokenKind::KwApplies)) {
+                e.typeParamBounds.push_back({tp, parseBoundName(), true});
+            }
+        } while (match(TokenKind::Comma));
+        expect(TokenKind::Gt, "'>' to close type parameters");
+    }
     // Catalogs implemented by this enum (spec 12.4): `enum Motor extends TipoMotor`.
     if (match(TokenKind::KwExtends)) {
         do {
@@ -949,6 +1166,7 @@ ast::EnumDecl Parser::parseEnum() {
         do {
             e.constants.push_back(expect(TokenKind::Identifier, "an enum constant").lexeme);
             e.constantArgs.push_back({});
+            e.constantPayloads.push_back({});
         } while (match(TokenKind::Comma));
         expect(TokenKind::Semicolon, "';' to close a `permits` enum");
         // AND IT MAY STILL HAVE BEHAVIOUR. `permits` says what the constants ARE; it says nothing
@@ -971,12 +1189,26 @@ ast::EnumDecl Parser::parseEnum() {
         return e;
     }
     expect(TokenKind::LBrace, "'{'");
-    // Constants: NAME [ (ctor args) ], comma-separated. Args make it Java-style.
+    // Constants: NAME [ (ctor args) ], comma-separated. Args make it Java-style; `Type name`
+    // declarations instead make it a CASE WITH A PAYLOAD, and the enum a sum (see `payloadCaseAhead`
+    // for how the two are told apart, since both spell themselves `NAME(...)`).
     if (check(TokenKind::Identifier)) {
         do {
             e.constants.push_back(expect(TokenKind::Identifier, "an enum constant").lexeme);
             std::vector<ast::ExprPtr> args;
-            if (match(TokenKind::LParen)) {
+            std::vector<ast::Param> payload;
+            if (check(TokenKind::LParen) && payloadCaseAhead()) {
+                advance();  // the '('
+                e.isSum = true;
+                do {
+                    ast::Param p;
+                    p.loc = current().loc;
+                    p.type = parseTypeRef();
+                    p.name = expect(TokenKind::Identifier, "a name for this payload field").lexeme;
+                    payload.push_back(std::move(p));
+                } while (match(TokenKind::Comma));
+                expect(TokenKind::RParen, "')' to close the payload of this case");
+            } else if (match(TokenKind::LParen)) {
                 e.isJavaStyle = true;
                 if (!check(TokenKind::RParen)) {
                     do {
@@ -986,6 +1218,7 @@ ast::EnumDecl Parser::parseEnum() {
                 expect(TokenKind::RParen, "')'");
             }
             e.constantArgs.push_back(std::move(args));
+            e.constantPayloads.push_back(std::move(payload));
         } while (match(TokenKind::Comma));
     }
     // `byCatalog { ... }` block (spec 12.4): constants provided to satisfy a catalog.
@@ -1011,6 +1244,7 @@ ast::EnumDecl Parser::parseEnum() {
                     expect(TokenKind::RParen, "')'");
                 }
                 e.constantArgs.push_back(std::move(args));  // keep parallel to `constants`
+                e.constantPayloads.push_back({});           // a catalog value never carries one
             } while (match(TokenKind::Comma));
         }
         expect(TokenKind::RBrace, "'}' to close byCatalog");
@@ -1034,6 +1268,201 @@ ast::EnumDecl Parser::parseEnum() {
     pendingProcCalls_.clear();
     normalizeEnumStyle(e);
     return e;
+}
+
+// THE FOUR WORDS `entity` BRINGS, each recognised by where it stands and nowhere else.
+//
+// `entity` (docs/design/entity.md) is A VALUE TYPE WHOSE ARRAYS ARE TRANSPOSED. That is the whole of
+// the new semantics; everything about a single one follows from the value semantics `struct` already
+// has. It answers AP-06, the objection that stands -- *a loop over one field of ten thousand objects
+// touches ten thousand cache lines where a column touches six hundred, so systems code abandons the
+// type* -- and no library can answer it, because the transposition has to happen BELOW the type:
+// something the compiler understands has to hold the type still while the storage comes apart.
+//
+// `pass` is a member written for ONE ROW and run over the whole population. `sparse` is a column
+// stored by presence rather than per row. `stable` says the address of this does not change, which
+// on an entity is the whole liveness trade: dense rows move to fill a hole and an index is
+// ephemeral, `stable` rows never move and an index is permanent.
+//
+// ALL FOUR ARE SOFT, and the design said they would be hard on the grounds that all four were free.
+// The check asked the keyword table and not the programs. `sparse` is a field of the prelude's own
+// sparse-set store; `stable` names a merge sort's property in three comments; `pass` is a local in a
+// dozen places across the tests and the operating system. Position is what makes soft safe, and
+// each of these has exactly one: `entity` where `class` may stand, `pass` where `method` may,
+// `sparse` and `stable` in the modifier run that precedes a type. An ordinary name can appear in
+// none of those places, so the words cost nothing and every existing program keeps its own.
+bool Parser::atSoftWord(const char* word, int ahead) const {
+    return peek(ahead).kind == TokenKind::Identifier && peek(ahead).lexeme == word;
+}
+
+// A SUM ENUM IS A SEALED HIERARCHY, and the language already had one: `Result<T,E>` and `Option<T>`
+// are written out by hand in the prelude as a sealed abstract base with one class per case, and
+// everything downstream -- monomorphisation, the value representation, `match` compiling to a tag
+// test, exhaustiveness over `permits` -- is built on that shape. So the word `enum` over cases with
+// payloads does not need a second mechanism; it needs to produce THE SAME DECLARATIONS the prelude
+// writes by hand, and then it inherits all of it, including the parts nobody has thought to add yet.
+//
+// `enum Shape { Circle(double radius), Rect(double w, double h), Empty }` becomes
+//
+//     sealed abstract class Shape permits Circle, Rect, Empty { public abstract method ...; }
+//     class Circle extends Shape { public final double radius; constructor Circle(double radius) ... }
+//     class Rect   extends Shape { ... }
+//     class Empty  extends Shape { constructor Empty() { } }
+//
+// The abstract method is not decoration: it forces a vtable onto the base, which is what lets a
+// `match` over the boxed form dispatch on the variant. The prelude's own comment says so, and the
+// hierarchy that comes out of here has to be indistinguishable from the one written by hand or the
+// two will drift on exactly the questions where drifting is silent.
+//
+// The fields are `final` because a case's payload is decided at construction and never after: that
+// is the difference between a sum and a record, and it is also what makes the value representation
+// sound, since a value with no identity cannot have its parts assigned through a copy of it.
+void Parser::desugarSumEnum(ast::EnumDecl& e, ast::Namespace& ns) {
+    ast::ClassDecl base;
+    base.loc = e.loc;
+    base.visibility = e.visibility;
+    base.name = e.name;
+    base.isSealed = true;
+    base.isAbstract = true;
+    base.typeParams = e.typeParams;
+    base.typeParamVariance = e.typeParamVariance;
+    base.typeParamBounds = e.typeParamBounds;
+    base.permits = e.constants;
+    base.applies = e.applies;
+    base.appliesLocs = e.appliesLocs;
+    base.procCalls = e.procCalls;
+    // The members written in the enum's body ride along: an enum whose whole point is that every
+    // case is named is exactly the enum you want to answer questions from, and those answers belong
+    // on the base for the same reason the prelude puts `isErr` there -- one place, and a case added
+    // later cannot forget one.
+    base.members = std::move(e.members);
+    {
+        // The vtable-forcing method. Named for what it answers rather than for what it is for,
+        // because it is visible: `s.variantName()` is a reasonable thing to ask a sum.
+        auto tagOf = std::make_unique<ast::MethodDecl>();
+        tagOf->loc = e.loc;
+        tagOf->visibility = "public";
+        tagOf->isAbstract = true;
+        tagOf->name = "variantOrdinal";
+        tagOf->returnType.name = "int";
+        base.members.push_back(std::move(tagOf));
+    }
+    ns.classes.push_back(std::move(base));
+
+    for (std::size_t i = 0; i < e.constants.size(); ++i) {
+        const std::string caseName = e.constants[i];
+        std::vector<ast::Param> payload;
+        if (i < e.constantPayloads.size()) {
+            payload = e.constantPayloads[i];
+        }
+        ast::ClassDecl c;
+        c.loc = e.loc;
+        c.visibility = e.visibility;
+        c.name = caseName;
+        c.typeParams = e.typeParams;
+        c.typeParamVariance = e.typeParamVariance;
+        c.typeParamBounds = e.typeParamBounds;
+        c.superclass = e.name;
+        c.superclassTypeArgs = e.typeParams;
+        // The payload fields. NOT `mutable` -- which is the default, so this is a decision made by
+        // not writing a word: a case's payload is chosen at construction and never after, and that
+        // is exactly what separates a sum from a record.
+        for (const ast::Param& p : payload) {
+            auto f = std::make_unique<ast::FieldDecl>();
+            f->loc = p.loc;
+            f->visibility = "public";
+            f->type = p.type;
+            f->name = p.name;
+            c.members.push_back(std::move(f));
+        }
+        {
+            auto ctor = std::make_unique<ast::ConstructorDecl>();
+            ctor->loc = e.loc;
+            ctor->visibility = "public";
+            ctor->body.loc = e.loc;
+            for (const ast::Param& p : payload) {
+                ctor->params.push_back(p);
+                auto assign = std::make_unique<ast::AssignStmt>();
+                assign->loc = p.loc;
+                auto self = std::make_unique<ast::IdentifierExpr>();
+                self->loc = p.loc;
+                self->name = "this";
+                auto target = std::make_unique<ast::MemberExpr>();
+                target->loc = p.loc;
+                target->object = std::move(self);
+                target->member = p.name;
+                auto value = std::make_unique<ast::IdentifierExpr>();
+                value->loc = p.loc;
+                value->name = p.name;
+                assign->target = std::move(target);
+                assign->value = std::move(value);
+                ctor->body.statements.push_back(std::move(assign));
+            }
+            c.members.push_back(std::move(ctor));
+        }
+        {
+            auto tagOf = std::make_unique<ast::MethodDecl>();
+            tagOf->loc = e.loc;
+            tagOf->visibility = "public";
+            tagOf->isOverride = true;
+            tagOf->name = "variantOrdinal";
+            tagOf->returnType.name = "int";
+            tagOf->body.loc = e.loc;
+            auto ret = std::make_unique<ast::ReturnStmt>();
+            ret->loc = e.loc;
+            auto lit = std::make_unique<ast::IntLiteralExpr>();
+            lit->loc = e.loc;
+            lit->text = std::to_string(i);
+            ret->value = std::move(lit);
+            tagOf->body.statements.push_back(std::move(ret));
+            c.members.push_back(std::move(tagOf));
+        }
+        sumCases_[caseName] = SumCase{e.name, e.typeParams.size(), payload.size()};
+        ns.classes.push_back(std::move(c));
+    }
+}
+
+// `RED(255)` and `Circle(double radius)` are the same shape -- NAME, then parentheses -- and mean
+// opposite things: the first gives THE constant its data once, the second says every construction of
+// this case brings its own. Nothing outside the parentheses distinguishes them, so this reads what
+// is inside, over the FIRST entry only (the entries of one case must agree, and a mixture is a
+// syntax error where the second entry fails to parse as whichever the first chose).
+//
+// The rule: strip a trailing name; what is left must be a non-empty type, and must not end in a dot.
+// That last clause is the whole difficulty, because `Color.RED` is a value that ends in a name and
+// `Errors.Fault f` is a type that ends in a name -- and they differ only in that the value's name IS
+// the qualified tail while the payload's name follows a complete one.
+//
+// Called with `(` current; scans forward without consuming, so a wrong guess costs nothing.
+bool Parser::payloadCaseAhead() const {
+    int depth = 0;      // <...> nesting, so the ',' in `Map<int,String> m` is not an entry separator
+    int i = 1;          // relative to the '('
+    int lastIdent = 0;  // where the last name in this entry sat
+    int count = 0;
+    for (;; ++i) {
+        const TokenKind k = peek(i).kind;
+        if (k == TokenKind::EndOfFile) {
+            return false;
+        }
+        if (k == TokenKind::Lt) {
+            ++depth;
+        } else if (k == TokenKind::Gt) {
+            --depth;
+        } else if (depth == 0 && (k == TokenKind::RParen || k == TokenKind::Comma)) {
+            break;
+        }
+        if (k == TokenKind::Identifier) {
+            lastIdent = i;
+        }
+        ++count;
+    }
+    if (count < 2) {
+        return false;  // `255`, `"x"`, a lone `Color` -- there is no name following a type
+    }
+    if (lastIdent != i - 1) {
+        return false;  // the entry does not END in a name, so nothing was being declared
+    }
+    return peek(i - 2).kind != TokenKind::Dot;
 }
 
 // What makes an enum java-style is STATE -- per-constant constructor arguments, instance fields, a
@@ -1247,6 +1676,12 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     if (match(TokenKind::KwPartial)) {
         c.isPartial = true;  // spec 8.3: one part of a split class
     }
+    // `mustuse` -- a value of this type is the point of the call that produced it (B.2). First in
+    // the chain because it is the one modifier about the type's USE rather than its shape or its
+    // hierarchy, and it reads where an adjective goes: `public mustuse sealed abstract class Result`.
+    if (match(TokenKind::KwMustuse)) {
+        c.isMustUse = true;
+    }
     if (match(TokenKind::KwSealed)) {
         c.isSealed = true;
     }
@@ -1263,6 +1698,30 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         c.isMovable = true;
     } else if (match(TokenKind::KwUnique)) {
         c.isUnique = true;
+    }
+    // `dynamic class X` -- the instance carries its type. Its own `if` rather than a branch of the
+    // chain above, because it is orthogonal to all of them: a `dynamic movable class` and a
+    // `dynamic unique class` are both meaningful, where `movable unique` is not.
+    if (match(TokenKind::KwDynamic)) {
+        c.isDynamic = true;
+    }
+    // `shareable` -- safe to reach from several threads. Orthogonal to everything above it, and to
+    // `dynamic`: a `dynamic shareable class` is meaningful and so is a `shareable struct`.
+    if (match(TokenKind::KwShareable)) {
+        c.isShareable = true;
+    }
+    // `stable` -- the address of this does not change. Orthogonal to every modifier above, and to
+    // `movable` in particular: they are about different subjects, `stable` about the ADDRESS and
+    // `movable` about OWNERSHIP, so `stable movable entity` is the useful pair rather than a
+    // contradiction -- a page-frame database handed from the boot allocator to the kernel, whose
+    // entries are referenced by permanent index throughout. Reading the two words as one would
+    // refuse exactly that.
+    // Soft: `stable` only where a modifier may stand, which is before the word that names the kind.
+    // An ordinary name never appears there, and a field or local called `stable` is untouched.
+    if (atSoftWord("stable") && (peek(1).kind == TokenKind::KwClass ||
+                                 peek(1).kind == TokenKind::KwStruct || atSoftWord("entity", 1))) {
+        advance();
+        c.isStable = true;
     }
     if (match(TokenKind::KwPartitionable)) {
         c.isPartitionable = true;  // spec 19.9
@@ -1325,11 +1784,42 @@ ast::ClassDecl Parser::parseClassOrInterface() {
     } else if (match(TokenKind::KwUnion)) {
         c.isUnion = true;   // value type whose fields overlap one storage
         c.isStruct = true;
+    } else if (atSoftWord("entity") && peek(1).kind == TokenKind::Identifier) {
+        advance();
+        // A lone entity IS a struct -- value semantics, no vtable, no inheritance -- and is laid out
+        // as one. The word changes `Particle[]`, not `Particle`, which is why it sets both flags
+        // rather than opening a fourth kind of value aggregate.
+        c.isEntity = true;
+        c.isStruct = true;
     } else {
-        expect(TokenKind::KwClass, "'class', 'struct', 'union', 'interface' or 'layout'");
+        expect(TokenKind::KwClass, "'class', 'struct', 'union', 'entity', 'interface' or 'layout'");
+    }
+    if (c.isStable) {
+        // A REFUSAL, and not because the word is wrong. `stable` means one thing everywhere -- the
+        // address of this does not change -- and it earns its place in the universal-prefix family
+        // by meaning it on a class, a region, a field, a thread and a local. What it CHOOSES is a
+        // deletion strategy: dense rows move to fill a hole and an index is ephemeral, `stable`
+        // rows never move and an index is permanent.
+        //
+        // Row deletion is not built. So today the word would change nothing at all, and a modifier
+        // the compiler reads and does not honour is worse than one it does not know: the author
+        // writes a guarantee down, gets no diagnostic, and gets no guarantee. The refusal says
+        // which of the two it is, which silence cannot.
+        fail("`stable` chooses between the two ways a row can be deleted -- rows that never move, "
+             "so an index into them is permanent, against rows that shift down to fill the hole. "
+             "Deleting a row is not built yet, so the word would be read and change nothing. It is "
+             "refused rather than accepted silently; see docs/design/entity.md section 8",
+             c.loc);
     }
     c.nameLoc = current().loc;   // before consuming it: a diagnostic about the NAME points at the name
     c.name = expect(TokenKind::Identifier, "the type name").lexeme;
+    // Whose members these are -- read by the inline `command` form, which lifts itself onto this
+    // class and has to name it at the call it leaves behind. Saved and restored rather than set and
+    // cleared, so a declaration parsed inside another one leaves the outer name intact.
+    const std::string outerClass = currentClassName_;
+    const int outerInlineCount = inlineCommandCount_;
+    currentClassName_ = c.name;
+    inlineCommandCount_ = 0;
     // `public class Sdl library SDL2 { ... }` -- the foreign library this class's externs come from.
     //
     // It sits on the CLASS because the class is already the unit that groups them, and because the
@@ -1365,9 +1855,41 @@ ast::ClassDecl Parser::parseClassOrInterface() {
                 advance();
                 variance = "out";
             }
+            /* `fixed` -- THIS PARAMETER BINDS AT STAMPING (A.3).
+             *
+             * Per parameter, and it does not spread: `<fixed T, fixed int R>` marks both, and
+             * `<fixed T, int a>` marks only the first. What a bare parameter means is RESERVED, not
+             * spent -- a bare value parameter is the runtime-bound extent (`mdspan`'s mixed shape)
+             * and a bare type parameter is a generic over a runtime type descriptor -- so v1
+             * refuses a bare value parameter rather than quietly giving it the stamped meaning and
+             * making the spelling unavailable later. */
+            const bool isFixed = match(TokenKind::KwFixed);
+            // `fixed int R` -- a VALUE parameter: the hole takes a number, not a type. Told apart
+            // from a type parameter by what follows: a type keyword or a name, and then the
+            // parameter's own name.
+            std::string valueType;
+            if (isTypeKeyword(current().kind) && peek(1).kind == TokenKind::Identifier) {
+                valueType = current().lexeme;
+                advance();
+            } else if (!isFixed && isTypeKeyword(current().kind)) {
+                // `<int a>` with nothing after it is not a value parameter either; fall through to
+                // the ordinary error below, which names what was expected.
+            }
             const std::string tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
+            if (!valueType.empty() && !isFixed) {
+                fail("`" + valueType + " " + tp +
+                         "` is a VALUE parameter that binds at run time -- the dimension supplied "
+                         "when the object is built rather than when the type is stamped. That "
+                         "arrives in a later version; the spelling is reserved for it so it cannot "
+                         "come to mean something else. Write `fixed " + valueType + " " + tp +
+                         "` for a stamped one (participates in the type, monomorphized, foldable), "
+                         "or make it a constructor parameter and keep it out of the type",
+                     current().loc);
+            }
             c.typeParams.push_back(tp);
             c.typeParamVariance.push_back(variance);
+            c.typeParamFixed.push_back(isFixed);
+            c.typeParamValueType.push_back(valueType);
             // Constraint (spec 15.2): `<T extends Base>` or `<T implements Iface>`, whose own type
             // arguments count: `<T implements Comparable<T>>` demands Comparable OF T, not of anything.
             // The bound is stored in its canonical mangled form ("Comparable$T"), so the constraint check
@@ -1418,14 +1940,61 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             c.interfaceTypeArgs.push_back(std::move(args));
         } while (match(TokenKind::Comma));
     }
+    // `struct Packet arranges WireRecord` -- the layouts this type's bytes are decided by.
+    //
+    // IT REPLACES `implements` FOR LAYOUTS BECAUSE `implements` LIED, and the repository's own
+    // sample admitted it in a comment: *"`implements` here must survive as a layout and not be
+    // mistaken for an interface."* When code needs a line saying it is not what it looks like, the
+    // syntax is at fault. A layout has no methods, is never a type, and reaches nothing outside the
+    // build -- so a promise made outward is precisely what it is not.
+    //
+    // A soft keyword, and the check that it is safe as one is the position: `arranges` is only read
+    // this way in a class header, where an identifier could not otherwise appear. A type named
+    // `arranges` still declares and still uses.
+    if (check(TokenKind::Identifier) && current().lexeme == "arranges" &&
+        peek(1).kind == TokenKind::Identifier) {
+        advance();
+        do {
+            c.layouts.push_back(expect(TokenKind::Identifier, "a layout name").lexeme);
+        } while (match(TokenKind::Comma));
+    }
     // `applies A, B` -- LAST on the class line, and the order is the argument: identity, then
     // obligation, then equipment. `extends` is one and is-a; `implements` is many and is a promise
     // made outward; `applies` is many, purely additive, and nobody outside needs to know about it.
     parseAppliesOpt(c);
     // `sealed ... permits A, B, C`: only the listed types may extend it (spec 12/16).
+    //
+    // ON A LAYOUT THE SAME WORD LISTS CONCESSIONS -- `layout Compact permits reorder, padding`.
+    // Same sense (this is the closed set of what is allowed), different noun: there it is what may
+    // extend, here it is what the compiler may DO to reach an arrangement. Reusing the token is
+    // deliberate; giving it a second meaning would not be, which is why the words after it are
+    // checked against a closed list rather than accepted as subtype names on a declaration that
+    // can have no subtypes.
     if (match(TokenKind::KwPermits)) {
         do {
-            c.permits.push_back(expect(TokenKind::Identifier, "a permitted subtype").lexeme);
+            const SourceLocation wordLoc = current().loc;
+            const std::string name = expect(TokenKind::Identifier,
+                                            c.isLayout ? "a concession -- `reorder` or `padding`"
+                                                       : "a permitted subtype")
+                                         .lexeme;
+            if (!c.isLayout) {
+                c.permits.push_back(name);
+                continue;
+            }
+            if (name == "reorder") {
+                c.permitsReorder = true;
+            } else if (name == "padding") {
+                c.permitsPadding = true;
+            } else {
+                fail("`permits` on a layout lists what the compiler may DO to reach the "
+                     "arrangement, and there are two things it can do: `reorder` lets it permute "
+                     "the fields, `padding` lets it insert bytes beyond what alignment requires. `" +
+                         name +
+                         "` is neither. Packing is not among them on purpose -- removing the "
+                         "padding the ABI wants is not the compiler choosing, it is the author "
+                         "overriding, so it is a constraint and belongs in `onArrange`",
+                     wordLoc);
+            }
         } while (match(TokenKind::Comma));
     }
     expect(TokenKind::LBrace, "'{'");
@@ -1478,7 +2047,9 @@ ast::ClassDecl Parser::parseClassOrInterface() {
             parseAffinityBlock(c);
             continue;
         }
+        inLayout_ = c.isLayout;
         c.members.push_back(parseMember(c.isInterface));
+        inLayout_ = false;
         // A property with a custom setter synthesizes extra members (the setter method); collect them.
         for (auto& em : extraMembers_) {
             c.members.push_back(std::move(em));
@@ -1486,6 +2057,8 @@ ast::ClassDecl Parser::parseClassOrInterface() {
         extraMembers_.clear();
     }
     expect(TokenKind::RBrace, "'}'");
+    currentClassName_ = outerClass;
+    inlineCommandCount_ = outerInlineCount;
     c.procCalls = std::move(pendingProcCalls_);  // every `call T.p()` written in this body
     pendingProcCalls_.clear();
     // Union fields are written/read freely (manual memory); make them mutable.
@@ -1510,6 +2083,10 @@ ast::ClassDecl Parser::parseRecord() {
     c.isRecord = true;
     c.isStruct = true;  // value type, no vtable -> reuses struct codegen
     c.name = expect(TokenKind::Identifier, "the record name").lexeme;
+    const std::string outerClass = currentClassName_;   // see parseClassOrInterface
+    const int outerInlineCount = inlineCommandCount_;
+    currentClassName_ = c.name;
+    inlineCommandCount_ = 0;
     expect(TokenKind::LParen, "'('");
     std::vector<ast::Param> fields = parseParams();
     expect(TokenKind::RParen, "')'");
@@ -1584,8 +2161,15 @@ ast::ClassDecl Parser::parseRecord() {
             fail("a record cannot declare fields beyond its primary constructor parameters", m->loc);
         }
         c.members.push_back(std::move(m));
+        // ...and anything the parser wrote for it: a property's setter, a lifted inline command.
+        for (auto& em : extraMembers_) {
+            c.members.push_back(std::move(em));
+        }
+        extraMembers_.clear();
     }
     expect(TokenKind::RBrace, "'}'");
+    currentClassName_ = outerClass;
+    inlineCommandCount_ = outerInlineCount;
     // DRAINED HERE TOO. Without this a `call T.p()` written in a record body stayed in the pending
     // list and was attributed to whichever declaration was parsed NEXT -- so the three rules `call`
     // carries were checked against the wrong type's `applies` clause, in both directions. A record
@@ -1643,9 +2227,12 @@ bool Parser::atAffinityBlock() const {
         check(TokenKind::KwInternal)) {
         i = 1;
     }
+    // `cold` is a hard keyword (B.3, on methods), so the field-group form has to accept it as a
+    // token as well as by lexeme -- `hot` is still an ordinary identifier, and stays one.
     return peek(i).kind == TokenKind::Identifier && peek(i).lexeme == "affinity" &&
-           peek(i + 1).kind == TokenKind::Identifier &&
-           (peek(i + 1).lexeme == "hot" || peek(i + 1).lexeme == "cold");
+           ((peek(i + 1).kind == TokenKind::Identifier &&
+             (peek(i + 1).lexeme == "hot" || peek(i + 1).lexeme == "cold")) ||
+            peek(i + 1).kind == TokenKind::KwCold);
 }
 
 // spec 32.9: `public affinity hot { float x; float y; }` -- the fields inside are ordinary fields,
@@ -1761,6 +2348,11 @@ constexpr ModifierRule kModifierRules[] = {
     // override anything -- the chain runs derived-then-base by itself -- so the word said nothing, and
     // saying nothing quietly is the shape this check exists to stop.
     {TokenKind::KwOverride,   "override",   kOnMethod | kOnField, 20, "a method or a field"},
+    // A METHOD ONLY, and not a destructor -- the destructor is where ownership is DECLARED, and the
+    // analysis reads what a class owns out of it. A surveyed destructor would erase the language's
+    // own source of truth about who frees what, which is not a risk to weigh but a sentence with no
+    // meaning. Refused in the analyzer, where a destructor is distinguishable from a method.
+    {TokenKind::KwSurveyed,   "surveyed",   kOnMethod, 20, "a method (spec 5b: the region binder)"},
     {TokenKind::KwFinal,      "final",      kOnMethod | kOnField | kOnLocal, 20,
      "a class, a method, a field, a local or an import (spec 37.6)"},
 
@@ -1890,6 +2482,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isMutable = false;
     bool isAbstract = false;
     bool isOverride = false;
+    bool isSurveyed = false;
     bool isFinal = false;
     bool isPersistent = false;
     bool isEternal = false;
@@ -1900,11 +2493,17 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
     bool isLazy = false;
     bool isAsync = false;
     bool isNaked = false;
+    bool isReentrant = false;   // may be entered again -- docs/design/reentrant.md
+    bool isReadonly = false;    // writes nothing -- declared, and checked
+    bool isCold = false;        // rarely taken -- off the hot line, never inlined into one
+    bool isMustUse = false;     // this one's answer is the point -- B.2
     bool isExternal = false;
     bool isDelegateField = false;
     bool isMovableField = false;
     bool isUniqueField = false;
     bool isWeakField = false;
+    bool isSparseField = false;
+    bool isStableField = false;
     bool isExtern = false;          // spec 26: extern C method member
     std::string externConvention;
     std::string fieldInRegion;      // spec 18.7: `in region X` placement, as written
@@ -1927,6 +2526,11 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         if (!isOverride && check(TokenKind::KwOverride)) {
             advance();
             isOverride = true;
+            continue;
+        }
+        if (!isSurveyed && check(TokenKind::KwSurveyed)) {
+            advance();
+            isSurveyed = true;
             continue;
         }
         if (!isFinal && check(TokenKind::KwFinal)) {
@@ -1988,6 +2592,35 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             isNaked = true;
             continue;
         }
+        // `reentrant` -- may be entered again while an earlier entry is still running
+        // (docs/design/reentrant.md). A MEMBER modifier: `reentrant field` means nothing, which is
+        // why it is not a universal prefix.
+        if (!isReentrant && check(TokenKind::KwReentrant)) {
+            advance();
+            isReentrant = true;
+            continue;
+        }
+        // `readonly` -- writes nothing (B.1/D.6). A MEMBER modifier like `reentrant`, and for the
+        // same reason: `readonly field` would be `final`, which the language already has.
+        if (!isReadonly && check(TokenKind::KwReadonly)) {
+            advance();
+            isReadonly = true;
+            continue;
+        }
+        // `cold` -- rarely taken (B.3). Not consumed when it is the `affinity cold { }` word, which
+        // `atAffinityBlock` has already claimed before this loop is reached.
+        if (!isCold && check(TokenKind::KwCold)) {
+            advance();
+            isCold = true;
+            continue;
+        }
+        // `mustuse` -- this one's answer is the point (B.2), for the occasional method on a type
+        // that is otherwise ordinary. The default lives on the TYPE.
+        if (!isMustUse && check(TokenKind::KwMustuse)) {
+            advance();
+            isMustUse = true;
+            continue;
+        }
         if (!isExternal && check(TokenKind::KwExternal)) {
             advance();
             isExternal = true;
@@ -2012,6 +2645,30 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
             advance();
             isWeakField = true;
             continue;
+        }
+        // Soft, and safe because a modifier is followed by ANOTHER MODIFIER OR A TYPE while a field
+        // named `sparse` is followed by `;`, `=` or `:`. The prelude's own sparse-set store has a
+        // field called `sparse`, which is how this was found.
+        // `sparse` is recognised HERE so its refusal names the construct rather than arriving as a
+        // syntax error about an unexpected identifier. It is designed (entity.md 7) and not built:
+        // a sparse column is stored by presence, which is its own index beside the block, and
+        // accepting the word without one would give a dense column of a million slots for the three
+        // thousand that exist -- exactly what the modifier exists to avoid, with no sign that it
+        // did nothing.
+        if (!isSparseField && atSoftWord("sparse") && peek(1).kind != TokenKind::Semicolon &&
+            peek(1).kind != TokenKind::Assign && peek(1).kind != TokenKind::Colon) {
+            fail("`sparse` stores a column BY PRESENCE rather than one slot per row, which needs an "
+                 "index of its own beside the block. That is not built yet, and accepting the word "
+                 "would give you the dense column it exists to avoid with nothing said; see "
+                 "docs/design/entity.md section 7",
+                 current().loc);
+        }
+        if (!isStableField && atSoftWord("stable") && peek(1).kind != TokenKind::Semicolon &&
+            peek(1).kind != TokenKind::Assign && peek(1).kind != TokenKind::Colon) {
+            fail("`stable` on a field promises that a pointer to it stays valid. Nothing acts on "
+                 "that promise yet, so the word would be read and change nothing -- which is worse "
+                 "than not knowing it, because the guarantee is written down and not kept",
+                 current().loc);
         }
         if (!isExtern && check(TokenKind::KwExtern)) {  // spec 26: extern <conv> [static] method ...
             advance();
@@ -2096,11 +2753,18 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         advance();
         return parseBidirectional(std::move(visibility), isStatic);
     }
-    if (check(TokenKind::KwMethod) || check(TokenKind::KwProcedure)) {
+    // `pass` is soft, and its position is the member-kind word -- where `method`, `constructor` and
+    // `interrupt` stand. What follows it is the pass's own name, so a LOCAL called `pass` (there
+    // are a dozen) and a field called `pass` never reach here.
+    const bool isPass = atSoftWord("pass") && peek(1).kind == TokenKind::Identifier;
+    if (check(TokenKind::KwMethod) || check(TokenKind::KwProcedure) || isPass ||
+        check(TokenKind::KwCommand)) {
         checkMemberModifiers(modFrom, modTo, MemberShape::Method);
-        member = parseMethod(std::move(visibility), isStatic, isAbstract, isOverride, isFinal,
+        member = parseMethod(std::move(visibility), isStatic, isAbstract, isOverride,
+                             isSurveyed, isFinal,
                              inInterface, isComptime, isAsync, isVolatile, isExtern,
-                             std::move(externConvention), isDeprecated, isNaked);
+                             std::move(externConvention), isDeprecated, isNaked, isReentrant,
+                             isPass, check(TokenKind::KwCommand), isReadonly, isCold, isMustUse);
     } else if (check(TokenKind::KwConstructor)) {
         checkMemberModifiers(modFrom, modTo, MemberShape::Constructor);
         member = parseConstructor(std::move(visibility));
@@ -2126,7 +2790,7 @@ ast::MemberPtr Parser::parseMember(bool inInterface) {
         member = parseField(std::move(visibility), isStatic, isMutable, isPersistent, isEternal,
                             isTransient, isVolatile, isLazy, isComptime, isExternal, isDelegateField,
                             isMovableField, isUniqueField, isWeakField, isAbstract, isOverride,
-                            isFinal, inInterface);
+                            isFinal, inInterface, isSparseField, isStableField);
     }
     if (!anns.empty()) {  // attach leading annotations to the declaration they precede
         if (auto* m = dynamic_cast<ast::MethodDecl*>(member.get())) {
@@ -2192,10 +2856,14 @@ std::unique_ptr<ast::MethodDecl> Parser::parseOperator(std::string visibility) {
 }
 
 std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, bool isStatic,
-                                                     bool isAbstract, bool isOverride, bool isFinal,
+                                                     bool isAbstract, bool isOverride,
+                                                     bool isSurveyed, bool isFinal,
                                                      bool inInterface, bool isComptime,
                                                      bool isAsync, bool isVolatile, bool isExtern,
-                                                     std::string externConvention, bool isDeprecated, bool isNaked) {
+                                                     std::string externConvention, bool isDeprecated,
+                                                     bool isNaked, bool isReentrant, bool isPass,
+                                                     bool isCommand, bool isReadonly, bool isCold,
+                                                     bool isMustUse) {
     auto m = std::make_unique<ast::MethodDecl>();
     m->loc = current().loc;
     m->visibility = std::move(visibility);
@@ -2205,23 +2873,37 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     // An interface method is abstract unless it provides a default body (spec 9); decided below.
     m->isAbstract = isAbstract;
     m->isOverride = isOverride;
+    m->isSurveyed = isSurveyed;
     m->isFinal = isFinal;
     m->isComptime = isComptime;  // `comptime` prefix (spec 37.4); suffix handled below
     m->isAsync = isAsync;
     m->isVolatile = isVolatile;  // spec 37.5: always executed; never inlined/elided
     m->isDeprecated = isDeprecated;  // spec 14.2: warn at every call site
+    m->isReentrant = isReentrant;    // may be entered again while an earlier entry runs
+    m->isReadonly = isReadonly;      // writes nothing -- B.1/D.6, checked by the analyzer
+    m->isCold = isCold;              // rarely taken -- B.3, read by the lowering
+    m->isMustUse = isMustUse;        // this one's answer is the point -- B.2
     m->isNaked = isNaked;            // spec 36: no prologue/epilogue; the body is raw assembly
     // `procedure` takes the same path as `method` because the difference is not in the parse: a
     // procedure has a name, parameters, a return type and (usually) a body, exactly like a method.
     // What differs is WHERE its signature is completed -- at the type that applies it -- and that is
     // a question for the expansion pass, not the grammar.
+    m->isPass = isPass;
     if (check(TokenKind::KwProcedure)) {
         advance();
         m->isProcedure = true;
+    } else if (isPass) {
+        advance();  // the soft word `pass`
+    } else if (isCommand) {
+        advance();  // `command`
+        m->isCommand = true;
     } else {
         expect(TokenKind::KwMethod, "'method'");
     }
-    m->name = expectMemberName(m->isProcedure ? "the procedure name" : "the method name");
+    m->name = expectMemberName(m->isProcedure   ? "the procedure name"
+                               : m->isPass      ? "the pass name"
+                               : m->isCommand   ? "the command name"
+                                                : "the method name");
     // Generic method type parameters: method identity<T>(...) (spec 15). Each
     // (method-name, type-args) call is monomorphized into a concrete method.
     if (match(TokenKind::Lt)) {
@@ -2245,6 +2927,16 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
             // `<itself f>` -- a procedure may bind a target of the APPLYING type, which is what a
             // structural copier is: `copy<itself f>` builds another one of whatever this turns out
             // to be. `itself` is a keyword and so never reached the identifier this slot expected.
+            // `<fixed int N>` on a METHOD too (A.3), and for the same reason it exists on a class:
+            // `timesShape<fixed int N>(Grid<T, C, N>& other)` is where a dimension is DISCRIMINATED
+            // in a signature -- N appears in the parameter and in what comes back, so the shapes
+            // have to line up for the call to compile at all.
+            const bool tpFixed = match(TokenKind::KwFixed);
+            std::string tpValueType;
+            if (isTypeKeyword(current().kind) && peek(1).kind == TokenKind::Identifier) {
+                tpValueType = current().lexeme;
+                advance();
+            }
             std::string tp;
             if (m->isProcedure && check(TokenKind::KwItself)) {
                 tp = "itself";
@@ -2252,7 +2944,16 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
             } else {
                 tp = expect(TokenKind::Identifier, "a type parameter").lexeme;
             }
+            if (!tpValueType.empty() && !tpFixed) {
+                fail("`" + tpValueType + " " + tp +
+                         "` is a VALUE parameter that binds at run time, which arrives in a later "
+                         "version -- the spelling is reserved for it. Write `fixed " + tpValueType +
+                         " " + tp + "` for a stamped one, or make it an ordinary parameter",
+                     current().loc);
+            }
             m->typeParams.push_back(tp);
+            m->typeParamFixed.push_back(tpFixed);
+            m->typeParamValueType.push_back(tpValueType);
             // `procedure into<Fahrenheit f>` -- the slot also DECLARES the target, so the body has it
             // to work on rather than having to conjure it through a constructor whose parameter list
             // it must already know. The source of a conversion has always had a name (`from<Other>(
@@ -2281,6 +2982,39 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
     expect(TokenKind::LParen, "'('");
     m->params = parseParams(m->isExtern ? &m->isVariadic : nullptr);
     expect(TokenKind::RParen, "')'");
+    /* `carries (T name, ...) into pack` -- THE CAPTURE, DECLARED, and the reason a command is not a
+       lambda with a nicer name.
+
+       A lambda's capture list is a set of outer locals dragged into an anonymous block; nobody can
+       see, from the declaration, what one holds. A command's baggage is a list of PARAMETERS to a
+       constructor the compiler writes, and `into` gives the environment a NAME, which no language
+       does: inside the body it is reached qualified (`pack.minAge`), so a read of carried state and
+       a read of anything else never look alike.
+
+       Omitted when there is nothing to carry, and then the command is stateless -- which is the form
+       that can cross to C, because there is no environment to leave behind. */
+    if (m->isCommand && match(TokenKind::KwCarries)) {
+        expect(TokenKind::LParen, "'(' after 'carries'");
+        if (!check(TokenKind::RParen)) {
+            m->carries = parseParams();
+        }
+        expect(TokenKind::RParen, "')' to close the carries list");
+        // `into` is not a keyword -- it is `procedure into<T>`'s word, and this is a different use of
+        // the same ordinary English preposition. Matched by lexeme so neither has to give it up.
+        if (!(check(TokenKind::Identifier) && current().lexeme == "into")) {
+            fail("a command that carries something says where it lives: `carries (int minAge) into "
+                 "pack`. The baggage is reached through that name inside the body (`pack.minAge`), "
+                 "so a read of what the command carries never looks like a read of anything else",
+                 current().loc);
+        }
+        advance();  // `into`
+        m->packLoc = current().loc;
+        m->packName = expect(TokenKind::Identifier, "the name the baggage lives under").lexeme;
+    } else if (m->isCommand && check(TokenKind::Identifier) && current().lexeme == "into") {
+        fail("`into` names where a command's baggage lives, and this command carries none -- write "
+             "`carries (...) into " + peek(1).lexeme + "`, or drop both",
+             current().loc);
+    }
     // `throws(T1, T2)` clause (spec 21.1), between the signature and `returns`.
     if (match(TokenKind::KwThrows)) {
         expect(TokenKind::LParen, "'(' after 'throws'");
@@ -2289,8 +3023,44 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         } while (match(TokenKind::Comma));
         expect(TokenKind::RParen, "')' to close 'throws'");
     }
-    expect(TokenKind::KwReturns, "'returns'");
-    m->returnType = parseTypeRef();
+    // A PASS'S OWN CLAUSES, in the slot `returns`/`throws`/`requires`/`ensures` share, and read
+    // before `returns` because a pass usually has none -- it is an iteration, and an iteration's
+    // answer is the population it changed.
+    //
+    // `reads` and `writes` are SOFT keywords, and the position is what makes that safe: after the
+    // parameter list's `)` the only legal continuations are `returns`, `throws`, `requires`,
+    // `ensures` or `{`, so an identifier can never appear there and there is nothing to be
+    // ambiguous with. This is the `expecting` case rather than the `step` case -- `step` failed as a
+    // soft keyword because it follows a NUMERIC LITERAL, where the unit-suffix grammar can claim it.
+    if (m->isPass) {
+        // `index i` -- the row's position, bound by the same word `foreach` uses, in the same
+        // position. A binder and not a parameter: the caller does not supply it, which is why it
+        // sits outside the parameter list where it would read as one.
+        if (match(TokenKind::KwIndex)) {
+            m->indexBinding = expect(TokenKind::Identifier, "a name for the row's index").lexeme;
+        }
+        while (check(TokenKind::Identifier) &&
+               (current().lexeme == "reads" || current().lexeme == "writes")) {
+            const bool reading = current().lexeme == "reads";
+            advance();
+            expect(TokenKind::LParen, reading ? "'(' after 'reads'" : "'(' after 'writes'");
+            if (!check(TokenKind::RParen)) {
+                do {
+                    (reading ? m->readsFields : m->writesFields)
+                        .push_back(expect(TokenKind::Identifier, "a field name").lexeme);
+                } while (match(TokenKind::Comma));
+            }
+            expect(TokenKind::RParen, reading ? "')' to close 'reads'" : "')' to close 'writes'");
+        }
+    }
+    // A pass answers with the population it changed, so `returns void` is what it always meant and
+    // writing it out every time would be ceremony. Written out, it is still accepted.
+    if (m->isPass && !check(TokenKind::KwReturns)) {
+        m->returnType.name = "void";
+    } else {
+        expect(TokenKind::KwReturns, "'returns'");
+        m->returnType = parseTypeRef();
+    }
     if (match(TokenKind::KwComptime)) {
         m->isComptime = true;  // suffix form (spec 28.3)
     }
@@ -2380,6 +3150,20 @@ std::unique_ptr<ast::MethodDecl> Parser::parseMethod(std::string visibility, boo
         // of its own algorithm instead of borrowing an interface to hold them.
         m->isAbstract = true;
         advance();
+    } else if (inLayout_ && check(TokenKind::Semicolon)) {
+        // THE SAME SOCKET, ON A LAYOUT, and it is the distinction the second design was missing.
+        //
+        // A layout declares an obligation the way an interface does, and the language already draws
+        // the line this needs: a member DECLARED WITH NO BODY must be supplied by whoever the
+        // declaration is about; a member declared WITH one is a default they may replace. So
+        // `comptime method arrange() returns void;` on a layout says *arrange yourself, I say what
+        // it must cost* -- which is what a hardware descriptor wants -- and the same line with a
+        // body is a shared policy written once.
+        //
+        // No new concept and no new word: this branch exists only because the existing rule was
+        // reachable from an interface and a transformer and not from here.
+        m->isAbstract = true;
+        advance();
     } else if (m->isAbstract) {
         expect(TokenKind::Semicolon, "';' (an abstract method has no body)");
     } else if (m->isExtern) {
@@ -2415,7 +3199,8 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
                                   bool isPersistent, bool isEternal, bool isTransient,
                                   bool isVolatile, bool isLazy, bool isComptime, bool isExternal, bool isDelegate,
                                   bool isMovable, bool isUnique, bool isWeak, bool isAbstract,
-                                  bool isOverride, bool isFinal, bool inInterface) {
+                                  bool isOverride, bool isFinal, bool inInterface, bool isSparse,
+                                  bool isStableField) {
     const SourceLocation loc = current().loc;
     // Region flavor / growth soft keywords (spec 17 flavors) on a `region` field, before the type.
     std::string fieldRegionFlavor;
@@ -2457,6 +3242,8 @@ ast::MemberPtr Parser::parseField(std::string visibility, bool isStatic, bool is
     f->isMovable = isMovable;
     f->isUnique = isUnique;
     f->isWeak = isWeak;
+    f->isSparse = isSparse;
+    f->isStableField = isStableField;
     f->regionFlavor = fieldRegionFlavor;
     f->regionGrowable = fieldRegionGrowable;
     f->type = std::move(type);
@@ -2947,25 +3734,7 @@ ast::TypeRef Parser::parseTypeRef() {
         t.name = canonical + ")";
         return t;  // tuple components carry their own markers; no outer [] / * / &
     }
-    // function<Ret, Params...> -- the whole canonical string is the type name (no generic mangling).
-    if (tok.kind == TokenKind::KwFunction) {
-        advance();
-        std::string nm = "function<";
-        expect(TokenKind::Lt, "'<' after function");
-        std::size_t fn = 0;
-        do {
-            ast::TypeRef arg = parseTypeRef();
-            nm += (fn++ ? "," : "") + ast::canonicalType(arg);
-        } while (match(TokenKind::Comma));
-        if (current().kind == TokenKind::Shr) {
-            tokens_[pos_].kind = TokenKind::Gt;  // split ">>": take one ">", leave one for the outer type
-        } else {
-            expect(TokenKind::Gt, "'>' to close function type");
-        }
-        t.name = nm + ">";
-        return t;
-    }
-    // [unknown-abi] `unknown <world> funcptr<...>` -- a function pointer INTO a foreign binary; a call
+    // [unknown-abi] `unknown <world> methodptr<...>` -- a code address INTO a foreign binary; a call
     // THROUGH it uses that world's ABI (e.g. jumping to a Windows PE entry point, or a callback the
     // foreign code will invoke). The world is REQUIRED (never inferred) and is encoded as a leading
     // "$unknown:<world>" element so it survives into the flattened canonical string.
@@ -2973,39 +3742,39 @@ ast::TypeRef Parser::parseTypeRef() {
         advance();
         std::string world = expect(TokenKind::Identifier,
             "the foreign world (pe/elf/macho, or raw win64/sysv/aapcs) after 'unknown'").lexeme;
-        if (!(current().kind == TokenKind::Identifier &&
-          (current().lexeme == "methodptr" || current().lexeme == "funcptr"))) {
-            fail("`unknown <world>` on a type applies only to funcptr (e.g. `unknown pe funcptr<...>`)",
+        if (!(current().kind == TokenKind::Identifier && isMethodPtrWord(current().lexeme))) {
+            fail("`unknown <world>` on a type applies only to methodptr (e.g. `unknown pe "
+                 "methodptr<...>`)",
                  current().loc);
         }
-        advance();  // 'funcptr'
-        std::string nm = "funcptr<$unknown:" + world + ",";
-        expect(TokenKind::Lt, "'<' after funcptr");
+        advance();  // 'methodptr'
+        std::string nm = "methodptr<$unknown:" + world + ",";
+        expect(TokenKind::Lt, "'<' after methodptr");
         std::size_t fn = 0;
         do {
             ast::TypeRef arg = parseTypeRef();
             nm += (fn++ ? "," : "") + ast::canonicalType(arg);
         } while (match(TokenKind::Comma));
         if (current().kind == TokenKind::Shr) { tokens_[pos_].kind = TokenKind::Gt; }
-        else { expect(TokenKind::Gt, "'>' to close funcptr type"); }
+        else { expect(TokenKind::Gt, "'>' to close methodptr type"); }
         t.name = nm + ">";
         return t;
     }
-    // funcptr<Ret, Params...> -- a bare C function pointer (no closure environment), for dynamic FFI:
-    // an address obtained at runtime (e.g. wglGetProcAddress / GetProcAddress) cast to this type and
-    // called with the plain C ABI. `funcptr` is a contextual type name (only special before '<'), so it
-    // is not a reserved word. The canonical string, like function<>, is not generic-mangled.
-    // `methodptr<Ret, Args...>` -- and `funcptr` for one more release.
+    // `methodptr<Ret, Params...>` -- A CODE ADDRESS, and the whole of the FFI's near side.
     //
-    // The rename is the vocabulary rule applied where it had been missed: in Polaron they are METHODS,
-    // interrupts, procedures and lambdas, never functions. `function` stays the first-class value type;
-    // what a pointer points at is a method. The old spelling is still read so no existing program
-    // breaks on the day the word changes.
-    if (tok.kind == TokenKind::Identifier &&
-        (tok.lexeme == "methodptr" || tok.lexeme == "funcptr") && peek(1).kind == TokenKind::Lt) {
+    // An address obtained at run time -- GetProcAddress, a driver's dispatch slot, a destructor a
+    // registry holds against a bare pointer -- carrying a typed signature and the plain C ABI. One
+    // machine word, no environment, and no guarantee the region binder can offer about what is on
+    // the other end. It is a contextual type name (special only before '<'), so it is not reserved.
+    //
+    // It completes the customs post, and the pair is the point: `address` is the address of DATA,
+    // blind to shape and to guarantees; `methodptr` is the address of CODE, blind to guarantees and
+    // sighted as to shape. With it the word "function" leaves the grammar entirely, border included.
+    if (tok.kind == TokenKind::Identifier && isMethodPtrWord(tok.lexeme) &&
+        peek(1).kind == TokenKind::Lt) {
         advance();
-        std::string nm = "funcptr<";
-        expect(TokenKind::Lt, "'<' after funcptr");
+        std::string nm = "methodptr<";
+        expect(TokenKind::Lt, "'<' after methodptr");
         std::size_t fn = 0;
         do {
             ast::TypeRef arg = parseTypeRef();
@@ -3014,7 +3783,7 @@ ast::TypeRef Parser::parseTypeRef() {
         if (current().kind == TokenKind::Shr) {
             tokens_[pos_].kind = TokenKind::Gt;
         } else {
-            expect(TokenKind::Gt, "'>' to close funcptr type");
+            expect(TokenKind::Gt, "'>' to close methodptr type");
         }
         t.name = nm + ">";
         return t;
@@ -3076,8 +3845,7 @@ ast::TypeRef Parser::parseTypeRef() {
     // full type (recursive parseTypeRef); a trailing '>>' (Shr) is split into two '>'.
     if (match(TokenKind::Lt)) {
         do {
-            ast::TypeRef arg = parseTypeRef();
-            t.typeArgs.push_back(ast::canonicalType(arg));
+            parseTypeArgInto(t.typeArgs);
         } while (match(TokenKind::Comma));
         if (current().kind == TokenKind::Shr) {
             tokens_[pos_].kind = TokenKind::Gt;  // split '>>' so the enclosing generic gets a '>'
@@ -3122,6 +3890,50 @@ ast::TypeRef Parser::parseTypeRef() {
         t.arrayDims = 1;
         t.arrayExtent = extent;
     }
+    /* `T[R * C]` -- AN EXTENT THAT IS STILL AN EXPRESSION (A.3).
+     *
+     * Inside `Matrix<fixed T, fixed int R, fixed int C>` the extent is known to the type and not yet
+     * to the compiler: it becomes a number when the class is stamped. Read here as the TEXT between
+     * the brackets, because that is what survives substitution unchanged -- `substType` rewrites the
+     * names in it exactly as it rewrites `T`, and folds the result.
+     *
+     * Deliberately narrow: names, integers, and `* + -`. The domain of a fixed value is what the
+     * comptime evaluator folds, and this is the part of it a TYPE can hold; anything more elaborate
+     * belongs in a `fixed` constant, where the same evaluator reads it and the type names that.
+     */
+    while (check(TokenKind::LBracket) && t.arrayDims == 0 && t.arrayExtent == 0 &&
+           t.arrayExtentExpr.empty() && peek(1).kind == TokenKind::Identifier) {
+        std::size_t at = 1;
+        std::string spelled;
+        bool wantTerm = true;
+        while (true) {
+            const Token& tk = peek(at);
+            if (wantTerm &&
+                (tk.kind == TokenKind::Identifier || tk.kind == TokenKind::IntLiteral)) {
+                spelled += tk.lexeme;
+                wantTerm = false;
+                ++at;
+                continue;
+            }
+            if (!wantTerm && (tk.kind == TokenKind::Star || tk.kind == TokenKind::Plus ||
+                              tk.kind == TokenKind::Minus)) {
+                spelled += tk.lexeme;
+                wantTerm = true;
+                ++at;
+                continue;
+            }
+            break;
+        }
+        if (wantTerm || peek(at).kind != TokenKind::RBracket || spelled.empty()) {
+            break;   // not an extent expression: leave it to the plain `T[]` loop below
+        }
+        for (std::size_t skip = 0; skip <= at; ++skip) {
+            advance();
+        }
+        t.isArray = true;
+        t.arrayDims = 1;
+        t.arrayExtentExpr = spelled;
+    }
     while (match(TokenKind::LBracket)) {  // T[], T[][], ... -- multi-dimensional (spec 25)
         expect(TokenKind::RBracket, "']'");
         t.isArray = true;
@@ -3162,10 +3974,7 @@ ast::Block Parser::parseBlock() {
 // `Ok(x)` / `Err(x)` / `Some(x)` / `None()` become `new Ok<args>(x) on heap`, taking the generic
 // args from the expected type (the method return type or the declared variable type). Those args are
 // syntactically present, so no inference is needed; the normal `new` lowering handles the rest.
-static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected) {
-    if (expected.typeArgs.empty()) {
-        return;
-    }
+void Parser::rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected) {
     auto* call = dynamic_cast<ast::CallExpr*>(value.get());
     if (call == nullptr) {
         return;
@@ -3174,9 +3983,15 @@ static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected
     if (id == nullptr) {
         return;
     }
+    // The four names were built in here because the prelude writes `Result`/`Option` out by hand and
+    // there was no other sum in the language. `sumCases_` is the general form: every case of every
+    // `enum` with payloads, recorded as it was parsed. The prelude's two stay listed separately
+    // because they are hand-written CLASSES and never pass through the enum desugaring -- the day
+    // they are rewritten as `enum`s this branch deletes itself.
     const bool isResult = id->name == "Ok" || id->name == "Err";
     const bool isOption = id->name == "Some" || id->name == "None";
-    if (!isResult && !isOption) {
+    const auto declared = sumCases_.find(id->name);
+    if (!isResult && !isOption && declared == sumCases_.end()) {
         return;
     }
     // Only sugar against the matching sealed base with the right arity, so `Some(x)`
@@ -3186,6 +4001,26 @@ static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected
         return;
     }
     if (isOption && !(expected.name == "Option" && expected.typeArgs.size() == 1)) {
+        return;
+    }
+    if (!isResult && !isOption) {
+        if (expected.name != declared->second.sum ||
+            expected.typeArgs.size() != declared->second.typeParams) {
+            return;
+        }
+        auto nw = std::make_unique<ast::NewExpr>();
+        nw->loc = call->loc;
+        nw->className = id->name;
+        nw->typeArgs = expected.typeArgs;
+        nw->args = std::move(call->args);
+        // BOXED, for now, and deliberately so rather than by omission. The value representation in
+        // the lowerer understands exactly two sums and two cases each; a user sum marked "value"
+        // would fall past that test into the ordinary construction path with a placement word it
+        // does not mean, and the failure mode there is a field read off something that was never
+        // built. When the lowerer's four names become a shape test, this line becomes the same
+        // condition the prelude's sums get, and not before.
+        nw->location = "heap";
+        value = std::move(nw);
         return;
     }
     auto nw = std::make_unique<ast::NewExpr>();
@@ -3209,6 +4044,52 @@ static void rewriteVariantCtor(ast::ExprPtr& value, const ast::TypeRef& expected
 }
 
 ast::StmtPtr Parser::parseStatement() {
+    // `[Allow(...)]` BEFORE A LOCAL, which was a syntax error.
+    //
+    // Every other place the compiler reports advice has somewhere to answer it -- a class, a method,
+    // a field all take an annotation -- and a LOCAL did not. So the one kind of advice that is about
+    // a local (`0B0D`, "declared mutable and nothing ever assigns to it", and the value-folding and
+    // loop-bound rules beside it) could not be answered at all: the author's choices were to change
+    // code that was right, or to put an `[Allow]` on the whole method and switch the rule off for
+    // every other local in it.
+    //
+    // ONLY ON A DECLARATION. An annotation before a `return` or an `if` would have nothing to attach
+    // to and no meaning to give it, and accepting one silently is how a program comes to carry a
+    // line that says something and does nothing.
+    if (check(TokenKind::LBracket) && peek(1).kind == TokenKind::Identifier) {
+        const SourceLocation at = current().loc;
+        std::vector<ast::AnnotationUse> anns = parseAnnotationUsesOpt();
+        ast::StmtPtr what = parseStatement();
+        if (auto* decl = dynamic_cast<ast::VarDeclStmt*>(what.get())) {
+            decl->annotations = std::move(anns);
+        } else if (!anns.empty()) {
+            fail("an annotation here can only be attached to a local declaration -- there is no "
+                 "other statement it would mean anything on",
+                 at);
+        }
+        return what;
+    }
+    /* `discard <expr>;` -- THE ANSWER WAS SEEN AND NOT WANTED (B.2).
+     *
+     * `mustuse` warns when a result is thrown away, and a rule with no way to answer it is a rule
+     * people learn to switch off. This is the answer, and it is a WORD rather than a suppression
+     * comment: it stands at the line, and a reader sees a decision instead of a missing diagnostic.
+     *
+     * SOFT, and it has to be. `discard` is an ordinary English word, and the standard library's
+     * `Memo` and `EventLog` each have a `discard()` method -- exactly the use that reserving it
+     * would take away. Recognised here, at the start of a statement, where a lone `discard` cannot
+     * be anything else: a call to one would be `x.discard()`, which begins with `x`.
+     */
+    if (checkWord("discard") && peek(1).kind != TokenKind::Dot && peek(1).kind != TokenKind::LParen &&
+        peek(1).kind != TokenKind::Semicolon && peek(1).kind != TokenKind::Assign) {
+        auto st = std::make_unique<ast::ExprStmt>();
+        st->loc = current().loc;
+        advance();   // `discard`
+        st->isDiscard = true;
+        st->expr = parseExpression();
+        expect(TokenKind::Semicolon, "';' after the discarded expression");
+        return st;
+    }
     // Loop label: `name: <loop>` (spec 7.4). A bare identifier followed by ':'.
     if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
         auto lbl = std::make_unique<ast::LabeledStmt>();
@@ -3498,12 +4379,12 @@ ast::StmtPtr Parser::parseStatement() {
             if (check(TokenKind::Identifier) && current().lexeme == "out") {
                 advance();
                 expect(TokenKind::LParen, "'(' after 'out' in an asm operand list");
-                do { a->outputs.push_back(parseExpression()); } while (match(TokenKind::Comma));
+                do { parseAsmOperand(a->outputs, a->outputWhere); } while (match(TokenKind::Comma));
                 expect(TokenKind::RParen, "')' to close the asm 'out' list");
             } else if (check(TokenKind::KwIn)) {
                 advance();
                 expect(TokenKind::LParen, "'(' after 'in' in an asm operand list");
-                do { a->inputs.push_back(parseExpression()); } while (match(TokenKind::Comma));
+                do { parseAsmOperand(a->inputs, a->inputWhere); } while (match(TokenKind::Comma));
                 expect(TokenKind::RParen, "')' to close the asm 'in' list");
             } else if (check(TokenKind::Identifier) && current().lexeme == "clobber") {
                 advance();
@@ -3809,7 +4690,6 @@ ast::StmtPtr Parser::parseStatement() {
         check(TokenKind::KwPersistent) || check(TokenKind::KwEternal) ||
         check(TokenKind::KwVolatile) ||  // spec 37.5: volatile local
         check(TokenKind::KwLazy) ||      // spec 37.3: lazy local
-        check(TokenKind::KwFunction) ||  // function<Ret, Params...> local
         check(TokenKind::KwNullable) ||  // spec 3.7: `nullable T x` local
         isTypeKeyword(current().kind) || classVarDecl || looksLikeGenericVarDecl() ||
         looksLikeQualifiedVarDecl() || looksLikeFlavoredRegionDecl()) {
@@ -3845,9 +4725,11 @@ bool Parser::looksLikeGenericVarDecl() const {
             }
         } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
                    k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
-                   k != TokenKind::Dot && k != TokenKind::KwItself && !isTypeKeyword(k)) {
+                   k != TokenKind::Dot && k != TokenKind::KwItself && k != TokenKind::IntLiteral &&
+                   !isTypeKeyword(k)) {
             // A pure type-argument list may hold pointer/ref/array/qualified args (Box<Point*>,
-            // Box<int[]>, Box<app.Foo>); anything else means it's a comparison.
+            // Box<int[]>, Box<app.Foo>) and, since A.3, a NUMBER filling a `fixed int` parameter
+            // (`m.timesShape<4>(other)`); anything else means it's a comparison.
             return false;
         }
         ++i;
@@ -3975,9 +4857,11 @@ bool Parser::looksLikeGenericCall() const {
             }
         } else if (k != TokenKind::Identifier && k != TokenKind::Comma && k != TokenKind::Star &&
                    k != TokenKind::Amp && k != TokenKind::LBracket && k != TokenKind::RBracket &&
-                   k != TokenKind::Dot && k != TokenKind::KwItself && !isTypeKeyword(k)) {
+                   k != TokenKind::Dot && k != TokenKind::KwItself && k != TokenKind::IntLiteral &&
+                   !isTypeKeyword(k)) {
             // A pure type-argument list may hold pointer/ref/array/qualified args (Box<Point*>,
-            // Box<int[]>, Box<app.Foo>); anything else means it's a comparison.
+            // Box<int[]>, Box<app.Foo>) and, since A.3, a NUMBER filling a `fixed int` parameter
+            // (`m.timesShape<4>(other)`); anything else means it's a comparison.
             return false;
         }
         ++i;
@@ -4782,13 +5666,13 @@ ast::ExprPtr Parser::parseUnary() {
         // `parseTypeRef` is the language's own type grammar (generics, pointers, arrays, nullable, and
         // the `>>` split), and `canonicalType` spells the result the way every other type reaches the
         // rest of the compiler. Reading a type any other way here is how the two drift apart.
-        if (tt.kind == TokenKind::KwFunction || tt.kind == TokenKind::KwUnknown ||  // [unknown-abi]
+        if (tt.kind == TokenKind::KwUnknown ||  // [unknown-abi]
             (tt.kind == TokenKind::Identifier && peek(1).kind == TokenKind::Lt)) {
-            // A function<...> / funcptr<...> / generic target carries its own angle brackets: parse
-            // the full type (it also splits the trailing '>>', leaving one '>' for the cast to close).
+            // A methodptr<...> / generic target carries its own angle brackets: parse the full type
+            // (it also splits the trailing '>>', leaving one '>' for the cast to close).
             const ast::TypeRef tr = parseTypeRef();
             // `.name` alone loses the type arguments and every decoration -- right for a
-            // `function<...>`, whose name already holds them, and wrong for `ArrayList<int>*`.
+            // `methodptr<...>`, whose name already holds them, and wrong for `ArrayList<int>*`.
             c->targetType = tr.typeArgs.empty() ? tr.name : ast::canonicalType(tr);
             if (match(TokenKind::Star)) {
                 c->targetType += "*";   // parseTypeRef stops at the closing '>' of the type arguments
@@ -4828,6 +5712,27 @@ ast::ExprPtr Parser::parseUnary() {
         advance();  // 'region'
         mk->region = parseRegionName();
         return mk;
+    }
+    // `capacity of region R` / `used of region R` / `room of region R` (spec 17): how big the arena
+    // is, how much of it is gone, and how much is left -- in bytes.
+    //
+    // Soft keywords on the same rule as `mark`: these operators only when directly followed by `of
+    // region`, ordinary identifiers everywhere else. That matters most for `used`, which is a
+    // perfectly good name for a variable and stays one.
+    if (check(TokenKind::Identifier) &&
+        (current().lexeme == "capacity" || current().lexeme == "used" ||
+         current().lexeme == "room") &&
+        peek(1).kind == TokenKind::KwOf && peek(2).kind == TokenKind::KwRegion) {
+        auto sp = std::make_unique<ast::RegionSpaceExpr>();
+        sp->loc = current().loc;
+        sp->ask = current().lexeme == "capacity" ? ast::RegionSpaceExpr::Ask::Capacity
+                  : current().lexeme == "used"   ? ast::RegionSpaceExpr::Ask::Used
+                                                 : ast::RegionSpaceExpr::Ask::Room;
+        advance();  // the ask
+        advance();  // 'of'
+        advance();  // 'region'
+        sp->region = parseRegionName();
+        return sp;
     }
     // `extract X from region R` (spec 17, flavors expansion): relocate X out of a region and yield the
     // owning pointer. `extract` is a soft keyword -- treated as this operator only when it directly
@@ -4951,8 +5856,7 @@ ast::ExprPtr Parser::parsePostfixOps(ast::ExprPtr base) {
             std::vector<std::string> typeArgs;
             advance();  // '<'
             do {
-                ast::TypeRef arg = parseTypeRef();
-                typeArgs.push_back(ast::canonicalType(arg));
+                parseTypeArgInto(typeArgs);
             } while (match(TokenKind::Comma));
             if (current().kind == TokenKind::Shr) {
                 tokens_[pos_].kind = TokenKind::Gt;  // split '>>'
@@ -5214,44 +6118,94 @@ ast::ExprPtr Parser::parsePrimary() {
             expect(TokenKind::RBracket, "']' to close the array literal");
             return e;
         }
-        case TokenKind::KwLambda: {
-            auto e = std::make_unique<ast::LambdaExpr>();
-            e->loc = tok.loc;
-            advance();  // 'lambda'
-            // Optional capture list: lambda[captures: byvalue x, byref y](...). Parsed now;
-            // the codegen for closures (carrying an environment) is the next step.
-            if (check(TokenKind::LBracket)) {
-                advance();  // '['
-                expect(TokenKind::Identifier, "'captures' in the lambda capture list");
-                expect(TokenKind::Colon, "':' after 'captures'");
-                do {
-                    ast::Capture cap;
-                    cap.loc = current().loc;
-                    const std::string mode = current().lexeme;
-                    expect(TokenKind::Identifier, "'byvalue' or 'byref'");
-                    if (mode != "byvalue" && mode != "byref") {
-                        fail("expected 'byvalue' or 'byref' but found '" + mode + "'", cap.loc);
-                    }
-                    cap.byRef = (mode == "byref");
-                    cap.name = current().lexeme;
-                    expect(TokenKind::Identifier, "a captured variable name");
-                    e->captures.push_back(std::move(cap));
-                } while (match(TokenKind::Comma));
-                expect(TokenKind::RBracket, "']' to close the capture list");
+        case TokenKind::KwCommand: {
+            /* THE INLINE FORM. `command (int x) carries (int floor = 10) into pack returns boolean
+               { return x > pack.floor; }` where a value is expected.
+
+               It is the declared form with two things folded in: the name is supplied by the
+               compiler, because nobody else needs it, and the baggage arrives WITH ITS VALUES --
+               `int floor = 10` -- because this is the only place the values could be written. The
+               declared form separates the two (`carries (int floor)` at the declaration,
+               `Gate.aboveFloor(10)` at the use) precisely because there the two happen in different
+               places; here they do not, so they are one list.
+
+               What comes out is not a new kind of thing: a member is lifted onto the enclosing class
+               and this expression becomes the call that builds one. */
+            const SourceLocation at = tok.loc;
+            advance();  // `command`
+            if (currentClassName_.empty()) {
+                fail("a command written inline belongs to the class the expression is in, and this "
+                     "expression is not inside one -- there is nowhere to put it. Move it into a "
+                     "method, or declare a named `command` member",
+                     at);
             }
-            expect(TokenKind::LParen, "'(' after lambda");
-            e->params = parseParams();
-            expect(TokenKind::RParen, "')' to close lambda parameters");
-            expect(TokenKind::KwReturns, "'returns' in a lambda");
-            e->returnType = parseTypeRef();
-            // The lambda's body has its OWN return type for the Ok(x)/Some(x) sugar;
-            // save/restore so a return inside it rewrites against the lambda's type,
-            // not the enclosing method's.
+            auto m = std::make_unique<ast::MethodDecl>();
+            m->loc = at;
+            m->visibility = "private";   // reachable only from where it was written
+            m->isCommand = true;
+            m->name = "command$" + std::to_string(inlineCommandCount_++);
+            expect(TokenKind::LParen, "'(' after 'command'");
+            m->params = parseParams();
+            expect(TokenKind::RParen, "')' to close the command's parameters");
+
+            std::vector<ast::ExprPtr> baggage;   // the values, in the order the list declares them
+            if (match(TokenKind::KwCarries)) {
+                expect(TokenKind::LParen, "'(' after 'carries'");
+                if (!check(TokenKind::RParen)) {
+                    do {
+                        ast::Param p;
+                        p.loc = current().loc;
+                        p.type = parseTypeRef();
+                        p.name = expect(TokenKind::Identifier, "a name for the carried value").lexeme;
+                        // Not optional, and not a default: an inline command is BUILT HERE, so a
+                        // carried value with nothing to carry would be a field nobody ever fills.
+                        if (!match(TokenKind::Assign)) {
+                            fail("an inline command carries its values with it: write `" +
+                                     ast::canonicalType(p.type) + " " + p.name +
+                                     " = <value>`. (The declared form separates the two because the "
+                                     "declaration and the use are in different places; here they are "
+                                     "the same place.)",
+                                 current().loc);
+                        }
+                        baggage.push_back(parseExpression());
+                        m->carries.push_back(std::move(p));
+                    } while (match(TokenKind::Comma));
+                }
+                expect(TokenKind::RParen, "')' to close the carries list");
+                if (!(check(TokenKind::Identifier) && current().lexeme == "into")) {
+                    fail("a command that carries something says where it lives: `carries (int floor "
+                         "= 10) into pack`, and the body reads it as `pack.floor`",
+                         current().loc);
+                }
+                advance();  // `into`
+                m->packLoc = current().loc;
+                m->packName = expect(TokenKind::Identifier, "the name the baggage lives under").lexeme;
+            }
+            expect(TokenKind::KwReturns, "'returns' -- a command states what it answers");
+            m->returnType = parseTypeRef();
+            // The body answers the COMMAND's type, not the enclosing method's, for the Ok(x)/Some(x)
+            // return sugar -- the same save/restore a lambda body needed, for the same reason.
             ast::TypeRef savedRet = currentMethodReturnType_;
-            currentMethodReturnType_ = e->returnType;
-            e->body = parseBlock();
+            currentMethodReturnType_ = m->returnType;
+            m->body = parseBlock();
             currentMethodReturnType_ = savedRet;
-            return e;
+            const std::string lifted = m->name;
+            extraMembers_.push_back(std::move(m));
+
+            // ...and the expression is the ordinary call that builds one.
+            auto owner = std::make_unique<ast::IdentifierExpr>();
+            owner->name = currentClassName_;
+            owner->loc = at;
+            auto factory = std::make_unique<ast::MemberExpr>();
+            factory->object = std::move(owner);
+            factory->member = lifted;
+            factory->loc = at;
+            auto build = std::make_unique<ast::CallExpr>();
+            build->callee = std::move(factory);
+            build->args = std::move(baggage);
+            build->argNames.assign(build->args.size(), std::string());
+            build->loc = at;
+            return build;
         }
         case TokenKind::KwMethodref: {
             // methodref obj.method (spec 22.3): a bound method reference. The object may itself
@@ -5276,6 +6230,10 @@ ast::ExprPtr Parser::parsePrimary() {
             }
             e->object = std::move(obj);
             e->method = name;
+            // Written down here so `expandCommands` knows which bindings to build a class for --
+            // see ast::Program::methodRefNames. The parser is already walking; a later visitor
+            // looking for these would be a second traversal to keep in step with the first.
+            methodRefNames_.insert(name);
             return e;
         }
         case TokenKind::StringLiteral:
@@ -5479,7 +6437,7 @@ ast::ExprPtr Parser::parseNew() {
         advance();  // '*'
         typeName += "*";
     }
-    // Array form: new T[size]() [on stack|heap]
+    // Array form: new T[size]() [on heap|static]
     if (match(TokenKind::LBracket)) {
         auto arr = std::make_unique<ast::NewArrayExpr>();
         arr->loc = loc;
@@ -5489,7 +6447,15 @@ ast::ExprPtr Parser::parseNew() {
         expect(TokenKind::LParen, "'(' (zero-initialized array: new T[n]())");
         expect(TokenKind::RParen, "')'");
         if (match(TokenKind::KwOn)) {
-            arr->location = expect(TokenKind::Identifier, "'stack' or 'heap'").lexeme;
+            // `static` IS A KEYWORD, so it does not arrive as an identifier like the other
+            // placements do. Taken by hand rather than by loosening `expect`, which would let every
+            // keyword through as a location and turn `on class` into an unknown-placement error
+            // three passes later instead of a parse error here.
+            if (match(TokenKind::KwStatic)) {
+                arr->location = "static";
+            } else {
+                arr->location = expect(TokenKind::Identifier, "'heap' or 'static'").lexeme;
+            }
         } else {
             arr->location = "heap";  // arrays are dynamic -> default heap
         }
@@ -5508,8 +6474,7 @@ ast::ExprPtr Parser::parseNew() {
     e->className = std::move(typeName);
     if (match(TokenKind::Lt)) {
         do {
-            ast::TypeRef arg = parseTypeRef();
-            e->typeArgs.push_back(ast::canonicalType(arg));
+            parseTypeArgInto(e->typeArgs);
         } while (match(TokenKind::Comma));
         if (current().kind == TokenKind::Shr) {
             tokens_[pos_].kind = TokenKind::Gt;  // split '>>'

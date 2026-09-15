@@ -208,6 +208,13 @@ struct ProgramUse {
     std::unordered_map<std::string, std::unordered_set<std::string>> methodsCalled;
     std::unordered_map<std::string, std::unordered_set<std::string>> typeSeenIn;  // type -> bundles
     std::unordered_set<std::string> movedTypes;       // declared types of things a `move` names
+    // `case Circle(double r)` READS `Circle.radius` -- it must, to bind `r` -- and it does it
+    // without ever writing `x.radius`, so the by-name walk above cannot see it. Recorded by class
+    // and by how many leading fields a destructuring bound, which is the form the question gets
+    // asked in later: is THIS field's position covered by some pattern over its class.
+    //
+    // Keyed on the base name, because a pattern names `Wrapped` and the class is `Wrapped$int`.
+    std::unordered_map<std::string, std::size_t> destructuredArity;
 };
 
 namespace {
@@ -220,6 +227,19 @@ void indexMemberTarget(const ast::Expr* target, const std::string& cls, ProgramU
         use.membersWritten.insert(mem->member);
         use.writersOf[mem->member].insert(cls);
     }
+}
+
+void indexBlock(const ast::Block& blk, const std::string& bundle, const std::string& cls,
+                ProgramUse& use, std::unordered_map<std::string, std::string>& localTypes);
+void indexMatchCase(const ast::MatchCase& mc, const std::string& bundle, const std::string& cls,
+                    ProgramUse& use, std::unordered_map<std::string, std::string>& localTypes);
+
+// `Wrapped$int` back to `Wrapped`. A `match` arm names the generic as the author wrote it; the class
+// the question is asked about is the instantiation, and `baseType` strips pointers rather than
+// instantiations, so neither of the two existing projections closes this gap.
+std::string genericBase(const std::string& name) {
+    const std::size_t dollar = name.find('$');
+    return dollar == std::string::npos ? name : name.substr(0, dollar);
 }
 
 void indexExpr(const ast::Expr* e, const std::string& bundle, ProgramUse& use,
@@ -289,11 +309,54 @@ void indexExpr(const ast::Expr* e, const std::string& bundle, ProgramUse& use,
         for (const ast::ExprPtr& part : interp->exprs) {
             indexExpr(part.get(), bundle, use, localTypes);
         }
+    } else if (const auto* arr = dynamic_cast<const ast::ArrayLiteralExpr*>(e)) {
+        for (const ast::ExprPtr& el : arr->elements) {
+            indexExpr(el.get(), bundle, use, localTypes);
+        }
+    } else if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(e)) {
+        for (const ast::ExprPtr& el : tup->elements) {
+            indexExpr(el.get(), bundle, use, localTypes);
+        }
+    } else if (const auto* mex = dynamic_cast<const ast::MatchExpr*>(e)) {
+        // The expression form of the same hole the statement form had. `x.field` read only inside
+        // an arm of a `match` used as a value was invisible to every rule here.
+        //
+        // The locals a match arm binds are its own, so the map is copied rather than threaded: a
+        // name bound in an arm cannot be seen after it, and letting it leak would make the `move`
+        // rule attribute the arm's binding to whatever the outer scope calls the same word.
+        std::unordered_map<std::string, std::string> inner = localTypes;
+        indexExpr(mex->subject.get(), bundle, use, inner);
+        for (const ast::MatchCase& mc : mex->cases) {
+            indexMatchCase(mc, bundle, std::string(), use, inner);
+        }
+        indexExpr(mex->defaultResult.get(), bundle, use, inner);
+    } else if (const auto* lam = dynamic_cast<const ast::LambdaExpr*>(e)) {
+        std::unordered_map<std::string, std::string> inner = localTypes;
+        indexBlock(lam->body, bundle, std::string(), use, inner);
     }
 }
 
-void indexBlock(const ast::Block& blk, const std::string& bundle, const std::string& cls,
-                ProgramUse& use, std::unordered_map<std::string, std::string>& localTypes);
+// One arm of a `match`, in either form. The bindings are the reason this is not just "walk the body":
+// `case Circle(double radius)` is a READ of the first field of `Circle`, and it is the only kind of
+// read in the language that leaves no `x.f` behind for the walk above to see.
+//
+// Recorded as an arity rather than as field names, because the pattern does not name the field --
+// it names the LOCAL, and `case Circle(double r)` binds the same field under a different word. What
+// the arm proves is that the first N fields of that class are read by somebody, and N is all that
+// survives to the question asked later.
+void indexMatchCase(const ast::MatchCase& mc, const std::string& bundle, const std::string& cls,
+                    ProgramUse& use, std::unordered_map<std::string, std::string>& localTypes) {
+    if (!mc.typeName.empty()) {
+        use.typeSeenIn[baseType(mc.typeName)].insert(bundle);
+        std::size_t& seen = use.destructuredArity[genericBase(mc.typeName)];
+        seen = std::max(seen, mc.bindings.size());
+    }
+    for (const ast::Param& b : mc.bindings) {
+        localTypes[b.name] = typeRefStr(b.type);
+    }
+    indexBlock(mc.body, bundle, cls, use, localTypes);
+    indexExpr(mc.result.get(), bundle, use, localTypes);
+}
 
 void indexStmt(const ast::Stmt& st, const std::string& bundle, const std::string& cls,
                ProgramUse& use, std::unordered_map<std::string, std::string>& localTypes) {
@@ -382,6 +445,69 @@ void indexStmt(const ast::Stmt& st, const std::string& bundle, const std::string
     if (const auto* inc = dynamic_cast<const ast::IncDecStmt*>(&st)) {
         indexMemberTarget(inc->target.get(), cls, use);
         indexExpr(inc->target.get(), bundle, use, localTypes);
+        return;
+    }
+    // EVERYTHING BELOW WAS MISSING, and the omission was not a rounding error. A `match` was not
+    // walked at all -- not its subject, not its arms, not one expression inside them -- so every
+    // rule that consults this index was blind to whatever a program does inside one. In a language
+    // that pushes you toward matching on a sealed sum, that is most of the program: the field the
+    // arm reads looked unread, the method the arm calls looked uncalled, the type the arm holds
+    // looked never held. `switch`, `defer`, `using`, `throw` and a labelled loop were the same.
+    //
+    // It surfaced from the other end. `enum` with payloads made cases whose only reader is a
+    // pattern, and `nothing reads 'Circle.radius'` was reported about a field two lines below a
+    // `case Circle(double radius)`. The narrow reading is that destructuring needed recording; the
+    // true one is that the walk stopped at six statement kinds and nobody had asked it about a
+    // seventh. Adding one would have left the rest, so here is the rest.
+    if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(&st)) {
+        indexExpr(ms->subject.get(), bundle, use, localTypes);
+        for (const ast::MatchCase& mc : ms->cases) {
+            indexMatchCase(mc, bundle, cls, use, localTypes);
+        }
+        if (ms->defaultBody) {
+            indexBlock(*ms->defaultBody, bundle, cls, use, localTypes);
+        }
+        return;
+    }
+    if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(&st)) {
+        indexExpr(sw->subject.get(), bundle, use, localTypes);
+        for (const ast::SwitchCase& sc : sw->cases) {
+            indexExpr(sc.value.get(), bundle, use, localTypes);
+            indexBlock(sc.body, bundle, cls, use, localTypes);
+        }
+        if (sw->defaultBody) {
+            indexBlock(*sw->defaultBody, bundle, cls, use, localTypes);
+        }
+        return;
+    }
+    if (const auto* df = dynamic_cast<const ast::DeferStmt*>(&st)) {
+        indexBlock(df->body, bundle, cls, use, localTypes);
+        return;
+    }
+    if (const auto* us = dynamic_cast<const ast::UsingStmt*>(&st)) {
+        if (us->decl) {
+            indexStmt(*us->decl, bundle, cls, use, localTypes);
+        }
+        indexBlock(us->body, bundle, cls, use, localTypes);
+        return;
+    }
+    if (const auto* th = dynamic_cast<const ast::ThrowStmt*>(&st)) {
+        indexExpr(th->value.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* lb = dynamic_cast<const ast::LabeledStmt*>(&st)) {
+        if (lb->stmt) {
+            indexStmt(*lb->stmt, bundle, cls, use, localTypes);
+        }
+        return;
+    }
+    if (const auto* ys = dynamic_cast<const ast::YieldStmt*>(&st)) {
+        indexExpr(ys->value.get(), bundle, use, localTypes);
+        return;
+    }
+    if (const auto* td = dynamic_cast<const ast::TupleDeclStmt*>(&st)) {
+        indexExpr(td->init.get(), bundle, use, localTypes);
+        return;
     }
 }
 
@@ -527,8 +653,18 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
             break;
         }
     }
-    if (oneSubject && lookupClass(subject) == nullptr) {
+    const ClassInfo* subjectInfo = oneSubject ? lookupClass(subject) : nullptr;
+    if (oneSubject && subjectInfo == nullptr) {
         oneSubject = false;   // a primitive is not a type that applies transformers
+    }
+    // ...AND NEITHER IS A COMMAND TYPE. `Roots.brent(Mapper<double,double>* f, ...)` shares its
+    // first parameter across four methods because they all solve a function, not because there is a
+    // subject the behaviour belongs on: a command type is a ROLE -- a shape of behaviour with no
+    // state and no instances of its own -- so "write it as a transformer applied to that type"
+    // names a thing that cannot exist. Before commands this was excluded by accident, because
+    // `function<double, double>` was not a class at all.
+    if (oneSubject && subjectInfo != nullptr && subjectInfo->isCommandType) {
+        oneSubject = false;
     }
     if (!c.isInterface && !c.isAbstract && fields.empty() && oneSubject &&
         std::all_of(methods.begin(), methods.end(),
@@ -653,7 +789,28 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
     // A field outlives the call that produced the value; a local does not. The binder proves
     // lifetimes on this side of a foreign boundary and nothing at all on the other, so a bare
     // address in a field is a lifetime with no proof behind it.
+    //
+    // ...UNLESS THE TYPE IS THE FIX. This rule's own advice is *"wrap the address in a type that
+    // owns it and frees it through the same foreign interface that produced it -- so the lifetime
+    // has one place that knows about it"*, and that wrapper is a class with an address in a field.
+    // So the rule fired on the shape it had just recommended, and an author who took the advice got
+    // the same warning about the type they had written to answer it. Advice that refuses its own
+    // remedy teaches a reader to stop reading it.
+    //
+    // A DESTRUCTOR IS HOW A TYPE SAYS IT OWNS SOMETHING. It is the one place that runs when the
+    // object dies, it is what a wrapper is FOR, and it cannot be written by accident -- so it is a
+    // far better signal than the field's spelling. A class with one has made the lifetime its
+    // business, which is exactly what the rule was asking for.
+    bool ownsWhatItHolds = false;
+    for (const ast::MemberPtr& m : c.members) {
+        if (dynamic_cast<const ast::DestructorDecl*>(m.get()) != nullptr) {
+            ownsWhatItHolds = true;
+        }
+    }
     for (const ast::FieldDecl* f : fields) {
+        if (ownsWhatItHolds) {
+            continue;
+        }
         if (isAddressName(baseType(typeRefStr(f->type)))) {
             // THE FIELD'S OWN `[Allow]`, and not only the class's. These rules report AT a field, so
             // the annotation a reader writes to answer one goes on that field -- and the scope open
@@ -718,6 +875,14 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
     // order for as long as the program exists. Three or more of one primitive is where the odds stop
     // being on the author's side.
     for (const ast::MethodDecl* m : methods) {
+        // NOT ON A MONOMORPHIZED INSTANCE, where the repeated type came from the type ARGUMENTS and
+        // not from anything the author wrote. `command Combiner3<A, B, C, R>(A a, B b, C c)`
+        // declares three DIFFERENT types; they collapse to `int` at one instantiation, and the
+        // advice then asked the library to distinguish parameters on a line whose text is `A`, `B`,
+        // `C`. Same exemption, and the same reason, as the borrow-shaped-pointer rule.
+        if (c.name.find('$') != std::string::npos || m->name.find('$') != std::string::npos) {
+            continue;
+        }
         std::unordered_map<std::string, int> byType;
         for (const ast::Param& p : m->params) {
             const std::string t = typeRefStr(p.type);
@@ -727,10 +892,16 @@ void SemanticAnalyzer::adviseOnClass(const ast::ClassDecl& c) {
         }
         for (const auto& [t, n] : byType) {
             if (n >= 3) {
+                // THE METHOD'S OWN `[Allow]` COUNTS, and it did not. Only the class's annotations
+                // were pushed, so an allow written on the one method the rule is about was read and
+                // then ignored -- and the only way to settle a single method was to exempt its whole
+                // class. Every other member-level rule in this file pushes the member's own.
+                pushAllows({}, m->annotations);
                 warn(diag::Code::PrimitiveObsession,
                      "'" + m->name + "' takes " + std::to_string(n) + " parameters of type '" + t +
                          "', which the compiler will accept in any order",
                      m->loc);
+                popAllows();
             }
         }
     }
@@ -866,9 +1037,18 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
     // has two hundred `Bundle` nodes and one bundle. Counting entries made a single-bundle program
     // look like two hundred, which fired the public-with-no-outside-use rule on every public type
     // in the game -- ninety-nine of them.
+    // ...AND NOT THE PRELUDE'S, asked as `isPrelude` rather than by comparing against the name
+    // `System`. The library arrives with every program, so counting it makes a one-bundle program
+    // look like two -- which is what the note above records costing ninety-nine false warnings.
+    //
+    // It WAS a name comparison, and it held for exactly as long as the prelude was one bundle. The
+    // day `Machine` arrived -- a second prelude bundle, so a freestanding program has a library
+    // instead of only a refusal -- every program on the machine had two "authored" bundles and this
+    // rule fired on every public type again. The AST has recorded which bundles are the prelude's
+    // all along; the check was reading a name that happened to mean it.
     std::unordered_set<std::string> authored;
     for (const ast::Bundle& b : program.bundles) {
-        if (b.name != "System") {
+        if (!b.isPrelude) {
             authored.insert(b.name);
         }
     }
@@ -931,7 +1111,7 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     const bool onlyHere = seen == use.typeSeenIn.end() ||
                                           (seen->second.size() == 1 &&
                                            seen->second.count(bundle.name) > 0);
-                    if (onlyHere && bundle.name != "System") {
+                    if (onlyHere && !bundle.isPrelude) {
                         warn(diag::Code::PublicWithNoOutsideUse,
                              "'" + c.name + "' is public and nothing outside bundle '" +
                                  bundle.name + "' mentions it",
@@ -959,11 +1139,22 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                          c.loc);
                 }
 
+                std::size_t instanceFieldsSoFar = 0;
+                // How many leading fields of this class some `case C(...)` pattern binds. A pattern
+                // names the class, so the answer is per class and not per field.
+                const std::size_t destructured = [&] {
+                    auto it = use.destructuredArity.find(genericBase(typeAsWritten(c.name)));
+                    return it == use.destructuredArity.end() ? std::size_t{0} : it->second;
+                }();
                 for (const ast::MemberPtr& mp : c.members) {
                     const auto* f = dynamic_cast<const ast::FieldDecl*>(mp.get());
                     if (f == nullptr || f->isStatic) {
                         continue;
                     }
+                    // WHERE THIS FIELD SITS AMONG THE INSTANCE FIELDS, which is what a positional
+                    // pattern binds against. Counted here rather than by the loop index because the
+                    // members also hold methods and a constructor, and a pattern counts neither.
+                    const std::size_t fieldIndex = instanceFieldsSoFar++;
                     // The field's own `[Allow]` for the three rules below, which all report at it.
                     pushAllows({}, f->annotations);
                     struct PopOnExit {
@@ -998,7 +1189,8 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     // this compilation reads it" is not evidence about `ProcessResult.output`.
                     const bool reachableFromOutside =
                         f->visibility != "private" && (bundle.isPrelude || bundle.isImported);
-                    if (!reachableFromOutside && use.membersRead.count(f->name) == 0) {
+                    if (!reachableFromOutside && use.membersRead.count(f->name) == 0 &&
+                        fieldIndex >= destructured) {
                         warn(diag::Code::FieldNeverRead,
                              "nothing reads '" + c.name + "." + f->name + "'", f->loc);
                         continue;
@@ -1037,8 +1229,20 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
         byName[c->name] = c;
     }
     for (const ast::ClassDecl* c : all) {
-        if (!c->isStruct && !c->isRecord) {
-            continue;   // only an inline aggregate has a layout the author's order decides
+        // A CLASS'S FIELD ORDER COSTS THE SAME BYTES, and this used to skip one -- "only an inline
+        // aggregate has a layout the author's order decides", which confuses WHERE the bytes live
+        // with WHETHER the order costs. A class's fields are laid out in the order written exactly
+        // as a struct's are; what differs is that the object is on the heap, and the padding is then
+        // paid once per INSTANCE rather than once per value on a frame.
+        //
+        // That makes the class case the more expensive of the two, not the less: a struct's holes
+        // cost a few bytes of stack per call, and a class with a million live instances carries a
+        // million copies of them. The textbook shape -- a byte, a wide field, a byte -- was reported
+        // as a `struct` and silently accepted as a `class`, on identical declarations.
+        //
+        // An interface has no fields to order and a layout is not laid out at all.
+        if (c->isInterface || c->isLayout || c->isUnion) {
+            continue;
         }
         pushAllows(c->annotations, {});
         // Padding the declared order costs (catalogue 27). A `layout` authorises the compiler to
@@ -1180,7 +1384,13 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     return !name.empty() && shape.find("'" + name + "'") != std::string::npos;
                 };
                 if (const auto* recv = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
-                    aboutTheCall = mentions(recv->name);
+                    // A STATIC CALL'S RECEIVER IS A CLASS NAME, and a class name is not a value a
+                    // guard could be about. `if (d.flavor == Core.Stack) { Core.rollback(b, 0); }`
+                    // matched because the condition names `Core` -- it names the class the CONSTANT
+                    // is qualified by, which says nothing about the call. The rule then advised a
+                    // `requires` on `rollback` for a condition over `d.flavor`, which `rollback`
+                    // cannot see. Only a receiver that is a variable counts.
+                    aboutTheCall = lookupClass(recv->name) == nullptr && mentions(recv->name);
                 } else if (const auto* held =
                                dynamic_cast<const ast::MemberExpr*>(mem->object.get())) {
                     aboutTheCall = mentions(held->member);   // a receiver written `this.field`
@@ -1303,7 +1513,14 @@ void SemanticAnalyzer::adviseOnDeclarations(const ast::Program& program) {
                     const int idx = static_cast<int>(i);
                     const std::string t = typeRefStr(m->params[i].type);
                     const bool holdable = lookupClass(baseType(t)) != nullptr || isArrayType(t);
-                    if (mine.count(idx) > 0 && holdable) {
+                    // A `weak` FIELD DOES NOT KEEP WHAT IT POINTS AT -- it is emptied when that dies,
+                    // which is the whole word. Told to `move` into one, a parent handing itself to a
+                    // child's back-link was being advised to give itself away.
+                    const auto into = escapesToReceiverField_.find(c->name + "." + m->name + "#" +
+                                                                   std::to_string(idx));
+                    const bool weakly = into != escapesToReceiverField_.end() &&
+                                        allFieldsWeak(c->name, into->second);
+                    if (mine.count(idx) > 0 && holdable && !weakly) {
                         keeps[m->name].insert(idx);
                     } else {
                         disputed[m->name].insert(idx);

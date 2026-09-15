@@ -1,0 +1,37 @@
+import System.IO.Console;
+program CommandReturnsCommand;
+
+// A COMMAND THAT ANSWERS WITH A COMMAND -- what a higher-order function was, without the nesting.
+//
+// The old shape was `function<function<int,int>>`, a type inside a type, and the test existed
+// largely to prove the parser could split the `>>`. A command type is a NAME, so a command that
+// makes commands says `returns IntMap` and there is nothing to nest and nothing to split: the
+// factory reads like any other method that returns an object, which is what it is.
+//
+// Prints: d=42 t=63
+
+public bundle Main {
+    public namespace App {
+        public command IntMap(int n) returns int;
+        public command MapMaker() returns IntMap*;
+
+        public class Scale {
+            // The command that multiplies -- the factor is its baggage.
+            public command times(int n) carries (int factor) into pack returns int {
+                return n * pack.factor;
+            }
+            // ...and a command that hands one of those back.
+            public command doublerMaker() returns IntMap* { return Scale.times(2); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                MapMaker* make = Scale.doublerMaker();
+                IntMap* dbl = make();
+                IntMap* triple = Scale.times(3);
+                System.IO.Console.printf("d=%d t=%d\n", dbl(21), triple(21));
+                return;
+            }
+        }
+    }
+}

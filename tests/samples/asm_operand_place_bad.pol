@@ -1,0 +1,29 @@
+program AsmOperandPlaceBad;
+
+// THE REFUSAL, and what it is really for is not a typo — it is a PORT.
+//
+// This block declares `aarch64` and constrains an operand to `rdi`. Every mnemonic in it is now
+// checked against ARM; without a check on the constraint, the one line still saying x86 is the one
+// line nothing looks at. The block would reach LLVM asking for a register the target does not have.
+//
+// A block copied from the x86 side with the arch word changed is how this arrives in a real
+// program, and it arrives looking finished.
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+            public static method read(int n) returns int {
+                mutable int r = 0;
+                asm("aarch64") {
+                    mov x0, x1
+                } out ("x0": r) in ("rdi": n);
+                return r;
+            }
+
+            public static method main(string[] args) returns void {
+                Main.read(1);
+                return;
+            }
+        }
+    }
+}

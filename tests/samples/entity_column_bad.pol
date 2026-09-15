@@ -1,0 +1,27 @@
+import System.IO.Console;
+program EntityColumnBad;
+
+// AN ENTITY'S FIELDS EACH BECOME A COLUMN, and a column of N of something needs to know how wide one
+// of them is. `Particle[]` is one block whose columns run end to end, so the second column starts at
+// the width of the first times N -- and a field with no width decided here has no offset to give.
+//
+// A dynamic array is the case that reads as if it should work and cannot: its length is a property
+// of the VALUE, not of the declaration, so `int[] trail` is a different number of bytes in every
+// row. Laid out anyway it would be a column of slice headers, which is a side table wearing a field,
+// and a side table is the type dissolving again -- the exact failure AP-06 records.
+public bundle Main {
+    public namespace Bad {
+
+        public entity Particle {
+            public mutable int x;
+            public mutable int[] trail;   // <-- no width at the declaration
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Particle[] swarm = new Particle[4]();
+                System.IO.Console.println(swarm[0].x.toString());
+            }
+        }
+    }
+}

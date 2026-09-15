@@ -5,19 +5,24 @@ program LayoutOverBudget;
 // 4 + 4 + 4 + 1 + 1 = 14, rounded up to 16 -- over the twelve the layout allows. The compiler
 // refuses, and says so with the layout's own words plus the fact that reordering was already tried,
 // so nobody spends an afternoon shuffling the declaration.
+//
+// THE CONCESSION IS GRANTED HERE AND IT IS STILL NOT ENOUGH, which is the case the message has to
+// get right and the reason this sample keeps `permits reorder` on a layout that fails anyway. The
+// refusal must not offer the word to somebody who already wrote it -- so the arm the compiler takes
+// is the one that says reordering was already tried, and the remaining moves are narrower or fewer.
 
 public bundle main {
 
     public namespace app {
 
-        public layout Packed {
+        public layout Packed permits reorder {
             onArrange {
                 itself.fitWithin(12 bytes);
                 itself.refuse("a tick must stay five to a cache line");
             }
         }
 
-        public struct Tick implements Packed {
+        public struct Tick arranges Packed {
             public mutable byte kind;
             public mutable int  at;
             public mutable byte flags;

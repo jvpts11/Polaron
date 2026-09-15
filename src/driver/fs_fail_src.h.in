@@ -1,0 +1,7 @@
+#pragma once
+// Generated from runtime/polaron_fs_fail.pol by CMake.
+namespace polaron {
+inline constexpr const char* kFreestandingFailSource = R"POLARONFAIL(
+@POLARON_FS_FAIL_SOURCE@
+)POLARONFAIL";
+}

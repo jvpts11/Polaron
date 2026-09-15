@@ -1,0 +1,23 @@
+import System.IO.Console;
+program OwnTypeNamedLikeLibraryGeneric;
+
+// A PROGRAM'S OWN `Result`, next to the library's generic `Errors.Result<T, E>`. The compiler warned
+// "yours wins" (0B02) and then refused the program's own declaration and every use of it with "type
+// 'Result' is in namespace 'Errors'; import it" -- the visibility check for a name the library declares
+// as a GENERIC looked only at the generic's homes.
+public bundle Main {
+    public namespace App {
+        public struct Result {
+            private mutable int held;
+            public constructor Result(int c) { this.held = c; }
+            public method code() returns int { return this.held; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Result r = new Result(7);
+                System.IO.Console.println($"{r.code()}");
+                return;
+            }
+        }
+    }
+}

@@ -1,6 +1,7 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.Channel;
+import System.Commands.Action;
 program ChannelSelect;
 
 // Channel.select (spec 20.4): a fluent builder that waits on several channels at once. The chain
@@ -14,15 +15,15 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Channel<int> a = new Channel<int>(4) on heap;
                 Channel<int> b = new Channel<int>(4) on heap;
-                function<void> prod = lambda[captures: byvalue b]() returns void {
-                    b.send(42);
+                Action* prod = command () carries (Channel<int>* out = b) into pack returns void {
+                    pack.out.send(42);
                 };
                 Thread t = new Thread(prod) on heap;
                 t.start();
                 t.join();   // b now holds a value; a is empty
                 Channel.select()
-                    .receive(a, lambda(int x) returns void { System.IO.Console.printf("a=%d\n", x); })
-                    .receive(b, lambda(int y) returns void { System.IO.Console.printf("b=%d\n", y); })
+                    .receive(a, command (int x) returns void { System.IO.Console.printf("a=%d\n", x); })
+                    .receive(b, command (int y) returns void { System.IO.Console.printf("b=%d\n", y); })
                     .run();
                 return;
             }

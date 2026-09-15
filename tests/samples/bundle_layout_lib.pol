@@ -1,24 +1,31 @@
 program LayoutLib;
 
-// A struct that IMPLEMENTS A LAYOUT, exported from a bundle.
+// A struct ARRANGED BY A LAYOUT, exported from a bundle.
 //
-// Implementing a layout authorizes the compiler to order the fields widest-alignment-first, so this
+// `permits reorder` authorizes the compiler to order the fields widest-alignment-first, so this
 // struct's fields are NOT in declaration order in memory. If the header did not carry the layout, a
 // consumer would lay the same struct out as written and disagree with the bundle about every offset
 // after the first -- silently, because both sides would then be consistent with themselves.
+//
+// AND THE HEADER HAS TO CARRY THE CONCESSION, not just the layout, which is what makes this sample
+// worth more than it was. Under the first design the header could say only *this type is arranged*,
+// because being arranged was itself the permission. Now the permission is a separate word, and a
+// header that dropped it would leave the consumer laying the fields out in declaration order --
+// the exact divergence this test exists to catch, reintroduced through the one channel neither side
+// can inspect.
 //
 // The field order below is the worst possible on purpose: one-byte fields between four-byte ones.
 public bundle layoutlib {
     public namespace shapes {
 
-        public layout Packed {
+        public layout Packed permits reorder {
             onArrange {
                 itself.fitWithin(12 bytes);
                 itself.refuse("a tick must stay five to a cache line");
             }
         }
 
-        public struct Tick implements Packed {
+        public struct Tick arranges Packed {
             public mutable byte flag;
             public mutable int when;
             public mutable byte kind;

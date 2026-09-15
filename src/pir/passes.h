@@ -30,10 +30,19 @@ struct PassReport {
     int slotsMadeImmutable = 0;
     int deadRemoved = 0;
     int allocationsHoisted = 0;
+    // §11.8: dispatches that turned out to have one possible answer, so the call names it. Counted
+    // apart from everything else because it is the row of the §12 hand-off scoreboard that read
+    // `devirt=0` while the compiler was busy printing diagnostics that ENUMERATED the closed set --
+    // it knew the answer and emitted a table lookup anyway.
+    int devirtualised = 0;
+    // §11.5: allocations that provably do not outlive the frame, so the frame is where they went.
+    // Each one is a `__polaron_malloc` and a `__polaron_free` that stop existing, plus the header
+    // and the pointer chase behind them.
+    int heapToStack = 0;
 
     bool didSomething() const {
         return factsPropagated + guardsRemoved + slotsMadeImmutable + deadRemoved +
-                   allocationsHoisted >
+                   allocationsHoisted + devirtualised + heapToStack >
                0;
     }
 };

@@ -3,6 +3,7 @@ import System.Concurrency.Thread;
 import System.Concurrency.Barrier;
 import System.Concurrency.ReadWriteLock;
 import System.Concurrency.atomic;
+import System.Commands.Action;
 program BarrierRwlock;
 
 // TWO SYNCHRONISERS THE LIBRARY SHIPPED AND NOTHING EXERCISED. Found by counting: of 285 standard
@@ -44,7 +45,7 @@ public bundle Main {
                 Shared.b = 0;
                 Shared.torn = new atomic<int>(0) on heap;
 
-                function<void> phase = lambda() returns void {
+                Action* phase = command () returns void {
                     Shared.before.add(1);
                     Shared.gate.arrive();
                     int seen = Shared.before.get();
@@ -61,7 +62,7 @@ public bundle Main {
                                          Shared.before.get(), Shared.minSeen.get());
 
                 // Writers under the write lock, readers under the read lock, all at once.
-                function<void> writer = lambda() returns void {
+                Action* writer = command () returns void {
                     for (mutable int i = 0; i < 100; i++) {
                         Shared.lock.writeLock();
                         Shared.a = Shared.a + 1;
@@ -69,7 +70,7 @@ public bundle Main {
                         Shared.lock.writeUnlock();
                     }
                 };
-                function<void> reader = lambda() returns void {
+                Action* reader = command () returns void {
                     for (mutable int i = 0; i < 200; i++) {
                         Shared.lock.readLock();
                         if (Shared.b != Shared.a * 2) { Shared.torn.add(1); }

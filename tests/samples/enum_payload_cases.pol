@@ -1,0 +1,85 @@
+import System.IO.Console;
+program EnumPayloadCases;
+
+// An `enum` whose cases CARRY DATA (spec 16, enum-variants 10.1). Three things are being proved
+// here, and they are three because each has failed on its own in some language that shipped this:
+//
+//   1. `Circle(double radius)` and `RED(255)` are told apart. The first declares a payload -- data
+//      chosen at every construction -- and the second gives THE constant its data once. They are
+//      written the same way and mean opposite things, and nothing outside the parentheses says
+//      which is which.
+//   2. A case with no payload still works, and is still a case: `Empty` is constructed and matched,
+//      and is not an ordinal that happens to fit in the same variable.
+//   3. `match` DESTRUCTURES the payload by position, over a sum the user declared rather than the
+//      two the parser had built into it. The enum desugars to a SEALED hierarchy, so the case list
+//      is closed and a forgotten case is named rather than swallowed by a `default` -- which would
+//      also swallow the case added next year.
+//
+// The generic form is proved beside it, because the type parameters are not decoration: they are
+// what makes a payload sized. `Holder<T>` with no argument has no width; `Holder<int>` does.
+//
+// Prints:
+//   circle 12
+//   rect 12
+//   empty 0
+//   ordinals 012
+//   held 42
+//   none is absent
+public bundle Main {
+    public namespace Shapes {
+
+        public enum Shape {
+            Circle(double radius),
+            Rect(double width, double height),
+            Empty
+        }
+
+        // The parameterised form. `Wrapped` and `Absent` are cases of `Holder<T>`, so each
+        // construction takes its type argument from the place it is going -- the same rule
+        // `Ok`/`Some` follow, now written by the user rather than built into the parser.
+        public enum Holder<T> {
+            Wrapped(T item),
+            Absent
+        }
+
+        public class Main {
+            // Area by case. This is the method the whole feature exists for: the shape of the
+            // answer follows the shape of the data, and neither the reader nor the compiler has to
+            // trust a comment about which field is live.
+            public static method area(Shape s) returns double {
+                match (s) {
+                    case Circle(double radius) { return 3.14159265358979 * radius * radius; }
+                    case Rect(double width, double height) { return width * height; }
+                    case Empty() { return 0.0; }
+                }
+                return -1.0;
+            }
+
+            public static method main(string[] args) returns void {
+                Shape c = Circle(2.0);
+                Shape r = Rect(3.0, 4.0);
+                Shape e = Empty();
+
+                System.IO.Console.println("circle " + cast<int>(Main.area(c)).toString());
+                System.IO.Console.println("rect " + cast<int>(Main.area(r)).toString());
+                System.IO.Console.println("empty " + cast<int>(Main.area(e)).toString());
+
+                // The ordinal is the declaration order, and it is visible: a sum can be asked which
+                // case it is without opening it.
+                System.IO.Console.println("ordinals " + c.variantOrdinal().toString() +
+                                  r.variantOrdinal().toString() + e.variantOrdinal().toString());
+
+                Holder<int> held = Wrapped(41);
+                Holder<int> none = Absent();
+                match (held) {
+                    case Wrapped(int item) { System.IO.Console.println("held " + (item + 1).toString()); }
+                    case Absent() { System.IO.Console.println("held nothing"); }
+                }
+                match (none) {
+                    case Wrapped(int item) { System.IO.Console.println("none " + item.toString()); }
+                    case Absent() { System.IO.Console.println("none is absent"); }
+                }
+            }
+        }
+    }
+}

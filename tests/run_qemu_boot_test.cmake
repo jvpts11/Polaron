@@ -6,8 +6,14 @@
 # reading the .ll would have shown.
 #
 # Required -D args: POLARON (the driver), PROJECT (a directory with polaron.toml), QEMU, MACHINE,
-#                   CPU, EXPECTED (a substring of the serial output), SERIAL (where to write it).
+#                   CPU, EXPECTED (substrings of the serial output, a `;` list), SERIAL (where to
+#                   write it).
 # Optional: TIMEOUT (seconds, default 20).
+#
+# EXPECTED IS A LIST BECAUSE A BOOT IS EXPENSIVE. It was one needle, then a second under a second
+# name (`ALSO_EXPECTED`), and a third claim would have wanted a third name -- which is a list spelled
+# by hand, one variable at a time. Twenty seconds of wall clock says everything one boot can prove
+# should be asserted on that boot, rather than left unasserted because asserting it was expensive.
 #
 # The guest PARKS rather than exiting -- a kernel that returns has nowhere to return to -- so QEMU is
 # killed on a timeout and the serial log is the verdict. A timeout is therefore the NORMAL outcome and
@@ -31,19 +37,12 @@ if(NOT EXISTS "${SERIAL}")
     message(FATAL_ERROR "the guest wrote nothing at all: no ${SERIAL} (qemu said ${qrc})")
 endif()
 file(READ "${SERIAL}" _log)
-string(FIND "${_log}" "${EXPECTED}" _found)
-if(_found EQUAL -1)
-    message(FATAL_ERROR "the guest did not say '${EXPECTED}'\n--- serial ---\n${_log}")
-endif()
-# ALSO_EXPECTED: a second needle, so ONE boot can assert two independent things. Booting costs twenty
-# seconds of wall clock, and a guest that prints two lines should not be started twice to have both
-# read -- nor should the second claim go unasserted because asserting it was expensive.
-if(ALSO_EXPECTED)
-    string(FIND "${_log}" "${ALSO_EXPECTED}" _found2)
-    if(_found2 EQUAL -1)
-        message(FATAL_ERROR "the guest did not say '${ALSO_EXPECTED}'\n--- serial ---\n${_log}")
+set(_needles ${EXPECTED} ${ALSO_EXPECTED})   # ALSO_EXPECTED still works; it is one more entry
+foreach(_needle IN LISTS _needles)
+    string(FIND "${_log}" "${_needle}" _found)
+    if(_found EQUAL -1)
+        message(FATAL_ERROR "the guest did not say '${_needle}'\n--- serial ---\n${_log}")
     endif()
-    message(STATUS "OK: booted and said '${EXPECTED}' and '${ALSO_EXPECTED}'")
-else()
-    message(STATUS "OK: booted and said '${EXPECTED}'")
-endif()
+endforeach()
+list(LENGTH _needles _count)
+message(STATUS "OK: booted and said all ${_count} of what it should")

@@ -112,6 +112,19 @@ std::string archFamily(const std::string& name);
 // answer for architectures no table here lists.
 std::string archOfTriple(const std::string& triple);
 
+// HOW WIDE A MACHINE ADDRESS IS on the target a triple names: 32 or 64.
+//
+// `address` was sixty-four bits on every target -- right for every target this compiler had ever been
+// pointed at, and wrong the moment it was pointed at i686. The type is documented as the machine's
+// own address, so on a 32-bit machine it has to be thirty-two: an FFI declaration taking an `address`
+// otherwise passes a 64-bit value where the callee reads a pointer, and address arithmetic carries a
+// top half that does not exist. Nothing DIAGNOSED that. It compiled, linked, and passed garbage.
+//
+// Asked of the ARCH and not the family, because `riscv32` and `riscv64` share a family and not a
+// width. An unknown arch answers 64, which every target supported today is, and is the safer half of
+// a guess: too wide truncates at a boundary, too narrow loses the top of a pointer.
+unsigned pointerBits(const std::string& triple);
+
 // ---- Questions about a type NAME ----
 // These traffic in Polaron's canonical type strings ("int", "Box$int", "int[]", "Node*"), which is why
 // they need no LLVM: the answer is in the name.

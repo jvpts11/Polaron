@@ -25,7 +25,9 @@ you can pick the right tool for the input size. Many trade pointer chasing for f
 plays to Polaron's manual-memory model.
 
 Notes that apply throughout: an `int[]` is a heap-backed dynamic array; `T[]` is a generic array;
-`function<R, A...>` is a closure/lambda type with return type `R` and argument types `A...`;
+a `Predicate<T>*` / `Mapper<T, R>*` / `Comparer<T>*` and the rest of `System.Commands` are command
+types — roles a `command` satisfies structurally, so an API names the shape it will call rather than
+any particular command (reference 14.1);
 `nullable T*` is a nullable pointer; `T&` is a by-reference parameter. In the examples below, a
 `// ->` comment shows the value a call returns.
 
@@ -440,13 +442,16 @@ Members:
 
 **Namespace:** `System.Collections` — `import System.Collections.Comparators;`
 
-Comparator combinators built on closures; each returns a `function<int, int, int>` usable with
-`ArrayList.sortedBy`.
+Comparator combinators, each a `command`; each is a `Comparer<int>` and so goes straight into
+`ArrayList.sortedBy`. Two of them CARRY the comparators they wrap, which is what a combinator is.
 
 Members:
-- `public static method naturalInt() returns function<int, int, int>` — ascending int order.
-- `public static method reversed(function<int, int, int> cmp) returns function<int, int, int>` — a comparator that flips `cmp`.
-- `public static method thenComparing(function<int, int, int> first, function<int, int, int> second) returns function<int, int, int>` — `first`, falling back to `second` as a tie-breaker.
+- `public command naturalInt(int a, int b) returns int` — ascending int order. Built as
+  `Comparators.naturalInt()`.
+- `public command reversed(int a, int b) carries (Comparer<int>* cmp) into pack returns int` — flips
+  `cmp`. Built as `Comparators.reversed(other)`.
+- `public command thenComparing(int a, int b) carries (Comparer<int>* first, Comparer<int>* second)
+  into pack returns int` — `first`, falling back to `second` as a tie-breaker.
 
 ---
 
@@ -633,7 +638,7 @@ A small object wrapping a no-argument handler function so it can be stored in an
 `Signal`.
 
 Members:
-- `public constructor VoidHandler(function<void> f)` — wrap the handler `f`.
+- `public constructor VoidHandler(Action* f)` — wrap the handler `f`.
 - `public method invoke() returns void` — call the wrapped handler.
 
 ---
@@ -647,7 +652,7 @@ handlers in a plain growable array and calls them all on `emit`.
 
 Members:
 - `public constructor Signal()` — an event with no subscribers.
-- `public method subscribe(function<void> h) returns void` — register a handler to run on emit.
+- `public method subscribe(Action* h) returns void` — register a handler to run on emit.
 - `public method emit() returns void` — call every subscribed handler.
 - `public method count() returns int` — number of subscribers.
 
@@ -661,7 +666,7 @@ A small object wrapping a handler taking one int argument so it can be stored in
 `IntEvent`.
 
 Members:
-- `public constructor IntHandler(function<void, int> f)` — wrap the handler `f`.
+- `public constructor IntHandler(Action1<int>* f)` — wrap the handler `f`.
 - `public method invoke(int arg) returns void` — call the wrapped handler with `arg`.
 
 ---
@@ -674,7 +679,7 @@ An event that fires with an int payload (such as `onTick(elapsed)` or `onScore(p
 
 Members:
 - `public constructor IntEvent()` — an event with no subscribers.
-- `public method subscribe(function<void, int> h) returns void` — register an int-taking handler.
+- `public method subscribe(Action1<int>* h) returns void` — register an int-taking handler.
 - `public method emit(int arg) returns void` — call every subscribed handler with `arg`.
 - `public method count() returns int` — number of subscribers.
 
@@ -688,7 +693,7 @@ A small object wrapping a handler taking one `String` argument so it can be stor
 Used by `StringEvent`.
 
 Members:
-- `public constructor StringHandler(function<void, String> f)` — wrap the handler `f`.
+- `public constructor StringHandler(Action1<String>* f)` — wrap the handler `f`.
 - `public method invoke(String arg) returns void` — call the wrapped handler with `arg`.
 
 ---
@@ -701,7 +706,7 @@ An event that fires with a `String` payload (such as `onMessage(text)` or `onErr
 
 Members:
 - `public constructor StringEvent()` — an event with no subscribers.
-- `public method subscribe(function<void, String> h) returns void` — register a String-taking handler.
+- `public method subscribe(Action1<String>* h) returns void` — register a String-taking handler.
 - `public method emit(String arg) returns void` — call every subscribed handler with `arg`.
 - `public method count() returns int` — number of subscribers.
 

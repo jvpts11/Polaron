@@ -1,0 +1,49 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program DeleteFromPoolRegion;
+
+// `delete X from region R` WHERE R IS A POOL, which is the case `delete_from_region.pol` next door
+// does not reach: that one uses a plain bump region, and the three region flavors took three
+// different arms of the same `else if` in the lowering. Only the arm the bump region took emptied
+// the local, so only the bump region was ever destroyed once.
+//
+// A pool RECLAIMS the slot, which is what makes the bug reachable and what makes it bad. `delete a`
+// runs ~Dog 1 and puts the slot on the free-list; the next allocation gets that same slot back; and
+// the end of the scope still holds the name `a`, so it destructs it a second time -- over `c`, an
+// object that is alive. It printed `~Dog 3 ~Dog 2 ~Dog 3`.
+//
+// The region stamps cannot catch this one. They make a plain `delete` of a region object a trap, but
+// a destructor called straight off the scope's own list never enters the runtime for its stamp to be
+// read. Emptying the local is the whole guard, and it is the same rule `stack_delete` fixed for the
+// plain `delete` form.
+
+public bundle main {
+    public namespace app {
+        public class Dog {
+            public mutable int id;
+            public constructor Dog(int id) { this.id = id; }
+            public destructor ~Dog() returns void {
+                System.IO.Console.printf("~Dog %d\n", this.id);
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool region pen = itself.allocate(4 kilobytes);
+                Dog* a = new Dog(1) in region pen;
+                Dog* b = new Dog(2) in region pen;
+                System.IO.Console.println("before");
+                address freed = cast<address>(a);   // where the slot is, before it goes back
+                delete a from region pen;      // ~Dog 1 now, and the slot goes on the free-list
+                System.IO.Console.println("mid");
+                // The same slot, handed back out. `reused 1` is half the test: if the pool stopped
+                // reclaiming, the second destruct would land on untouched memory and the bug this
+                // sample exists for would stop being visible without the sample failing.
+                Dog* c = new Dog(3) in region pen;
+                System.IO.Console.printf("reused %d\n", cast<address>(c) == freed ? 1 : 0);
+                release region pen;            // ~Dog 3 and ~Dog 2, once each
+                System.IO.Console.println("after");
+                return;
+            }
+        }
+    }
+}

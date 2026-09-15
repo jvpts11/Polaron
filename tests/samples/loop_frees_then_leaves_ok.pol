@@ -1,0 +1,47 @@
+import System.IO.Console;
+program LoopFreesThenLeavesOk;
+
+// THE CONTROL FOR `loop_frees_at_the_end_and_reads_at_the_top_bad.pol`, and the reason the answer is
+// a replay of the flow rather than a search for a shape.
+//
+// Every ingredient of the defect is here: a loop, a `delete this` inside it, and reads of the
+// receiver at the top of the body. A rule that looked for that arrangement would refuse this
+// program, and this program is correct -- the path that frees also LEAVES, so there is no second
+// iteration to read anything.
+//
+// The replay gets it right without being told: `return` means the end of the iteration is never
+// reached on that path, so the state carried back across the loop's edge does not carry the free,
+// and the second pass has nothing to say. An `if (done) { delete this; return; }` inside a worker
+// loop is one of the commonest correct shapes there is, and it stays silent.
+//
+// Prints:
+//   3
+public bundle Main {
+    public namespace App {
+        public class Worker {
+            public mutable int done;
+            public constructor Worker() { this.done = 0; }
+
+            // Frees itself when the work runs out -- and stops, which is the whole point.
+            public method run(int rounds) returns void {
+                for (mutable int i = 0; i < rounds; i++) {
+                    if (this.done > 2) {
+                        System.IO.Console.println($"{this.done}");
+                        delete this;
+                        return;
+                    }
+                    this.done = this.done + 1;
+                }
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Worker* w = new Worker() on heap;
+                w.run(10);
+                return;
+            }
+        }
+    }
+}

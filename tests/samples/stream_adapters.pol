@@ -38,7 +38,7 @@ public bundle Main {
                 // The first three even numbers. Ten elements exist; a lazy take stops at six.
                 Counter.reset();
                 IteratorStream<int> base = new IteratorStream<int>(nums.iterator()) on heap;
-                Stream<int> evens = base.filter(lambda(int x) returns boolean {
+                Stream<int> evens = base.filter(command (int x) returns boolean {
                     Counter.bump();
                     return x % 2 == 0;
                 });
@@ -48,7 +48,7 @@ public bundle Main {
 
                 // ...and past the first two of them.
                 IteratorStream<int> b2 = new IteratorStream<int>(nums.iterator()) on heap;
-                mutable ArrayList<int> after2 = b2.filter(lambda(int x) returns boolean {
+                mutable ArrayList<int> after2 = b2.filter(command (int x) returns boolean {
                     return x % 2 == 0;
                 }).skip(2).toList();
                 System.IO.Console.printf("after2=%s\n", Main.join(after2));
@@ -56,7 +56,7 @@ public bundle Main {
                 // takeWhile stops at the first failure -- it does not keep looking like filter does.
                 Counter.reset();
                 IteratorStream<int> b3 = new IteratorStream<int>(nums.iterator()) on heap;
-                mutable ArrayList<int> under7 = b3.takeWhile(lambda(int x) returns boolean {
+                mutable ArrayList<int> under7 = b3.takeWhile(command (int x) returns boolean {
                     Counter.bump();
                     return x < 7;
                 }).toList();
@@ -65,10 +65,10 @@ public bundle Main {
 
                 IteratorStream<int> b4 = new IteratorStream<int>(nums.iterator()) on heap;
                 mutable int hasBig = 0;
-                if (b4.any(lambda(int x) returns boolean { return x > 9; })) { hasBig = 1; }
+                if (b4.any(command (int x) returns boolean { return x > 9; })) { hasBig = 1; }
                 IteratorStream<int> b5 = new IteratorStream<int>(nums.iterator()) on heap;
                 mutable int allBig = 0;
-                if (b5.all(lambda(int x) returns boolean { return x > 9; })) { allBig = 1; }
+                if (b5.all(command (int x) returns boolean { return x > 9; })) { allBig = 1; }
                 System.IO.Console.printf("any=%d all=%d\n", hasBig, allBig);
                 return;
             }

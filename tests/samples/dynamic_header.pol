@@ -1,0 +1,95 @@
+import System.IO.Console;
+program DynamicHeader;
+
+// `dynamic` — THE OBJECT HEADER BECOMES A WORD THE AUTHOR WRITES.
+//
+// AP-02: *every object carries a vtable pointer, including ones with no virtual method at all, and
+// a cache line it did not need. A C struct is its fields.* It was right, and the cost came from one
+// loop in the compiler's driver that gave `extends Object` to every hosted class — so `class Tag`,
+// which nothing extends and nothing overrides, was sixteen bytes because nobody had written
+// anything.
+//
+// `dynamic class X` says the instance CARRIES ITS TYPE: a dispatch pointer at field zero, eight
+// bytes on every instance, and membership of the `Object` root. Without it a class is its fields.
+//
+// C++ cannot say this, and that is what makes it a language answer rather than an optimisation:
+// `virtual` is per-method, and the header arrives as a side effect neither declaration mentions.
+//
+// FOUR KINDS CARRY IT WITHOUT THE WORD, because for them it is not a choice — a class that
+// `extends` something, one that `implements` an interface, an `abstract` class, and a `region` or
+// `heap class`, whose instances are walked and so must say what they are.
+//
+// Prints: plain=8 sealed=8 asked=16 derived=16 implementer=16 tag=7 spoke=1
+
+public bundle Main {
+    public namespace App {
+
+        // ---- what a class costs when nobody asked for anything ----
+        public class Tag {
+            public mutable int id;
+            public mutable int rank;
+            public constructor Tag(int id) { this.id = id; this.rank = 0; }
+            public method get() returns int { return this.id; }
+        }
+
+        // `final` did not help before: the compiler could prove the set of possible types was one
+        // and the header was there anyway. Now the proof is not even needed — nobody asked.
+        public final class Sealed {
+            public mutable int a;
+            public mutable int b;
+            public constructor Sealed() { this.a = 0; this.b = 0; }
+        }
+
+        // ---- and what it costs when somebody does ----
+        public dynamic class Asked {
+            public mutable int a;
+            public mutable int b;
+            public constructor Asked() { this.a = 0; this.b = 0; }
+        }
+
+        // A base with a subclass: the header is not optional and the word would be a restatement.
+        public class Root {
+            public mutable int a;
+            public mutable int b;
+            public constructor Root() { this.a = 0; this.b = 0; }
+            public method speak() returns int { return 1; }
+        }
+        public class Leaf extends Root {
+            public constructor Leaf() { super(); }
+            public override method speak() returns int { return 2; }
+        }
+
+        // ...and one that implements an interface, which is dispatch by definition.
+        public interface Voice {
+            method speak() returns int;
+        }
+        public class Implementer implements Voice {
+            public mutable int a;
+            public mutable int b;
+            public constructor Implementer() { this.a = 0; this.b = 0; }
+            public override method speak() returns int { return 3; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // A CLASS WITH NO HEADER STILL WORKS: constructed, read, called and deleted. The
+                // call is direct, because there is no table and nothing to look up in one.
+                Tag* t = new Tag(7) on heap;
+                int tag = t.get();
+                delete t;
+
+                // ...AND DISPATCH IS UNTOUCHED where a class does carry its type. `Root* r` holding
+                // a `Leaf` finds `Leaf.speak`, which is the thing the header is FOR.
+                Root* r = new Leaf() on heap;
+                int spoke = r.speak() == 2 ? 1 : 0;
+                delete r;
+
+                System.IO.Console.printf(
+                    "plain=%d sealed=%d asked=%d derived=%d implementer=%d tag=%d spoke=%d\n",
+                    Tag.sizeof(), Sealed.sizeof(), Asked.sizeof(), Leaf.sizeof(),
+                    Implementer.sizeof(), tag, spoke);
+                return;
+            }
+        }
+    }
+}

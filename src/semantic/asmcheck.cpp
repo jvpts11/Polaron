@@ -80,12 +80,30 @@ const std::set<std::string>& knownMnemonics() {
         "cld", "std", "cli", "sti", "clc", "stc", "cmc",
         "lgdt", "sgdt", "lidt", "sidt", "ltr", "str", "lldt", "sldt",
         "swapgs", "rdmsr", "wrmsr", "rdtsc", "rdtscp", "cpuid", "invlpg", "wbinvd",
+        // THE HARDWARE RANDOM GENERATOR. `rdrand` reads the on-die generator and `rdseed` its
+        // seeding source, and both report success in the CARRY FLAG rather than by returning a
+        // value -- which is why they are reached for from a block that also runs `setc`, already in
+        // this table eight lines up. Present on every x86 part made since about 2012, and the only
+        // real entropy source a kernel on this architecture has: without them `getrandom` has
+        // nothing honest to answer with, and a modern libc calls it before `main`.
+        "rdrand", "rdseed",
         "in", "out", "inb", "inw", "inl", "outb", "outw", "outl",
         "insb", "insw", "insl", "outsb", "outsw", "outsl",
         // strings
         "movsb", "movsw", "movsl", "movsq", "stosb", "stosw", "stosl", "stosq",
         "lodsb", "lodsw", "lodsl", "lodsq", "scasb", "scasw", "scasl", "scasq",
         "cmpsb", "cmpsw", "cmpsl", "cmpsq", "rep", "repe", "repne", "repz", "repnz",
+        // COUNT-REGISTER LOOPS, absent from everything a compiler emits and present in every boot
+        // sector ever written. `loop` is two bytes and needs no comparison: scanning the four
+        // entries of a partition table is `mov cx, 4` and `loop`, in a sector whose code has to end
+        // before the table starts at byte 446. Horizon's MBR is what asked for them.
+        //
+        // The whole family, because reaching for one and finding its siblings missing is the same
+        // interruption twice over: the `e`/`ne` forms are the same instruction with the zero flag
+        // tested as well, and `jcxz`/`jecxz`/`jrcxz` are the guard a `loop` needs when the count may
+        // be zero -- `loop` decrements FIRST, so a count of zero wraps to 65535 and walks the
+        // segment.
+        "loop", "loope", "loopne", "loopz", "loopnz", "jcxz", "jecxz", "jrcxz",
         // SSE, enough to recognise rather than to validate
         "movaps", "movups", "movdqa", "movdqu", "movd", "movss", "movsd",
         "xorps", "xorpd", "por", "pxor", "paddd", "psubd", "fxsave", "fxrstor",
@@ -105,6 +123,58 @@ bool isRegName(const std::string& s) { return registerFamily().count(lower(s)) !
 std::string familyOf(const std::string& s) {
     auto it = registerFamily().find(lower(s));
     return it == registerFamily().end() ? std::string() : it->second;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// AArch64 registers, and which 64-bit register each name is part of.
+//
+// The same table for a second architecture, and it exists for the same reason: writing `w3` destroys
+// `x3`, so a name is not what has to be compared. What it is FOR here is narrower than the x86 one --
+// the body checker still only reads x86 mnemonics -- and it is enough for the question §6.2 asks:
+// **is this name a register on the architecture this block declared.**
+//
+// That question is not pedantry. The failure it catches is a PORT: a block copied from the x86 side
+// with the arch word changed gets every mnemonic checked against ARM and, with no table here, its
+// constraints checked against nothing -- so `out ("rdi": n)` in an `asm("aarch64")` block would
+// reach LLVM asking for a register the target does not have.
+//
+// `xzr`/`wzr` are one family: the zero register is not two registers. `sp` has no `w` half worth
+// naming here. `v0`-`v31` are the SIMD registers, whose `b`/`h`/`s`/`d`/`q` views are the same
+// physical register under five widths, which is exactly what a family is.
+const std::map<std::string, std::string>& registerFamilyArm64() {
+    static const std::map<std::string, std::string> m = [] {
+        std::map<std::string, std::string> t;
+        for (int i = 0; i <= 30; i++) {
+            const std::string x = "x" + std::to_string(i);
+            t[x] = x;
+            t["w" + std::to_string(i)] = x;
+        }
+        t["sp"] = "sp";
+        t["xzr"] = "xzr";
+        t["wzr"] = "xzr";
+        for (int i = 0; i <= 31; i++) {
+            const std::string v = "v" + std::to_string(i);
+            t[v] = v;
+            for (const char* w : {"b", "h", "s", "d", "q"}) {
+                t[w + std::to_string(i)] = v;
+            }
+        }
+        return t;
+    }();
+    return m;
+}
+
+// THE TABLE FOR ONE ARCHITECTURE, or null when this checker has not learned it. Null is what makes
+// an unlearned target accept anything, which is the same bargain `checkAsm` makes for mnemonics and
+// for the same reason: refusing correct code for a target nobody taught it is the worse failure.
+const std::map<std::string, std::string>* registersOf(const std::string& arch) {
+    if (arch == "x86_64" || arch == "x86" || arch == "i686" || arch == "i386") {
+        return &registerFamily();
+    }
+    if (arch == "aarch64" || arch == "arm64") {
+        return &registerFamilyArm64();
+    }
+    return nullptr;
 }
 
 // One line of the body, split into what the checks need.
@@ -550,6 +620,85 @@ AsmReport checkAsm(const std::string& body, const AsmDeclared& declared) {
              lines.empty() ? 1 : lines.back().number});
     }
     return rep;
+}
+
+// ---- operand constraints (docs/design/asm-constraints.md §6) ----
+
+namespace {
+
+// Split a place on ':', keeping empty parts. `"eax:"` is then two parts, one of them empty, and gets
+// diagnosed -- rather than quietly reading as one register with a stray colon.
+std::vector<std::string> placeParts(const std::string& place) {
+    std::vector<std::string> parts;
+    size_t from = 0;
+    for (;;) {
+        const size_t colon = place.find(':', from);
+        parts.push_back(place.substr(from, colon == std::string::npos ? std::string::npos
+                                                                     : colon - from));
+        if (colon == std::string::npos) {
+            return parts;
+        }
+        from = colon + 1;
+    }
+}
+
+}  // namespace
+
+bool asmPlaceIsValid(const std::string& arch, const std::string& place, std::string* why) {
+    auto say = [&](std::string m) {
+        if (why != nullptr) {
+            *why = std::move(m);
+        }
+        return false;
+    };
+    // Nothing said, or one of the two class words. Neither is a register, which is exactly why
+    // neither can be spelled as one (§6.3).
+    if (place.empty() || place == "memory" || place == "immediate") {
+        return true;
+    }
+    // AN ARCHITECTURE THIS CHECKER HAS NOT LEARNED ACCEPTS ANYTHING -- the same bargain `checkAsm`
+    // makes for mnemonics, for the same reason: refusing correct code for a target nobody has taught
+    // it is the worse failure. Two are taught (§6.2).
+    const std::map<std::string, std::string>* table = registersOf(arch);
+    if (table == nullptr) {
+        return true;
+    }
+    std::set<std::string> families;
+    for (const std::string& one : placeParts(place)) {
+        if (one.empty()) {
+            return say("'" + place +
+                       "' has an empty part. A register pair is written high part first, joined by "
+                       "':' -- \"edx:eax\"");
+        }
+        const auto found = table->find(lower(one));
+        if (found == table->end()) {
+            return say("'" + one + "' is not a register on " + arch +
+                       ". An operand's place is written with the architecture's own register name "
+                       "-- \"ax\" on x86_64, \"x0\" on aarch64 -- or one of \"memory\" and "
+                       "\"immediate\"");
+        }
+        // DISTINCT FAMILIES. `"eax:ax"` names one register twice and would produce an operand half
+        // of which overwrites the other half. It reads as a typo because it is one.
+        if (!families.insert(found->second).second) {
+            return say("'" + place + "' names one register twice: '" + one + "' belongs to '" +
+                       found->second + "', which another part of this pair already claimed");
+        }
+    }
+    return true;
+}
+
+std::vector<std::string> asmPlaceFamilies(const std::string& arch, const std::string& place) {
+    std::vector<std::string> out;
+    const std::map<std::string, std::string>* table = registersOf(arch);
+    if (table == nullptr || place.empty() || place == "memory" || place == "immediate") {
+        return out;
+    }
+    for (const std::string& one : placeParts(place)) {
+        if (const auto found = table->find(lower(one)); found != table->end()) {
+            out.push_back(found->second);
+        }
+    }
+    return out;
 }
 
 }  // namespace polaron::semantic

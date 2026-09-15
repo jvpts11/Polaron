@@ -1,0 +1,62 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program BorrowTakenAfterClear;
+
+// A BORROW TAKEN AFTER ITS SOURCE WAS EMPTIED is a borrow of what the source holds NOW, and reading
+// it is fine. The rule `borrow_after_clear.pol` is refused by was kept per SOURCE -- "people was
+// emptied" -- so every borrow of `people` for the rest of the method was refused with it, the ones
+// taken after the refill included. Emptying invalidates the borrows that exist when it happens.
+//
+// The destructor is the same shape through `this`, and it is where the kernel met it: `this.clear()`
+// empties the object, and the field read after it is the field as it is after the clear.
+public bundle Main {
+    public namespace App {
+        public class Row {
+            public mutable int value;
+            public constructor Row(int value) { this.value = value; }
+            public method read() returns int { return this.value; }
+        }
+
+        public class Table {
+            private mutable ArrayList<Row*> rows;
+            private mutable nullable Row* spare;
+            public constructor Table() {
+                this.rows = new ArrayList<Row*>() on heap;
+                this.spare = null;
+            }
+            public method insert(Row* row) returns void { this.rows.add(row); return; }
+            public method keepSpare(Row* row) returns void { this.spare = row; return; }
+            public method at(int position) returns Row* { return this.rows.get(position); }
+            public method clear() returns void {
+                for (mutable int i = 0; i < this.rows.size(); i++) { delete this.rows.get(i); }
+                this.rows.clear();
+                return;
+            }
+            public destructor ~Table() returns void {
+                this.clear();
+                nullable Row* last = this.spare;
+                if (last != null) {
+                    System.IO.Console.printf("spare %d\n", last.read());
+                    delete last;
+                }
+                delete this.rows;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Table* people = new Table() on heap;
+                people.insert(new Row(10) on heap);
+                Row* before = people.at(0);
+                System.IO.Console.printf("%d ", before.read());
+                people.clear();                         // `before` dangles from here on
+                people.insert(new Row(30) on heap);
+                Row* after = people.at(0);              // ...and this is the row that is there now
+                System.IO.Console.printf("%d ", after.read());
+                people.keepSpare(new Row(7) on heap);
+                delete people;
+                return;
+            }
+        }
+    }
+}

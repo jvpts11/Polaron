@@ -3,7 +3,7 @@ program DispatchTable;
 
 // Mutable dispatch tables (spec 32.8): a class's method table can be rewritten at runtime.
 //
-//     Dog.methods.replace("bark", lambda(Dog d) returns void { ... });
+//     Dog.methods.replace("bark", command (Dog d) returns void { ... });
 //
 // The replacement takes over the class's vtable slot, so EVERY instance -- the ones already alive and
 // the ones not yet born -- picks up the new behaviour. Type safety is not lost: the replacement must
@@ -48,7 +48,7 @@ public bundle main {
                 rex.bark();
 
                 // Patch a void method with no arguments.
-                Dog.methods.replace("bark", lambda(Dog d) returns void {
+                Dog.methods.replace("bark", command (Dog d) returns void {
                     System.IO.Console.println("woof remix");
                 });
 
@@ -58,16 +58,18 @@ public bundle main {
 
                 // Patch a method that takes arguments and returns a value; the replacement reads the
                 // receiver's state just like the original did.
-                Dog.methods.replace("loudness", lambda(Dog d, int times) returns int {
+                Dog.methods.replace("loudness", command (Dog d, int times) returns int {
                     return 100 + times;
                 });
                 System.IO.Console.printf("loudness=%d\n", rex.loudness(7));
 
-                // A capturing replacement: the closure is installed, so the captured value travels with it.
+                // A replacement WITH BAGGAGE: the command is installed, and what it carries travels
+                // with it. As a lambda this read the outer `base` and said nothing about doing so.
                 mutable int base = 1000;
-                Dog.methods.replace("loudness", lambda(Dog d, int times) returns int {
-                    return base + times;
-                });
+                Dog.methods.replace("loudness",
+                    command (Dog d, int times) carries (int floor = base) into pack returns int {
+                        return pack.floor + times;
+                    });
                 System.IO.Console.printf("captured=%d\n", fido.loudness(5));
 
                 // The Poodle inherits bark, so the patch reaches it; it overrides loudness, so it keeps

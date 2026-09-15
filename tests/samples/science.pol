@@ -55,23 +55,23 @@ public bundle Main {
 
                 // Brent finds sqrt(2) as the root of x^2 - 2.
                 System.IO.Console.printf("root=%.6f ",
-                    Roots.brent(lambda(double x) returns double { return x * x - 2.0; },
+                    Roots.brent(command (double x) returns double { return x * x - 2.0; },
                                 0.0, 2.0, 0.000000001));
 
                 // A central difference and an adaptive Simpson, on functions whose answers are exact.
                 System.IO.Console.printf("deriv=%.6f integral=%.6f ",
-                    Calculus.derivative(lambda(double x) returns double { return x * x * x; }, 2.0),
-                    Calculus.integrate(lambda(double x) returns double { return x * x; },
+                    Calculus.derivative(command (double x) returns double { return x * x * x; }, 2.0),
+                    Calculus.integrate(command (double x) returns double { return x * x; },
                                        0.0, 3.0, 0.000000001));
 
                 // y' = y from y(0)=1 over [0,1] is e, which is the standard way to see an integrator
                 // work: RK4 gets six digits in ten steps where Euler gets one.
                 System.IO.Console.printf("ode=%.6f ",
-                    Ode.rk4(lambda(double t, double y) returns double { return y; },
+                    Ode.rk4(command (double t, double y) returns double { return y; },
                             0.0, 1.0, 1.0, 20));
 
                 System.IO.Console.printf("min=%.6f ",
-                    Optimize.minimize(lambda(double x) returns double {
+                    Optimize.minimize(command (double x) returns double {
                         return (x - 3.0) * (x - 3.0);
                     }, 0.0, 10.0, 0.0000001));
 

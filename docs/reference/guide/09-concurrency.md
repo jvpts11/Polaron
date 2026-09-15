@@ -39,14 +39,15 @@ their time waiting and you do not want to burn an OS thread on each one.
 
 ## 9.2 Threads
 
-`Thread` lives at `System.Concurrency.Thread`. A thread runs a `function<void>` — a closure that takes
-no arguments and returns nothing — which you hand to its constructor. Calling `start()` spawns the OS
-thread and begins running the closure; calling `join()` blocks the calling thread until that thread has
+`Thread` lives at `System.Concurrency.Thread`. A thread runs an `Action` — a command that takes no
+arguments and answers nothing — which you hand to its constructor. Calling `start()` spawns the OS
+thread and begins running it; calling `join()` blocks the calling thread until that thread has
 finished.
 
 ```polaron
 import System.IO.Console;
 import System.Concurrency.Thread;
+import System.Commands.Action;
 program ThreadSpawn;
 
 public bundle main {
@@ -54,12 +55,11 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 mutable int n = 21;
-                function<void> work =
-                    lambda[captures: byvalue n]() returns void {
-                        System.IO.Console.printf("worker n=%d\n", n * 2);
-                    };
+                Action* work = command () carries (int seed = n) into pack returns void {
+                    System.IO.Console.printf("worker n=%d\n", pack.seed * 2);
+                };
                 Thread t = new Thread(work) on heap;
-                t.start();   // the closure now runs on its own OS thread
+                t.start();   // the command now runs on its own OS thread
                 t.join();    // wait for it to finish before continuing
                 System.IO.Console.printf("main done\n");
                 return;
@@ -69,9 +69,11 @@ public bundle main {
 }
 ```
 
-The lambda captures `n` **by value**, so the worker thread receives its own copy and does not race the
-main thread over the original variable. This is the safe default and it matters: a closure that
-outlives the scope it was created in must not hold a dangling reference. Because `main` calls `join()`
+The command **carries** `n`, and baggage is copied when the command is built — so the worker thread
+receives its own copy and does not race the main thread over the original variable. That is not a
+default to remember: it is the only mode there is, and the list says out loud what crossed. The
+compiler reads the same list to decide whether the crossing is safe at all (§9.5). Because `main`
+calls `join()`
 before printing its last line, the output is deterministic — the worker runs to completion first, so
 the program prints `worker n=42` and then `main done`. Without the `join()`, the two prints could
 interleave in either order, which is exactly the kind of nondeterminism threads introduce.
@@ -353,9 +355,10 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Mutex<int> counter = new Mutex<int>(0) on heap;
-                function<void> work = lambda[captures: byvalue counter]() returns void {
+                Action* work = command () carries (Mutex<int> cell = counter) into pack
+                    returns void {
                     for (mutable int i = 0; i < 100000; i++) {
-                        synchronized (counter) using int& c {
+                        synchronized (pack.cell) using int& c {
                             c = c + 1;    // read-modify-write, protected by the lock
                         }
                     }
@@ -380,8 +383,8 @@ Two threads each increment the shared counter one hundred thousand times. The `c
 `synchronized` block is a read-modify-write, which is not atomic on its own; without the lock the two
 threads would routinely read the same value, both add one, and both write it back, losing an update.
 With the lock, the total is exactly `200000`. Note that both threads share the *same* mutex: the
-closure captures `counter` by value, but `Mutex` is a heap object referred to through its handle, so
-both closures lock the one counter.
+command carries `counter`, and `Mutex` is a heap object referred to through its handle, so both
+threads lock the one counter — which is why the data-race rule lets this baggage across at all.
 
 The mutex generalizes to any type. A `Mutex<ArrayList<Dog>>` guards a whole list, and
 `synchronized (m) using ArrayList<Dog>& list { list.add(rex); }` mutates it safely.
@@ -409,9 +412,10 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 atomic<int> counter = new atomic<int>(0) on heap;
-                function<void> work = lambda[captures: byvalue counter]() returns void {
+                Action* work = command () carries (atomic<int> cell = counter) into pack
+                    returns void {
                     for (mutable int i = 0; i < 100000; i++) {
-                        counter.increment();   // one indivisible atomic add
+                        pack.cell.increment();   // one indivisible atomic add
                     }
                 };
                 Thread t1 = new Thread(work) on heap;
@@ -473,9 +477,10 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Channel<int> ch = new Channel<int>(4) on heap;    // capacity 4
-                function<void> producer = lambda[captures: byvalue ch]() returns void {
+                Action* producer = command () carries (Channel<int> out = ch) into pack
+                    returns void {
                     for (mutable int i = 1; i <= 5; i++) {
-                        ch.send(i);      // blocks once the buffer is full
+                        pack.out.send(i);      // blocks once the buffer is full
                     }
                 };
                 Thread t = new Thread(producer) on heap;
@@ -503,7 +508,7 @@ object references alike.
 
 Sometimes you need to wait on *several* channels at once and act on whichever becomes ready first.
 Earlier drafts of the language had a `select` keyword for this; the language settled instead on a
-fluent builder, `Channel.select()`, which reuses ordinary static methods and lambdas and needs no new
+fluent builder, `Channel.select()`, which reuses ordinary static methods and commands and needs no new
 syntax. You chain a `.receive(channel, handler)` arm for each channel you want to watch, optionally a
 `.timeout(milliseconds, handler)` arm, and finish with `.run()`.
 
@@ -519,17 +524,17 @@ public bundle main {
             public static method main(string[] args) returns void {
                 Channel<int> a = new Channel<int>(4) on heap;
                 Channel<int> b = new Channel<int>(4) on heap;
-                function<void> prod = lambda[captures: byvalue b]() returns void {
-                    b.send(42);
+                Action* prod = command () carries (Channel<int> out = b) into pack returns void {
+                    pack.out.send(42);
                 };
                 Thread t = new Thread(prod) on heap;
                 t.start();
                 t.join();   // b now holds a value; a is still empty
                 Channel.select()
-                    .receive(a, lambda(int x) returns void {
+                    .receive(a, command (int x) returns void {
                         System.IO.Console.printf("a=%d\n", x);
                     })
-                    .receive(b, lambda(int y) returns void {
+                    .receive(b, command (int y) returns void {
                         System.IO.Console.printf("b=%d\n", y);   // this arm fires: prints b=42
                     })
                     .run();
@@ -551,10 +556,10 @@ milliseconds, the timeout handler runs instead, so `select` never hangs forever:
 ```polaron
 Channel<int> a = new Channel<int>(4) on heap;   // stays empty
 Channel.select()
-    .receive(a, lambda(int x) returns void {
+    .receive(a, command (int x) returns void {
         System.IO.Console.printf("a=%d\n", x);
     })
-    .timeout(20, lambda() returns void {
+    .timeout(20, command () returns void {
         System.IO.Console.println("timeout");   // no value within ~20 ms: this runs
     })
     .run();
@@ -567,9 +572,13 @@ with no synchronization between them — is undefined behavior in most systems l
 some of the hardest bugs there are. Polaron does not make races impossible, but its concurrency toolkit is
 designed so that the *straightforward* way to share state is also the *safe* way.
 
-Three ideas do the work. First, value semantics: assignment in Polaron is a deep copy, and closures capture
-by value by default, so handing data to another thread tends to hand it a private copy rather than a
-shared, aliased one. Two threads that each own their own copy cannot race over it. Second, when threads
+Three ideas do the work. First, value semantics: assignment in Polaron is a deep copy, and a command's
+baggage is copied when the command is built, so handing work to another thread tends to hand it a
+private copy rather than a shared, aliased one. Two threads that each own their own copy cannot race
+over it — and where the baggage is a POINTER, the declaration says so, which is exactly what the
+compiler reads to refuse the crossing (`region-binder: this thread's work carries ...`) unless the
+type is `shareable`, an `atomic<T>`, a `Mutex<T>`, a `Channel<T>`, or was handed over with `move`.
+Second, when threads
 genuinely must share mutable state, `Mutex<T>` makes the shared value *unreachable* except while the lock
 is held, so you cannot forget to synchronize — the type system routes you through the lock — and the lock
 is released even when the critical section throws. Third, `atomic<T>` gives you correct shared counters

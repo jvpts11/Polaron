@@ -1,0 +1,37 @@
+﻿import System.IO.Console;
+program UniqueContagion;
+
+// CONTAGION, AND THE DIAGNOSTIC THAT NAMES ITS CAUSE (ownership.md §6.1).
+//
+// A type with a `unique` field cannot be copied. That is not a choice, it is arithmetic -- the
+// shallow copy would alias the unique and break the single-holder guarantee -- so unlike `dynamic`
+// it is implied rather than written.
+//
+// What §6.1 requires beyond the refusal is the REASON: *"The diagnostic must name the field that
+// causes it. Without that, the user sees a refusal with no visible cause."* The message used to say
+// only *"it owns a `unique` field"*, and that field is frequently not in the type being copied but
+// two types below it -- so the reader went looking through a declaration that does not contain the
+// cause. It names the path now, and names the type as it was WRITTEN rather than by the qualified
+// key the compiler files it under (`Queue`, not `App__Queue`).
+
+public bundle Main {
+    public namespace App {
+        public unique struct Slot {
+            public mutable int v;
+            public constructor Slot(int v) { this.v = v; }
+        }
+        // A type with a `unique` field cannot be copied -- arithmetic, not a choice (ownership.md 6.1).
+        public struct Queue {
+            public mutable Slot head;
+            public constructor Queue(int v) { this.head = new Slot(v) on stack; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Queue q = new Queue(3) on stack;
+                Queue r = q;
+                System.IO.Console.printf("r=%d q=%d\n", r.head.v, q.head.v);
+                return;
+            }
+        }
+    }
+}

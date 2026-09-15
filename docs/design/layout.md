@@ -3,6 +3,35 @@
 > **Status.** A redesign of a construct that already ships. §3 is what exists today, measured against
 > the source; §4 onwards is the new model. §9 lists what breaks. §10 generalises `comptime`, which is
 > larger than `layout` and is written here because `layout` is what forced it.
+>
+> **BUILT — §5, §6, §6.1, §7 and §8.** `arranges` replaces `implements`, with the old spelling
+> warning under `Polaron-0B51` rather than breaking. `permits reorder, padding` sits on the layout
+> header and **nothing is permuted without it**. The refusal names the concession and what the type
+> would then measure, under `Polaron-0813`. The concessions cross a `.polh`, survive the cloner and
+> the monomorphiser, and the corpus is migrated. `layout_concession_is_explicit` reads bytes through
+> an **address** to prove two declarations stay different, and `layout_names_the_concession` pins the
+> message. **That closes §3.1, which was a live defect rather than a gap** — the numbers were 8 and 8
+> and are now 12 and 8.
+>
+> **And the resolver:** `resolvedBy` names the member; a bodyless one on the layout is an obligation
+> and a bodied one a default; the target's own always wins. All four verbs, completeness over the
+> field set, and both concession checks — `align` and `isolate` need `padding` (§13.4), and a
+> resolver that permutes without `reorder` is refused naming the word it did not have.
+> `layout_resolver` measures **addresses**: `apart 64` is the promise `isolate` makes, where 4 would
+> be the two counters adjacent at the same total size.
+>
+> **One implementation note the design did not anticipate, and it is the load-bearing one.** A
+> boundary cannot be RECORDED on a field and left to the backend: what the backend emits is a struct
+> type, and `{ i32, i32 }` puts two counters four bytes apart whatever is written down about them.
+> `align` and `isolate` therefore **materialise** the gap as real padding, exactly as `pad` does —
+> and the tail is rounded up too, because stopping at 68 puts the second element of an array 68 bytes
+> in and the guarantee holds inside one object while failing one subscript away. A promise about a
+> distance has to become a distance.
+>
+> **NOT BUILT:** §13.2's inherited fields (no arranged type in the corpus has a base), §13.5's
+> `together`, and §11's extension to non-`dynamic` classes. §8.2's topological order over containment
+> is not built either, and is not needed yet: a resolver that reads another type's `sizeof()` would
+> need it, and the four verbs as built read only the target's own fields.
 
 ---
 
@@ -337,12 +366,111 @@ Neither fix alone is enough.
 | `resolvedBy`, `place`, `isolate`, `align`, `pad` | verbs on `itself` | not keywords |
 | `comptime` | **existing**, generalised over statements | §10 |
 
-## 13. Still to design
+## 13. Decided (Wave 4.5)
 
-| | |
-|---|---|
-| 13.1 | `layout` collects by **short name globally** (`layouts[c.name] = &c`). Two layouts with one name in two namespaces is not handled |
-| 13.2 | Does a resolver see **inherited** fields, and may it place them? A layout can `extends` a layout; a target can `extends` a target |
-| 13.3 | Whether a resolver may read anything about a field beyond name/type/size/align — an annotation on it, for instance, which is what a "every field marked X gets its own line" rule would want |
-| 13.4 | What `align` does when the concession `padding` was not granted: refuse, or is alignment not padding? |
-| 13.5 | The `entity` case. `layout` on an `entity` arranges **columns**, not fields within an instance (`docs/design/entity.md` §9) — the same three roles apply, and the resolver's verbs need an entity meaning: `together(a, b)` for AoSoA is the one that has no analogue here |
+### 13.1 Layouts are keyed by the resolved class key, like everything else
+
+**Decided.** `layouts[c.name]` becomes `layouts[resolveClassKey(c.name)]` — the same key the type
+table, the vtable globals and `vtable.load`'s `text` all use.
+
+This is not a design question, it is **a bug with a design question written on it**. Two layouts named
+`Compact` in two namespaces do not currently collide loudly; the second overwrites the first in a
+`std::map`, and every target arranging by the first name silently gets the second one's rules. A wire
+format arranged by somebody else's cache-line layout produces a struct of the right size with the
+fields in the wrong places, and both ends of the wire agree it is 32 bytes.
+
+The mechanism already exists and is used everywhere else — Wave 3 hit the same thing from the other
+side, where `shape.base` and `shape.interfaces` had to be resolved or the descent relation silently
+had no edges. **A name that half the compiler resolves and half does not is the shape both defects
+have.**
+
+### 13.2 A resolver sees inherited fields and must place them
+
+**Decided: yes, it sees them, and completeness includes them.**
+
+The alternative — inherited fields fixed at the base's arrangement, with the resolver placing only
+the ones declared here — was tempting because it matches how single inheritance already works, and it
+is wrong for what a layout is for. A layout is a statement about **the bytes of an instance**, and an
+instance's bytes include what it inherited. A resolver that cannot see them cannot say *this field is
+alone on its cache line* about the one field that matters, if the base declared it.
+
+Three consequences, and each is a rule the machinery already has:
+
+- **Completeness (§8.1) counts inherited fields.** Every field of the whole instance placed exactly
+  once — one missed is an error naming it, and the error must say which class declared it, because
+  the resolver's author may not have written that line.
+- **A base's own arrangement is not binding on a derived target.** It is a different type with
+  different bytes; the only thing that must survive is what the layout's concessions and constraints
+  say.
+- **But a `dynamic` class's header stays at offset zero**, whatever the resolver does, and that is
+  not a field the resolver may place. It is not the author's byte to move: `Tagged*` used as a
+  `Particle*` finds the vtable pointer at zero, and a resolver that relocated it would break every
+  cast in the program. It is excluded from the field list rather than refused at `place`, so it never
+  appears as something to forget.
+
+### 13.3 A resolver reads name, type, size, align — and annotations
+
+**Decided: annotations too, and nothing else.**
+
+The case that forces it is the one the item names: *every field marked X gets its own line* is a real
+rule, it is exactly what `isolate` is for, and without annotations the only way to write it is to
+list field names in the resolver — which puts the target's field names in the layout, where a rename
+breaks a file that does not mention the class.
+
+`[Annotation]` is already applied to members (`AnnotationUse` on the AST), already read at compile
+time, and already the language's way of saying *this one is different* without changing its type. A
+resolver asking `f.hasAnnotation("Hot")` is reading a fact the author wrote on the field, at the
+field, which is where a reader will look for the reason it moved.
+
+**What is deliberately still out:** the field's *value*, anything about the methods of its type, and
+anything about other declarations in the program. A resolver decides where bytes go; the moment it
+can read the program it becomes a macro system, and §10's whole argument for `comptime` is that the
+resolver writes ordinary code over a **small** vocabulary.
+
+### 13.4 `align` needs the `padding` concession — because alignment *is* padding
+
+**Decided: refuse without it.**
+
+The question was whether alignment is padding, and it is: putting a field at a 64-aligned offset when
+its type wants 8 means inserting up to 56 bytes that nothing asked for. That is precisely what
+`padding` grants (§6: *"beyond what alignment requires"*), and the field's own alignment requirement
+is not what is doing the work here — the resolver's `64 bytes` is.
+
+**The alternative reading is worse than merely wrong.** If `align` were free, then `WireRecord`,
+which permits nothing, could have its fields spread across 64-byte boundaries by its resolver, and a
+declaration whose entire purpose is *both ends index this* would have granted the one thing it meant
+to refuse. §8's rule is that a resolver exceeding its concession is an error naming the line it did
+not have; this is that rule, applied to the verb where it is least obvious and therefore most needed.
+
+**`isolate` needs it too**, for the same reason and more obviously — a cache line to itself is padding
+by definition. It is stated here because §8.1 says `isolate` is *not* sugar for `align(f, 64 bytes)`,
+and two verbs that are deliberately not the same thing might have been thought to need different
+concessions. They need the same one.
+
+### 13.5 On an `entity`, the verbs mean columns — and `together` is the new one
+
+**Decided.** `layout` over an `entity` arranges **columns**, and each verb keeps its sense with the
+subject changed from *field of an instance* to *column of the entity*:
+
+| | over a struct | over an entity |
+|---|---|---|
+| `place(f)` | the field goes next | the **column** goes next |
+| `isolate(f)` | a cache line to itself | the column's storage is its own allocation — no other column shares a line with it |
+| `align(f, N)` | an N-aligned offset | each column's base is N-aligned, which is what a vector load wants |
+| `pad(N)` | a hole | a hole between column allocations |
+| **`together(a, b, ...)`** | — | the named columns are **interleaved**: AoSoA |
+
+`together` is the one with no analogue, and it is the only addition. It exists because AoSoA is *the*
+thing a column layout wants to say and nothing else can say it: `place` puts columns in an order,
+`isolate` separates them, and neither expresses *these three travel as one block of N-element
+groups*. The group width is the target's vector width, for the same reason `isolate` does not write
+64 in the source — the intent is *these are read together*, and the width is one machine's answer.
+
+**Concessions carry over unchanged and mean more here.** `reorder` over an entity is permission to
+change **column order**, which is invisible to every reader of a row and therefore nearly free —
+where over a struct it changes offsets that an FFI boundary might depend on. `permits` nothing over
+an entity is the AoSoA-forbidding case: a column format read by something outside the program.
+
+**And completeness still means every column exactly once**, including one named inside `together`.
+A column that is interleaved and also placed is placed twice, which is the error §8.1 already
+defines — arriving through a verb that makes it easy to do by accident.

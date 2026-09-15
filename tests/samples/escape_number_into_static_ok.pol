@@ -1,0 +1,47 @@
+import System.IO.Console;
+program EscapeNumberIntoStaticOk;
+
+// A NUMBER READ OUT OF AN ARGUMENT, FILED IN A STATIC FIELD, IS NOT THE ARGUMENT.
+//
+// `Keeper.base = at` is a static method's `this.base = at`: what lands in the field is an
+// `address` the pool handed back, and nothing of the pool is reachable through it afterwards. The
+// number check read only `this.`, so the static spelling recorded the pool as kept and a call with
+// a frame object was refused (Polaron-1721) -- while the compiler's own advice said `open` only
+// ever reads through its parameter.
+//
+// Both spellings: through a local (`address at = pool.take()`) and straight from the call.
+//
+// Must compile clean.
+public bundle Main {
+    public namespace App {
+        public class Pool {
+            private mutable int next;
+            public constructor Pool() { this.next = 4096; }
+            public method take() returns address {
+                address a = cast<address>(this.next);
+                this.next = this.next + 4096;
+                return a;
+            }
+            public method count() returns int { return this.next / 4096; }
+        }
+        public class Keeper {
+            private static mutable address base;
+            private static mutable int pages;
+            public static method open(Pool* pool) returns boolean {
+                address at = pool.take();
+                Keeper.base = at;
+                Keeper.pages = pool.count();
+                return true;
+            }
+            public static method pageCount() returns int { return Keeper.pages; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Pool pool = new Pool() on stack;
+                Keeper.open(&pool);
+                System.IO.Console.println($"{Keeper.pageCount()}");
+                return;
+            }
+        }
+    }
+}

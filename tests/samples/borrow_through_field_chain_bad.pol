@@ -1,0 +1,33 @@
+import System.IO.Console;
+program BorrowThroughFieldChainBad;
+
+// A BORROW READ STRAIGHT OUT OF A FIELD PATH, TWO OBJECTS IN.
+//
+// `Leaf* deep = t.branch.leaf;` holds storage that `~Tree` frees by way of `~Branch`. Only CALLS
+// were being followed as borrows, so the plainest way there is to take a reference into another
+// object -- naming its field -- was the one thing nothing looked at. The depth changes nothing:
+// whatever the path hangs off is whose lifetime the value has.
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Branch {
+        public mutable Leaf* leaf;
+        public constructor Branch() { this.leaf = new Leaf(1) on heap; }
+        public destructor ~Branch() returns void { delete this.leaf; return; }
+    }
+    public class Tree {
+        public mutable Branch* branch;
+        public constructor Tree() { this.branch = new Branch() on heap; }
+        public destructor ~Tree() returns void { delete this.branch; return; }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Tree* t = new Tree() on heap;
+            Leaf* deep = t.branch.leaf;              // empréstimo a dois níveis
+            delete t;
+            System.IO.Console.println($"{deep.n}");
+            return;
+        }
+    }
+} }

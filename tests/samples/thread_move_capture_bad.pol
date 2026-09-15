@@ -1,0 +1,43 @@
+import System.Concurrency.Thread;
+import System.Commands.Action;
+program ThreadMoveCaptureBad;
+
+// THE INVALIDATION, which is what makes `move` into a thread a promise rather than a reassuring
+// word (ownership.md §11).
+//
+// A thread that receives its chunk by `move` is its sole holder — and *sole* has to be enforced
+// somewhere, or the mode is a third spelling of `byref`. It is enforced by the same machinery every
+// other `move` uses: the source is emptied, so a later read of it in the spawning scope is
+// `Polaron-0402`, at the line that reads it.
+//
+// That is the difference between this and a permission. `atomic<T>`, `Mutex<T>` and `Channel<T>`
+// make sharing safe; `move` makes sharing *not happen*, and the compiler is what makes the second
+// claim true.
+
+public bundle Main {
+    public namespace App {
+        public class Chunk {
+            public mutable int total;
+            public constructor Chunk() { this.total = 0; }
+            public method work() returns void { this.total = this.total + 1; return; }
+            public method sum() returns int { return this.total; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Chunk* chunk = new Chunk() on heap;
+                Action* work = command () carries (Chunk* mine = move chunk) into pack returns void {
+                    pack.mine.work();
+                };
+                Thread t = new Thread(work) on heap;
+                t.start();
+                t.join();
+                // The thread is the only holder now. This reads something the spawning scope
+                // handed away.
+                int leftover = chunk.sum();
+                delete t;
+                return;
+            }
+        }
+    }
+}

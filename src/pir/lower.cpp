@@ -15,6 +15,10 @@
 // this pass asks it rather than keeping a second list that can disagree with it.
 #include "semantic/semutil.h"
 
+// For `cloneExprDeep` -- a `methodref` lowers as the construction of its binding class, and the
+// receiver expression has to be handed to that construction without being evaluated twice.
+#include "parser/monomorphize.h"
+
 // For `collectRefs` -- the free-variable walk a lambda's automatic capture needs. It touches no
 // LLVM and belongs to neither backend; writing a second walk over every expression kind is how the
 // two ends of a closure come to disagree about what it carries.
@@ -926,15 +930,23 @@ private:
             // NESTED, THROUGH THE NAME. The parser folds the FIRST group into the base name, so
             // `int[3][4]` arrives as name `int[3]` with extent 4 -- and wrapping the base in the
             // extent directly builds it inside out, four of three rather than three of four. The
-            // spelling is the one place the order is unambiguous, so it is what decides.
-            return baseTypeOf(named + "[" + std::to_string(t.arrayExtent) + "]");
+            // spelling is the one place the order is unambiguous, so it is what decides -- and the
+            // element's own '*' is part of that spelling. `byte*[33]` was rebuilt here as `byte[33]`
+            // and came out `[33 x i8]`: thirty-three BYTES where thirty-three pointers were written.
+            // It compiled, and every read of one loaded a byte and widened it into an address.
+            // `canonicalType` puts the marker in exactly this position; this is the same name.
+            return baseTypeOf(named + (t.arrayElemPointer ? "*" : "") + "[" +
+                              std::to_string(t.arrayExtent) + "]");
         }
         if (t.isArray) {
             // ONCE PER DIMENSION. This wrapped exactly once however many `[]` were written, so an
             // `int[][]` parameter arrived as an `int[]`: indexing it produced an `i32` where the
             // second index needed a pointer, and the second `gep` was given `undef` as its base.
             // `arrayDims` is the count and it was being ignored; `isArray` only says "at least one".
-            const Type* made = base;
+            // `T*[]` -- an array whose ELEMENT is a pointer -- gets that element here for the same
+            // reason the stated-extent case above does: `base` was asked of the bare name, which has
+            // had the '*' taken off it by the parser and put on the flag.
+            const Type* made = t.arrayElemPointer ? tt.ptrType() : base;
             for (int d = std::max(1, t.arrayDims); d > 0; --d) {
                 made = tt.sliceType(made);
             }
@@ -2038,8 +2050,8 @@ private:
         // A CALLABLE VALUE IS A POINTER. `function<int,int>` was read as an unknown class and
         // became an opaque nominal struct, so a lambda passed to a method was passed BY VALUE as
         // an empty aggregate -- `call i32 @apply(%"function<int,int>" undef, i32 21)`. Behind the
-        // pointer is `{code, env}`; `funcptr` is the bare code pointer, which is also one word.
-        if (name.rfind("function<", 0) == 0 || name.rfind("funcptr<", 0) == 0) {
+        // pointer is `{code, env}`; `methodptr` is the bare code pointer, which is also one word.
+        if (name.rfind("function<", 0) == 0 || ast::isMethodPtrType(name)) {
             return tt.ptrType();
         }
         // A CATALOG IS AN INTERFACE FOR ENUMS, and a value of one is a TAGGED ORDINAL -- a 64-bit
@@ -2989,7 +3001,8 @@ private:
             for (const ast::Namespace& ns : b.namespaces) {
                 for (const ast::ClassDecl& c : ns.classes) {
                     const std::string key = classKey(b.name, ns.name, c.name);
-                    classesByKey_.emplace(key, ClassEntry{&c, b.name, ns.name, b.isPrelude});
+                    classesByKey_.emplace(
+                        key, ClassEntry{&c, b.name, ns.name, b.isPrelude, b.isAppendedRuntime});
                     // The FIRST declared one, recorded in source order. Deterministic on purpose:
                     // a fallback that has to pick must pick the same thing every time, or the bug
                     // it creates is one nobody can reproduce.
@@ -3570,6 +3583,19 @@ private:
         return false;
     }
 
+    // THE `weak` FIELDS A CLASS DECLARES ITSELF. Each is a node on the list of the object it points
+    // at, and it has to come off that list when the object holding it dies -- see `unlinkOwnWeak`.
+    // A base's weak fields are the base's destructor's to unlink, which the chain runs.
+    std::vector<std::string> ownWeakFields(const ast::ClassDecl& c) const {
+        std::vector<std::string> names;
+        forEachMember<ast::FieldDecl>(c, [&](const ast::FieldDecl& f) {
+            if (f.isWeak && !f.isStatic) {
+                names.push_back(f.name);
+            }
+        });
+        return names;
+    }
+
     // The destructor that answers for `c`: its own if it declares one, otherwise its base's.
     std::string destructorOf(const ast::ClassDecl& c) const {
         bool has = false;
@@ -3577,8 +3603,9 @@ private:
         // ...OR THE ONE IT WAS GIVEN. A counted class has a destructor whether it wrote one or not,
         // and reporting only the declared ones sent `delete leaf` up to the base class's -- so
         // `Leaf`'s own count never came down and `release region Node` refused an arena whose every
-        // object had been deleted.
-        if (has || countsInstances(c)) {
+        // object had been deleted. So does a class with a `weak` field: its destructor is where the
+        // field comes off its target's list.
+        if (has || countsInstances(c) || !ownWeakFields(c).empty()) {
             const std::string cls = keyOfClass(c);
             return cls + ".~" + cls;
         }
@@ -3700,6 +3727,52 @@ private:
         hasVtable_.insert(keyOfClass(c));
     }
 
+    // HOW LONG AN `on static` ARRAY IS, answered from what the folder already knows.
+    //
+    // A literal, or any name `foldConstants` reduced to one -- which is what `fixed` means and is
+    // how the length is usually written: `new byte[FailureMessage.Capacity]() on static`. Anything
+    // else is refused rather than guessed, because the storage is in the image and its size is a
+    // fact about the image.
+    bool foldsToLength(const ast::Expr* size, int64_t& out) {
+        if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(size)) {
+            out = parseIntLexeme(n->text);
+            return out > 0;
+        }
+        // ARITHMETIC OVER CONSTANTS, because the size is usually two facts multiplied: a count of
+        // families and the room each gets, a slot count and a slot size. Written as one number they
+        // are one number, and the day either changes the other has to be remembered.
+        if (const auto* bin = dynamic_cast<const ast::BinaryExpr*>(size)) {
+            int64_t l = 0;
+            int64_t r = 0;
+            if (!foldsToLength(bin->lhs.get(), l) || !foldsToLength(bin->rhs.get(), r)) {
+                return false;
+            }
+            if (bin->op == "*") { out = l * r; } else if (bin->op == "+") { out = l + r;
+            } else if (bin->op == "-") { out = l - r; } else { return false; }
+            return out > 0;
+        }
+        std::string name;
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(size)) {
+            name = id->name;
+        } else if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(size)) {
+            if (const auto* owner = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                name = owner->name + "." + mem->member;
+            }
+        }
+        if (name.empty()) {
+            return false;
+        }
+        if (auto folded = constInts_.find(name); folded != constInts_.end()) {
+            out = folded->second;
+            return out > 0;
+        }
+        return false;
+    }
+
+    // Every `on static` array in the module: the storage global's name and how long it is. Read
+    // once, at the top of the entry, to write the header word -- see `Global::arrayBytes`.
+    std::vector<std::pair<std::string, int64_t>> staticArrays_;
+
     // A class-level static, as a module global under `<Class>.<field>` -- the same key the call
     // sites already build from the qualified name. A LITERAL initialiser is folded in here, because
     // that is what `static fixed` means: one value, known now, and the reader is a constant.
@@ -3753,6 +3826,39 @@ private:
         } else if (const auto* b = dynamic_cast<const ast::BoolLiteralExpr*>(init)) {
             g.initInt = b->value ? 1 : 0;
             g.zeroInit = false;
+        } else if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(init);
+                   na != nullptr && na->location == "static") {
+            // `new T[N]() on static` -- STORAGE THAT IS PART OF THE IMAGE, and the answer to the
+            // refusal below in the one case where allocating is not inconvenient but impossible:
+            // the bootstrap runtime, which is what every other allocation is built on.
+            //
+            // TWO GLOBALS AND NOT ONE. The field is an ordinary array reference, so it is a pointer,
+            // and it is initialised to the storage's address -- a relocation, which is a constant,
+            // so nothing has to run. The storage is the array itself, all zero, header word
+            // included; `Global::arrayBytes` says why the length is written at the entry rather
+            // than here.
+            const Type* elem = storageTypeOf(na->elementType);
+            const int64_t stride =
+                elem != nullptr && elem->facts.size > 0 ? static_cast<int64_t>(elem->facts.size) : 4;
+            int64_t count = 0;
+            if (!foldsToLength(na->size.get(), count)) {
+                refuse("'on static' needs a length this compiler can compute, and '" + key +
+                           "' is sized by something that is not one. The storage is part of the "
+                           "image, so how much of it there is has to be settled before the program "
+                           "runs -- write a literal, or a `fixed` that folds to one",
+                       loc);
+            } else {
+                const std::string storage = key + ".storage";
+                Global block;
+                block.name = storage;
+                block.type = out_.module.types.ptrType();
+                block.linkage = Linkage::Internal;
+                block.arrayBytes = count * stride;
+                out_.module.globals.push_back(std::move(block));
+                staticArrays_.emplace_back(storage, count);
+                g.initGlobal = storage;
+                g.zeroInit = false;
+            }
         } else if (init != nullptr) {
             // AN INITIALIZER THAT WAS WRITTEN AND CANNOT BE EVALUATED is the failure this whole
             // step exists to stop being silent. Zeroing it is never what was meant, and the
@@ -3769,13 +3875,22 @@ private:
             // folder is weak, but because a value that must be ALLOCATED cannot exist before the
             // process does. `static mutable String tag = "hello";` compiled clean and took the
             // process down with an access violation.
+            //
+            // ...AND AN ARRAY HAS A THIRD ANSWER, which is why it is named separately: `on static`
+            // puts the storage in the image, so there is nothing left to allocate and no hook to
+            // wait for. It is the only answer available to the bootstrap runtime, whose whole job
+            // is to be what the allocator is built on.
             const std::string spelled = resolvedTypeName(type);
             const bool numeric = cgutil::isIntName(spelled) || cgutil::isFloatType(spelled) ||
                                  spelled == "boolean" || spelled == "char";
+            const bool array = dynamic_cast<const ast::NewArrayExpr*>(init) != nullptr;
             refuse("the initializer for static field '" + key +
                        "' cannot be evaluated before the program starts: it is neither a constant "
                        "nor built from other static fields without a cycle" +
                        (numeric ? ""
+                        : array ? ". A value that must be ALLOCATED cannot exist before the program "
+                                  "runs -- write `on static` to put the storage in the image "
+                                  "instead, or give it a value in `onClassLoad`"
                                 : ". A value that must be ALLOCATED cannot exist before the program "
                                   "runs -- give it a value in `onClassLoad`, which is where the "
                                   "standard library builds its own tables"),
@@ -4322,8 +4437,8 @@ private:
         // A COUNTED CLASS GETS A DESTRUCTOR IT NEVER WROTE, for the one reason: that is where the
         // live-instance count comes down, and `release region A` and `unimport A` both refuse while
         // the count is above zero. Not by analogy with unimport -- it is the same counter and the
-        // same refusal.
-        if (hasDestructor || countsInstances(c)) {
+        // same refusal. A class with a `weak` field gets one too, to unlink it (`unlinkOwnWeak`).
+        if (hasDestructor || countsInstances(c) || !ownWeakFields(c).empty()) {
             Field self;
             self.type = out_.module.types.ptrType();
             self.name = "this";
@@ -4513,6 +4628,15 @@ private:
         Function* fn =
             out_.module.addFunction(key, out_.module.types.fnType(returns, std::move(params)));
         fn->params = std::move(plist);
+        // WHICH SIDE OF THE PROGRAM THIS IS. A runtime the compiler appended -- the region core --
+        // is entirely internal to this module however its methods are spelled, and the backend
+        // sweeps whatever of it the program never reaches. Marked for the whole class, not only for
+        // the `unknown c` entry points: the private helpers behind them are what would otherwise be
+        // left standing once the entry points went. See `Function::appendedRuntime`.
+        if (auto owns = classesByKey_.find(owner);
+            owns != classesByKey_.end() && owns->second.appendedRuntime) {
+            fn->appendedRuntime = true;
+        }
         // MANGLED, and without the outer pointers -- the same spelling `noteName` records, or a
         // call's result is filed under `Result` where every other use says `Result$int$int` and the
         // two never meet. `try?` asked for `Ok` and found no table.
@@ -4546,7 +4670,10 @@ private:
         // poor proxy when the bulk of one runs log(n) times in n -- see the note beside the other
         // backend's copy of this, and `ArrayList.ensureCapacity`, which is what asked for it.
         // `Affinity::Cold` already reached LLVM from here (Â§12 counts it); nothing set it.
-        if (cgutil::hasAnnotation(m, "Cold")) {
+        // ...and `cold` as a WORD (B.3), which is the same fact said in the place a reader looks.
+        // The annotation stays: it is how the standard library says it today, and both spellings
+        // reach the same attribute rather than two mechanisms that can disagree.
+        if (m.isCold || cgutil::hasAnnotation(m, "Cold")) {
             fn->affinity = Affinity::Cold;
             fn->inlineNever = true;
         }
@@ -4582,7 +4709,7 @@ private:
             fn->conv = Conv::Naked;
         }
         // [unknown-abi] A method declared `unknown <world>` IS A BOUNDARY THE FOREIGN WORLD CALLS
-        // INTO -- the other direction from `unknown <world> funcptr`, which is us calling out. Two
+        // INTO -- the other direction from `unknown <world> methodptr`, which is us calling out. Two
         // consequences, and the declaration means nothing without either: it takes its BARE name as
         // the linker symbol (the foreign world knows `syscall_entry`, not `Syscall.entry` -- it has
         // no idea our classes exist), and it keeps external linkage, or dead-stripping deletes the
@@ -4826,14 +4953,14 @@ private:
         lowerLifecycleHooks(c, cls);
     }
 
-    // `X.methods.replace("m", fn)` (Â§32.8): point X's dispatch slot at a thunk that calls `fn`.
+    // `X.methods.replace("m", cmd)` (Â§32.8): point X's dispatch slot at a thunk that runs `cmd`.
     //
     // TYPE SAFETY IS NOT LOST -- the analyzer has already checked that the replacement has the
     // method's exact signature with the receiver as its first parameter. What is left here is the
-    // indirection: a closure is `{code, env}` and a vtable slot holds a bare function of the
-    // method's own shape, so a thunk of that shape stands in the slot and forwards to the closure
-    // through a global. One global and one thunk per replace site, which is what lets the same
-    // method be replaced twice.
+    // indirection: the replacement is a COMMAND, which is an object with one method, and a vtable
+    // slot holds a bare function of the method's own shape. So a thunk of that shape stands in the
+    // slot and forwards into the command through a global. One global and one thunk per replace
+    // site, which is what lets the same method be replaced twice.
     ValueId patchDispatchSlot(const std::string& cls, const ast::CallExpr& c) {
         const auto* named = dynamic_cast<const ast::StringLiteralExpr*>(c.args[0].get());
         const ast::ClassDecl* decl = findClass(cls);
@@ -4853,14 +4980,23 @@ private:
         const Type* ptr = tt.ptrType();
         const std::string tag = cls + "." + method + ".patch" + std::to_string(patchSites_++);
 
+        // THE REPLACEMENT IS LOWERED FIRST, because the thunk has to know WHOSE table it dispatches
+        // through: a command is an object, and reaching its one method is a vtable load like any
+        // other. (It used to be a `{code, env}` pair, where the code was simply the first word.)
+        const ValueId fnVal = lowerExpr(c.args[1].get());
+        if (fnVal == kNoValue) {
+            return kNoValue;
+        }
+        const std::string cmdClass = classNameOf(declaredName(fnVal));
+
         Global held;
         held.name = tag + ".fn";
         held.type = ptr;
         held.linkage = Linkage::Private;
         out_.module.globals.push_back(std::move(held));
 
-        // The thunk: the METHOD'S signature, so it fits the slot, and inside it the closure's --
-        // the environment first, then everything the caller passed.
+        // The thunk: the METHOD'S signature, so it fits the slot, and inside it the command's --
+        // the command object as the receiver, then everything the caller passed.
         Function* thunk = out_.module.addFunction(tag + ".thunk", body->signature);
         thunk->params = body->params;
         thunk->linkage = Linkage::Internal;
@@ -4892,9 +5028,17 @@ private:
             at.text = tag + ".fn";
             const ValueId cell = emit(std::move(at));
             slotType_[cell] = ptr;
-            const ValueId closure = loadFrom(cell, c.loc);
-            const ValueId code = loadAt(closure, 0, ptr, c.loc);
-            const ValueId env = loadAt(closure, 8, ptr, c.loc);
+            // The command the global holds, and its one method, reached through its table -- which
+            // is what keeps a replacement polymorphic in its own right.
+            const ValueId env = loadFrom(cell, c.loc);
+            Inst pick;
+            pick.op = Op::VtableLoad;
+            pick.type = ptr;
+            pick.operands.push_back(env);
+            pick.imm = slotFor(kCommandMethod);
+            pick.text = cmdClass;   // rule 15: the class whose table this names
+            pick.loc = c.loc;
+            const ValueId code = emit(std::move(pick));
 
             Inst call;
             call.op = Op::CallIndirect;
@@ -4916,14 +5060,10 @@ private:
             restoreBody(std::move(outer));
         }
 
-        // The patch itself: keep the closure, then point the slot at the thunk -- in this class and
+        // The patch itself: keep the command, then point the slot at the thunk -- in this class and
         // in every subclass that INHERITS the same implementation. A Poodle is a Dog, so replacing
         // `Dog.bark` must reach the Poodles too; one that overrides it has its own behaviour and is
         // deliberately left alone.
-        const ValueId fnVal = lowerExpr(c.args[1].get());
-        if (fnVal == kNoValue) {
-            return kNoValue;
-        }
         Inst cellAt;
         cellAt.op = Op::ConstFn;
         cellAt.type = ptr;
@@ -7923,6 +8063,14 @@ private:
             if (written == fieldTypeName_.end()) {
                 continue;
             }
+            // ...AND A POINTER FIELD IS SHARED, like a `weak` one: it names an object somebody else
+            // owns. The name here is kept WITHOUT its stars -- `Box*` is filed as `Box`, depth one --
+            // so `isCopyableClass`'s test for a trailing `*` never saw one, and every struct holding
+            // a pointer to a class cloned the pointee on assignment: a holder watched a copy, and in
+            // the Horizon VFS a place in the tree (a mount and a dentry) was cloned on every open.
+            if (written->second.pointerDepth > 0) {
+                continue;
+            }
             const std::string& ftype = written->second.name;
             auto readField = [&](ValueId from) {
                 Inst g;
@@ -8804,6 +8952,28 @@ private:
         // `acc.addInterest()` on a `Savings` through an `Account*` ran `Account`'s empty one.
         // `bank` printed 1500 where the program computes 1650, with nothing to say a virtual call
         // had gone to the wrong body.
+        // WHAT MAKES AN `on static` BLOCK AN ARRAY: its length word, written once, here.
+        //
+        // The storage is all zero so that it lands in `.bss` (see `Global::arrayBytes`), and a
+        // zero-length array is one nothing can index. This is the earliest moment in the program
+        // that exists: bare metal the entry IS the first instruction the machine executes, and
+        // hosted it runs before any Polaron code. Nothing can read one of these arrays before this.
+        if (fn.key.size() > 5 && fn.key.compare(fn.key.size() - 5, 5, ".main") == 0) {
+            for (const auto& [storage, count] : staticArrays_) {
+                Inst at;
+                at.op = Op::ConstFn;   // §7.1: the address of a named module-level thing
+                at.type = out_.module.types.ptrType();
+                at.text = storage;
+                at.loc = body.loc;
+                const ValueId block = emit(std::move(at));
+                Inst put;
+                put.op = Op::Store;
+                put.operands.push_back(constLong(count, body.loc));
+                put.operands.push_back(block);
+                put.loc = body.loc;
+                emit(std::move(put));
+            }
+        }
         size_t firstStatement = 0;
         if (fn.kind == FnKind::Constructor && !body.statements.empty() &&
             beginsWithSuperCall(body.statements.front().get())) {
@@ -8874,6 +9044,12 @@ private:
             lowerStmt(body.statements[at].get());
         }
         closePassLoop(pass, loc(body));
+        // ...AFTER ITS BODY, WHICH MAY STILL READ THEM, THE OBJECT'S `weak` FIELDS LEAVE THEIR LISTS.
+        if (fn.kind == FnKind::Destructor && !blockClosed()) {
+            if (const ast::ClassDecl* here = findClass(owner); here != nullptr) {
+                unlinkOwnWeak(*here);
+            }
+        }
         // A DESTRUCTOR ENDS BY DESTROYING THE BASE. `~Derived` runs its own body and then the
         // base's, which the language guarantees and which nothing here was doing -- `virtual_dtor`
         // printed one line where the program prints two. Emitted after the body, before the
@@ -9519,6 +9695,14 @@ private:
                         ld.operands.push_back(v);
                         ld.loc = r->loc;
                         v = emit(std::move(ld));
+                    } else if (const auto declared = returnName_.find(fn_->key);
+                               declared != returnName_.end() &&
+                               wantsBox(declared->second.name, declared->second.pointerDepth, want,
+                                        got)) {
+                        // A NUMBER RETURNED AS `nullable` IS BOXED, as it is when stored into a
+                        // `nullable` slot. Converted instead, `return k * 10;` went out as the
+                        // POINTER 40, and the caller's `?? 0` read four bytes at address 40.
+                        v = boxed(v, declared->second.name, r->loc);
                     } else if (want != nullptr && got != nullptr && want != got) {
                         // ...AND EVERY OTHER RETURN IS CONVERTED TOO. A method declared `returns
                         // float` whose body yields a `double` -- a `match` over literals, say --
@@ -9900,7 +10084,7 @@ private:
                                    // call's return type, which this pass had guessed as `int`, and
                                    // put a closure address into four bytes.
                                    v->type.name.rfind("function<", 0) == 0 ||
-                                   v->type.name.rfind("funcptr<", 0) == 0)));
+                                   ast::isMethodPtrType(v->type.name))));
             const Type* t = scalar ? declared
                                    : (init != kNoValue ? fn_->value(init)->type : typeOf(v->type));
             if (init != kNoValue) {
@@ -11032,10 +11216,27 @@ private:
         return true;
     }
 
-    // Is this the name of a callable value? `function<int,int>` and `funcptr<...>` are the two
-    // spellings; a `funcptr` is the bare code pointer and a `function` is `{code, env}`.
+    // A CLOSURE: `{ code, env }` behind a pointer, called as `code(env, args...)`.
     static bool isClosureName(const std::string& n) {
         return n.rfind("function<", 0) == 0;
+    }
+
+    // A CODE ADDRESS: one machine word, called as `code(args...)` with no environment.
+    //
+    // THIS PREDICATE DID NOT EXIST, and its absence was not a missing feature -- it was silently
+    // wrong code. `isClosureName` above carried a comment naming BOTH spellings and answered only
+    // for one, so a call through a `procptr` never reached a callable path at all: it fell through
+    // to method resolution, and `destruct(subject)` came out as `call i32 %subject()` -- the first
+    // ARGUMENT called, with no arguments, returning an i32 nobody asked for. It compiled clean,
+    // every time, and there was not one test of the type in the repository.
+    // `nullable` counts, and leaving it out reproduced exactly the failure above one spelling over.
+    // A `nullable methodptr<void, address>` -- the only honest type for an optional callback, and
+    // what a destructor slot holds -- failed the prefix test, so `returnOfMethodPtrType` answered
+    // null and a call through it came out as `call i32 %f(...)` for a method returning void.
+    static bool isMethodPtrName(const std::string& n) { return ast::isMethodPtrType(n); }
+
+    static bool isCallableName(const std::string& n) {
+        return isClosureName(n) || isMethodPtrName(n);
     }
 
     // ---- Â§20.4, `Channel.select()` ----
@@ -11205,33 +11406,29 @@ private:
 
     // A `function<void>` or `function<void, T>` closure, called with an optional argument. The
     // environment is argument zero; that is the whole of the convention.
-    void callHandler(ValueId closure, ValueId arg, SourceLocation loc) {
-        if (closure == kNoValue) {
+    /* ONE ARM'S HANDLER, RUN. The handler is a COMMAND -- an object with one method -- so reaching
+       it is a vtable load and the object goes in as the receiver, which is exactly the position the
+       old `{code, env}` pair's environment word occupied. Same shape, one indirection more honest:
+       the command's own method can be overridden, and here it is found the way any override is. */
+    void callHandler(ValueId handler, ValueId arg, SourceLocation loc) {
+        if (handler == kNoValue) {
             return;
         }
         TypeTable& tt = out_.module.types;
         const Type* ptr = tt.ptrType();
-        Inst codeAt;
-        codeAt.op = Op::Gep;
-        codeAt.type = ptr;
-        codeAt.operands.push_back(closure);
-        codeAt.imm = 0;
-        codeAt.loc = loc;
-        const ValueId codeSlot = emit(std::move(codeAt));
-        slotType_[codeSlot] = ptr;
-        Inst envAt;
-        envAt.op = Op::Gep;
-        envAt.type = ptr;
-        envAt.operands.push_back(closure);
-        envAt.imm = 8;
-        envAt.loc = loc;
-        const ValueId envSlot = emit(std::move(envAt));
-        slotType_[envSlot] = ptr;
-        std::vector<ValueId> pass{loadFrom(envSlot, loc)};
+        Inst pick;
+        pick.op = Op::VtableLoad;
+        pick.type = ptr;
+        pick.operands.push_back(handler);
+        pick.imm = slotFor(kCommandMethod);
+        pick.text = classNameOf(declaredName(handler));   // rule 15: whose table this names
+        pick.loc = loc;
+        const ValueId code = emit(std::move(pick));
+        std::vector<ValueId> pass{handler};
         if (arg != kNoValue) {
             pass.push_back(arg);
         }
-        callIndirect(loadFrom(codeSlot, loc), pass, tt.voidType(), loc);
+        callIndirect(code, pass, tt.voidType(), loc);
     }
 
     // A channel slot back as the element type it was sent as -- the inverse of `asWord`.
@@ -11351,6 +11548,63 @@ private:
         return out;
     }
 
+    /**
+     * Call through a `procptr<Ret, Params...>` -- the value IS the code address.
+     *
+     * The closure call above loads two words and puts the environment in front of the arguments.
+     * This one has neither: a code address is one machine word and the arguments are the caller's,
+     * in the caller's order, under the plain C ABI. That is the whole difference between the two,
+     * and it is why they cannot share a path -- an environment inserted here would push every
+     * argument one place to the right.
+     *
+     * It unwinds like the closure call for the same reason: nothing here can know what is on the
+     * other end of an address obtained at run time.
+     */
+    ValueId callMethodPtr(ValueId code, const ast::CallExpr& c) {
+        const std::string written = declaredName(code);
+        const Type* result = returnOfMethodPtrType(written);
+        Inst call;
+        call.op = Op::CallIndirect;
+        call.type = result != nullptr ? result : out_.module.types.voidType();
+        call.operands.push_back(code);
+        for (const auto& a : c.args) {
+            const ValueId v = lowerExpr(a.get());
+            if (v != kNoValue) {
+                call.operands.push_back(v);
+            }
+        }
+        call.loc = c.loc;
+        ValueId out;
+        if (!handlers_.empty()) {
+            call.op = Op::CallUnwind;
+            const BlockId normal = fn_->addBlock(fresh("resumed"));
+            call.edges.push_back(Edge{normal, {}});
+            call.edges.push_back(Edge{handlers_.back().landing, {}});
+            out = emit(std::move(call));
+            here_ = normal;
+        } else {
+            out = emit(std::move(call));
+        }
+        // THE RESULT'S TYPE NAME, so that a call whose answer is itself a methodptr can be called
+        // again. `methodptrBody` strips the `$unknown:<world>` element a foreign-world pointer
+        // carries, which is not a type argument and would otherwise be read as the return type.
+        const std::string inner = ast::methodptrBody(ast::bracketedInner(written));
+        noteName(out, firstTypeArgOf("methodptr<" + inner + ">"));
+        return out;
+    }
+
+    // The result type of a `methodptr<...>`: its first type argument. A `void` result answers null
+    // here, which is the same thing `returnOfFunctionType` does and for the same reason -- the
+    // caller wants a type to give the instruction, and void is the absence of one.
+    const Type* returnOfMethodPtrType(const std::string& name) {
+        if (!isMethodPtrName(name)) {
+            return nullptr;
+        }
+        const std::string inner = ast::methodptrBody(ast::bracketedInner(name));
+        const std::string r = firstTypeArgOf("methodptr<" + inner + ">");
+        return r.empty() || r == "void" ? nullptr : storageTypeOf(r);
+    }
+
     // The FIRST type argument of a `function<...>` -- its result. `function<int, int>` is
     // `(int) -> int` and `function<function<int,int>>` is `() -> function<int,int>`, so the split
     // has to count angle brackets: cutting at the first comma turns the second one into nonsense.
@@ -11384,7 +11638,7 @@ private:
     }
 
     const Type* returnOfFunctionType(const std::string& name) {
-        if (name.rfind("function<", 0) != 0 && name.rfind("funcptr<", 0) != 0) {
+        if (name.rfind("function<", 0) != 0 && !isMethodPtrName(name)) {
             return nullptr;
         }
         const std::string r = firstTypeArgOf(name);
@@ -14998,6 +15252,32 @@ private:
         emitCall(weakNullifyFn(), {head}, loc);
     }
 
+    // THE OTHER END OF A WEAK REFERENCE'S LIFE: the object HOLDING one dies. Its field is a node on
+    // the target's list, and nothing took it off -- only writing the field relinked it -- so the
+    // target's list went on naming sixteen bytes of freed memory, and the target's own `delete`
+    // walked them and wrote null into whatever lived there next. A kernel's inode cache, torn down
+    // after the open files that had pointed at its inodes, faulted on exactly that walk.
+    //
+    // Emitted into `c`'s destructor for the fields `c` declares; a base's are unlinked by the base's
+    // destructor, which the chain always runs. Every way an object dies -- `delete`, through a base
+    // pointer or not, `delete from region`, the end of a scope -- goes through the destructor.
+    void unlinkOwnWeak(const ast::ClassDecl& c) {
+        const std::vector<std::string> fields = ownWeakFields(c);
+        if (fields.empty()) {
+            return;
+        }
+        const ValueId self = selfLoad(SourceLocation{});
+        for (const std::string& name : fields) {
+            const ValueId at = fieldAddress(self, name, SourceLocation{});
+            if (at == kNoValue) {
+                continue;
+            }
+            if (auto slot = weakSlotAt_.find(at); slot != weakSlotAt_.end()) {
+                weakRelink(at, slot->second, kNoValue, SourceLocation{});
+            }
+        }
+    }
+
     // The address of one word of a WeakSlot: 0 is the target, 1 is the next node.
     ValueId weakWord(ValueId slot, int64_t which, SourceLocation loc) {
         TypeTable& tt = out_.module.types;
@@ -15575,11 +15855,20 @@ private:
                 continue;
             }
             const std::string cls = classNameOf(declaredName(obj));
-            const ast::ClassDecl* decl = cls.empty() ? nullptr : findClass(cls);
-            if (decl != nullptr) {
-                if (const Function* dtor = resolveKey(destructorOf(*decl))) {
-                    emitCall(dtor, {obj}, s.loc);
-                }
+            // THE DESTRUCTOR, DISPATCHED like a plain `delete`'s and for the same reason: the object
+            // may be a subclass of what the name says. Called by the STATIC class's name, `delete h
+            // from region R` on a `Handle*` holding a `Watcher` ran no destructor at all -- and the
+            // watcher's weak field stayed on its target's list after the slot was handed out again.
+            // A `drop` with no "heap" note runs the destructor and leaves the memory to the region.
+            if (!cls.empty() && findClass(cls) != nullptr) {
+                Inst drop;
+                drop.op = Op::Drop;
+                drop.type = tt.ptrType();
+                drop.operands.push_back(obj);
+                drop.text = cls;
+                drop.imm = destructorSlotFor(cls);
+                drop.loc = s.loc;
+                emit(std::move(drop));
             }
             const ValueId block = regionBlockFor(s.fromRegion, s.loc);
             if (block == kNoValue) {
@@ -15599,9 +15888,25 @@ private:
                 // memory whose destructor has already run.
                 callExternal("__polaron_region_untrack", tt.voidType(),
                              {tt.ptrType(), tt.ptrType()}, {block, obj}, s.loc);
-            } else if (const auto* named = dynamic_cast<const ast::IdentifierExpr*>(target)) {
-                // ...and where the list is the COMPILER'S, forgetting means emptying the slot: the
-                // release below walks that list and skips whatever is null.
+            }
+            /* AND THE LOCAL IS EMPTIED, WHATEVER THE FLAVOR -- which is what this did not do.
+             *
+             * Emptying it was the third arm of an `else if`, so it happened only for the flavors
+             * that had nothing else to forget with. A `pool` took the first arm and a bump region
+             * with a registry took the second, and both left the name pointing at the slot. The
+             * scope end then walks its own list, finds the local still set, and runs the destructor
+             * a SECOND time -- on a slot the region has already handed out again, so the destructor
+             * runs over somebody else's live object:
+             *
+             *     Node* a = new Node(1) in region p;   delete a from region p;
+             *     Node* c = new Node(3) in region p;   // reuses a's slot
+             *     release region p;                    // ~Node(3), ~Node(2), ~Node(3)
+             *
+             * The stamps cannot catch it, because a destructor called straight from the scope list
+             * never enters the runtime to have its stamp read. The plain `delete` path had this
+             * right and says so (`stack_delete` printed `dtor 1` twice); this is the same rule for
+             * the region form, and the guard on the scope-exit side is a null test on this slot. */
+            if (const auto* named = dynamic_cast<const ast::IdentifierExpr*>(target)) {
                 if (auto slot = locals_.find(named->name); slot != locals_.end()) {
                     Inst emptied;
                     emptied.op = Op::Store;
@@ -15856,6 +16161,18 @@ private:
             TypeTable& tt = out_.module.types;
             callExternal("memcpy", tt.ptrType(), {tt.ptrType(), tt.ptrType(), tt.intType(64)},
                          {addr, value, sizeOfClass(held, loc)}, loc);
+            return;
+        }
+        // AN INLINE ARRAY IS ITS STORAGE TOO, so assigning one COPIES ITS ELEMENTS -- the same rule
+        // as a value struct above. It went through as a plain store, and what landed in the field
+        // was the source array's ADDRESS, in its first eight bytes: `this.text = blank` in a
+        // constructor, the one way to satisfy Polaron-0612 for an inline array field, filled the
+        // field with a stack pointer at -O0 and with nothing at -O2.
+        if (held != nullptr && held->kind == TypeKind::Array &&
+            held->storage == ArrayStorage::Inline && given != nullptr && given->isPointerLike()) {
+            TypeTable& tt = out_.module.types;
+            callExternal("memcpy", tt.ptrType(), {tt.ptrType(), tt.ptrType(), tt.intType(64)},
+                         {addr, value, constLong(static_cast<int64_t>(held->facts.size), loc)}, loc);
             return;
         }
         Inst st;
@@ -17476,13 +17793,47 @@ private:
                 }
                 return v;
             };
+            auto numeric = [](const Type* t) {
+                return t != nullptr &&
+                       (t->kind == TypeKind::Int || t->kind == TypeKind::Addr ||
+                        t->kind == TypeKind::Float || t->kind == TypeKind::Bool);
+            };
+            // BOTH ARMS FIRST, THEN THE EDGES, each from the block its arm ended in. The join's type
+            // is not known until both are: a `nullable` number meeting a plain one joins as a box,
+            // and which arm needs boxing is only seen once the second has been lowered.
             ValueId a = asAddress(lowerExpr(t->thenExpr.get()), t->thenExpr.get());
+            const BlockId thenEnd = here_;
+            here_ = elseB;
+            ValueId bv = asAddress(lowerExpr(t->elseExpr.get()), t->elseExpr.get());
+            const BlockId elseEnd = here_;
+            // A BOX MEETING A NUMBER: the number is put in a box of its own, at the end of its arm.
+            // Unboxing the other arm instead would be right only where the analyzer proved it present
+            // -- `n != null ? n : 0` -- and a read of the null pointer in `c ? n : 5`, where the
+            // result is itself `nullable int`. A box is right for both: a proven use reads the number
+            // out of it (see `unboxed`), and an unproven one keeps its "absent".
+            auto boxIn = [&](ValueId v, ValueId like, BlockId at) {
+                here_ = at;
+                const Type* inside = boxedPrimitiveOf(like);
+                return boxed(lowerConversion(v, fn_->value(v)->type, inside, e->loc),
+                             declaredName(like), e->loc);
+            };
+            if (a != kNoValue && bv != kNoValue) {
+                const Type* ta = fn_->value(a)->type;
+                const Type* tb = fn_->value(bv)->type;
+                if (boxedPrimitiveOf(a) != nullptr && tb->kind != TypeKind::Ptr && numeric(tb)) {
+                    bv = boxIn(bv, a, elseEnd);
+                } else if (boxedPrimitiveOf(bv) != nullptr && ta->kind != TypeKind::Ptr &&
+                           numeric(ta)) {
+                    a = boxIn(a, bv, thenEnd);
+                }
+            }
             const Type* rt = a != kNoValue ? fn_->value(a)->type : tt.intType(32);
             // The join's parameter is typed from the arm, and both edges are supplied AFTER it
             // exists -- verifier rule 3 checks exactly that agreement.
             const ValueId out = fn_->addValue(rt, ValueOrigin::BlockParam, join, 0, "");
             fn_->block(join)->params.push_back(out);
 
+            here_ = thenEnd;
             Inst goA;
             goA.op = Op::Br;
             Edge ea{join, {}};
@@ -17490,8 +17841,7 @@ private:
             goA.edges.push_back(ea);
             emit(std::move(goA));
 
-            here_ = elseB;
-            ValueId bv = asAddress(lowerExpr(t->elseExpr.get()), t->elseExpr.get());
+            here_ = elseEnd;
             // THE TWO ARMS ARE CONVERTED TO ONE TYPE, NOT DISCARDED FOR NOT ALREADY BEING IT.
             //
             // This required the else arm's type to match the then arm's EXACTLY and substituted
@@ -17512,11 +17862,6 @@ private:
             // conversion turned three collection samples into programs that print nothing. What the
             // bug above requires is the numeric case -- an `int` literal meeting an `address` -- and
             // that is all this does.
-            auto numeric = [](const Type* t) {
-                return t != nullptr &&
-                       (t->kind == TypeKind::Int || t->kind == TypeKind::Addr ||
-                        t->kind == TypeKind::Float || t->kind == TypeKind::Bool);
-            };
             if (bv != kNoValue && rt != nullptr && fn_->value(bv)->type != rt &&
                 numeric(rt) && numeric(fn_->value(bv)->type)) {
                 bv = lowerConversion(bv, fn_->value(bv)->type, rt, e->loc);
@@ -18009,6 +18354,59 @@ private:
                     return javaEnumOrdinal(*found->second, v, cast->loc);
                 }
             }
+            // ...AND A NUMBER BACK TO ONE: `cast<Planet>(n)` is the other direction of the ordinal
+            // cast above. The constant's value is its singleton, so the number PICKS one -- the same
+            // select chain, run the other way -- and a number outside the declared set picks none,
+            // which is refused where the cast was written, as a downcast the object refutes is. Left
+            // to the generic conversion, the ordinal became an address and the first method call on
+            // the "constant" read its fields out of page zero.
+            // Asked of the NAME: the type table spells every enum as its ordinal, so `to` says `i32`
+            // even for one whose values are objects.
+            if (from != nullptr && from->kind == TypeKind::Int) {
+                std::string cls = cgutil::baseType(cast->targetType);
+                auto found = enums_.find(cls);
+                if (found == enums_.end()) {
+                    if (const size_t dot = cls.rfind('.'); dot != std::string::npos) {
+                        found = enums_.find(cls.substr(dot + 1));
+                    }
+                }
+                if (found != enums_.end() && found->second->isJavaStyle) {
+                    const ast::EnumDecl& decl = *found->second;
+                    const ValueId ordinal =
+                        lowerConversion(v, from, out_.module.types.intType(32), cast->loc);
+                    ValueId picked = nullPointer(cast->loc);
+                    for (size_t i = 0; i < decl.constants.size(); ++i) {
+                        Inst pick;
+                        pick.op = Op::Select;
+                        pick.type = out_.module.types.ptrType();
+                        pick.operands.push_back(
+                            cmp(Op::CmpEq, ordinal, constInt(static_cast<int64_t>(i), 32, cast->loc),
+                                cast->loc));
+                        pick.operands.push_back(javaEnumSingleton(decl, i, cast->loc));
+                        pick.operands.push_back(picked);
+                        pick.loc = cast->loc;
+                        picked = emit(std::move(pick));
+                    }
+                    // No constant picked is the one failure, and the null guard is the check that
+                    // works in both worlds: a ClassCastException a hosted program can catch, and in
+                    // freestanding -- which has no unwinder -- the failure report, named as such.
+                    Inst check;
+                    check.op = Op::GuardNull;
+                    check.operands.push_back(picked);
+                    check.text = "ClassCastException";
+                    if (auto raised = named_.find(check.text); raised != named_.end()) {
+                        check.aggregate = raised->second;
+                    }
+                    if (!handlers_.empty()) {
+                        check.edges.push_back(Edge{handlers_.back().landing, {}});
+                    }
+                    check.extra.push_back("ordinal");
+                    check.loc = cast->loc;
+                    emit(std::move(check));
+                    noteName(picked, decl.name);
+                    return picked;
+                }
+            }
             // Â§34: A CAST TO OR FROM `Decimal` MOVES THE SCALE. `cast<Decimal>(5)` is not the
             // number five in a wider register -- it is five times 10^18, and without the multiply
             // `cast<Decimal>(5) / cast<Decimal>(2)` is integer division and answers 2. The other
@@ -18157,8 +18555,22 @@ private:
             return lowerLambda(*lam);
         }
         if (auto* mr = dynamic_cast<const ast::MethodRefExpr*>(e)) {
-            // `methodref obj.method` is a closure whose capture is the receiver and whose code is
-            // the method. Exactly the same shape as a lambda that captures one thing.
+            /* `methodref obj.method` IS A COMMAND CARRYING THE RECEIVER, and by here the analyzer
+               has said which generated class expresses it. So this builds one, with the ordinary
+               `new` path -- no closure pair, no second kind of callable value, and the virtual
+               dispatch lives where it belongs: inside the generated body, at `this.self.method(...)`,
+               resolved by the object exactly as the call written out in full would be. */
+            if (!mr->boundClass.empty()) {
+                ast::NewExpr build;
+                build.loc = e->loc;
+                build.className = mr->boundClass;
+                build.location = "heap";
+                build.locationWritten = true;
+                build.args.push_back(cloneExprDeep(mr->object.get()));
+                const ValueId made = lowerNew(build);
+                noteName(made, mr->boundClass, 1);
+                return made;
+            }
             const ValueId recv = lowerExpr(mr->object.get());
             const Function* target = resolveSuffix(mr->method);
             if (target == nullptr) {
@@ -18353,6 +18765,17 @@ private:
             // `alloca`, which gave a stack pointer where the runtime expects heap storage whose
             // first eight bytes are the length -- so `xs.length` read whatever the stack had and
             // every element access was off by the header.
+            // `on static` NEVER REACHES HERE WHEN IT IS LEGAL. `declareStatic` takes it before any
+            // body is lowered, because "before the program runs" is a moment a static field has and
+            // a local does not: a local `on static` would be one buffer shared by every call, which
+            // is a different feature and not one anybody has asked for by writing this.
+            if (na->location == "static") {
+                refuse("'on static' is storage that is part of the image, so it belongs to a static "
+                       "field rather than to a local -- `private static mutable byte[] b = new "
+                       "byte[1024]() on static;`. A local that wants one buffer for the whole "
+                       "program is asking for a static field",
+                       e->loc);
+            }
             const ValueId n = lowerExpr(na->size.get());
             const Type* elem = storageTypeOf(na->elementType);
             const Type* arr = tt.sliceType(elem);
@@ -18640,9 +19063,91 @@ private:
     // A conversion is never implicit and never wrapping unless it says so: the language's rule is
     // that a cast SATURATES, and here that is the opcode rather than emitted clamping code the
     // optimiser then has to understand.
+    // A `nullable` PRIMITIVE IS A BOX -- `nullable int y = 5;` is a pointer to four bytes, and absent
+    // is the null pointer -- and where the analyzer has proven one present, the program reads it as
+    // the number. This pass has no narrowing of its own, so a proven `n` still arrived as the box:
+    // `n + 1` added one to the ADDRESS, `int m = n;` stored `undef`, and nothing said so. A value is
+    // a box when it was DECLARED `nullable` -- the prefix `canonicalType` puts in the name, which the
+    // store into a `nullable` slot already asks for -- no `*` was written after it, its machine type
+    // is a pointer, and the name under the prefix is a primitive rather than a class.
+    //
+    // THE PREFIX IS NOT OPTIONAL. Several helpers record a value's name with the default depth of
+    // zero, so a `byte*` can arrive here spelled `byte`, depth 0, typed `ptr` -- a box in every other
+    // respect -- and without the prefix `p + 1` would load a byte instead of stepping the pointer.
+    const Type* boxedPrimitiveOf(ValueId v) {
+        if (v == kNoValue || pointerDepthOf(v) != 0 || !ast::typeIsNullable(declaredName(v))) {
+            return nullptr;
+        }
+        const ValueDef* d = fn_->value(v);
+        if (d == nullptr || d->type == nullptr || d->type->kind != TypeKind::Ptr) {
+            return nullptr;
+        }
+        const std::string inside = classNameOf(declaredName(v));
+        if (inside.empty() || findClass(inside) != nullptr) {
+            return nullptr;
+        }
+        ast::TypeRef bare;
+        bare.name = inside;
+        const Type* t = typeOf(bare);
+        const bool scalar = t != nullptr && (t->kind == TypeKind::Int || t->kind == TypeKind::Float ||
+                                             t->kind == TypeKind::Bool);
+        return scalar ? t : nullptr;
+    }
+
+    // ...and the other direction: a number put in a box of its own, for a `nullable` slot, parameter
+    // or result. `name` is what the box is known as (`nullable int`), so a later read can unbox it.
+    ValueId boxed(ValueId v, const std::string& name, SourceLocation loc) {
+        TypeTable& tt = out_.module.types;
+        const ValueId box = callExternal("__polaron_malloc", tt.ptrType(), {tt.intType(64)},
+                                         {constInt(8, 64, loc)}, loc);
+        Inst put;
+        put.op = Op::Store;
+        put.operands.push_back(v);
+        put.operands.push_back(box);
+        put.loc = loc;
+        emit(std::move(put));
+        noteName(box, name);
+        return box;
+    }
+
+    // Does a `nullable` declaration want this value boxed? Only a number that is not one already, and
+    // only for a declaration with no `*` in it: a `nullable byte*` is a pointer that may be null, and
+    // a number reaching one is an address, not something to put in a box.
+    static bool wantsBox(const std::string& declared, int declaredDepth, const Type* want,
+                         const Type* have) {
+        return declaredDepth == 0 && ast::typeIsNullable(declared) && want != nullptr &&
+               want->kind == TypeKind::Ptr && have != nullptr &&
+               (have->kind == TypeKind::Int || have->kind == TypeKind::Float ||
+                have->kind == TypeKind::Bool);
+    }
+
+    // The number in a box, or the value itself when it is not one.
+    ValueId unboxed(ValueId v, SourceLocation loc) {
+        const Type* inside = boxedPrimitiveOf(v);
+        if (inside == nullptr) {
+            return v;
+        }
+        Inst load;
+        load.op = Op::Load;
+        load.type = inside;
+        load.operands.push_back(v);
+        load.loc = loc;
+        const ValueId out = emit(std::move(load));
+        noteName(out, classNameOf(declaredName(v)));
+        return out;
+    }
+
     ValueId lowerConversion(ValueId v, const Type* from, const Type* to, SourceLocation loc) {
         if (from == to || to == nullptr || from == nullptr) {
             return v;
+        }
+        // A PROVEN `nullable` NUMBER BECOMING A NUMBER is a read of the box, then the ordinary
+        // conversion from what was in it. Never to an `address`: that is a question about the box.
+        if (from->kind == TypeKind::Ptr &&
+            (to->kind == TypeKind::Int || to->kind == TypeKind::Float || to->kind == TypeKind::Bool)) {
+            if (const Type* inside = boxedPrimitiveOf(v); inside != nullptr) {
+                return lowerConversion(unboxed(v, loc), inside, to, loc);
+            }
         }
         Inst in;
         in.type = to;
@@ -22146,9 +22651,16 @@ private:
         // `function<...>` loads the code pointer and the environment out of it and calls
         // `code(env, x)`. Resolved by name instead, `twice(4)` bound to whatever class in the
         // program had a method called `twice` -- it found `Curve.twice`, and called it.
+        //
+        // ...AND A `methodptr` IS CALLABLE TOO, which this asked and did not answer. The predicate
+        // knew only the closure spelling, so a call through a code address fell all the way through
+        // to method resolution by NAME -- and what came out was a call to the first argument.
         if (auto* id = dynamic_cast<const ast::IdentifierExpr*>(c.callee.get());
-            id != nullptr && locals_.count(id->name) != 0 && isClosureName(declaredName(locals_[id->name]))) {
-            return callClosure(loadFrom(locals_[id->name], c.loc), c);
+            id != nullptr && locals_.count(id->name) != 0 &&
+            isCallableName(declaredName(locals_[id->name]))) {
+            const ValueId held = loadFrom(locals_[id->name], c.loc);
+            return isMethodPtrName(declaredName(locals_[id->name])) ? callMethodPtr(held, c)
+                                                                    : callClosure(held, c);
         }
         if (auto* m = dynamic_cast<const ast::MemberExpr*>(c.callee.get())) {
             receiver = lowerExpr(m->object.get());
@@ -22188,9 +22700,11 @@ private:
             // and, where the object is itself a call, run it twice.
             if (const std::string owner = classNameOf(declaredName(receiver)); !owner.empty()) {
                 auto ft = fieldTypeName_.find(owner + "." + key);
-                if (ft != fieldTypeName_.end() && isClosureName(ft->second.name)) {
+                if (ft != fieldTypeName_.end() && isCallableName(ft->second.name)) {
                     if (const ValueId addr = fieldAddress(receiver, key, c.loc); addr != kNoValue) {
-                        return callClosure(loadFrom(addr, c.loc), c);
+                        const ValueId held = loadFrom(addr, c.loc);
+                        return isMethodPtrName(ft->second.name) ? callMethodPtr(held, c)
+                                                                : callClosure(held, c);
                     }
                 }
             }
@@ -22215,9 +22729,11 @@ private:
             // ...and one held in a field of `this`, written without the `this.`.
             if (const std::string owner = classNameOf(declaredName(receiver)); !owner.empty()) {
                 auto ft = fieldTypeName_.find(owner + "." + key);
-                if (ft != fieldTypeName_.end() && isClosureName(ft->second.name)) {
+                if (ft != fieldTypeName_.end() && isCallableName(ft->second.name)) {
                     if (const ValueId addr = fieldAddress(receiver, key, c.loc); addr != kNoValue) {
-                        return callClosure(loadFrom(addr, c.loc), c);
+                        const ValueId held = loadFrom(addr, c.loc);
+                        return isMethodPtrName(ft->second.name) ? callMethodPtr(held, c)
+                                                                : callClosure(held, c);
                     }
                 }
             }
@@ -22473,12 +22989,20 @@ private:
                             ? target->signature->element
                             : tt.intType(32);
             call.operands.push_back(fnPtr);
+            coerceToSignature(target, args, c.loc);      // the same conversions a direct call gets
             for (ValueId a : args) {
                 call.operands.push_back(a);
             }
             call.loc = c.loc;
-            const ValueId out = emit(std::move(call));
-            noteStringResult(target, out);
+            const Type* produced = call.type;
+            const ValueId raw = emit(std::move(call));
+            noteStringResult(target, raw);
+            // A VALUE STRUCT COMES BACK AS BYTES and is given a home here, exactly as a direct call's
+            // is in `finishCall`. Without it the bytes were stored straight into the pointer-sized
+            // slot of the local being assigned -- sixteen bytes over eight -- and the next read took
+            // the struct's first field for its address: an access violation in a two-line program,
+            // and `VirtualFs.makeIn` reading its `Outcome` as garbage in the Horizon kernel.
+            const ValueId out = spillValueStruct(raw, produced, c.loc);
             if (target != nullptr) {
                 if (auto it = returnName_.find(target->key); it != returnName_.end()) {
                     noteName(out, it->second.name, it->second.pointerDepth);
@@ -22799,9 +23323,12 @@ private:
     Lowered lowerSystemCall(const std::string& name, const ast::CallExpr& c) {
         // clang-format off
         static constexpr SysRow kSys[] = {
-            // ---- threads and locks. A thread starts from a `function<void>` CLOSURE, which is one
-            // pointer holding both the code and what it captured; the runtime calls it back.
-            {"System.Concurrency.__threadStart", "__polaron_thread_spawn",  "p",  'l'},
+            // ---- threads and locks. A thread starts from a CODE ADDRESS and the object that code
+            // is about -- `Thread.enter` and the `command` it will run -- and the runtime calls
+            // `code(object)`. Two words rather than the one `function<void>` closure it used to be,
+            // and the dispatch that turns a command into a code address is written in Polaron, in
+            // `Thread.start`, where it can be read.
+            {"System.Concurrency.__threadStart", "__polaron_thread_spawn",  "pp", 'l'},
             {"System.Concurrency.__threadJoin",  "__polaron_thread_join",   "l",  'v'},
             {"System.Concurrency.__threadYield", "__polaron_thread_yield",  "",   'v'},
             {"System.Concurrency.__lockCreate",  "__polaron_lock_create",   "",   'l'},
@@ -23909,6 +24436,15 @@ private:
                 }
             }
         }
+        coerceToSignature(target, args, loc);
+        return finishCall(target, std::move(args), loc);
+    }
+
+    // THE ARGUMENTS, CONVERTED TO WHAT THE CALLEE DECLARES -- shared by a direct call and a
+    // dispatched one. The dispatched path pushed its arguments as they came, so a value struct still
+    // in storage crossed as its ADDRESS into a callee that takes it by value: the Horizon VFS's
+    // `create(Name, ...)` through the base `Inode` read a name whose length was garbage.
+    void coerceToSignature(const Function* target, std::vector<ValueId>& args, SourceLocation loc) {
         // A VALUE STRUCT ARGUMENT TRAVELS BY VALUE. Inside a method an object is a pointer to its
         // storage -- a `struct` too, since that is what makes `k.bytes[i]` an address rather than a
         // register -- and at the boundary the signature says otherwise. Handing the pointer over
@@ -23927,6 +24463,18 @@ private:
                     }
                 }
                 const Type* want = declared[i].type;
+                // A PROVEN `nullable` NUMBER CROSSES AS THE NUMBER -- see `unboxed`.
+                if (want != nullptr &&
+                    (want->kind == TypeKind::Int || want->kind == TypeKind::Float ||
+                     want->kind == TypeKind::Bool)) {
+                    args[i] = unboxed(args[i], loc);
+                }
+                // ...and a number handed to a `nullable` parameter is boxed, as it is into a slot.
+                if (i < target->params.size() && args[i] != kNoValue &&
+                    wantsBox(target->params[i].typeName, target->params[i].pointerDepth, want,
+                             fn_->value(args[i])->type)) {
+                    args[i] = boxed(args[i], target->params[i].typeName, loc);
+                }
                 const Type* have = args[i] != kNoValue ? fn_->value(args[i])->type : nullptr;
                 // ANY ADDRESS, not only one typed `ptr`. An ELEMENT of an array of value structs
                 // arrives as a `gep` whose type is the array's -- a `slice<Coord>`, because that is
@@ -23970,6 +24518,9 @@ private:
                 }
             }
         }
+    }
+
+    ValueId finishCall(const Function* target, std::vector<ValueId>&& args, SourceLocation loc) {
         Inst in;
         in.loc = loc;
         in.operands = std::move(args);
@@ -24658,6 +25209,21 @@ private:
         if (l == kNoValue || r == kNoValue) {
             return kNoValue;
         }
+        // A PROVEN `nullable` NUMBER IS THE NUMBER on either side (see `unboxed`): `n + 1` is
+        // arithmetic on what is in the box. Two cases still ask about the box itself, and are left
+        // as they were: a test against `null`, and `==`/`!=` between two boxes, which nothing here
+        // can tell apart from two values the analyzer has not proven.
+        {
+            const bool equality = b.op == "==" || b.op == "!=";
+            const bool againstNull =
+                dynamic_cast<const ast::NullLiteralExpr*>(b.lhs.get()) != nullptr ||
+                dynamic_cast<const ast::NullLiteralExpr*>(b.rhs.get()) != nullptr;
+            const bool twoBoxes = boxedPrimitiveOf(l) != nullptr && boxedPrimitiveOf(r) != nullptr;
+            if (!(equality && (againstNull || twoBoxes))) {
+                l = unboxed(l, b.loc);
+                r = unboxed(r, b.loc);
+            }
+        }
         TypeTable& tt = out_.module.types;
 
         // BOTH SIDES TO ONE WIDTH, before anything else. `long + int` was emitted as-is and the
@@ -24665,10 +25231,18 @@ private:
         // module that computes nothing, which the verifier is right not to catch and the differential
         // is the only thing that does. The wider side wins, and the narrower is extended by ITS OWN
         // sign, which is the one place the two facts have to be read together.
+        //
+        // AN `address` IS ONE OF THE INTEGERS HERE. It is `Addr` and not `Int`, and asking only for
+        // two `Int`s let `8192 - (at & 4095)` through at two widths: typed after its 32-bit literal
+        // while the backend computed 64 bits. The `cast<int>` around it then saw an `int` and emitted
+        // nothing, the division ran in 64 bits and was stored into a 4-byte local, and `-O2` folded
+        // the whole thing to `undef` -- Horizon's NVMe driver got a block count of nothing and looped.
+        auto integral = [](const Type* t) {
+            return t != nullptr && (t->kind == TypeKind::Int || t->kind == TypeKind::Addr);
+        };
         const Type* lty = fn_->value(l)->type;
         const Type* rty = fn_->value(r)->type;
-        if (lty != nullptr && rty != nullptr && lty->kind == TypeKind::Int &&
-            rty->kind == TypeKind::Int && lty->bits != rty->bits) {
+        if (integral(lty) && integral(rty) && lty->bits != rty->bits) {
             if (lty->bits < rty->bits) {
                 const ValueId wide = lowerConversion(l, lty, rty, b.loc);
                 noteName(wide, declaredName(l));   // widening does not change what it is
@@ -25139,6 +25713,10 @@ private:
         std::string bundle;
         std::string ns;
         bool prelude = false;   // declared in the standard library rather than in the program
+        // ...and declared in a runtime source the COMPILER appended, which is a different thing
+        // again: its `unknown c` methods are called only from this module. See `Function::
+        // appendedRuntime`.
+        bool appendedRuntime = false;
     };
     std::unordered_map<std::string, ClassEntry> classesByKey_;
     std::unordered_set<std::string> sharedNames_;

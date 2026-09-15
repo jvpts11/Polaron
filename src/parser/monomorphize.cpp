@@ -117,6 +117,47 @@ std::string substArg(const std::string& arg, const Subst& s) {
     return rebuilt;
 }
 
+/* THE ARITHMETIC A STAMPED EXTENT IS ALLOWED (A.3). `4*4` folds to 16; `R*C` with R unbound does
+   not fold, and returns 0 so the caller leaves the expression alone and tries again after the next
+   substitution. Multiplication binds tighter than addition, which is the only precedence three
+   operators need. Anything the parser did not already narrow to names, integers and `* + -` cannot
+   reach here. */
+long long foldExtent(const std::string& text) {
+    long long total = 0;
+    long long term = 1;
+    long long sign = 1;
+    bool haveTerm = false;
+    std::string word;
+    auto value = [&](bool& ok) -> long long {
+        ok = !word.empty() &&
+             word.find_first_not_of("0123456789") == std::string::npos;
+        const long long n = ok ? std::strtoll(word.c_str(), nullptr, 10) : 0;
+        word.clear();
+        return n;
+    };
+    for (std::size_t i = 0; i <= text.size(); ++i) {
+        const char ch = i < text.size() ? text[i] : '\0';
+        if (ch != '*' && ch != '+' && ch != '-' && ch != '\0') {
+            word += ch;
+            continue;
+        }
+        bool ok = false;
+        const long long n = value(ok);
+        if (!ok) {
+            return 0;   // a name is still a name: not foldable yet
+        }
+        term *= n;
+        haveTerm = true;
+        if (ch == '*') {
+            continue;
+        }
+        total += sign * term;
+        term = 1;
+        sign = (ch == '-') ? -1 : 1;
+    }
+    return haveTerm ? total : 0;
+}
+
 ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
     ast::TypeRef r = t;
     if (auto ai = g_aliases.find(r.name); ai != g_aliases.end()) {
@@ -193,7 +234,51 @@ ast::TypeRef substType(const ast::TypeRef& t, const Subst& s) {
     for (std::string& a : r.typeArgs) {
         a = substArg(a, s);  // handles nested mangled args (Handler$T)
     }
+    /* ...AND AN EXTENT THAT WAS STILL AN EXPRESSION (A.3). `T[R * C]` is the point of const
+       generics: an array whose length is part of the type, so the value carries no header, needs no
+       allocation and can live inside another type. The names in it bind here, with everything else,
+       and the result is folded to the number the rest of the compiler already knows how to read. */
+    if (!r.arrayExtentExpr.empty()) {
+        std::string bound;
+        std::string word;
+        auto flush = [&]() {
+            if (word.empty()) {
+                return;
+            }
+            auto sub = s.find(word);
+            bound += sub != s.end() ? sub->second : word;
+            word.clear();
+        };
+        for (const char ch : r.arrayExtentExpr) {
+            if (ch == '*' || ch == '+' || ch == '-') {
+                flush();
+                bound += ch;
+            } else {
+                word += ch;
+            }
+        }
+        flush();
+        r.arrayExtentExpr = bound;
+        if (const long long folded = foldExtent(bound); folded > 0) {
+            r.arrayExtent = static_cast<int>(folded);
+            r.arrayExtentExpr.clear();
+        }
+    }
     return r;
+}
+
+// A receiver written as a path of plain names, flattened: `text.Reader` for the two-node chain, and
+// `Main.text.Reader` for the three. Empty when anything in the chain is not a bare name -- an index,
+// a call, `this` -- because then it is a VALUE being navigated and not a type being named.
+std::string dottedPath(const ast::Expr* e) {
+    if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+        return id->name;
+    }
+    if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+        const std::string head = dottedPath(mem->object.get());
+        return head.empty() ? std::string() : head + "." + mem->member;
+    }
+    return std::string();
 }
 
 // ---- Deep clone of the AST with type substitution ----
@@ -214,6 +299,23 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         return nullptr;
     }
     if (const auto* x = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+        /* A `fixed int` PARAMETER READ AS A VALUE BECOMES THE NUMBER (A.3).
+         *
+         * `for (mutable int i = 0; i < R; i++)` inside `Matrix<fixed T, fixed int R, ...>` means
+         * `i < 4` in the stamped copy -- and it has to become the literal here, not a name the
+         * analyzer would look for as a variable, because there is no variable: the value is part of
+         * the type. That is also what makes it worth having, since a bound the optimizer can see is
+         * a loop it can unroll and a check it can fold.
+         *
+         * Told apart from a TYPE substitution by what it maps to: a type name is not all digits. */
+        if (auto sub = s.find(x->name);
+            sub != s.end() && !sub->second.empty() &&
+            sub->second.find_first_not_of("-0123456789") == std::string::npos) {
+            auto lit = std::make_unique<ast::IntLiteralExpr>();
+            lit->loc = x->loc;
+            lit->text = sub->second;
+            return lit;
+        }
         auto n = std::make_unique<ast::IdentifierExpr>();
         n->loc = x->loc;
         n->name = (!g_selfTemplate.empty() && x->name == g_selfTemplate) ? g_selfConcrete : x->name;
@@ -306,6 +408,36 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
             if (auto it = s.find(oid->name); it != s.end()) {
                 auto obj = std::make_unique<ast::IdentifierExpr>();
                 obj->loc = oid->loc;
+                obj->name = it->second;
+                n->object = std::move(obj);
+                return n;
+            }
+        }
+        // ...AND A RECEIVER THAT IS A PATH, which is how a name declared twice is told apart.
+        //
+        // Two namespaces may both declare `Reader`; they are renamed apart (`text__Reader`), and the
+        // way to say which one is meant is `text.Reader.parse(...)`. That receiver is not one
+        // identifier -- it is a CHAIN of them -- so the substitution above, which matches a single
+        // name, never saw it. The compiler said so in its own diagnostic ("a static call through a
+        // qualified path is not resolved yet") and sent the reader to reach the method through an
+        // instance, or to rename one of the two types.
+        //
+        // Collapsed HERE, at the pass that does the renaming, rather than taught to the two passes
+        // downstream: flattened to `text.Reader`, looked up in the same map, and rebuilt as the one
+        // identifier `text__Reader`. Everything after this sees the ordinary `Class.method` shape and
+        // needs to know nothing about paths at all.
+        // ONLY WHEN THE TYPE WAS ACTUALLY RENAMED, which is the whole condition. The same map holds
+        // an identity entry for every unambiguous path -- `System.IO.Console` maps to `Console` --
+        // and collapsing those threw away a path that something downstream still wants: the
+        // Console/File builtins are recognised BY their full path, so `System.IO.Console.printf`
+        // became a lookup for a `printf` on an ordinary class, and the prelude stopped compiling.
+        // A rename is what this is for, and a rename is when the answer differs from the name.
+        if (const std::string path = dottedPath(x->object.get()); !path.empty()) {
+            const std::size_t tail = path.rfind('.');
+            const std::string simple = tail == std::string::npos ? path : path.substr(tail + 1);
+            if (auto it = s.find(path); it != s.end() && it->second != simple) {
+                auto obj = std::make_unique<ast::IdentifierExpr>();
+                obj->loc = x->object->loc;
                 obj->name = it->second;
                 n->object = std::move(obj);
                 return n;
@@ -534,6 +666,13 @@ ast::ExprPtr cloneExpr(const ast::Expr* e, const Subst& s) {
         n->region = x->region;
         return n;
     }
+    if (const auto* x = dynamic_cast<const ast::RegionSpaceExpr*>(e)) {
+        auto n = std::make_unique<ast::RegionSpaceExpr>();
+        n->loc = x->loc;
+        n->ask = x->ask;
+        n->region = x->region;
+        return n;
+    }
     if (const auto* x = dynamic_cast<const ast::TryExpr*>(e)) {
         auto n = std::make_unique<ast::TryExpr>();
         n->loc = x->loc;
@@ -734,6 +873,12 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
         for (const auto& o : x->outputs) { n->outputs.push_back(cloneExpr(o.get(), s)); }
         for (const auto& i : x->inputs) { n->inputs.push_back(cloneExpr(i.get(), s)); }
         n->clobbers = x->clobbers;
+        // ...AND WHERE EACH OPERAND MUST BE. A clone that drops these produces a block whose
+        // operands go wherever the allocator likes: it assembles, it runs, and `in $0, dx` reads
+        // whatever register `$0` happened to land in. Copied rather than rebuilt, because a place
+        // is a string about the machine and substitution has nothing to say to it.
+        n->outputWhere = x->outputWhere;
+        n->inputWhere = x->inputWhere;
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::GotoStmt*>(st)) {
@@ -1030,6 +1175,8 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
             n->inputs.push_back(cloneExpr(e.get(), s));
         }
         n->clobbers = x->clobbers;
+        n->outputWhere = x->outputWhere;   // see the other AsmStmt clone for why these travel
+        n->inputWhere = x->inputWhere;
         return n;
     }
     if (const auto* x = dynamic_cast<const ast::GotoStmt*>(st)) {
@@ -1109,6 +1256,17 @@ ast::StmtPtr cloneStmt(const ast::Stmt* st, const Subst& s) {
     if (const auto* x = dynamic_cast<const ast::IfStmt*>(st)) {
         auto n = std::make_unique<ast::IfStmt>();
         n->loc = x->loc;
+        // `comptime` TRAVELS, and dropping it is not a lost optimisation -- it is a different
+        // program. A `comptime if` selects which arm EXISTS: the untaken one is not analysed and
+        // not emitted, so it may name a register this target does not have. A clone that forgets
+        // the word turns it into an ordinary runtime `if`, both arms lower, and the arm written for
+        // another architecture reaches the assembler.
+        //
+        // Found the way the other seven were: `Machine.Port` compiled everywhere until a program
+        // containing a `typealias` -- which is what sends a body through this cloner -- reported
+        // *"this `asm` block is written for i686, and the target is x86_64"* from inside the
+        // standard library. Same hole, eighth instance; see `polc-clone-fidelity`.
+        n->isComptime = x->isComptime;
         n->cond = cloneExpr(x->cond.get(), s);
         n->thenBlock = cloneBlock(x->thenBlock, s);
         if (x->elseBlock) {
@@ -1273,6 +1431,13 @@ ast::MemberPtr cloneMemberOfKind(const ast::MemberDecl* m, const Subst& s) {
         // because `cloneClass` was dropping `applies` at the same time -- two silences that hid
         // each other, and fixing one revealed the other.
         n->isProcedure = x->isProcedure;
+        // ...AND WHETHER THIS BODY IS DATA. `resolveLayouts` runs BEFORE this pass and marks the
+        // member a layout's `resolvedBy` names, so that the analyser reads it instead of analysing
+        // it. Dropping the mark here does not lose a feature -- it turns the resolver back into
+        // ordinary code, and the first thing the analyser then says is *use of undeclared variable
+        // 'itself'*, pointing at a line that is not wrong, in a file the author will not think to
+        // connect to the `typealias` three files away that made the clone happen at all.
+        n->isLayoutResolver = x->isLayoutResolver;
         n->fromTransformer = x->fromTransformer;
         n->boundTargetType = x->boundTargetType;
         n->boundTargetVia = x->boundTargetVia;
@@ -1282,6 +1447,43 @@ ast::MemberPtr cloneMemberOfKind(const ast::MemberDecl* m, const Subst& s) {
         n->whenLoc = x->whenLoc;
         n->law = cloneExpr(x->law.get(), s);   // an expression, so it is cloned rather than shared
         n->escapeSummary = x->escapeSummary;
+        // ...AND THE THREE THAT WERE STILL MISSING, which is the fifth time this file has dropped
+        // part of a declaration.
+        //
+        // `surveyed` is the one that showed. It is the whole of what the region binder is told about
+        // a call into a foreign function -- "I have read the other side and I answer for this" -- so
+        // a clone without it is a method whose own escape hatch was thrown away. What that reads
+        // like is not a missing feature: it is the binder REFUSING code that says the thing the
+        // binder asked for, on a line that carries the word, and only in programs large enough to
+        // make this pass clone anything. The compiler's own bare-metal reporter hit it from inside
+        // the compiler; a five-file program did not, and a three-hundred-file one did.
+        //
+        // The other two are the same shape and were found beside it: `reentrant` is an obligation
+        // that must be inherited or the check it exists for stops running on the copy, and `pass`
+        // decides whether the body means one element or the array the compiler synthesises over.
+        n->isSurveyed = x->isSurveyed;
+        n->isReentrant = x->isReentrant;
+        n->isPass = x->isPass;
+        // ...AND THE SIXTH TIME, which is `command`. Three fields, and dropping them does not lose a
+        // modifier -- it loses the MEMBER KIND: the clone comes out as an ordinary method whose body
+        // reads a name (`pack`) that only a command has, so the failure is "use of undeclared
+        // variable 'pack'" inside the standard library, on a line the reader never wrote, in any
+        // program that happens to make this pass clone anything. Which is one that declares a type
+        // whose name the library also uses.
+        //
+        // The parameter types are substituted like every other type here: a command inside a generic
+        // carries `T` in its baggage exactly as its parameters do.
+        n->isCommand = x->isCommand;
+        n->packName = x->packName;
+        n->packLoc = x->packLoc;
+        n->isReadonly = x->isReadonly;   // a promise the copy has to keep too
+        n->isCold = x->isCold;
+        n->isMustUse = x->isMustUse;
+        for (const ast::Param& p : x->carries) {
+            ast::Param q = p;
+            q.type = substType(p.type, s);
+            n->carries.push_back(std::move(q));
+        }
         n->typeParamBounds = x->typeParamBounds;
         return n;
     }
@@ -1405,6 +1607,13 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     // function needs is the one `cloneMember` learned the hard way: a clone that copies most of a
     // declaration is a rewrite that changes it.
     c.isInterface = d.isInterface;
+    // ...and WHICH KIND of interface. `Comparer<int>` that stopped being a command type would start
+    // collecting the advice meant for an author who chose a pointer -- `DogTest&`, which no caller
+    // can pass -- on every API in the library that takes a command.
+    c.isCommandType = d.isCommandType;
+    // ...and whether a value of it may be dropped. `Result<int, String>` that stopped being
+    // `mustuse` would take the rule off exactly the types it was written for.
+    c.isMustUse = d.isMustUse;
     c.isStruct = d.isStruct;
     c.isRecord = d.isRecord;
     c.isUnion = d.isUnion;
@@ -1420,10 +1629,18 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     c.isRegionClass = d.isRegionClass;
     c.isHeap = d.isHeap;
     c.foreignLibrary = d.foreignLibrary;
-    // The layouts a type implements, once `resolveLayouts` has split them out of `interfaces`. A
-    // clone that ran after that pass -- monomorphization does -- would otherwise drop the
-    // arrangement, and a generic value type would lose the size it promised.
+    // The layouts a type is arranged by, once `resolveLayouts` has validated `arranges` and split
+    // any still spelled `implements` out of `interfaces`. A clone that ran after that pass --
+    // monomorphization does -- would otherwise drop the arrangement, and a generic value type would
+    // lose the size it promised.
     c.layouts = d.layouts;
+    // ...AND WHAT A LAYOUT CONCEDES, which is the half that decides what gets built. Dropping these
+    // would not lose a size, it would silently change one: a cloned `permits reorder` reverts to
+    // declaration order, so the original and the instantiation disagree on every offset. Same hole
+    // as the paragraph above, at the one place where the two halves of one program are the two that
+    // disagree.
+    c.permitsReorder = d.permitsReorder;
+    c.permitsPadding = d.permitsPadding;
     // The transformer clauses. `applies` is what the author wrote and is printed back by the
     // documentation generator; `appliedClosure` is what a `<T applies TComparer>` constraint is
     // checked against long after the transformers themselves are gone.
@@ -1497,6 +1714,20 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     c.onFirstInstance = cloneHook(d.onFirstInstance);
     c.onLastInstanceDestroyed = cloneHook(d.onLastInstanceDestroyed);
     c.onClassUnload = cloneHook(d.onClassUnload);
+    // ...AND THE FIFTH HOOK, which is the one the paragraph above did not know about.
+    //
+    // `onArrange` has the same shape as the four -- a block nobody calls -- at a different MOMENT:
+    // those run in the built program, this one runs during the build. Dropping it does not lose a
+    // line of output, it loses a GUARANTEE: a layout with no `onArrange` asks for nothing, so
+    // `fitWithin` stops being checked, `refuse` never speaks, and `resolvedBy` names nobody. The
+    // author writes a size budget down and gets one on some builds and not others, depending on
+    // whether anything in the program happens to collide with a standard-library name or declare a
+    // `typealias` three files away.
+    //
+    // Found from the other end: a probe type called `Queue` -- which the standard library also
+    // declares -- reported `use of undeclared variable 'itself'` inside its own resolver. The
+    // resolver was fine. Its layout had been emptied, so nothing knew the method was a resolver.
+    c.onArrange = cloneHook(d.onArrange);
     // EVERYTHING ELSE THE DECLARATION SAID ABOUT ITSELF, and it has to be everything.
     //
     // A CLONE THAT FORGETS IS A LANGUAGE THAT FORGETS. This function listed the facts it copied, so
@@ -1516,6 +1747,8 @@ ast::ClassDecl cloneClass(const ast::ClassDecl& d, const Subst& s, const std::st
     // again, and it will show up as a keyword that stops meaning anything in a program that happens
     // to contain an alias.
     c.isLayout = d.isLayout;
+    c.permitsReorder = d.permitsReorder;   // what the layout concedes, not merely that it is one
+    c.permitsPadding = d.permitsPadding;
     c.isUnion = d.isUnion;
     c.isHeap = d.isHeap;
     c.isRegionClass = d.isRegionClass;
@@ -1656,7 +1889,8 @@ void collectExpr(const ast::Expr* e, const std::set<std::string>& g, InstMap& ou
     if (const auto* x = dynamic_cast<const ast::IndexExpr*>(e)) { collectExpr(x->array.get(), g, out); collectExpr(x->index.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
     if (const auto* x = dynamic_cast<const ast::ExtractExpr*>(e)) { collectExpr(x->target.get(), g, out); return; }
-    if (dynamic_cast<const ast::MarkExpr*>(e) != nullptr) {
+    if (dynamic_cast<const ast::MarkExpr*>(e) != nullptr ||
+        dynamic_cast<const ast::RegionSpaceExpr*>(e) != nullptr) {
         return;  // no sub-expressions
     }
     if (const auto* x = dynamic_cast<const ast::TryExpr*>(e)) { collectExpr(x->operand.get(), g, out); return; }
@@ -1828,7 +2062,8 @@ void collectMethExpr(const ast::Expr* e, MethInsts& out) {
     if (const auto* x = dynamic_cast<const ast::IndexExpr*>(e)) { collectMethExpr(x->array.get(), out); collectMethExpr(x->index.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::MoveExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
     if (const auto* x = dynamic_cast<const ast::ExtractExpr*>(e)) { collectMethExpr(x->target.get(), out); return; }
-    if (dynamic_cast<const ast::MarkExpr*>(e) != nullptr) {
+    if (dynamic_cast<const ast::MarkExpr*>(e) != nullptr ||
+        dynamic_cast<const ast::RegionSpaceExpr*>(e) != nullptr) {
         return;  // no sub-expressions
     }
     if (const auto* x = dynamic_cast<const ast::TryExpr*>(e)) { collectMethExpr(x->operand.get(), out); return; }
@@ -1988,7 +2223,8 @@ void rewriteMethExpr(ast::Expr* e) {
     if (auto* x = dynamic_cast<ast::IndexExpr*>(e)) { rewriteMethExpr(x->array.get()); rewriteMethExpr(x->index.get()); return; }
     if (auto* x = dynamic_cast<ast::MoveExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
     if (auto* x = dynamic_cast<ast::ExtractExpr*>(e)) { rewriteMethExpr(x->target.get()); return; }
-    if (dynamic_cast<ast::MarkExpr*>(e) != nullptr) {
+    if (dynamic_cast<ast::MarkExpr*>(e) != nullptr ||
+        dynamic_cast<ast::RegionSpaceExpr*>(e) != nullptr) {
         return;  // no sub-expressions
     }
     if (auto* x = dynamic_cast<ast::TryExpr*>(e)) { rewriteMethExpr(x->operand.get()); return; }
@@ -2549,6 +2785,8 @@ void resolveTypeAliases(ast::Program& program) {
                 ast::ClassDecl rewritten = cloneClass(c, empty, c.name);
                 rewritten.typeParams = c.typeParams;  // cloneClass drops these; keep generics generic
                 rewritten.typeParamVariance = c.typeParamVariance;
+                rewritten.typeParamFixed = c.typeParamFixed;          // A.3: and WHEN each binds
+                rewritten.typeParamValueType = c.typeParamValueType;  // ...and what kind it is
                 // ...AND `isProcedure`, for the same reason and with the same shape.
                 //
                 // `cloneMember` drops that flag ON PURPOSE: the same copier is what injects a
@@ -2575,6 +2813,7 @@ void resolveTypeAliases(ast::Program& program) {
                         ++j;
                         if (from != nullptr && from->name == to->name) {
                             to->isProcedure = from->isProcedure;
+                            to->isLayoutResolver = from->isLayoutResolver;   // a body that is data
                             break;
                         }
                     }
@@ -3006,6 +3245,8 @@ void qualifyNamespaces(ast::Program& program) {
                 ast::ClassDecl rewritten = cloneClass(c, subst, newName);
                 rewritten.typeParams = c.typeParams;  // cloneClass drops these; keep generics generic
                 rewritten.typeParamVariance = c.typeParamVariance;
+                rewritten.typeParamFixed = c.typeParamFixed;          // A.3: and WHEN each binds
+                rewritten.typeParamValueType = c.typeParamValueType;  // ...and what kind it is
                 // cloneClass does not run these name fields through the subst:
                 if (auto it = subst.find(rewritten.superclass); it != subst.end()) {
                     rewritten.superclass = it->second;
@@ -3537,12 +3778,18 @@ bool monomorphize(ast::Program& program) {
     }
     // Index generic templates by name.
     std::map<std::string, const ast::ClassDecl*> templates;
+    // ...AND WHERE EACH ONE LIVED, because an instantiation belongs where its template does.
+    // See the placement loop at the end of this function for what went wrong without it. A
+    // `Namespace*` survives: the namespaces themselves are never moved, only their `classes`
+    // vectors are rebuilt.
+    std::map<std::string, ast::Namespace*> templateHome;
     std::set<std::string> generics;
     for (auto& b : program.bundles) {
         for (auto& ns : b.namespaces) {
             for (auto& c : ns.classes) {
                 if (!c.typeParams.empty()) {
                     templates[c.name] = &c;
+                    templateHome[c.name] = &ns;
                     generics.insert(c.name);
                     // Record the template's namespace before it is dropped, so the analyzer can enforce
                     // imports on a generic by its base name (a stdlib collection requires an import; a
@@ -3625,6 +3872,50 @@ bool monomorphize(ast::Program& program) {
                 for (auto& m : c.members) {
                     if (auto* meth = dynamic_cast<ast::MethodDecl*>(m.get())) {
                         collectMethBlock(meth->body, methInsts);
+                    }
+                }
+            }
+        }
+    }
+
+    /* A GENERIC METHOD'S SIGNATURE CAN NAME A GENERIC CLASS IN TERMS OF ITS OWN PARAMETER.
+     *
+     * `Arrays.equal<T>(T[] a, T[] b, Comparer<T>* compare)` needs `Comparer<int>` to exist, and
+     * `Comparer<int>` becomes a concrete name only when T is bound -- which happens in
+     * `expandGenericMethods`, long after this pass has finished generating classes. So it is bound
+     * HERE, once per instantiation the program actually asks for, and the resulting class
+     * instantiations join the worklist like any other.
+     *
+     * Over EVERY class, not only the generic ones: `Arrays` is not generic and `equal<T>` is, which
+     * is the commonest shape of all -- a static helper parameterised over what it works on. The
+     * instantiation walk below only reaches classes it GENERATES, so a non-generic class's generic
+     * method was never asked this question, and its parameter type came out naming a class the
+     * program does not contain. The call `compare(a[i], b[i])` then read as a call to nothing.
+     *
+     * Invisible until now because a callable parameter used to be spelled `function<int, T, T>`,
+     * which is structural: it has no instantiation to miss. */
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                for (auto& m : c.members) {
+                    const auto* meth = dynamic_cast<const ast::MethodDecl*>(m.get());
+                    if (meth == nullptr || meth->typeParams.empty()) {
+                        continue;
+                    }
+                    for (const MethInst& mi : methInsts) {
+                        if (mi.first != meth->name || mi.second.size() != meth->typeParams.size()) {
+                            continue;
+                        }
+                        Subst ms;
+                        for (std::size_t i = 0; i < mi.second.size(); ++i) {
+                            ms[meth->typeParams[i]] = mi.second[i];
+                        }
+                        ast::MemberPtr cm = cloneMember(meth, ms);
+                        const auto* bound = static_cast<const ast::MethodDecl*>(cm.get());
+                        for (const ast::Param& p : bound->params) {
+                            collectType(p.type, generics, insts);
+                        }
+                        collectType(bound->returnType, generics, insts);
                     }
                 }
             }
@@ -3756,7 +4047,22 @@ bool monomorphize(ast::Program& program) {
                     ms[gm->typeParams[i]] = mi.second[i];
                 }
                 ast::MemberPtr cm = cloneMember(gm, ms);
-                collectBlock(static_cast<const ast::MethodDecl*>(cm.get())->body, generics, more);
+                const auto* bound = static_cast<const ast::MethodDecl*>(cm.get());
+                collectBlock(bound->body, generics, more);
+                /* ...AND ITS SIGNATURE, which is where the gap was.
+                   `map<R>(Mapper<T, R>* transform)` names a generic class in a PARAMETER, and
+                   `Mapper<int, int>` becomes a concrete type only once R is bound -- which happens
+                   here. Only the body was being collected from, so the instantiation was never
+                   generated, and the method came out taking a class the program does not contain:
+                   the call `transform(x)` then read as a call to nothing, and the compiler answered
+                   with the nearest same-named method it could find, in another class entirely.
+                   Invisible while the callable type was `function<...>`, which is structural and
+                   needs no instantiation -- so the gap arrived with the first library signature that
+                   named a generic type in terms of a method's own parameter. */
+                for (const ast::Param& p : bound->params) {
+                    collectType(p.type, generics, more);
+                }
+                collectType(bound->returnType, generics, more);
             }
         }
         for (const auto& [mm, pp] : more) {
@@ -3786,9 +4092,41 @@ bool monomorphize(ast::Program& program) {
             }
         }
     }
-    if (sink != nullptr) {
-        for (auto& c : generated) {
-            sink->classes.push_back(std::move(c));
+    // EACH INSTANTIATION GOES HOME -- to the namespace its TEMPLATE was declared in.
+    //
+    // Every one of them used to go into `sink`, which is *the first namespace of the first bundle*
+    // and has nothing to do with any of them. For most of the compiler that was harmless: names are
+    // mangled and resolved by key, so which namespace held `ArrayList$String` never came up.
+    //
+    // IT CAME UP AT `unimport namespace X`, which is the one statement whose meaning is *every type
+    // in this namespace*. A program that said `unimport namespace app` got its own two classes and,
+    // sitting in the same namespace by accident of this line, every generic instantiation in the
+    // program -- `ArrayList$String`, `Option$Certificate*`, forty more, almost all of them the
+    // standard library's. And §30 means `unimport` literally: their vtables were poisoned to the
+    // trap and their machine code overwritten with `int3`. The next `println` ran into it.
+    //
+    // The symptom is worth recording because it is why this survived: the process died with **no
+    // output at all**, since stdout was a pipe and the buffered lines went with it -- while on a
+    // console the same program printed first and appeared to fail somewhere later entirely.
+    //
+    // And it was HIDDEN, not absent. Every prelude class used to be given an implicit `Object` base
+    // whether it needed one or not; removing that (`dynamic`'s last debt) changed which classes have
+    // a vtable at all, and this fell out immediately. A bug that only shows when an unrelated
+    // pessimisation is removed is one the pessimisation was paying for.
+    for (auto& c : generated) {
+        const std::size_t at = c.name.find('$');
+        ast::Namespace* home = nullptr;
+        if (at != std::string::npos) {
+            auto it = templateHome.find(c.name.substr(0, at));
+            if (it != templateHome.end()) {
+                home = it->second;
+            }
+        }
+        if (home == nullptr) {
+            home = sink;   // a name no template claims: nowhere better, and nothing depends on it
+        }
+        if (home != nullptr) {
+            home->classes.push_back(std::move(c));
         }
     }
     // Mangle generic superclasses now that every concrete class exists (Derived$int
@@ -3821,7 +4159,7 @@ bool monomorphize(ast::Program& program) {
 // `delegate`: satisfy an interface by FORWARDING to a field.
 //
 // The word does not mean "function pointer" here -- that is C#'s idiosyncrasy, and Polaron already spells
-// callables four ways (`function<>`, `typealias`, `methodref`, `unknown <world> funcptr<>`). It means
+// callables four ways (`function<>`, `typealias`, `methodref`, `unknown <world> methodptr<>`). It means
 // what it means in OOP: this object receives a message and passes it to the component that actually
 // knows how to answer it.
 //
@@ -3983,6 +4321,441 @@ ast::MemberPtr makeForwarder(const ast::FieldDecl& f, const ast::MethodDecl& owe
 }
 
 }  // namespace
+
+// ---- `command`: portable behaviour, expanded into an ordinary class ----
+//
+// A COMMAND IS AN OBJECT, and this is where it becomes one. `{code, env}` is what every language
+// builds by hand for a closure -- a method and a `this` with no type between them -- so a command is
+// that pair said honestly: the baggage becomes FIELDS, the signature becomes a METHOD, and the
+// language it lowers into is the one it already has.
+//
+//     public command aboveAge(Dog& d) carries (int minAge) into pack returns boolean {
+//         return d.age() >= pack.minAge;
+//     }
+//
+// becomes, in the same namespace:
+//
+//     public class Kennel$aboveAge {
+//         private mutable int minAge;
+//         public constructor Kennel$aboveAge(int minAge) { this.minAge = minAge; }
+//         public method __command(Dog& d) returns boolean { return d.age() >= this.minAge; }
+//     }
+//
+// and the member itself becomes a static factory on `Kennel`, so `Kennel.aboveAge(21)` builds one.
+// Everything downstream -- type checking, the region binder, codegen, reflection -- sees a class and
+// a method it already understands, the same bargain `delegate` and `yield` make.
+//
+// `pack.X` BECOMES `this.X`, and that rewrite is the whole of what `into` buys: inside the body a
+// read of carried state is spelled differently from a read of anything else, so the two can never be
+// confused by a reader -- and after this pass they are the same thing, which is what makes the name
+// free.
+
+namespace {
+
+// One role, as the matcher needs it: what it is called, what it is generic over, and the shape it
+// asks for -- every type canonical, so `Dog&` and a renamed-by-`qualifyNamespaces` `Dog` land on the
+// same spelling the analyzer and codegen already agree on.
+struct CommandRole {
+    std::string name;
+    std::vector<std::string> typeParams;   // empty for the ordinary, non-generic role
+    std::vector<std::string> params;       // canonical, in order
+    std::string returns;
+};
+
+// The trailing markers of a type name -- `*`, `**`, `&`, `[]` -- with the base in front. A role
+// written `T& a` must be answered by `Dog& d` and not by `Dog* d`, so the markers are compared and
+// only the base is allowed to be the hole.
+std::string typeSuffix(const std::string& t) {
+    std::size_t cut = t.size();
+    while (cut > 0) {
+        const char c = t[cut - 1];
+        if (c == '*' || c == '&') {
+            --cut;
+        } else if (cut >= 2 && t[cut - 1] == ']' && t[cut - 2] == '[') {
+            cut -= 2;
+        } else {
+            break;
+        }
+    }
+    return t.substr(cut);
+}
+
+/* DOES THIS COMMAND PLAY THIS ROLE, and if the role is generic, with what?
+
+   For a plain role it is equality: the parameter types in order, then the answer. For a generic one
+   -- `command Comparer<T>(T a, T b) returns int;` -- a type param is a HOLE, and what fills it has
+   to be the same thing every time it appears: `Comparer<T>` is answered by `(int, int) -> int` and
+   by `(Dog*, Dog*) -> int`, and NOT by `(int, Dog*) -> int`, which is what makes the role a
+   statement about the command rather than a shape with two independent blanks.
+
+   On success `args` holds what each hole was filled with, in declaration order -- which is exactly
+   the `implements Comparer<int>` the generated class needs. */
+bool commandFitsRole(const CommandRole& role, const ast::MethodDecl& m,
+                     std::vector<std::string>& args) {
+    if (role.params.size() != m.params.size()) {
+        return false;
+    }
+    std::map<std::string, std::string> bound;
+    auto unify = [&](const std::string& want, const std::string& got) {
+        const std::string suffix = typeSuffix(want);
+        const std::string base = want.substr(0, want.size() - suffix.size());
+        const bool isHole =
+            std::find(role.typeParams.begin(), role.typeParams.end(), base) != role.typeParams.end();
+        if (!isHole) {
+            return want == got;
+        }
+        if (typeSuffix(got) != suffix || got.size() <= suffix.size()) {
+            return false;   // `T&` is not answered by `Dog*`, and a hole is not the empty name
+        }
+        const std::string fill = got.substr(0, got.size() - suffix.size());
+        auto seen = bound.find(base);
+        if (seen != bound.end()) {
+            return seen->second == fill;   // the same hole, filled twice, must agree
+        }
+        bound[base] = fill;
+        return true;
+    };
+    for (std::size_t i = 0; i < role.params.size(); ++i) {
+        if (!unify(role.params[i], canonicalType(m.params[i].type))) {
+            return false;
+        }
+    }
+    if (!unify(role.returns, canonicalType(m.returnType))) {
+        return false;
+    }
+    args.clear();
+    for (const std::string& tp : role.typeParams) {
+        auto fill = bound.find(tp);
+        if (fill == bound.end()) {
+            return false;   // a hole the signature never mentions cannot be decided from a call
+        }
+        args.push_back(fill->second);
+    }
+    return true;
+}
+
+}  // namespace
+
+void expandCommands(ast::Program& program) {
+    /* THE ROLES, GATHERED FIRST -- every `command DogTest(Dog& d) returns boolean;` in the program,
+       keyed by the shape it asks for.
+
+       Imported bundles are read too, and that is the point rather than an oversight: a library
+       declares the role its API takes, and a program in another bundle writes the command that fits.
+       Neither names the other. (The generated CLASSES of an imported bundle are skipped below, as
+       they always were -- those were expanded by the build that produced the .polb.) */
+    std::vector<CommandRole> roles;
+    for (auto& b : program.bundles) {
+        for (auto& ns : b.namespaces) {
+            for (auto& c : ns.classes) {
+                if (!c.isCommandType || c.members.empty()) {
+                    continue;
+                }
+                const auto* sig = dynamic_cast<const ast::MethodDecl*>(c.members.front().get());
+                if (sig == nullptr) {
+                    continue;
+                }
+                CommandRole r;
+                r.name = c.name;
+                r.typeParams = c.typeParams;
+                for (const ast::Param& p : sig->params) {
+                    r.params.push_back(canonicalType(p.type));
+                }
+                r.returns = canonicalType(sig->returnType);
+                roles.push_back(std::move(r));
+            }
+        }
+    }
+
+    for (auto& b : program.bundles) {
+        if (b.isImported) {
+            continue;   // its declarations were expanded by the build that produced the .polb
+        }
+        for (auto& ns : b.namespaces) {
+            std::vector<ast::ClassDecl> made;
+            for (auto& c : ns.classes) {
+                for (ast::MemberPtr& m : c.members) {
+                    auto* cmd = dynamic_cast<ast::MethodDecl*>(m.get());
+                    if (cmd == nullptr || !cmd->isCommand) {
+                        continue;
+                    }
+                    const std::string cls = c.name + "$" + cmd->name;
+
+                    ast::ClassDecl made1;
+                    made1.name = cls;
+                    made1.visibility = "public";
+                    made1.loc = cmd->loc;
+
+                    // The baggage, as fields -- one per entry, in the order it was written.
+                    for (const ast::Param& p : cmd->carries) {
+                        auto f = std::make_unique<ast::FieldDecl>();
+                        f->loc = cmd->loc;
+                        f->visibility = "private";
+                        f->isMutable = true;
+                        f->type = p.type;
+                        f->name = p.name;
+                        made1.members.push_back(std::move(f));
+                    }
+                    // ...and the constructor that fills them, which is what makes the baggage
+                    // COPIED at construction rather than referred to: an ordinary assignment, with
+                    // the ordinary meaning it has everywhere else in the language.
+                    auto ctor = std::make_unique<ast::ConstructorDecl>();
+                    ctor->loc = cmd->loc;
+                    ctor->visibility = "public";
+                    ctor->params = cmd->carries;
+                    ctor->body.loc = cmd->loc;
+                    for (const ast::Param& p : cmd->carries) {
+                        auto self = std::make_unique<ast::IdentifierExpr>();
+                        self->name = "this";
+                        self->loc = cmd->loc;
+                        auto target = std::make_unique<ast::MemberExpr>();
+                        target->object = std::move(self);
+                        target->member = p.name;
+                        target->loc = cmd->loc;
+                        auto from = std::make_unique<ast::IdentifierExpr>();
+                        from->name = p.name;
+                        from->loc = cmd->loc;
+                        auto as = std::make_unique<ast::AssignStmt>();
+                        as->target = std::move(target);
+                        as->value = std::move(from);
+                        as->loc = cmd->loc;
+                        ctor->body.statements.push_back(std::move(as));
+                    }
+                    made1.members.push_back(std::move(ctor));
+
+                    // The body, with `pack.x` now reading `this.x`.
+                    auto run = std::make_unique<ast::MethodDecl>();
+                    run->loc = cmd->loc;
+                    run->visibility = "public";
+                    run->name = kCommandMethod;
+                    run->params = cmd->params;
+                    run->returnType = cmd->returnType;
+                    run->throwsTypes = cmd->throwsTypes;
+                    run->requiresClauses = std::move(cmd->requiresClauses);
+                    run->ensuresClauses = std::move(cmd->ensuresClauses);
+                    run->isSurveyed = cmd->isSurveyed;
+                    run->isReentrant = cmd->isReentrant;
+                    /* `pack.x` BECOMES `this.x`, and it is `cloneBlock` that does it rather than a
+                       walker written here.
+
+                       The cloner already renames an identifier standing in RECEIVER position -- that
+                       is how a renamed type keeps its own static self-calls working -- and `pack` is
+                       exactly a receiver. Reusing it means this rewrite cannot fall behind: a second
+                       visitor over the tree goes out of date the first time a node kind is added,
+                       quietly, and only here. The same argument the field-splice rewrite makes two
+                       hundred lines above, for the same reason. */
+                    if (cmd->packName.empty()) {
+                        run->body = std::move(cmd->body);
+                    } else {
+                        Subst toThis;
+                        toThis[cmd->packName] = "this";
+                        run->body = cloneBlock(cmd->body, toThis);
+                    }
+                    /* AND EVERY ROLE IT FITS, without either side having named the other.
+                       "Conformidade estrutural": a command satisfies a command type when the
+                       signatures agree, which is the only thing either party can check and the only
+                       thing either needs. Written as `implements`, so the analyzer, the vtable
+                       layout and the call site all handle it with the machinery interfaces already
+                       have -- there is no second dispatch mechanism here, only a second way of
+                       arriving at the first one.
+
+                       All of them, not the first: one command may be a `DogTest` and a `Predicate`
+                       at once, and refusing the second would make the roles compete for it. */
+                    std::vector<std::string> args;
+                    for (const CommandRole& role : roles) {
+                        if (!commandFitsRole(role, *run, args)) {
+                            continue;
+                        }
+                        made1.interfaces.push_back(role.name);
+                        made1.interfaceTypeArgs.push_back(args);
+                        // Answering an interface's method is overriding it, and the language says so
+                        // out loud at every hand-written implementation. The word is not decoration
+                        // here either: without it the analyzer refuses the class it just built.
+                        run->isOverride = true;
+                    }
+                    made1.members.push_back(std::move(run));
+                    made.push_back(std::move(made1));
+
+                    // AND THE MEMBER BECOMES A FACTORY, static on the declaring class -- so one is
+                    // built by naming it the way everything static is named, `Kennel.aboveAge(21)`,
+                    // and the rule that a static method is called through its class covers commands
+                    // without a word of its own.
+                    auto factory = std::make_unique<ast::MethodDecl>();
+                    factory->loc = cmd->loc;
+                    factory->visibility = cmd->visibility;
+                    factory->isStatic = true;
+                    factory->name = cmd->name;
+                    factory->params = cmd->carries;
+                    factory->returnType.name = cls;
+                    factory->returnType.isPointer = true;
+                    // ...AND ITS DEPTH, because the two spellings of "is a pointer" are read by
+                    // different halves of the compiler: `typeRefStr` asks `isPointer`, and
+                    // `canonicalType` counts `pointerDepth`. With only the flag set, the same type
+                    // rendered as `Gate$aboveFloor*` in one place and `Gate$aboveFloor` in another,
+                    // and an argument check between the two reported "2 levels of pointer too few".
+                    factory->returnType.pointerDepth = 1;
+                    factory->body.loc = cmd->loc;
+                    auto build = std::make_unique<ast::NewExpr>();
+                    build->loc = cmd->loc;
+                    build->className = cls;
+                    build->location = "heap";
+                    build->locationWritten = true;
+                    for (const ast::Param& p : cmd->carries) {
+                        auto a = std::make_unique<ast::IdentifierExpr>();
+                        a->name = p.name;
+                        a->loc = cmd->loc;
+                        build->args.push_back(std::move(a));
+                    }
+                    auto rs = std::make_unique<ast::ReturnStmt>();
+                    rs->value = std::move(build);
+                    rs->loc = cmd->loc;
+                    factory->body.statements.push_back(std::move(rs));
+                    m = std::move(factory);
+                }
+            }
+            /* `methodref cat.speak` -- A RECEIVER BOUND TO A METHOD, which is a command carrying one
+               thing. So it becomes one, the same way everything else here does:
+
+                   public class Animal$bound$speak {
+                       private mutable Animal* self;
+                       public constructor Animal$bound$speak(Animal* self) { this.self = self; }
+                       public method __command(int n) returns int { return this.self.speak(n); }
+                   }
+
+               The forwarding call inside is an ORDINARY call on an ordinary receiver, which is what
+               keeps virtual dispatch: `methodref cat.speak` on an `Animal` holding a `Cat` runs
+               `Cat.speak`, because the call in the body is resolved by the object the way every
+               other call is. Nothing here has to know about overriding, and nothing can lose it.
+
+               Generated per class that DECLARES a method of a name some `methodref` used -- a list
+               the parser wrote down -- rather than per (class, method) pair in the program, which
+               for a construct most programs never use would be an explosion. Which of them a given
+               reference means is settled later, by the analyzer, where the receiver has a type. */
+            for (ast::ClassDecl& c : ns.classes) {
+                if (!c.typeParams.empty() || c.isInterface || c.isTransformer || c.isLayout) {
+                    continue;   // a generic's binding would need type arguments nobody has yet
+                }
+                std::vector<ast::ClassDecl> bound;
+                for (const ast::MemberPtr& m : c.members) {
+                    const auto* target = dynamic_cast<const ast::MethodDecl*>(m.get());
+                    if (target == nullptr || target->isStatic || target->isCommand ||
+                        target->isProcedure || target->isAbstract ||
+                        program.methodRefNames.count(target->name) == 0) {
+                        continue;
+                    }
+                    ast::ClassDecl one;
+                    one.name = c.name + "$bound$" + target->name;
+                    one.visibility = "public";
+                    one.loc = target->loc;
+
+                    auto self = std::make_unique<ast::FieldDecl>();
+                    self->loc = target->loc;
+                    self->visibility = "private";
+                    self->isMutable = true;
+                    self->type.name = c.name;
+                    self->type.isPointer = true;
+                    self->type.pointerDepth = 1;
+                    self->name = "self";
+                    one.members.push_back(std::move(self));
+
+                    auto ctor = std::make_unique<ast::ConstructorDecl>();
+                    ctor->loc = target->loc;
+                    ctor->visibility = "public";
+                    ast::Param p;
+                    p.loc = target->loc;
+                    p.name = "self";
+                    p.type.name = c.name;
+                    p.type.isPointer = true;
+                    p.type.pointerDepth = 1;
+                    ctor->params.push_back(p);
+                    ctor->body.loc = target->loc;
+                    {
+                        auto here = std::make_unique<ast::IdentifierExpr>();
+                        here->name = "this";
+                        here->loc = target->loc;
+                        auto slot = std::make_unique<ast::MemberExpr>();
+                        slot->object = std::move(here);
+                        slot->member = "self";
+                        slot->loc = target->loc;
+                        auto from = std::make_unique<ast::IdentifierExpr>();
+                        from->name = "self";
+                        from->loc = target->loc;
+                        auto as = std::make_unique<ast::AssignStmt>();
+                        as->target = std::move(slot);
+                        as->value = std::move(from);
+                        as->loc = target->loc;
+                        ctor->body.statements.push_back(std::move(as));
+                    }
+                    one.members.push_back(std::move(ctor));
+
+                    auto run = std::make_unique<ast::MethodDecl>();
+                    run->loc = target->loc;
+                    run->visibility = "public";
+                    run->name = kCommandMethod;
+                    run->params = target->params;
+                    run->returnType = target->returnType;
+                    run->throwsTypes = target->throwsTypes;
+                    run->body.loc = target->loc;
+                    {
+                        auto here = std::make_unique<ast::IdentifierExpr>();
+                        here->name = "this";
+                        here->loc = target->loc;
+                        auto slot = std::make_unique<ast::MemberExpr>();
+                        slot->object = std::move(here);
+                        slot->member = "self";
+                        slot->loc = target->loc;
+                        auto callee = std::make_unique<ast::MemberExpr>();
+                        callee->object = std::move(slot);
+                        callee->member = target->name;
+                        callee->loc = target->loc;
+                        auto forward = std::make_unique<ast::CallExpr>();
+                        forward->callee = std::move(callee);
+                        forward->loc = target->loc;
+                        for (const ast::Param& q : target->params) {
+                            auto a = std::make_unique<ast::IdentifierExpr>();
+                            a->name = q.name;
+                            a->loc = target->loc;
+                            forward->args.push_back(std::move(a));
+                            forward->argNames.emplace_back();
+                        }
+                        if (canonicalType(target->returnType) == "void") {
+                            auto st = std::make_unique<ast::ExprStmt>();
+                            st->expr = std::move(forward);
+                            st->loc = target->loc;
+                            run->body.statements.push_back(std::move(st));
+                            auto rs = std::make_unique<ast::ReturnStmt>();
+                            rs->loc = target->loc;
+                            run->body.statements.push_back(std::move(rs));
+                        } else {
+                            auto rs = std::make_unique<ast::ReturnStmt>();
+                            rs->value = std::move(forward);
+                            rs->loc = target->loc;
+                            run->body.statements.push_back(std::move(rs));
+                        }
+                    }
+                    std::vector<std::string> args;
+                    for (const CommandRole& role : roles) {
+                        if (!commandFitsRole(role, *run, args)) {
+                            continue;
+                        }
+                        one.interfaces.push_back(role.name);
+                        one.interfaceTypeArgs.push_back(args);
+                        run->isOverride = true;
+                    }
+                    one.members.push_back(std::move(run));
+                    bound.push_back(std::move(one));
+                }
+                for (ast::ClassDecl& one : bound) {
+                    made.push_back(std::move(one));
+                }
+            }
+
+            for (ast::ClassDecl& c : made) {
+                ns.classes.push_back(std::move(c));
+            }
+        }
+    }
+}
 
 bool expandDelegates(ast::Program& program) {
     bool ok = true;

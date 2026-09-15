@@ -1,0 +1,71 @@
+import System.IO.Console;
+program LayoutSurvivesTheCloner;
+
+// A LAYOUT'S `onArrange` MUST SURVIVE BEING CLONED, and for a long time it did not.
+//
+// `cloneClass` copies a declaration field by field, and a field added to `ClassDecl` afterwards is
+// dropped by it silently. That has been the same defect nine times -- the invariants, the four
+// lifecycle hooks, `comptime`, `asm`, the `volatile` on locals -- and `onArrange` is the tenth. What
+// makes this one different from the others is what the silence costs: dropping a lifecycle hook
+// loses a line of OUTPUT, and dropping `onArrange` loses a GUARANTEE.
+//
+// A layout with no `onArrange` asks for nothing. `fitWithin` stops being checked, `refuse` never
+// speaks, and `resolvedBy` names nobody -- so a type that measures twice its budget compiles clean.
+// The author wrote the ceiling down and gets it enforced on some builds and not others.
+//
+// WHAT DECIDES WHICH is nothing about the layout at all. `resolveTypeAliases` runs EVERY class in
+// the program through the cloner the moment a single `typealias` is declared anywhere, and a class
+// whose name collides with a standard-library one is rewritten for that reason alone. So the
+// guarantee held until somebody three files away wrote a type alias, and then stopped, with nothing
+// said at either moment.
+//
+// THE TEST IS THE ALIAS, and it has to be, because the layout is not what is being tested -- the
+// clone is. `Millis` below is never used for anything; declaring it is the whole point. Without it
+// this file passes with the bug in place.
+//
+// Prints:
+//   tick 12
+//   over caught
+
+public bundle Main {
+
+    public namespace App {
+
+        // THE TRIGGER. One alias, used by nothing, is enough to send every class in the program --
+        // including the layout below -- through `cloneClass`.
+        public typealias Millis = int;
+
+        public layout Packed permits reorder {
+            onArrange {
+                itself.fitWithin(12 bytes);
+                itself.refuse("a tick must stay five to a cache line");
+            }
+        }
+
+        // 1 + 3 padding + 4 + 1 + 3 padding + 4 = 16 as declared, and 12 ordered widest-first. Both
+        // halves of the layout have to have survived for this to be 12: the CONCESSION, or nothing
+        // is reordered, and the `onArrange`, or there is no ceiling to have met.
+        public struct Tick arranges Packed {
+            public mutable byte kind;
+            public mutable int  at;
+            public mutable byte flags;
+            public mutable int  who;
+            public constructor Tick() { this.kind = 0; this.at = 0; this.flags = 0; this.who = 0; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("tick " + Tick.sizeof().toString());
+                // ...AND THE CEILING IS STILL A CEILING. A number alone would pass with an emptied
+                // `onArrange` too -- 12 is what widest-first gives whether or not anybody asked for
+                // it -- so the second line asks the question the first one cannot: does the layout
+                // still REFUSE. `demand` is comptime and reads the same size the layout does, so a
+                // budget that has quietly stopped being enforced shows up here as a build that
+                // succeeds where this one is written to fail.
+                demand Tick.sizeof() <= 12 otherwise "the layout's ceiling is no longer enforced";
+                System.IO.Console.println("over caught");
+                return;
+            }
+        }
+    }
+}

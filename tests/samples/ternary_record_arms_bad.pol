@@ -1,0 +1,34 @@
+import System.IO.Console;
+program TernaryRecordArmsBad;
+
+// A TERNARY WHOSE ARMS ARE TWO `record`s, WHICH USED TO MISCOMPILE IN SILENCE.
+//
+// A record read out of an array lowers to the element view; one built on the spot lowers to a
+// pointer to a temporary. The two shapes did not match, and the join quietly took `undef` on the
+// else edge -- so every pass through this loop produced the FIRST arm's value.
+//
+// It cost a compound-file writer its directory: all sixteen records came out carrying the root
+// entry's start and size, and Crystal refused the file with "Registro TLV invalido". The same
+// `undef` reaching a parameter corrupted the heap, and that surfaced two frames away inside
+// `ArrayList.get`, reporting an index of 1 against a length of 16 -- which is not out of bounds and
+// cannot happen.
+//
+// Joining the two shapes is the fix worth having and is not written yet. Refusing is the fix that
+// can be written today: a program that does not build is worth more than one that builds and lies.
+public bundle Main {
+    public namespace App {
+        public record P(int start, int size) { }
+        public class Main {
+            public static method main(string[] args) returns void {
+                P[] placed = new P[5]();
+                for (mutable int i = 0; i < 5; i++) { placed[i] = new P(i * 10, i * 100); }
+                for (mutable int i = 0; i < 5; i++) {
+                    P where = i == 0 ? new P(999, 888) : placed[i];
+                    System.IO.Console.println($"i={i} start={where.start} size={where.size}");
+                }
+                delete placed;
+                return;
+            }
+        }
+    }
+}

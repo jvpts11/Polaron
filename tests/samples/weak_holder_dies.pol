@@ -1,0 +1,58 @@
+import System.IO.Console;
+import System.Memory.Units.kilobytes;
+program WeakHolderDies;
+
+// A `weak` FIELD LEAVES ITS TARGET'S LIST WHEN THE OBJECT HOLDING IT DIES.
+//
+// The field is a node on the list of the object it points at, and only WRITING the field ever took it
+// off -- so a watcher that died left its node on the room's list, and deleting the room walked sixteen
+// bytes of freed memory and wrote null into them. A pool hands a freed slot straight back, so here the
+// next watcher lives in those bytes, and the kitchen's delete nulled the hall watcher's field: it
+// printed `sees 0` for a hall that is still standing.
+//
+// The first watcher is deleted through its BASE class, which declares no weak field and no destructor:
+// the destructor that unlinks is the subclass's, and `delete from region` has to dispatch to it the way
+// a plain `delete` does.
+public bundle main {
+    public namespace app {
+        public class Room {
+            private mutable int area;
+            public constructor Room(int area) { this.area = area; }
+            public method size() returns int { return this.area; }
+        }
+        public class Handle {
+            public constructor Handle() { }
+            public method seen() returns int { return 0 - 1; }
+        }
+        public class Watcher extends Handle {
+            private mutable weak nullable Room* room;
+            public constructor Watcher(Room* r) {
+                super();
+                this.room = r;
+            }
+            public override method seen() returns int {
+                nullable Room* r = this.room;
+                if (r == null) { return 0; }
+                return r.size();
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                pool region pen = itself.allocate(4 kilobytes);
+                Room* kitchen = new Room(3) on heap;
+                Room* hall = new Room(7) on heap;
+                Handle* first = new Watcher(kitchen) in region pen;
+                address freed = cast<address>(first);
+                delete first from region pen;
+                Watcher* second = new Watcher(hall) in region pen;
+                int reused = cast<address>(second) == freed ? 1 : 0;
+                delete kitchen;
+                System.IO.Console.println($"reused {reused} sees {second.seen()}");
+                delete hall;
+                System.IO.Console.println($"after {second.seen()}");
+                release region pen;
+                return;
+            }
+        }
+    }
+}

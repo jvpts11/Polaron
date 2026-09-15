@@ -1,6 +1,7 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.Channel;
+import System.Commands.Action;
 program AwaitChannel;
 
 // `await ch.receive()` (spec 20.7): a channel receive already blocks for the value, so await is a
@@ -11,9 +12,10 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Channel<int> ch = new Channel<int>(4) on heap;
-                function<void> producer = lambda[captures: byvalue ch]() returns void {
+                Action* producer = command () carries (Channel<int>* out = ch) into pack
+                    returns void {
                     for (mutable int i = 1; i <= 5; i++) {
-                        ch.send(i);
+                        pack.out.send(i);
                     }
                 };
                 Thread t = new Thread(producer) on heap;

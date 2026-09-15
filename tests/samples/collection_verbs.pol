@@ -31,7 +31,7 @@ public bundle Main {
             public static method main(string[] args) returns void {
                 mutable ArrayList<int> xs = new ArrayList<int>() on heap;
                 xs.add(5); xs.add(3); xs.add(8); xs.add(1); xs.add(2);
-                xs.sort(lambda(int a, int b) returns int { return a - b; });
+                xs.sort(command (int a, int b) returns int { return a - b; });
                 System.IO.Console.printf("sorted=%s", Main.join(xs));
                 xs.reverse();
                 System.IO.Console.printf(" reversed=%s", Main.join(xs));

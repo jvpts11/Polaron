@@ -1,5 +1,6 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
+import System.Commands.Action;
 program LazyThread;
 
 // `lazy thread` (spec 37.3): the Thread object is created on first reference, not at the
@@ -10,8 +11,8 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 mutable int marker = 7;
-                function<void> work = lambda[captures: byvalue marker]() returns void {
-                    System.IO.Console.printf("thread ran %d\n", marker);
+                Action* work = command () carries (int seen = marker) into pack returns void {
+                    System.IO.Console.printf("thread ran %d\n", pack.seen);
                 };
                 System.IO.Console.println("before");
                 lazy Thread t = new Thread(work) on heap;  // not created yet

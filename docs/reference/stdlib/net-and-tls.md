@@ -105,7 +105,7 @@ match it against a pattern, answer.
 
 ```polaron
 Router* routes = new Router() on heap;
-routes.get("/things/{id}", lambda[](ServerRequest* q) returns ServerResponse* {
+routes.get("/things/{id}", command (ServerRequest* q) returns ServerResponse* {
     return new ServerResponse(ServerResponse.json("{\"id\":\"" + q.param("id") + "\"}")) on heap;
 });
 ServerResponse* answer = routes.dispatch(request);

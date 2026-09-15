@@ -114,11 +114,42 @@ every pool, slab and handle table — and the language has no word for that. `we
 is wrong here: it nulls on a target's DEATH, and a recycled slot never dies, so marking the field
 `weak` would silence the diagnostic and leave the bug.
 
-### What is still not built
+### The handle the language has no word for — decided (Wave 4.5): **it needs no word**
 
-`&mut` exclusivity — a separate question about aliasing, and it should stay one. Steps 1–3 plus §10
-reach **temporal** safety, which is what the region model was designed to promise; data-race freedom
-is a further rule and deserves to be decided rather than to arrive as a side effect.
+A validated handle into another object's pool — index plus generation — is not a reference, and that
+is exactly why it is the answer. It is a **value**: two integers, copied freely, stored anywhere,
+outliving whatever it points at without danger, because holding one is not holding the object. The
+region binder has nothing to refuse about it — and that is not the binder being evaded, it is the
+binder having nothing to say, because there is no lifetime relationship to check.
+
+**Every part is already in the language.** `stable entity` (`entity.md` §8) means rows never move, so
+an index is a permanent reference — that document's exact words. A generation counter is a column
+beside it. `Handle<T>` is then a two-field `record` in the prelude, and the pool's accessor compares
+the generation and returns `Option<T&>`: a recycled slot has a different generation, so a stale
+handle **reads as absent rather than as somebody else's object**, which is the bug this section opens
+by describing.
+
+**What is genuinely owed is the diagnostic, not the construct.** The message today offers two things
+the socket does not want — a copy, or ownership of a slot somebody else recycles — and never names
+the third. It should, and it should say why `weak` is wrong here in one line: *`weak` nulls when the
+target dies, and a recycled slot never dies, so it would silence this and leave the bug.* That
+sentence is in this document and not in the compiler, which is the whole distance left to travel.
+
+### What is still not built, and it is deliberate
+
+`&mut` exclusivity — a separate question about aliasing, and it stays one. Steps 1–3 plus §10 reach
+**temporal** safety, which is what the region model was designed to promise.
+
+**Data-race freedom is decided elsewhere and does not arrive here as a side effect**, which was the
+concern. `ownership.md` §13–14 makes `Shared` a checked property rather than a trusted marker, §18
+grades the five ways across a thread boundary, and §20.5 decides that **a region may not be
+`Shared`** — precisely because this binder's model is one activation at a time, and region release is
+bulk and instantaneous, so there is no per-object lifetime for a second thread to reason about. The
+answer for concurrent work is a region per thread with `move` across (§11), which has no
+synchronisation on allocation at all and is therefore faster than a shared region would be.
+
+The split is settled rather than pending: **temporal safety is this document's, data-race freedom is
+`ownership.md`'s, and neither is a side effect of the other.**
 
 ---
 

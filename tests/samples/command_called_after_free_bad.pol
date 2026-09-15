@@ -1,0 +1,51 @@
+import System.IO.Console;
+program CommandCalledAfterFreeBad;
+
+// A COMMAND IS A BODY THAT RUNS SOMEWHERE ELSE, and everything it carries is read THERE.
+//
+// The baggage is copied when the command is built -- but `Box* b` copies the POINTER, which the
+// declaration says out loud, and deleting through the local empties what the command holds. Nothing
+// used to see it: a body is analysed where it is WRITTEN, with the state that holds at that line,
+// and there `b` is perfectly alive. The call site knew the object was gone and had never looked
+// inside the thing it was calling.
+//
+// The two halves are each right on their own, which is what makes the gap: the body is correct where
+// it stands, and the call is correct as a call. What is wrong is the pairing, and only the call site
+// can see it.
+//
+// ANSWERED BY THE BAGGAGE LIST, at the call, with the state that holds THERE -- which is when the
+// body runs. A lambda needed its body replayed to find out what it held; `carries (Box* box)` says
+// it, so the two lines above are the whole summary and nothing has to be analysed twice. That also
+// makes the rule stricter than the replay was: a body that reaches the pointer through three calls
+// is covered anyway, because HOLDING it is what the declaration already said.
+//
+// The FIRST call is fine and stays silent; only the one below the `delete` is refused.
+//
+// Refused with Polaron-1724, at the call.
+
+public bundle Main {
+    public namespace App {
+        public command IntSource() returns int;
+
+        public class Box {
+            public mutable int n;
+            public constructor Box() { this.n = 1; }
+        }
+
+        public class Peek {
+            public command at() carries (Box* box) into pack returns int { return pack.box.n; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box* b = new Box() on heap;
+                IntSource* read = Peek.at(b);
+                int first = read();      // fine: `b` is alive here
+                delete b;
+                int second = read();     // <- the same body, run when `b` is gone
+                System.IO.Console.println($"{first} {second}");
+                return;
+            }
+        }
+    }
+}

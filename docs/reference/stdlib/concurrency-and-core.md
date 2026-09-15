@@ -36,13 +36,13 @@ How these types fit the rest of Polaron:
 - **Namespace:** `System.Concurrency`
 - **Import:** `import System.Concurrency.Thread;`
 
-An OS thread (spec 20.1). Holds a `function<void>` and its OS handle; `start()`/`join()` call the
-low-level thread builtins, which lower to `CreateThread` / `WaitForSingleObject`.
+An OS thread (spec 20.1). Holds an `Action` — the work — and its OS handle; `start()`/`join()` call
+the low-level thread builtins, which lower to `CreateThread` / `WaitForSingleObject`.
 
 Public members:
 
-- `public constructor Thread(function<void> w)` — creates a thread bound to the work closure `w`; the handle starts at 0 (not yet started).
-- `public method start() returns void` — spawns the OS thread running the closure (via `System.Concurrency.__threadStart`) and stores its handle.
+- `public constructor Thread(Action* w)` — creates a thread bound to the work `w`; the handle starts at 0 (not yet started).
+- `public method start() returns void` — spawns the OS thread (via `System.Concurrency.__threadStart`, which is handed `Thread.enter` and the command) and stores its handle.
 - `public method join() returns void` — blocks until the thread finishes (via `System.Concurrency.__threadJoin`).
 
 ---
@@ -107,8 +107,8 @@ import System.Concurrency.Thread;
 import System.Concurrency.Channel;
 
 Channel<int> ch = new Channel<int>(4) on heap;
-function<void> producer = lambda[captures: byvalue ch]() returns void {
-    for (mutable int i = 1; i <= 5; i++) { ch.send(i); }   // blocks if the buffer is full
+Action* producer = command () carries (Channel<int> out = ch) into pack returns void {
+    for (mutable int i = 1; i <= 5; i++) { pack.out.send(i); }   // blocks if the buffer is full
 };
 Thread t = new Thread(producer) on heap;
 t.start();
@@ -157,9 +157,9 @@ import System.Concurrency.Thread;
 import System.Concurrency.Mutex;
 
 Mutex<int> counter = new Mutex<int>(0) on heap;
-function<void> work = lambda[captures: byvalue counter]() returns void {
+Action* work = command () carries (Mutex<int> cell = counter) into pack returns void {
     for (mutable int i = 0; i < 100000; i++) {
-        synchronized (counter) using int& c { c = c + 1; }   // atomic increment
+        synchronized (pack.cell) using int& c { c = c + 1; }   // atomic increment
     }
 };
 Thread t1 = new Thread(work) on heap;
@@ -612,9 +612,9 @@ import System.Concurrency.Parallel;
 
 Data parallelism over a range, on the pool `Thread` uses.
 
-- `public static method forRange(int from, int to, function<void, int> body) returns void` — runs
+- `public static method forRange(int from, int to, Action1<int>* body) returns void` — runs
   `body(i)` for every `i`, shared between hardware threads.
-- `public static method forChunks(int from, int to, function<void, int, int> body) returns void` —
+- `public static method forChunks(int from, int to, Action2<int, int>* body) returns void` —
   runs `body(lo, hi)` once per chunk, which is what a loop with per-hand scratch state wants: one
   allocation per chunk instead of one per element.
 

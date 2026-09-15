@@ -349,6 +349,17 @@ void SemanticAnalyzer::computeOwnership(const ast::Program& program) {
                     if (!contents.empty()) {
                         invalidators_.insert(self + "." + m->name);
                     }
+                    // ...AND FREEING THE FIELD ITSELF IS THE SAME NEWS FOR A BORROWER. `reset()`
+                    // deletes `this.leaf` and puts a fresh one in its place: nothing about the
+                    // object is wrong afterwards, and everybody who took a reference out of it
+                    // before the call is holding the old one.
+                    //
+                    // Only outside a destructor. `~Holder` freeing its fields is the object ending,
+                    // which `delete` already reports at the caller; counting it here would say that
+                    // every class with a destructor invalidates borrows on every call to it.
+                    if (!freed.empty() && m->name != "~" + self) {
+                        invalidators_.insert(self + "." + m->name);
+                    }
                     // DELETING YOUR OWN FIELD IS CLAIMING IT, wherever you write it. A destructor is
                     // the usual place and not the only one: `Stack.pop` frees the node it unlinks,
                     // and a static field has no destructor that could ever speak for it -- `drop`
@@ -368,6 +379,155 @@ void SemanticAnalyzer::computeOwnership(const ast::Program& program) {
                     }
                 }
             }
+        }
+    }
+}
+
+// WHICH METHODS CHANGE THE OBJECT THEY ARE CALLED ON. Weaker than `invalidators_`, which is about
+// freeing what a field HOLDS, and it is the fact a walk over a collection needs: `add` frees nothing
+// and moves everything.
+//
+// READ OFF THE AST, and the first attempt did not. It searched the printed body for the words
+// "Assign" and "this", which conflates "assigns anything" with "assigns a field of this" -- and got
+// the two commonest cases exactly backwards. `toArray` writes `out[i] = this.data[i]` into a fresh
+// array and was called a mutation; `remove` shifts the tail by calling `this.removeAt(i)` and was
+// called read-only. A rule that refuses the copy and allows the removal is worse than no rule, and
+// it passed 1292 tests, because nothing in the corpus wrote either shape inside a `foreach`.
+//
+// So: an assignment whose target is rooted at `this`, a `delete` of one of our own fields, and --
+// transitively -- a call on `this` or on one of our fields that reaches one of those. The
+// transitive half is not a refinement: it is where `remove`, `push`, `pop` and every other method
+// that delegates its writing actually live.
+void SemanticAnalyzer::computeReceiverMutation(const ast::Program& program) {
+    // What each method calls on itself or on one of its own fields, kept so the fixpoint below has
+    // something to walk without re-visiting the AST.
+    std::unordered_map<std::string, std::vector<std::string>> callsOnSelf;
+
+    auto rootedAtThis = [](const ast::Expr* e) {
+        while (e != nullptr) {
+            if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(e)) {
+                e = ix->array.get();
+                continue;
+            }
+            if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(e)) {
+                e = mem->object.get();
+                continue;
+            }
+            const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e);
+            return id != nullptr && id->name == "this";
+        }
+        return false;
+    };
+
+    for (const ast::Bundle& bundle : program.bundles) {
+        for (const ast::Namespace& ns : bundle.namespaces) {
+            for (const ast::ClassDecl& cls : ns.classes) {
+                const std::string self = baseType(cls.name);
+                for (const ast::MemberPtr& member : cls.members) {
+                    const auto* m = dynamic_cast<const ast::MethodDecl*>(member.get());
+                    if (m == nullptr) {
+                        continue;
+                    }
+                    const std::string key = self + "." + m->name;
+                    std::function<void(const ast::Stmt&)> visit;
+                    // A LOCAL WALK, because the one in the statement checker is private to that
+                    // file. Nested blocks matter here: a write to `this.f` inside an `if` inside a
+                    // loop is the same write.
+                    std::function<void(const ast::Block&)> walk = [&](const ast::Block& blk) {
+                        for (const ast::StmtPtr& sp : blk.statements) {
+                            if (!sp) {
+                                continue;
+                            }
+                            const ast::Stmt& st = *sp;
+                            if (const auto* iff = dynamic_cast<const ast::IfStmt*>(&st)) {
+                                walk(iff->thenBlock);
+                                if (iff->elseBlock != nullptr) {
+                                    walk(*iff->elseBlock);
+                                }
+                            } else if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(&st)) {
+                                walk(wh->body);
+                            } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&st)) {
+                                walk(dw->body);
+                            } else if (const auto* fr = dynamic_cast<const ast::ForStmt*>(&st)) {
+                                walk(fr->body);
+                            } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) {
+                                walk(fe->body);
+                            }
+                            visit(st);
+                        }
+                    };
+                    auto visitOne = [&](const ast::Stmt& st) {
+                        if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
+                            if (rootedAtThis(as->target.get())) {
+                                mutatesReceiver_.insert(key);
+                            }
+                            return;
+                        }
+                        if (const auto* inc = dynamic_cast<const ast::IncDecStmt*>(&st)) {
+                            if (rootedAtThis(inc->target.get())) {
+                                mutatesReceiver_.insert(key);   // `this.count++` is a write
+                            }
+                            return;
+                        }
+                        if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(&st)) {
+                            if (rootedAtThis(del->target.get())) {
+                                mutatesReceiver_.insert(key);
+                            }
+                            return;
+                        }
+                        // A call on ourselves or on one of our fields, remembered for the fixpoint.
+                        const ast::Expr* made = nullptr;
+                        if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
+                            made = es->expr.get();
+                        } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+                            made = vd->init.get();
+                        }
+                        const auto* call = dynamic_cast<const ast::CallExpr*>(made);
+                        const auto* callee =
+                            call != nullptr ? dynamic_cast<const ast::MemberExpr*>(call->callee.get())
+                                            : nullptr;
+                        if (callee == nullptr) {
+                            return;
+                        }
+                        if (const auto* rid =
+                                dynamic_cast<const ast::IdentifierExpr*>(callee->object.get());
+                            rid != nullptr && rid->name == "this") {
+                            callsOnSelf[key].push_back(self + "." + callee->member);
+                        } else if (const auto* rmem =
+                                       dynamic_cast<const ast::MemberExpr*>(callee->object.get())) {
+                            if (const auto* oid =
+                                    dynamic_cast<const ast::IdentifierExpr*>(rmem->object.get());
+                                oid != nullptr && oid->name == "this") {
+                                if (const FieldInfo* fi = findField(self, rmem->member)) {
+                                    callsOnSelf[key].push_back(baseType(fi->type) + "." +
+                                                               callee->member);
+                                }
+                            }
+                        }
+                    };
+                    visit = visitOne;
+                    walk(m->body);
+                }
+            }
+        }
+    }
+    // MONOTONE, so it converges; bounded anyway, because a program has finitely many methods.
+    for (int round = 0; round < 8; ++round) {
+        bool grew = false;
+        for (const auto& [caller, callees] : callsOnSelf) {
+            if (mutatesReceiver_.count(caller) > 0) {
+                continue;
+            }
+            for (const std::string& callee : callees) {
+                if (mutatesReceiver_.count(callee) > 0) {
+                    mutatesReceiver_.insert(caller);
+                    grew = true;
+                    break;
+                }
+            }
+        }
+        if (!grew) {
+            break;
         }
     }
 }
@@ -864,6 +1024,14 @@ void SemanticAnalyzer::checkKeptArguments(const std::string& ownerClass,
     // about. Declaring the extern that way is the program stating where its own proof stops -- in
     // the declaration, once, rather than at every call.
     if (calleeIsExtern) {
+        // ...UNLESS THIS BODY IS SURVEYED, which is the one thing the word is for. The paragraph
+        // above is right that assuming a foreign function keeps nothing is a guess -- and a
+        // `surveyed` method is a person saying "I have read the other side, and I answer for this
+        // call". The guess does not disappear; it moves, from the compiler to a name and a line,
+        // and every caller of that method pays for it at the boundary.
+        if (inSurveyedBody_) {
+            return;
+        }
         for (std::size_t i = 0; i < call.args.size(); ++i) {
             const bool aliases = i < paramTypes.size() ? isRefType(paramTypes[i])
                                                        : isRefType(typeOf(*call.args[i]));
@@ -952,7 +1120,27 @@ void SemanticAnalyzer::checkKeptArguments(const std::string& ownerClass,
         // delete subject; eye.read();` with nothing connecting the three lines.
         if (receiver != nullptr) {   // a static call has none; static storage is not a borrower
             if (const std::string holder = describePath(*receiver); !holder.empty()) {
-                if (const std::string from = describePath(*call.args[i]); !from.empty()) {
+                std::string from = describePath(*call.args[i]);
+                // AN ARGUMENT THAT IS ITSELF A BORROW NAMES ITS SOURCE, NOT ITSELF. `k.put(o.borrow())`
+                // hands the keeper storage that `o` frees, and `describePath` of a CALL is empty --
+                // so the keeper was recorded as borrowing from nothing, and `delete o` reached it
+                // through no path at all. The two halves were each written and never met: one knew
+                // the call lends the receiver, the other knew the keeper keeps what it is given.
+                if (from.empty()) {
+                    if (const auto* inner =
+                            dynamic_cast<const ast::CallExpr*>(call.args[i].get())) {
+                        if (const auto* icallee =
+                                dynamic_cast<const ast::MemberExpr*>(inner->callee.get())) {
+                            Quiet hush(*this);
+                            const std::string lender = baseType(typeOf(*icallee->object));
+                            if (!lender.empty() &&
+                                returnsBorrowOfReceiver_.count(lender + "." + icallee->member) > 0) {
+                                from = describePath(*icallee->object);
+                            }
+                        }
+                    }
+                }
+                if (!from.empty()) {
                     borrowsFrom_[holder] = from;
                 }
             }
@@ -1026,6 +1214,36 @@ bool SemanticAnalyzer::ownsField(const std::string& className, const std::string
     return it->second.count(field) > 0;
 }
 
+// DOES THIS CLASS FREE ANYTHING AT ALL -- a field, what is in one, or a REGION it holds -- itself or
+// through a base? A class that frees nothing cannot free what it lent out, so deleting what it
+// handed back is not a second free: an object-or-the-reason result carries the object out of the
+// call, and the caller is its only owner.
+//
+// A REGION FIELD COUNTS WITHOUT A DESTRUCTOR. It goes with the object whether or not anything says
+// so, and everything allocated in it goes too -- `borrow_out_of_a_region_field_bad.pol` hands out a
+// leaf from its arena and was let through when this asked only about destructors.
+bool SemanticAnalyzer::freesAnything(const std::string& className) const {
+    std::string at = baseType(className);
+    for (int depth = 0; !at.empty() && depth < 64; ++depth) {
+        if (auto it = ownedFields_.find(at); it != ownedFields_.end() && !it->second.empty()) {
+            return true;
+        }
+        if (auto it = ownedContents_.find(at); it != ownedContents_.end() && !it->second.empty()) {
+            return true;
+        }
+        const ClassInfo* info = lookupClass(at);
+        if (info != nullptr) {
+            for (const auto& [name, field] : info->fields) {
+                if (!field.isStatic && field.type == "region") {
+                    return true;
+                }
+            }
+        }
+        at = info == nullptr ? std::string() : baseType(info->superclass);
+    }
+    return false;
+}
+
 // ONE OWNER IS ENOUGH. An escape summary records every field an argument lands in, comma-joined,
 // because an append writes it into the chain the object owns AND into the tail pointer that makes
 // the next append cheap. If any of them is owned, the object took the value and the call is a
@@ -1055,6 +1273,39 @@ bool SemanticAnalyzer::anyFieldOwns(const std::string& className,
         at = comma + 1;
     }
     return false;
+}
+
+// Is this ONE field `weak`? The singular of `allFieldsWeak`, and it resolves the name the same way:
+// the named class first, and failing that any class that declares a field by that name -- which is
+// how an inherited field is found, since `fields` holds what each class declared rather than what it
+// inherited.
+//
+// The store check asks. `FieldInfo::isWeak` has said "the region binder reads it: a reference that
+// cannot outlive its target has nothing to prove" since it was written; this is the code that makes
+// the sentence true at a field store, which was the one place still demanding the proof.
+bool SemanticAnalyzer::fieldIsWeakIn(const std::string& className, const std::string& field) const {
+    auto cit = classes_.find(baseType(className));
+    if (cit != classes_.end()) {
+        auto f = cit->second.fields.find(field);
+        if (f != cit->second.fields.end()) {
+            return f->second.isWeak;
+        }
+    }
+    // Not declared here: an inherited field, or a store through a type the table knows by another
+    // name. Weak only if EVERY class declaring that name says so -- one that does not means the
+    // reference might be the strong one, and a guess in that direction is a dangling pointer.
+    bool seen = false;
+    for (const auto& [cname, other] : classes_) {
+        auto of = other.fields.find(field);
+        if (of == other.fields.end()) {
+            continue;
+        }
+        if (!of->second.isWeak) {
+            return false;
+        }
+        seen = true;
+    }
+    return seen;
 }
 
 // EVERY field the value landed in is a `weak` slot -- so the store needs no ordering. One weak and
@@ -1264,6 +1515,10 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
         if (auto it = regionOf_.find(id->name); it != regionOf_.end()) {
             return regionLifetime(it->second);
         }
+        // An eternal object in the entry point's frame -- see `programLongLocals_`.
+        if (programLongLocals_.count(id->name) > 0) {
+            return Lifetime{RegionKind::Root, ""};
+        }
         if (activationOwned_.count(id->name) > 0) {
             return Lifetime{RegionKind::Activation, ""};
         }
@@ -1292,7 +1547,23 @@ SemanticAnalyzer::Lifetime SemanticAnalyzer::lifetimeOf(const ast::Expr& expr) {
     // `recv.field` -- THE CASE THE WHOLE THING TURNS ON. If the receiver's class OWNS that field,
     // the value lives in the receiver's region; if it borrows it, the value lives wherever the real
     // owner keeps it, which this expression does not say.
+    // AN ELEMENT LIVES WHERE ITS ARRAY LIVES. `&here[0]` where `here` is a frame array was placed
+    // nowhere at all -- there was no branch for indexing -- so returning a pointer into a local
+    // array read as an unplaceable value and passed. The array IS the storage; an index picks a
+    // spot inside it and changes nothing about how long it lasts.
+    if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(&expr)) {
+        return lifetimeOf(*ix->array);
+    }
     if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(&expr)) {
+        // A FIELD OF SOMETHING IN THIS FRAME IS IN THIS FRAME, and saying "the region of object p"
+        // instead loses that: two objects are incomparable, so `return &p.a` -- a pointer into a
+        // stack local -- compared against nothing and was allowed. The answers below are about
+        // objects whose own lifetime is elsewhere; when the holder is frame or region storage, the
+        // holder's answer is the whole answer and it is the shorter one.
+        if (const Lifetime root = lifetimeOf(*mem->object);
+            root.kind == RegionKind::Activation || root.kind == RegionKind::Region) {
+            return root;
+        }
         const std::string recvType = baseType(typeOf(*mem->object));
         if (!recvType.empty() && ownsField(recvType, mem->member)) {
             return Lifetime{RegionKind::Object, describePath(*mem->object)};
@@ -1408,8 +1679,19 @@ std::string SemanticAnalyzer::describeRegion(const Lifetime& life) const {
             return "static storage";
         case RegionKind::Activation:
             return "this call";
-        case RegionKind::Region:
-            return "region " + life.owner;
+        case RegionKind::Region: {
+            // THE FLAVOUR IS PART OF THE NAME, because it is the part that says what to do. "region
+            // r" tells the reader which one and nothing about it; a bump region hands back nothing
+            // until it is released, a pool reuses the slot the moment an element is freed, a ring
+            // overwrites its oldest, and a fixedslot refuses rather than growing. Those are four
+            // different conversations, and the reader was being handed a name and left to go and
+            // look the declaration up.
+            auto fl = regionFlavor_.find(life.owner);
+            const std::string flavour = fl == regionFlavor_.end() ? std::string("bump") : fl->second;
+            const std::string grows =
+                regionGrowable_.count(life.owner) > 0 ? " growable" : std::string();
+            return "the " + flavour + grows + " region '" + life.owner + "'";
+        }
         case RegionKind::Object:
             return life.owner == "this" ? std::string("this object")
                                         : ("what '" + life.owner + "' belongs to");
@@ -1428,8 +1710,24 @@ std::string SemanticAnalyzer::regionAdvice(const Lifetime& source, const Lifetim
         return "Transfer ownership with `move`, or store a copy instead of a reference.";
     }
     if (source.kind == RegionKind::Region) {
-        return "A value in a region dies when the region is released. Copy it out, or keep the "
-               "reference somewhere that does not outlive the region.";
+        // WHAT THE FLAVOUR CHANGES ABOUT THE FIX. A bump region ends all at once, so the answer is
+        // to copy out or to move the whole use inside it. A pool or a ring recycles storage while
+        // the region is still alive, so the reference can go stale with the region perfectly
+        // healthy -- and "release the region later" is no answer at all there.
+        auto fl = regionFlavor_.find(source.owner);
+        const std::string flavour = fl == regionFlavor_.end() ? std::string("bump") : fl->second;
+        if (flavour == "pool" || flavour == "ring") {
+            return "A " + flavour +
+                   " region reuses its storage while it is still alive, so this reference can go "
+                   "stale without anything being released. Copy the value out, or keep the "
+                   "reference no longer than the slot it names.";
+        }
+        if (flavour == "fixedslot") {
+            return "A fixedslot region hands out a fixed set of slots and refuses when they run "
+                   "out. Copy the value out, or hold the slot for as long as the reference lives.";
+        }
+        return "A value in a bump region dies all at once when the region is released. Copy it "
+               "out, or keep the reference somewhere that does not outlive the region.";
     }
     if (source.kind == RegionKind::Object) {
         // ADVICE ONLY. This used to restate the diagnosis -- "nothing says which of the two dies

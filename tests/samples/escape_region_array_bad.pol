@@ -1,0 +1,31 @@
+import System.IO.Console;
+program EscapeRegionArrayBad;
+
+// AN ARRAY BUILT IN A LOCAL REGION, HANDED BACK OUT OF THE METHOD THAT OWNS THE REGION.
+//
+// This is the chapter's own headline case, and it was passing. Two reasons, both one type wide: an
+// array allocated `in region r` was not recorded as living in `r` -- only objects were -- and the
+// gate on the return check read `T*` and not `T[]`, so a `byte[]` never reached it at all.
+//
+// An array IS a reference: a handle to a block, and the block here belongs to a region that ends at
+// the closing brace. The message names the region's FLAVOUR, because that is the part that says
+// what to do about it -- a bump region gives everything back at once, and this value is inside the
+// everything.
+//
+// Refused with Polaron-1721.
+public bundle Main {
+    public namespace App {
+        public class Main {
+            static method leak() returns byte[] {
+                region r = itself.allocate(cast<address>(4096));
+                byte[] inner = new byte[64]() in region r;
+                return inner;
+            }
+            public static method main(string[] args) returns void {
+                byte[] kept = Main.leak();
+                System.IO.Console.println($"{kept.length()}");
+                return;
+            }
+        }
+    }
+}

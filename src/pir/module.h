@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "lexer/token.h"
@@ -29,6 +30,13 @@ using BlockId = uint32_t;
 
 inline constexpr ValueId kNoValue = 0xFFFFFFFFu;
 inline constexpr BlockId kNoBlock = 0xFFFFFFFFu;
+
+// A `T[]` IS EIGHT BYTES OF LENGTH, THEN THE ELEMENTS. The same layout the runtime allocates and
+// hands back. It lives here rather than in the backend because the LOWERING needs it too now: an
+// `entity` array is addressed column-first and that arithmetic is built here, while the row form's
+// is built in the backend. Two copies of one number in two files is exactly how the two
+// arrangements would come to disagree about where element zero starts.
+inline constexpr uint64_t kArrayHeaderBytes = 8;
 
 // ---- the instruction set (§7) ----
 //
@@ -137,6 +145,16 @@ bool producesValue(Op op);
 struct Edge {
     BlockId target = kNoBlock;
     std::vector<ValueId> args;
+    // THE VALUE THAT SELECTS THIS EDGE, on a `switch` and on nothing else -- edge 0 is the default
+    // and carries no value, and edges 1.. are the arms in the order the cases were written.
+    //
+    // It lives HERE rather than in a `cases` array beside `edges`, which is where it was: two arrays
+    // that have to stay the same length are a type nobody wrote down, and the day one is appended to
+    // and the other is not, the switch selects another arm's block with nothing to notice. The
+    // printer had already grown an `i - 1 < in.cases.size()` guard for exactly that skew, which is a
+    // length check standing in for the type. An edge knows its own value now, and the two cannot
+    // disagree because there is only one of them.
+    int64_t caseValue = 0;
 };
 
 // One instruction. Fields that do not apply to an opcode are left empty; the verifier is what makes
@@ -147,7 +165,6 @@ struct Inst {
     const Type* type = nullptr;         // the result's type
     std::vector<ValueId> operands;
     std::vector<Edge> edges;            // terminators; CallUnwind uses [0]=normal, [1]=landing
-    std::vector<int64_t> cases;         // Switch case values, parallel to edges[1..]
     int64_t imm = 0;                    // ConstInt, Gep index, field index, atomic ordering, ...
     // THE AGGREGATE A `gep` INDEXES INTO, which is not the same as the type of what comes out (that
     // is `type`, and it is always a pointer). Without it a field access could only be a BYTE offset,
@@ -274,6 +291,24 @@ struct Global {
     // so `.length()` and indexing need no special case anywhere.
     std::vector<uint8_t> initBytes;
     bool hasBytes = false;
+    // AN ARRAY THAT IS PART OF THE IMAGE -- `new T[N]() on static` (§36). The same
+    // `[i64 length | elements]` layout, so `.length()` and indexing need no special case, and
+    // emitted ALL ZERO so that it lands in `.bss` and costs the image nothing.
+    //
+    // The length word is written at the top of the entry rather than being part of the initialiser,
+    // and that is the design rather than an oversight: a global with one non-zero word in front of
+    // 65 536 zeroes is a `.data` global. Measured, `{ i64 65536, [65536 x i8] zero }` occupies
+    // 65 544 bytes of image and the all-zero form occupies none — and the bootstrap buffers this
+    // exists for come to some 450 KiB against a kernel of 1.9 MB.
+    //
+    // Nothing can read it before that store: bare metal the entry IS the first instruction the
+    // machine executes, and hosted it runs before any Polaron code does.
+    int64_t arrayBytes = -1;   // -1 when this is not one; else the element bytes after the header
+    // THIS GLOBAL'S VALUE IS THE ADDRESS OF ANOTHER. A static field declared `on static` is an
+    // ordinary array reference whose target happens to be in the image, so the field is a pointer
+    // and the storage is a second global -- two of them, because they have different types and only
+    // one may be zero for the section it wants.
+    std::string initGlobal;
     // A TABLE OF FUNCTION KEYS, which is what a vtable is: one entry per dispatch slot, empty
     // where the class provides no implementation. Held as keys rather than as addresses because
     // the address is the backend's business and the key is what verifier rule 15 checks against.
@@ -366,6 +401,19 @@ struct Function {
     bool noRedZone = false;
     bool cut = false;                   // belongs to a unit `unimport` may remove; a DCE root
     std::string cutSlot;                // the reimport slot it goes back into
+    /* PART OF THE RUNTIME THE COMPILER APPENDS, and therefore NOT a boundary.
+     *
+     * `Conv::Unknown` normally means "somebody outside this module calls this by name", which is why
+     * internalization keeps every such function. The region core is `unknown c` for its ABI -- the
+     * compiler emits calls to `__polaron_region_new` by that exact spelling -- but every one of those
+     * calls is in THIS module, because the core is appended to it. Kept external, the whole allocator
+     * survived into programs that use no region at all, and a freestanding image inherited its
+     * divide-by-zero guards, the exception they throw, and the allocator that builds the exception.
+     *
+     * Marked here it is internal like anything else: referenced, it stays; unreferenced, DCE takes
+     * it. Which is the same condition the driver used to compute by grepping the emitted IR before
+     * deciding whether to compile the C++ core at all. */
+    bool appendedRuntime = false;
     std::string symbol;                 // extern: the foreign symbol
     bool variadic = false;              // `printf(fmt, ...)`: the C ABI's trailing arguments
     std::string library;                // extern: the library it binds
@@ -425,6 +473,21 @@ struct Module {
     // functions that already exist. So the backend emits no entry of its own and no init hooks
     // either; the runner emits both, in the order a test run needs them.
     bool testRunnerEntry = false;
+    // HOW MANY DISPATCHES §11.8 TURNED INTO DIRECT CALLS, left here for the §12 hand-off line.
+    //
+    // That line's `devirt=` counted the backend's inline caches alone, and once this pass exists
+    // the two mechanisms take from each other: a dispatch the pass collapsed never reaches
+    // `speculate`, so the harder the pass works the smaller the row it is supposed to be filling
+    // reads. A number that goes DOWN as the thing it measures improves is worse than no number.
+    // Counted apart rather than added in, because "removed outright" and "guarded with a fast path"
+    // are different outcomes and the point of §12 is to say which one happened.
+    int devirtualised = 0;
+    // §11.5's SUMMARY, LEFT WHERE SOMEBODY ELSE CAN READ IT: per function key, which parameters the
+    // body provably does not let out. It is computed for the escape analysis, which needs to know
+    // whether handing an object to a constructor loses it -- and it is the same question the region
+    // binder answers on the AST as `escapesToReceiver`. Kept so the two can be held against each
+    // other; see §11.7 and `SemanticAnalyzer::escapesToReceiver`.
+    std::unordered_map<std::string, std::vector<bool>> paramStaysInside;
     // ...AND THE FUNCTIONS IT WILL CALL, which nothing in the program calls.
     //
     // A `[Test]` method, its `[BeforeAll]` fixture and its `[Cases]` source are reachable only from
@@ -452,8 +515,55 @@ struct Module {
     // two paths that spell one class two ways are two paths that disagree about their own output.
     struct ClassShape {
         bool overlapping = false;
+        // ---- WHAT THE CLASS PROMISES ABOUT WHO MAY ANSWER FOR IT (§11.8) ----
+        //
+        // Devirtualisation is a question about the set of types a pointer may point at, and none of
+        // it is recoverable from a shape: an LLVM struct says how wide a class is and nothing about
+        // what extends it. The lowering knows -- it walked the AST -- and threw the answer away, so
+        // the pass could only be written back on the tree, which is the arrangement §11 exists to
+        // undo.
+        //
+        // `base` is the immediate superclass's key, empty at the root. The descent relation is built
+        // from it rather than from a list of children, because a class knows its parent and a parent
+        // that had to list its children would be a second fact to keep in step.
+        std::string base;
+        // ...AND THE INTERFACES, which are the other half of the relation and the half that carries
+        // the dispatches worth removing. A call written against an interface has a static class that
+        // IS the interface, so following `base` alone from it reaches nothing: the classes that
+        // answer for it point AT it and are never pointed at. A single implementer of a one-method
+        // interface is the shape a program written to interfaces most often has, and without this
+        // line it is exactly the shape that never devirtualises.
+        std::vector<std::string> interfaces;
+        // AN ABSTRACT CLASS IS NEVER THE DYNAMIC TYPE. It matters when the set has one concrete
+        // member: `abstract class Shape` with one `Circle` under it is ONE candidate, not two, and
+        // that difference is the whole of whether the call goes direct.
+        bool isAbstract = false;
+        // `final` closes the set at this class. `sealed` closes it at `permits` -- the case the
+        // ledger reaches from four directions, where the compiler ENUMERATES the closed set in a
+        // diagnostic and then emits a table lookup anyway.
+        bool isFinal = false;
+        bool isSealed = false;
+        std::vector<std::string> permits;
+        // WHETHER THE PROMISE SURVIVES THIS COMPILATION. A `--lib`'s public class may be extended by
+        // a consumer compiled later, so "nothing overrides this here" proves nothing -- which is the
+        // defect Wave 2 found when the bundle was handed over (`bundle_inherit_runs` printed
+        // `total = 17` for 57). Only `final` and `sealed` cross that boundary, and they are asked
+        // about separately above.
+        bool openWorld = false;
     };
     std::unordered_map<std::string, ClassShape> classes;
+    // METHOD NAMES THAT `Dog.methods.replace(...)` MAY POINT SOMEWHERE ELSE (§32.8).
+    //
+    // A replaceable method is dispatched precisely so a slot exists to write into, so devirtualising
+    // one would defeat the feature it was dispatched for: the call would reach the body the program
+    // replaced. By NAME, because the slot numbering is by name -- every implementation of `bark`
+    // sits at the same index in every table that has one, and a replacement points that index at the
+    // new body for every class at once.
+    std::unordered_set<std::string> replaceableMethods;
+    // WHICH METHOD NAME EACH DISPATCH SLOT HOLDS, so a pass reading a `vtable.load` can say what it
+    // is looking at. The instruction carries the slot and the receiver's static class; without this
+    // it cannot ask whether that method is one of the above.
+    std::unordered_map<int64_t, std::string> slotMethod;
     std::vector<Global> globals;
     // The reflective type tokens this program asks for, one per class named in a `typeOf<T>()`.
     // See `ConstNode`: the backend turns each into a `private constant` in the image.

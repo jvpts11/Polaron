@@ -5,6 +5,7 @@
 #include "semantic/asmcheck.h"
 #include "semantic/comptime.h"
 #include "semantic/sys_intrinsics.h"
+#include "parser/monomorphize.h"   // kCommandMethod -- the one name a command answers to
 
 #include <algorithm>
 #include <functional>
@@ -16,6 +17,30 @@
 namespace polaron {
 
 using namespace semutil;   // NOLINT(google-build-using-namespace): as in analyzer.cpp
+
+namespace {
+
+/* `test(11)` BECOMES `test.__command(11)`, here, once, in the tree.
+
+   A command is reached through its role -- `IntTest* test` -- and the method behind that role is
+   named by the compiler. So the name is the compiler's to spell, and an author who had to write it
+   would be writing an internal detail into their own source: exactly the mistake `Kennel$aboveAge`
+   would have been if a command's class had to be named.
+
+   Rewriting rather than typing-in-place is what keeps this small. Everything a call needs -- the
+   argument check, the named-argument binding, the region binder's escape edges, the vtable dispatch,
+   codegen -- already exists for a method call on an object, and after this line that is exactly what
+   the tree holds. There is no second call path to keep in step with the first. */
+void routeThroughCommand(const ast::CallExpr* call) {
+    auto* c = const_cast<ast::CallExpr*>(call);
+    auto through = std::make_unique<ast::MemberExpr>();
+    through->loc = c->callee->loc;
+    through->member = kCommandMethod;
+    through->object = std::move(c->callee);
+    c->callee = std::move(through);
+}
+
+}  // namespace
 
 std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
     // spec 32.2: `snapshot region W in region B` yields a handle to a block the caller placed and
@@ -103,23 +128,44 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         return typeOf(*old->inner);
     }
     if (const auto* mr = dynamic_cast<const ast::MethodRefExpr*>(&expr)) {
-        // methodref obj.method (spec 22.3): its type is the method's function<Ret, Params...>.
+        /* `methodref obj.method` -- a receiver bound to a method, which IS a command carrying one
+           thing, and is now spelled as one. Its type is the generated class `C$bound$method`, which
+           `expandCommands` built from the name the parser wrote down; the resolution of WHICH C
+           happens here, because here is where the receiver has a type.
+
+           `C` is the receiver's STATIC type, and that is right: the binding carries an `Animal*`,
+           and the forwarding call inside the generated body is an ordinary call on that pointer, so
+           a `Cat` in it still runs `Cat.speak`. The dispatch is not decided here and does not have
+           to be. */
         const std::string objType = typeOf(*mr->object);
         const std::string cls = baseType(objType);
         const MethodInfo* m = findMethod(cls, mr->method);
         if (m == nullptr) {
             error("no method '" + mr->method + "' on type '" + cls + "' for methodref", mr->loc);
-            return "function<void>";
+            return "";
         }
         if (m->isStatic) {
-            error("methodref cannot bind a static method; reference it by name instead", mr->loc);
-            return "function<void>";
+            error("`methodref` binds a RECEIVER to a method, and a static method has none: it "
+                  "belongs to the class. Write `" + cls + "." + mr->method +
+                      "` for its address (a `methodptr`), or `methodref obj." + mr->method +
+                      "` on an instance",
+                  mr->loc);
+            return "";
         }
-        std::string s = "function<" + m->returnType;
-        for (const std::string& pt : m->paramTypes) {
-            s += "," + pt;
+        const std::string bound = cls + "$bound$" + mr->method;
+        if (lookupClass(bound) == nullptr) {
+            error("`methodref " + cls + "." + mr->method +
+                      "` has no binding class: `" + mr->method +
+                      "` is declared on a generic type, an interface or a transformer, and a "
+                      "binding to one of those would need type arguments nobody has supplied here. "
+                      "Write the command out (`command run(...) carries (" + cls +
+                      "* target) into pack returns ... { return pack.target." + mr->method +
+                      "(...); }`)",
+                  mr->loc);
+            return "";
         }
-        return s + ">";
+        const_cast<ast::MethodRefExpr*>(mr)->boundClass = bound;
+        return bound + "*";
     }
 
     if (const auto* tup = dynamic_cast<const ast::TupleExpr*>(&expr)) {
@@ -140,6 +186,13 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             if (currentClass_.empty()) {
                 error("'this' is not available in a static context", id->loc);
                 return "";
+            }
+            if (freed_.count("this") > 0) {
+                error("use of 'this' after `delete this`: the object is gone, and every field read "
+                      "through it reads freed memory. A method may free its own object -- as the "
+                      "last thing it does. Move this read above the `delete`, or return a value "
+                      "worked out before it",
+                      id->loc);
             }
             return currentClass_;
         }
@@ -190,8 +243,7 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                           "it (spec 18.2), or move the `delete` after this use",
                       id->loc);
             }
-        } else if (auto bit = borrowsFrom_.find(id->name);
-                   bit != borrowsFrom_.end() && invalidatedAt_.count(bit->second) > 0) {
+        } else if (auto bit = staleBorrows_.find(id->name); bit != staleBorrows_.end()) {
             // USE AFTER INVALIDATION -- the same mistake as use-after-free, spread over three
             // statements and two objects, which is why nothing caught it.
             //
@@ -199,6 +251,9 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // is returned. It goes wrong when the source is emptied and the result is read
             // afterwards, and that is a SELECT still holding what a DELETE freed. The rows are gone,
             // the pointers are not, and at the machine level those are the same 64 bits.
+            //
+            // The borrow has to have been LIVE at the emptying, which is why this asks the stranded
+            // set rather than whether the source was ever emptied -- see `invalidateSource`.
             error("use of '" + id->name + "' after '" + bit->second +
                       "' was emptied: it holds references to what that object owned, and freeing "
                       "them left every one of those references pointing at storage that is gone. "
@@ -255,9 +310,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         return t.empty() ? std::string() : t.substr(5);  // strip "Task$"
     }
     if (const auto* ue = dynamic_cast<const ast::UnimportExpr*>(&expr)) {
-        if (freestanding_) {
-            error("unimport/reimport is not available in freestanding mode (spec 36.3)", ue->loc);
-        }
+        // THE FOURTH GATE, and the last. `unimport X expecting using ... { ... }` is the EXPRESSION
+        // form -- the half that produces the proof a later `reimport` checks against -- and it was
+        // barred nowhere except here, which is what kept the whole validating pair out of
+        // freestanding after the three statement forms were opened.
+        //
+        // The argument is the one written above `UnimportStmt` in analyzer_stmt.cpp: the contract is
+        // two symbols the program provides, and a kernel provides them exactly as it provides
+        // `__polaron_panic`. Nothing about producing a fingerprint of a type's code needs a host --
+        // it is arithmetic over a method's own bytes, which is if anything a more bare-metal act
+        // than the rest of the feature. Horizon's module system IS this construct: a driver leaves a
+        // running kernel and comes back, and the `expecting` block is what makes the return checked.
         if (lookupClass(baseType(ue->target)) == nullptr) {
             error("cannot unimport '" + ue->target + "': not a known class", ue->loc);
         } else if (finalImports_.count(baseType(ue->target)) > 0) {
@@ -559,6 +622,22 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         return "checkpoint";
     }
+    if (const auto* sp = dynamic_cast<const ast::RegionSpaceExpr*>(&expr)) {
+        // ANY FLAVOUR, unlike mark. A cursor is only meaningful on a `stack` region because only
+        // there does rewinding it mean anything; how big an arena is and how much is left are true
+        // of every one of them, and the caller asking is usually asking so as not to fill it.
+        //
+        // A `this.field` region is validated at codegen, on the same rule as mark's.
+        if (sp->region.find('.') == std::string::npos) {
+            const LocalVar* r = lookupLocal(sp->region);
+            if (r == nullptr) {
+                error("unknown region '" + sp->region + "'", sp->loc);
+            } else if (r->type != "region") {
+                error("'" + sp->region + "' is not a region", sp->loc);
+            }
+        }
+        return "long";
+    }
     if (const auto* tx = dynamic_cast<const ast::TryExpr*>(&expr)) {
         // try? Result<T,E>/Option<T> yields T (the first type arg of the operand's instantiation).
         const std::string ot = baseType(typeOf(*tx->operand));
@@ -701,11 +780,17 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             return t == "String" || t == "string" || t == "Object" || t == "Type" ||
                    t == "Method" || t == "Field" || t == "Annotation";
         };
-        const bool dstRef = builtinRef(dst) || lookupClass(baseType(dst)) != nullptr;
+        // AN ENUM WITH DATA IS ALSO A CLASS in the table -- its fields and constructor live there --
+        // and being found there sent `cast<Pair>(i)` down the pointer branch, where a number becomes a
+        // class only as an address, and was refused. An enum of any kind is an ordinal and goes to the
+        // enum branch below, so the way back from `cast<int>(p)` exists for every enum, not only the
+        // bare ones.
+        const bool dstEnum = enums_.count(baseType(dst)) > 0;
+        const bool dstRef = builtinRef(dst) || (lookupClass(baseType(dst)) != nullptr && !dstEnum);
         const bool srcRef = src.empty() || builtinRef(src) ||
                             lookupClass(baseType(src)) != nullptr || isRefType(src) ||
-                            src.rfind("funcptr<", 0) == 0;  // a bare C fn pointer reinterprets like a ptr
-        const bool dstFuncptr = dst.rfind("funcptr<", 0) == 0;  // a bare C function pointer (dynamic FFI)
+                            src.rfind("methodptr<", 0) == 0;  // a bare C fn pointer reinterprets like a ptr
+        const bool dstFuncptr = dst.rfind("methodptr<", 0) == 0;  // a bare C function pointer (dynamic FFI)
         const bool dstPtr = isRefType(dst) || dstRef || dstFuncptr;  // pointer/ref target (T*, T&, class)
         // `char` is an integer for casting purposes; Decimal converts to/from the numeric family too
         // (scaled fixed-point, spec 34).
@@ -760,12 +845,31 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (!ct.empty() && ct != "boolean") {
             error("ternary condition must be boolean, got '" + ct + "'", tern->loc);
         }
+        // EACH ARM RUNS ONLY WHERE THE CONDITION SAID SO, so each is typed with what the condition
+        // proves for it -- the rule `&&` and `||` follow below. `node == null ? none : use(node)`
+        // refused `node` as nullable in the arm that only runs when it is not.
+        std::vector<std::string> condThen;
+        std::vector<std::string> condElse;
+        proofFromCondition(*tern->cond, condThen, condElse);
+        auto typedAssuming = [this](const ast::Expr& arm, const std::vector<std::string>& proven) {
+            std::vector<std::string> assumed;
+            for (const std::string& name : proven) {
+                if (nonNull_.insert(name).second) {
+                    assumed.push_back(name);
+                }
+            }
+            const std::string t = typeOf(arm);
+            for (const std::string& name : assumed) {
+                nonNull_.erase(name);
+            }
+            return t;
+        };
         // The result type comes from BOTH arms. Reading it off `then` alone made the other arm truncate:
         // `long r = c ? 7 : big;` took `int` from the literal, and codegen -- which had the same omission,
         // so the two agreed -- emitted `trunc i64 %big to i32`. The assignment to `long` then looked like
         // an ordinary widening and nothing reported anything.
-        const std::string tt = typeOf(*tern->thenExpr);
-        const std::string et = typeOf(*tern->elseExpr);
+        const std::string tt = typedAssuming(*tern->thenExpr, condThen);
+        const std::string et = typedAssuming(*tern->elseExpr, condElse);
         if (tt.empty() || et.empty() || tt == et) {
             return tt.empty() ? et : tt;
         }
@@ -849,7 +953,25 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const bool savedSuppress = suppressNarrowing_;
         suppressNarrowing_ = suppressNarrowing_ || nullTest;
         const std::string lt = typeOf(*bin->lhs);
+        // THE RIGHT OPERAND OF `&&` RUNS ONLY WHERE THE LEFT ONE WAS TRUE, and that of `||` only where
+        // it was false -- so it is typed with what the left one proves. `boolean heavy = b != null &&
+        // weigh(b);` refused `b` as nullable, while the same test written as an `if` narrowed it: the
+        // proof was read for the arms of a statement and never for the other half of an expression.
+        std::vector<std::string> leftThen;
+        std::vector<std::string> leftElse;
+        std::vector<std::string> assumed;
+        if (bin->op == "&&" || bin->op == "||") {
+            proofFromCondition(*bin->lhs, leftThen, leftElse);
+            for (const std::string& name : bin->op == "&&" ? leftThen : leftElse) {
+                if (nonNull_.insert(name).second) {
+                    assumed.push_back(name);
+                }
+            }
+        }
         const std::string rt = typeOf(*bin->rhs);
+        for (const std::string& name : assumed) {
+            nonNull_.erase(name);
+        }
         suppressNarrowing_ = savedSuppress;
         const std::string& op = bin->op;
         // Operator overloading: a OP b where a's class defines `operator OP` (spec 6.5).
@@ -1003,13 +1125,23 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             // Same hazard as ordering: the operands widen to one type first, so a negative signed value
             // and a large unsigned one can come out equal.
             checkSignedness();
+            // A `methodptr` counts here as much as a `T*` does. It is a code ADDRESS, and null is the
+            // C ABI's own spelling of "there is no callback" -- every foreign interface that takes an
+            // optional handler passes it. Without this the only way to ask was to cast the pointer to
+            // an integer and compare against zero, which says the same thing with the type thrown away.
             const bool nullPtr =
-                (lt == "null" && (isRefType(rt) || isNullableType(rt))) ||
-                (rt == "null" && (isRefType(lt) || isNullableType(lt)));
+                (lt == "null" && (isRefType(rt) || isNullableType(rt) || ast::isMethodPtrType(rt))) ||
+                (rt == "null" && (isRefType(lt) || isNullableType(lt) || ast::isMethodPtrType(lt)));
             // Numeric (and char) operands compare after widening to a common type, so differing
             // integer/float widths are fine (e.g. a long compared with an int literal).
             const bool bothNumeric = numOk(lt) && numOk(rt);
-            if (!lt.empty() && !rt.empty() && lt != rt && !nullPtr && !bothNumeric) {
+            // A NULLABLE AND A NON-NULL POINTER TO THE SAME TYPE ARE ONE KIND OF THING. Asking whether
+            // a `nullable Dentry*` is the `Dentry*` in hand is the ordinary question of every linked
+            // structure, and refusing it forced a narrowing of each walk variable before the compare --
+            // the Horizon VFS hit it ten times in its first build. A different referent is still refused.
+            const bool sameReferent =
+                ast::stripNullable(lt) == ast::stripNullable(rt) && isRefType(ast::stripNullable(lt));
+            if (!lt.empty() && !rt.empty() && lt != rt && !nullPtr && !bothNumeric && !sameReferent) {
                 error("operator '" + op + "' requires operands of the same type", bin->loc);
             }
             return "boolean";
@@ -1030,41 +1162,108 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         if (nw->location == "heap") {
             noteUnsafeForInterrupt("allocate on the heap", nw->loc);
         }
-        // region-binder DATA-RACE (§14): a closure handed to a Thread may only capture state that is safe to
-        // share across threads -- atomic<T>/Mutex<T>/Channel<T>, or a copied value. Capturing a plain mutable
-        // reference (byref, or byvalue a pointer) shares mutable state between two threads -> a data race.
+        // ...AND `new T()` CALLS T'S CONSTRUCTOR, WHEREVER IT PUTS THE OBJECT -- AND T'S DESTRUCTOR
+        // RUNS WHEN THE SCOPE ENDS.
+        //
+        // The `interrupt`/`reentrant` walk follows `callees`, and neither of those two was ever in
+        // it, so the rule watched every path a person writes and none of the ones the language
+        // inserts. A handler holding `Scratch s = new Scratch() on stack;` -- whose constructor
+        // allocates and whose destructor frees -- compiled clean, with an allocation and a free in
+        // an interrupt handler and no diagnostic anywhere.
+        //
+        // BOTH ARE RECORDED HERE, at the `new`, because this is the one place that names the type
+        // and is inside the method whose facts they belong to. The destructor at the closing brace
+        // is not a statement anybody visits; what makes it reachable is that an object of this type
+        // was built here, and that is exactly what this expression says.
+        //
+        // A constructor is not a special case of a call. It is a call, and this is where it becomes
+        // one as far as the walk is concerned.
+        if (MethodFacts* mf = facts(); mf != nullptr && !nw->className.empty()) {
+            const std::string built = baseType(nw->className);
+            if (!built.empty() && classes_.count(built) != 0) {
+                mf->callees.insert(built + "." + built);
+                mf->callees.insert(built + ".~");
+            }
+        }
+        /* region-binder DATA-RACE (§14): WHAT A THREAD'S WORK CARRIES ACROSS WITH IT.
+         *
+         * A command handed to a `Thread` runs on the other side, and everything in its baggage is
+         * reached THERE while the spawning thread still holds it. So the baggage may only be things
+         * two threads may reach at once: `atomic<T>`, `Mutex<T>`, `Channel<T>`, or a type that says
+         * `shareable` and had that checked at its declaration. A plain mutable object shared by
+         * pointer is a data race, and the fourth way out is not to share at all -- hand it over with
+         * `move`, which makes the thread its only holder.
+         *
+         * READ OFF THE COMMAND'S FIELDS, which ARE its baggage: `carries (Counter* c) into pack`
+         * becomes `private Counter* c`, so the list is complete by grammar and there is nothing to
+         * discover by reading a body. That is the concrete form of what the construct bought here.
+         * The lambda version had to walk a capture list that could be omitted entirely.
+         */
         if (regionBinder_ && nw->className == "Thread" && !nw->args.empty()) {
-            const ast::LambdaExpr* lam = dynamic_cast<const ast::LambdaExpr*>(nw->args[0].get());
-            if (lam == nullptr) {
-                if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(nw->args[0].get())) {
-                    auto it = lambdaLocals_.find(aid->name);
-                    if (it != lambdaLocals_.end()) {
-                        lam = it->second;
-                    }
+            // The CONCRETE command, not the role it is declared as: `Action*` says nothing about
+            // the baggage, which is the point of a role and the reason this asks a second question.
+            std::string work = typeOf(*nw->args[0]);
+            std::set<std::string> handedOver;
+            if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(nw->args[0].get())) {
+                if (auto made = commandBuiltAs_.find(aid->name); made != commandBuiltAs_.end()) {
+                    work = made->second;
+                }
+                if (auto gone = commandHandedOver_.find(aid->name);
+                    gone != commandHandedOver_.end()) {
+                    handedOver = gone->second;
                 }
             }
-            if (lam != nullptr) {
-                for (const ast::Capture& cap : lam->captures) {
-                    const LocalVar* lv = lookupLocal(cap.name);
-                    if (lv == nullptr) {
-                        continue;
+            const ClassInfo* cmd =
+                work.empty() ? nullptr : lookupClass(baseType(ast::stripNullable(work)));
+            /* A COMMAND IS SHAREABLE WHEN ITS BAGGAGE IS -- which is the whole of `shareable
+               command`, arriving for free because the baggage is a field list. `Parallel.forRange`
+               hands ONE body to every worker, and whether that is a race is a question about what
+               the body holds; a stateless command holds nothing, so N threads reading it is N
+               threads reading a vtable pointer. Recursive, and bounded, because a command may carry
+               a command. */
+            std::function<bool(const std::string&, int)> shareableCommand =
+                [&](const std::string& name, int depth) {
+                    const ClassInfo* c = depth > 4 ? nullptr : lookupClass(name);
+                    if (c == nullptr ||
+                        findMethod(c->name, kCommandMethod, /*objectFallback=*/false) == nullptr) {
+                        return false;
                     }
-                    const std::string b = baseType(lv->type);
-                    // ...OR THE TYPE SAYS ITS OWN THREADS MAY SHARE IT (`implements Shared`).
+                    for (const auto& [_, f] : c->fields) {
+                        const std::string fb = baseType(f.type);
+                        if (!isRefType(f.type) || fb.rfind("atomic", 0) == 0 ||
+                            fb.rfind("Mutex", 0) == 0 || fb.rfind("Channel", 0) == 0 ||
+                            declaresShared(fb) || shareableCommand(fb, depth + 1)) {
+                            continue;
+                        }
+                        return false;
+                    }
+                    return true;
+                };
+            if (cmd != nullptr &&
+                findMethod(cmd->name, kCommandMethod, /*objectFallback=*/false) != nullptr) {
+                for (const auto& [fname, f] : cmd->fields) {
+                    const std::string b = baseType(f.type);
+                    // The three shapes the language provides, plus `shareable` -- the escape hatch
+                    // for what a worker pool is actually made of: a value everybody reads and nobody
+                    // writes, or one whose writes are already atomic. It is a WORD somebody wrote on
+                    // the type and the compiler confirmed, so it cannot be arrived at by accident.
                     //
-                    // The three below are the shapes the language provides; `Shared` is the escape
-                    // hatch for the one a worker pool is actually made of -- a value everybody reads
-                    // and nobody writes, or one whose writes are already atomic. Without it, the only
-                    // way to write a crew was to stop the checker seeing the crew, which is the
-                    // choice this refuses to make anybody take. It is a SENTENCE somebody has to
-                    // write on the type, so it cannot be arrived at by accident.
-                    const bool safe = b.rfind("atomic", 0) == 0 || b.rfind("Mutex", 0) == 0 ||
-                                      b.rfind("Channel", 0) == 0 || declaresShared(b);
-                    const bool shares = cap.byRef || isRefType(lv->type);  // shares the var / the pointee
-                    if (shares && !safe) {
-                        error("region-binder: thread closure captures shared mutable '" + cap.name +
-                                  "' (type '" + lv->type + "') -- a data race; share it via atomic<T> / "
-                                  "Mutex<T> / Channel<T>, or capture an immutable copy (byvalue a value)",
+                    // ...AND THE FOURTH WAY, WHICH IS NOT TO SHARE AT ALL: a piece of baggage given
+                    // by `move` was HANDED OVER, so the thread that receives it is its only holder.
+                    // No race is possible because there is no second holder -- safe by construction
+                    // rather than by a lock, and it costs nothing. The source was emptied where the
+                    // `move` was written, which is what makes that a promise and not a word.
+                    const bool safe = handedOver.count(fname) != 0 || b.rfind("atomic", 0) == 0 ||
+                                      b.rfind("Mutex", 0) == 0 || b.rfind("Channel", 0) == 0 ||
+                                      declaresShared(b) || shareableCommand(b, 0);
+                    if (isRefType(f.type) && !safe) {
+                        error("region-binder: this thread's work carries '" + fname + "' (type '" +
+                                  f.type +
+                                  "'), which the spawning thread still holds -- a data race. Hand it "
+                                  "over instead of sharing it (`carries (" + f.type + " " + fname +
+                                  " = move ...)`), which makes the thread its only holder; or share "
+                                  "it through atomic<T> / Mutex<T> / Channel<T>; or declare the type "
+                                  "`shareable`, which the compiler checks against its fields",
                               nw->loc);
                     }
                 }
@@ -1211,6 +1410,31 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         const std::string st = typeOf(*na->size);
         if (!st.empty() && st != "int") {
             error("array size must be an int", na->loc);
+        }
+        // AN ARRAY'S PLACEMENT IS READ NOW, and until this it was not read at all: an object's
+        // `new` checked its own and an array's went straight through, so `on stack` on an array was
+        // accepted and ignored while the array went to the heap regardless. That is worse than a
+        // refusal. This compiler's own failure reporter was written `on stack` for the express
+        // purpose of keeping the allocator out of the panic path, and it called
+        // `__polaron_malloc(1032)` from inside a fired guard for as long as nobody read the IR.
+        //
+        // `on static` is the placement that means what that one was reaching for -- storage that is
+        // part of the image -- and where it is legal is decided in the lowering, which is where
+        // "a static field's initialiser" is a thing that can be recognised.
+        //
+        // ADVICE AND NOT A REFUSAL, and the count is why: 164 lines of the OS that dogfoods this
+        // compiler write it, every one of them allocating and none of them saying so. Refusing them
+        // in one release would stop a kernel building over a clause that has never done anything,
+        // and the honest fix for most of them is a stack array the language does not yet have.
+        if (na->location == "stack") {
+            warn(diag::Code::ArrayPlacementIgnored,
+                 "'on stack' is a placement an array cannot honour: this one goes to the heap, as "
+                 "it always has. Drop the clause, or write 'on static' for storage that costs no "
+                 "allocation",
+                 na->loc);
+        } else if (na->location != "heap" && na->location != "static") {
+            error("an array's location must be 'heap' or 'static', got '" + na->location + "'",
+                  na->loc);
         }
         // `new T[n]() in region R` is checked against the region's accepts/rejects exactly as an object
         // is. A region is TYPED -- that is what separates it from a hand-rolled arena, which takes bytes
@@ -1364,11 +1588,29 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // resolved to the entity being declared, so reaching here means there was no such entity.
         if (const auto* iid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get());
             iid != nullptr && iid->name == "itself") {
+            /* ...AND INSIDE A COMMAND, WHERE IT IS THE COMMAND. Same reading, same reason: the
+               entity being declared is the behaviour this body is, and it has no name of its own --
+               the compiler gave the method one. A command class holds exactly one method, so
+               `itself` inside it can mean nothing else, and a recursive command reads the way a
+               recursive lambda did. */
+            if (!enclosingClass_.empty() &&
+                findMethod(enclosingClass_, kCommandMethod, /*objectFallback=*/false) != nullptr) {
+                auto* here = const_cast<ast::CallExpr*>(call);
+                auto self = std::make_unique<ast::IdentifierExpr>();
+                self->name = "this";
+                self->loc = here->callee->loc;
+                auto through = std::make_unique<ast::MemberExpr>();
+                through->object = std::move(self);
+                through->member = kCommandMethod;
+                through->loc = here->callee->loc;
+                here->callee = std::move(through);
+                return typeOf(*call);
+            }
             if (!analyzingLambda_) {
                 error("'itself' names the entity being declared, and there is none to name here. "
-                      "Inside a lambda body it is the lambda, which is how an anonymous function "
-                      "recurses; in a declaration or an assignment it is what is being declared or "
-                      "assigned to. In a method, call the method by its name",
+                      "Inside a command's body it is the command, which is how a body with no name "
+                      "of its own recurses; in a declaration or an assignment it is what is being "
+                      "declared or assigned to. In a method, call the method by its name",
                       call->loc);
                 return "";
             }
@@ -1434,11 +1676,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         // Calling a funcptr<Ret, Params...> value (a bare C function pointer) -> Ret.
         if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
             if (const LocalVar* fv = lookupLocal(cid->name);
-                fv != nullptr && fv->type.rfind("funcptr<", 0) == 0) {
+                fv != nullptr && ast::isMethodPtrType(fv->type)) {
                 for (const auto& arg : call->args) {
                     typeOf(*arg);
                 }
-                const std::string inner = ast::funcptrBody(fv->type.substr(8, fv->type.size() - 9));  // [unknown-abi]
+                const std::string inner = ast::methodptrBody(
+                    ast::bracketedInner(ast::stripNullable(fv->type)));  // [unknown-abi]
                 for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
                     if (inner[i] == '<') {
                         depth++;
@@ -1453,12 +1696,19 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         // Calling a function value: callee is a local of type function<Ret, Params...> -> Ret.
         if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
-            if (const LocalVar* fv = lookupLocal(cid->name);
-                fv != nullptr && fv->type.rfind("function<", 0) == 0) {
+            const LocalVar* fv = lookupLocal(cid->name);
+            // THE TYPE, COPIED, BEFORE ANYTHING RE-ENTERS THE ANALYSER. `fv` points into the scope
+            // stack, and the lambda check below analyses a block -- which pushes a scope, which can
+            // reallocate that stack and leave this pointer dangling. Reading `fv->type` afterwards
+            // crashed the compiler with a stack-buffer overrun and NO diagnostic, which is how it
+            // presented: a probe that "reported nothing".
+            const std::string ftype = fv != nullptr ? fv->type : std::string();
+            if (ftype.rfind("function<", 0) == 0) {
                 for (const auto& arg : call->args) {
                     typeOf(*arg);
                 }
-                const std::string inner = fv->type.substr(9, fv->type.size() - 10);
+                checkLambdaBodyAgainstFlowHere(cid->name, call->loc);
+                const std::string inner = ftype.substr(9, ftype.size() - 10);
                 for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
                     if (inner[i] == '<') {
                         depth++;
@@ -1470,6 +1720,67 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 }
                 return inner;  // no params -> the whole inner is the return type
             }
+        }
+        /* CALLING A COMMAND HELD IN A LOCAL OR A PARAMETER. `test(11)`.
+           The test is "does this type answer `__command`", which is true of a command type, of every
+           class `expandCommands` generates, and of anything that inherits either -- one question,
+           asked of the thing itself, rather than a list of kinds to keep up to date. */
+        if (const auto* cid = dynamic_cast<const ast::IdentifierExpr*>(call->callee.get())) {
+            if (const LocalVar* cv = lookupLocal(cid->name); cv != nullptr) {
+                if (findMethod(baseType(cv->type), kCommandMethod, /*objectFallback=*/false) !=
+                    nullptr) {
+                    // ...and what it CARRIES has to still be there, which is asked here because
+                    // this is the moment the body runs.
+                    checkCommandBaggageAgainstFlowHere(cid->name, call->loc);
+                    routeThroughCommand(call);
+                    return typeOf(*call);
+                }
+            }
+        }
+        // `super.m(args)`: THE BODY THIS ONE OVERRIDES, called by name.
+        //
+        // An override that wants to extend rather than replace had no way to say so. AP-29 -- *deep
+        // hierarchies* -- was written with each level calling `super.render()` and adding a term,
+        // which is what a decorator chain IS, and it did not compile: *"'super' can only be used as
+        // 'super(...)' in a constructor"*. The finding was rewritten around the gap, so the
+        // objection it existed to test was never actually reached.
+        //
+        // THE LOWERING ALREADY DOES IT. `lower.cpp` matches a `MemberExpr` whose object is a
+        // `SuperExpr` and emits `call @Base.m`, NAMED rather than dispatched, with the comment
+        // *"`super.m()` means the base's body even when this class overrides it, which is the whole
+        // reason the word exists."* The construct was lowered, exercised by nothing, and refused one
+        // layer above by a message describing the only use anybody had needed at the time.
+        //
+        // TYPED HERE AND NOT IN `typeOf(SuperExpr)`, deliberately. Giving the bare word a type would
+        // make `Base b = super;` legal -- a copy of `this` sliced to its base, which is not what the
+        // word means and not something anyone asked for. `super` is only ever the receiver of a
+        // call, so the receiver position is where it acquires a meaning.
+        if (const auto* sm = dynamic_cast<const ast::MemberExpr*>(call->callee.get());
+            sm != nullptr && dynamic_cast<const ast::SuperExpr*>(sm->object.get()) != nullptr) {
+            for (const auto& arg : call->args) {
+                typeOf(*arg);
+            }
+            const ClassInfo* here = lookupClass(currentClass_);
+            if (here == nullptr || here->superclass.empty()) {
+                error("'super." + sm->member + "(...)' needs a superclass, and '" +
+                          (currentClass_.empty() ? std::string("<none>") : currentClass_) +
+                          "' extends nothing",
+                      call->loc);
+                return "";
+            }
+            // Looked up from the BASE and along its own chain, which is what makes this different
+            // from `this.m()`. A method the base inherited from ITS base is still what `super.m()`
+            // reaches; one that exists only on this class is not, and saying so is better than
+            // resolving to the override and recursing forever.
+            const std::string base = baseType(here->superclass);
+            if (const MethodInfo* m = findMethod(base, sm->member)) {
+                return m->returnType;
+            }
+            error("'" + base + "' has no method '" + sm->member +
+                      "' to call through 'super'. `super.m()` names the body this class overrides, "
+                      "so the method has to exist on the superclass or on one of its own bases",
+                  call->loc);
+            return "";
         }
         // super(args): explicitly call the base constructor to pass arguments.
         if (dynamic_cast<const ast::SuperExpr*>(call->callee.get()) != nullptr) {
@@ -1593,10 +1904,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
         }
         // Low-level thread builtins used by the System.Concurrency.Thread prelude class.
         if (name == "System.Concurrency.__threadStart") {
-            if (call->args.size() != 1) {
-                error("__threadStart takes one function<void>", call->loc);
+            // A code address and the object it is about -- `Thread.enter` and the command it runs.
+            if (call->args.size() != 2) {
+                error("__threadStart takes a code address and the object it is about "
+                      "(`__threadStart(Thread.enter, cast<address>(this.work))`)",
+                      call->loc);
             } else {
-                typeOf(*call->args.front());
+                for (const auto& a : call->args) {
+                    typeOf(*a);
+                }
             }
             return "long";  // the OS thread handle
         }
@@ -2561,6 +2877,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                 if (mem->member == "hash" && call->args.empty()) {
                     return "long";
                 }
+                // `swarm.advance(dt)` -- A PASS, DECLARED ON THE ELEMENT AND RUN OVER THE ARRAY
+                // (entity.md 5). The only member in the language reached through a `T[]` and
+                // written on `T`, and deliberately so: the alternative spelling is a static method
+                // taking an array, which is a free function in a hat.
+                if (const ClassInfo* elem = lookupClass(baseType(elementOf(objType)));
+                    elem != nullptr && elem->isEntity) {
+                    if (auto m = elem->methods.find(mem->member);
+                        m != elem->methods.end() && m->second.isPass) {
+                        for (const auto& arg : call->args) {
+                            typeOf(*arg);
+                        }
+                        return "void";   // a pass answers with the population it changed
+                    }
+                }
                 error("arrays support .length() to read and .length(n) to resize; '" + mem->member +
                           "' is not a method",
                       call->loc);
@@ -2766,6 +3096,45 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     typeOf(*arg);
                 }
                 if (mem->member == "send" && call->args.size() == 1) {
+                    /* SENDING SOMETHING THAT IS NOT A NUMBER MEANS HANDING IT OVER.
+
+                       A channel slot is 64 bits, "which covers integers and object references
+                       alike" -- so `send(obj)` puts a REFERENCE across, and both threads then hold
+                       the same object. That is the one aliasing the rest of the model spends its
+                       whole design refusing: assignment deep-copies, a command's baggage is copied
+                       at construction, and the easy path is the safe one everywhere except here,
+                       where the easy path was the dangerous one.
+
+                       `move` makes it a transfer instead of a share: one holder before, one holder
+                       after, zero copies, and the sender's name is spent afterwards by the same
+                       rule every other `move` obeys. Numbers are exempt because a number in a slot
+                       IS the value -- there is nothing on the other side to alias. */
+                    const std::string carried = baseType(ast::stripNullable(elem));
+                    // ...UNLESS THE TYPE ALREADY ANSWERS FOR TWO HOLDERS. `shareable`, `atomic<T>`,
+                    // `Mutex<T>` and `Channel<T>` are the four ways this language says "two threads
+                    // may reach this", and each of them is CHECKED where it is declared. The same
+                    // list the spawn boundary reads, for the same question: sharing one of these is
+                    // not the accident this refuses, it is the arrangement somebody wrote down.
+                    const bool trivial = isNumeric(carried) || carried == "boolean" ||
+                                         carried == "char" || isAddressName(carried) ||
+                                         enums_.count(carried) != 0 ||
+                                         carried.rfind("atomic", 0) == 0 ||
+                                         carried.rfind("Mutex", 0) == 0 ||
+                                         carried.rfind("Channel", 0) == 0 || declaresShared(carried);
+                    const auto* sent =
+                        dynamic_cast<const ast::IdentifierExpr*>(call->args[0].get());
+                    if (!trivial &&
+                        dynamic_cast<const ast::MoveExpr*>(call->args[0].get()) == nullptr) {
+                        error("a channel carries '" + elem +
+                                  "' by reference, so `send` transfers it: write `send(move " +
+                                  (sent != nullptr ? sent->name : std::string("<value>")) +
+                                  ")`. Without the transfer both threads hold the same object, "
+                                  "which is the aliasing the rest of the model exists to prevent -- "
+                                  "assignment copies, a command's baggage is copied, and only the "
+                                  "channel could hand the same thing to two owners. To send a copy, "
+                                  "make one first and send that",
+                              call->args[0]->loc);
+                    }
                     return "void";
                 }
                 if (mem->member == "receive" && call->args.empty()) {
@@ -2923,11 +3292,12 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             // A field of funcptr<...> type (a bare C function pointer): obj.f(args) calls it -> Ret.
             if (const FieldInfo* fpf = findField(objType, mem->member);
-                fpf != nullptr && fpf->type.rfind("funcptr<", 0) == 0) {
+                fpf != nullptr && ast::isMethodPtrType(fpf->type)) {
                 for (const auto& arg : call->args) {
                     typeOf(*arg);
                 }
-                const std::string inner = ast::funcptrBody(fpf->type.substr(8, fpf->type.size() - 9));  // [unknown-abi]
+                const std::string inner = ast::methodptrBody(
+                    ast::bracketedInner(ast::stripNullable(fpf->type)));  // [unknown-abi]
                 for (std::size_t i = 0, depth = 0; i < inner.size(); i++) {
                     if (inner[i] == '<') {
                         depth++;
@@ -2956,6 +3326,15 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     }
                 }
                 return inner;
+            }
+            // A FIELD holding a command: `this.onClick(e)`. Same rewrite as the local case above,
+            // one level further in -- the receiver of `__command` becomes the field access itself.
+            // Guarded on the field not also being a method, so a class with both keeps its method.
+            if (const FieldInfo* cf = findField(objType, mem->member);
+                cf != nullptr && findMethod(objType, mem->member, /*objectFallback=*/false) == nullptr &&
+                findMethod(baseType(cf->type), kCommandMethod, /*objectFallback=*/false) != nullptr) {
+                routeThroughCommand(call);
+                return typeOf(*call);
             }
             // Calling a catalog method through a catalog-TYPED receiver (spec 12.4). A catalog value
             // carries a runtime type tag (enum id + ordinal), so dispatch works for any number of
@@ -3006,6 +3385,23 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             const MethodInfo* m = findMethod(objType, mem->member, /*objectFallback=*/true);
             if (m == nullptr) {
+                // THE CALL THE COMPILER WROTE, WHICH THE AUTHOR CANNOT SEE. A record's generated
+                // `toString` asks every field to describe itself, so `record Slot(EntryKind kind)`
+                // over a bare `enum EntryKind { storage, stream }` reported "class 'EntryKind' has
+                // no method 'toString'" at the RECORD's line -- a method nobody wrote, about a field
+                // it does not name, with no hint that the fix belongs on the enum. The rule that an
+                // enum without a `toString` has none is deliberate (see `interp_enum_tostring.pol`:
+                // its ordinal is the answer, and a name would be invented) -- so the diagnostic is
+                // the part that has to carry the author from where the error lands to where the
+                // edit goes.
+                if (inSynthesizedMember_ && mem->member == "toString" &&
+                    enums_.count(baseType(objType)) > 0) {
+                    error("this type generates a `toString` that asks every field to describe "
+                          "itself, and enum '" + baseType(objType) + "' has no `toString` to ask -- "
+                          "write one on the enum, or write this type's own `toString`",
+                          call->loc);
+                    return "";
+                }
                 error("class '" + objType + "' has no method '" + mem->member + "'", call->loc);
                 return "";
             }
@@ -3123,18 +3519,38 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
             }
             return m->returnType;
         }
-        // A bare, unqualified call. Polaron has no free functions, so this names a method of the enclosing
-        // class written without its receiver. The `this.`/`ClassName.` qualifier is optional: locals and
-        // lambdas were already resolved above, so `name` here is not a local -- resolve it as `this.name`
-        // (an instance method, in an instance context) or `EnclosingClass.name` (a static method), exactly
-        // as if the receiver had been written. Only when the method is an instance method reached from a
-        // static context -- or when no such method exists anywhere -- do we error, naming the cause and fix.
+        // A bare, unqualified call. Polaron has no free methods, so this names a method of the enclosing
+        // class written without its receiver: `this.name` in an instance context. An INSTANCE method may
+        // be written that way -- the receiver it is missing is the one the language supplies -- and a
+        // STATIC one may not: see below.
         if (!name.empty() && name.find('.') == std::string::npos) {
             if (!enclosingClass_.empty()) {
                 if (const MethodInfo* m = findMethod(enclosingClass_, name, /*objectFallback=*/false)) {
+                    /* A STATIC METHOD IS CALLED THROUGH ITS CLASS, ALWAYS -- including from inside
+                       that very class.
+
+                       An instance method written bare is not missing a subject: `this` is the
+                       subject, and the language puts it there. A static method has no `this`, so a
+                       bare `announce(5)` is an action with nothing it is about -- a loose verb,
+                       which is the shape this language exists to refuse. `Maths.announce(5)` says
+                       whose action it is, and it says it at the CALL, where the reader is.
+
+                       It also settles ambiguity by construction: two classes may both declare
+                       `parse`, and the path is what separates them. Written bare, the answer
+                       depended on which class the call happened to be written inside. */
+                    if (m->isStatic) {
+                        error("'" + name + "' belongs to '" + enclosingClass_ +
+                                  "', and a static method is called through its class: write '" +
+                                  enclosingClass_ + "." + name +
+                                  "(...)'. An instance method may be written bare because `this` is "
+                                  "its subject; a static one has none, and an action with no subject "
+                                  "is the shape this language refuses",
+                              call->loc);
+                        return m->returnType;
+                    }
                     // An instance-method call needs a receiver; `this` exists only in an instance context
                     // (currentClass_ is cleared inside a static method).
-                    if (m->isStatic || !currentClass_.empty()) {
+                    if (!currentClass_.empty()) {
                         // Inside the class that declares it, `interrupt()` reads as an ordinary
                         // implicit-`this` call. It is the same mistake as the qualified one, and
                         // the likelier of the two -- a handler tail-calling itself to "re-run".
@@ -3195,6 +3611,20 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     return "";
                 }
             }
+        }
+        /* THE LAST THING TO TRY: whatever this callee is, does its VALUE answer `__command`?
+
+           The two shapes above cover the ones a program writes most -- a name, and a field reached
+           through a receiver -- and they are tried first because they need no evaluation. But a
+           command can arrive from anywhere an expression can: `Main.built()(15)` calls the command a
+           method just returned, `table[i](x)` calls the one an array holds. Asked here, after every
+           name-based reading has failed, this costs nothing on the paths that already worked and
+           refuses nothing that used to compile. */
+        if (const std::string held = typeOf(*call->callee);
+            !held.empty() &&
+            findMethod(baseType(held), kCommandMethod, /*objectFallback=*/false) != nullptr) {
+            routeThroughCommand(call);
+            return typeOf(*call);
         }
         error("unknown call '" + (name.empty() ? std::string("<expr>") : name) + "'", call->loc);
         return "";
@@ -3271,10 +3701,10 @@ std::string SemanticAnalyzer::typeOf(const ast::Expr& expr) {
                     if (f == nullptr) {
                         if (const MethodInfo* mi = findMethod(objId->name, mem->member);
                             mi != nullptr && mi->isStatic) {
-                            // `funcptr<...>` is the CANONICAL spelling both words normalise to --
-                            // `methodptr` is the newer name for the same type, and the canonical
-                            // form is what every comparison downstream comes back to.
-                            std::string t = "funcptr<" + mi->returnType;
+                            // `methodptr<...>` is the canonical spelling, and now the only one:
+                            // `funcptr` is gone from the grammar, and this string is what every
+                            // comparison downstream comes back to.
+                            std::string t = "methodptr<" + mi->returnType;
                             for (const std::string& pt : mi->paramTypes) { t += "," + pt; }
                             return t + ">";
                         }

@@ -4,6 +4,7 @@ import System.Concurrency.Semaphore;
 import System.Concurrency.CountdownLatch;
 import System.Concurrency.atomic;
 import System.Collections.ArrayList;
+import System.Commands.Action;
 program ConcurrencyPrimitives;
 
 // Named concurrency primitives (spec 20): a Semaphore caps concurrency at 2, a CountdownLatch lets the
@@ -18,11 +19,16 @@ public bundle main {
                 CountdownLatch latch = new CountdownLatch(6) on heap;
                 ArrayList<Thread> threads = new ArrayList<Thread>() on heap;
                 for (mutable int i = 0; i < 6; i++) {
-                    function<void> w = lambda[captures: byvalue sem, byvalue counter, byvalue latch]() returns void {
-                        sem.acquire();
-                        counter.increment();
-                        sem.signal();
-                        latch.countDown();
+                    // All three by POINTER: one semaphore, one counter, one latch, shared by six
+                    // workers. Carried by value each worker would get its own, which is six
+                    // semaphores capping nothing and a latch nobody counts down.
+                    Action* w = command ()
+                        carries (Semaphore* gate = sem, atomic<int>* tally = counter,
+                                 CountdownLatch* done = latch) into pack returns void {
+                        pack.gate.acquire();
+                        pack.tally.increment();
+                        pack.gate.signal();
+                        pack.done.countDown();
                     };
                     Thread t = new Thread(w) on heap;
                     t.start();

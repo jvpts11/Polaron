@@ -2,14 +2,18 @@ import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.atomic;
 import System.Concurrency.Shared;
+import System.Commands.Action;
 program ThreadSharedType;
 
 // `implements Shared` (spec 14, 20): a program's OWN type crossing a thread boundary.
 //
-// The data-race rule refuses a thread closure that captures a pointer to mutable state, and knows
+// The data-race rule refuses a thread's work that CARRIES a pointer to mutable state, and knows
 // atomic<T>, Mutex<T> and Channel<T> by name. A tally whose every field is an atomic is exactly as
 // safe as those, and says so. Two threads count into it; the total is exact because every write
 // went through an atomic.
+//
+// The rule reads the command's baggage list -- which is its fields -- rather than a capture list
+// that could have been left out entirely.
 
 public bundle main {
     public namespace app {
@@ -36,9 +40,9 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Tally* tally = new Tally() on heap;
-                function<void> work = lambda[captures: byvalue tally]() returns void {
+                Action* work = command () carries (Tally* into = tally) into pack returns void {
                     for (mutable int i = 0; i < 50000; i++) {
-                        tally.add();
+                        pack.into.add();
                     }
                 };
                 Thread t1 = new Thread(work) on heap;

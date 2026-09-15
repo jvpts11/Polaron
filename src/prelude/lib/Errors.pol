@@ -12,7 +12,11 @@
         // Written on the ABSTRACT BASE where the answer is the same for both variants, and overridden
         // where it differs -- so `match` and these agree by construction rather than by being kept in
         // step, and a variant added later cannot forget one.
-        public sealed abstract class Result<T, E> permits Ok, Err {
+        // `mustuse`, because a Result whose answer is dropped is an error nobody handled -- which is
+        // the one failure this type exists to make impossible to have by accident. The word is on
+        // the TYPE, so it covers every method that returns one, including the ones written later;
+        // `discard x;` is how a caller says the dropping was deliberate.
+        public mustuse sealed abstract class Result<T, E> permits Ok, Err {
             public abstract method isOk() returns boolean;
             public method isErr() returns boolean { return !this.isOk(); }
             // The value, or this one instead. The commonest thing anybody does with a Result, and it
@@ -35,21 +39,23 @@
             public override method valueOr(T fallback) returns T { return fallback; }
             public override method errorOr(E fallback) returns E { return this.error; }
         }
-        public sealed abstract class Option<T> permits Some, None {
+        // ...and the same for an Option: it says "there may be nothing here", and a caller who drops
+        // it has answered neither half of the question the type asked.
+        public mustuse sealed abstract class Option<T> permits Some, None {
             public abstract method isSome() returns boolean;
             public method isNone() returns boolean { return !this.isSome(); }
             // The value, or this one instead.
             public abstract method valueOr(T fallback) returns T;
             // Whether it holds something that passes the test. `present(p)` reads as the question it
             // is -- "is there one, and is it what I want" -- which otherwise takes a match and an if.
-            public abstract method present(function<boolean, T> test) returns boolean;
+            public abstract method present(Predicate<T>* test) returns boolean;
         }
         public class Some<T> extends Option<T> {
             public final T value;
             public constructor Some(T value) { this.value = value; }
             public override method isSome() returns boolean { return true; }
             public override method valueOr(T fallback) returns T { return this.value; }
-            public override method present(function<boolean, T> test) returns boolean {
+            public override method present(Predicate<T>* test) returns boolean {
                 return test(this.value);
             }
         }
@@ -57,7 +63,7 @@
             public constructor None() {}
             public override method isSome() returns boolean { return false; }
             public override method valueOr(T fallback) returns T { return fallback; }
-            public override method present(function<boolean, T> test) returns boolean {
+            public override method present(Predicate<T>* test) returns boolean {
                 return false;   // nothing to test, and the test is never called
             }
         }

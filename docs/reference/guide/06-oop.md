@@ -712,6 +712,16 @@ Only the *layout* changes; the fields, their access, and the class's semantics a
 if they were declared plainly. Affinity is inherited safely: a subclass's object still begins
 with exactly the base's layout, and only the subclass's own fields are grouped.
 
+The same question about CODE is a method modifier: **`cold`** says a path is rarely taken, so its
+body moves off the hot line and is not inlined into one. The inliner costs a method by its size,
+which is a poor proxy when the bulk of one runs once in a thousand calls —
+`ArrayList.ensureCapacity` is the case that asked for it. There is no `hot` beside it, on purpose:
+hot is what the optimizer already assumes, so the word would spend a token and add no fact.
+
+```polaron
+private cold method grow() returns void { ... }
+```
+
 With classes, inheritance, interfaces, virtual dispatch, properties, operators, enums, and
 ## 6.14 Layouts: an interface for memory
 

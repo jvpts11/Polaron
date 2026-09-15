@@ -44,6 +44,19 @@ void resolveTypeAliases(ast::Program& program);
 // delegate answers something an interface requires, or when more than one does.
 bool expandDelegates(ast::Program& program);
 
+// `command` members -- the third member kind, beside `method` and `procedure`. Each becomes an
+// ordinary CLASS (baggage to private fields, signature to a method named `kCommandMethod`) plus a
+// static factory on the declaring class that builds one, so `Kennel.aboveAge(21)` is a construction
+// and everything downstream sees a class it already understands.
+//
+// Run after `qualifyNamespaces` -- the generated class is named from the declaring one, which must
+// already have its final name -- and BEFORE `monomorphize`, so a command inside a generic is
+// expanded once on the template and copied per instantiation, the same order `expandDelegates` needs.
+void expandCommands(ast::Program& program);
+
+// The one method name every generated command class answers to -- `kCommandMethod`, defined in
+// parser/ast.h so the parser and the language server have it without linking this pass.
+
 // Deep-clone of an expression / statement (no type substitution). Used by AST-level optimization
 // passes (e.g. loop interchange) that need to duplicate sub-trees.
 ast::ExprPtr cloneExprDeep(const ast::Expr* e);

@@ -1,0 +1,42 @@
+import System.IO.Console;
+program EternalInEntryIsKept;
+
+// AN `eternal` OBJECT IN `main` MAY BE KEPT BY ANOTHER ONE. The entry point's frame lasts the whole run
+// and `eternal` stops the teardown at its closing brace, so `&kind` never dangles -- which is how a
+// kernel's `main` wires its eternal objects together. The region binder read the `on stack` alone and
+// refused the `register` as a pointer to storage "about to disappear".
+//
+// `eternal_outside_entry_bad.pol` is the other half: the same lines in a method that returns stay refused.
+public bundle Main {
+    public namespace App {
+        public class Kind {
+            private mutable int id;
+            public constructor Kind(int id) { this.id = id; }
+            public method number() returns int { return this.id; }
+        }
+        public class Registry {
+            private mutable nullable Kind*[] known;
+            public constructor Registry() { this.known = new nullable Kind*[4](); }
+            public method register(Kind* k) returns void { this.known[0] = k; return; }
+            public method first() returns int {
+                nullable Kind* k = this.known[0];
+                if (k == null) { return 0; }
+                return k.number();
+            }
+        }
+        public class Holder {
+            private mutable Registry* reg;
+            public constructor Holder() { this.reg = new Registry() on heap; }
+            public method types() returns Registry* { return this.reg; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                eternal Kind kind = new Kind(7) on stack;
+                eternal Holder holder = new Holder() on stack;
+                holder.types().register(&kind);
+                System.IO.Console.println($"{holder.types().first()}");
+                return;
+            }
+        }
+    }
+}

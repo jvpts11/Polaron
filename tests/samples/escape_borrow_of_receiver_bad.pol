@@ -1,0 +1,35 @@
+import System.IO.Console;
+program EscapeBorrowOfReceiverBad;
+
+// AN ACCESSOR'S ANSWER OUTLIVING THE OBJECT IT CAME OUT OF.
+//
+// `borrow()` hands back the array `Owner`'s destructor frees. Nothing in it is wrong, and nothing on
+// the caller's first line is wrong either; the bug is the three lines together, and it is only
+// visible where both names are in scope.
+//
+// This is the other half of a sentence the analysis had already written down. It knew that
+// `view.of(table)` keeps a borrow OF THE ARGUMENT, so a later `delete table` invalidates the view --
+// and it did not know the same thing about a borrow of the RECEIVER, which is what every accessor
+// in every class hands out. A compound-file reader kept a directory record past the file that owned
+// it exactly this way: read the record, delete the file, lay out a new one from what was read.
+//
+// Refused with Polaron-1724.
+public bundle Main {
+    public namespace App {
+        public class Owner {
+            private mutable byte[] bytes;
+            public constructor Owner() { this.bytes = new byte[128](); }
+            public destructor ~Owner() returns void { delete this.bytes; return; }
+            public method borrow() returns byte[] { return this.bytes; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Owner* o = new Owner() on heap;
+                byte[] kept = o.borrow();
+                delete o;
+                System.IO.Console.println($"{kept.length()}");
+                return;
+            }
+        }
+    }
+}

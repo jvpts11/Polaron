@@ -1,0 +1,28 @@
+import System.IO.Console;
+program WeakFieldInStructBad;
+
+// A `weak` FIELD IN A VALUE STRUCT IS REFUSED. The field is a node on its target's weak list, and a
+// struct is copied by value and dies at the end of its scope with nothing to unlink it -- so the target's
+// list ends up pointing into dead stack, and deleting the target walks it.
+//
+// Refused: "'weak' is not allowed on a field of struct 'Place'".
+public bundle Main {
+    public namespace App {
+        public class Room {
+            public mutable int size;
+            public constructor Room(int s) { this.size = s; }
+        }
+        public struct Place {
+            private mutable weak Room* where;
+            public constructor Place(Room* r) { this.where = r; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Room* r = new Room(3) on heap;
+                Place p = new Place(r);
+                delete r;
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,34 @@
+import System.IO.Console;
+program EscapeOutParameterBad;
+
+// A FRAME-LOCAL WRITTEN THROUGH AN OUT PARAMETER.
+//
+// The analysis watched two ways out of a method -- the `return`, and a store into a field of
+// something longer-lived -- and an out parameter is neither. It is the same escape spelled
+// backwards: the caller made the storage before the call existed, so writing this frame's object
+// into it puts a dead pointer somewhere that outlives the frame by construction.
+//
+// Decidable with no summary at all. A `T**` parameter cannot point into this frame.
+//
+// Refused with Polaron-1721.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int n;
+            public constructor Box(int n) { this.n = n; }
+        }
+        public class Main {
+            static method fill(Box** out) returns void {
+                Box* local = new Box(9);
+                out[0] = local;
+                return;
+            }
+            public static method main(string[] args) returns void {
+                Box*[] slot = new Box*[1]();
+                Main.fill(&slot[0]);
+                System.IO.Console.println($"{slot[0].n}");
+                return;
+            }
+        }
+    }
+}

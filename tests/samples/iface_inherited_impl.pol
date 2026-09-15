@@ -1,0 +1,118 @@
+import System.IO.Console;
+program IfaceInheritedImpl;
+
+// AN INTERFACE METHOD SATISFIED BY AN INHERITED IMPLEMENTATION.
+//
+// Three shapes, and only the first of them was ever exercised:
+//
+//   1. `Standalone implements Speaks` and defines `speak` itself. This is what every interface in
+//      the standard library and in Horizon looked like, and it works.
+//   2. `Derived extends Base implements Speaks`, where BASE defines `speak`. The class satisfies the
+//      interface without declaring anything, which is ordinary OOP and is how a driver base class
+//      earns its subclasses their contract.
+//   3. The same, one level further: an interface that REFINES another (`Louder implements Speaks`),
+//      with the implementation still up the class chain.
+//
+// Shapes 2 and 3 are what Horizon reached for when its network stack stopped naming a concrete card:
+// `Peripheral implements Driver` defines `start`, and `E1000 extends Peripheral implements
+// NetworkCard` where `NetworkCard implements Driver`. Every call of `start` through a `NetworkCard*`
+// returned a wrong answer and the next call through that pointer faulted.
+//
+// The interesting part is that NOTHING REFUSED IT. The class compiled, the interface compiled, and
+// the dispatch went somewhere. A test that only asks "does it build" passes on all three.
+//
+// Prints:
+//   direct hello
+//   iface hello
+//   base 7
+//   louder HELLO
+//   diamond machine
+//   both machine WIDGET
+//   serial 11
+public bundle Main {
+    public namespace App {
+        public interface Speaks {
+            method speak() returns String;
+        }
+
+        // ...and an interface that refines another. `Louder` is everything `Speaks` is, plus one.
+        public interface Louder implements Speaks {
+            method shout() returns String;
+        }
+
+        // Shape 1: no superclass, defines the method itself.
+        public class Standalone implements Speaks {
+            public constructor Standalone() { }
+            public override method speak() returns String { return "hello"; }
+        }
+
+        // Shape 2 and 3: the implementation is on the BASE and the interface is on the DERIVED.
+        public class Base {
+            private mutable int held;
+            public constructor Base(int n) { this.held = n; }
+            public method speak() returns String { return "hello"; }
+            public method held() returns int { return this.held; }
+        }
+
+        public class Derived extends Base implements Louder {
+            public constructor Derived(int n) { super(n); }
+            public override method shout() returns String { return "HELLO"; }
+        }
+
+        // Shape 4: THE DIAMOND, and it is the one Horizon actually has.
+        //
+        // `Appliance` is abstract and implements `Speaks` itself, defining `speak` as an override of
+        // the interface's declaration. `Widget extends Appliance implements Louder`, and `Louder`
+        // refines `Speaks` -- so `Speaks` is reachable from `Widget` by TWO routes: up the class
+        // chain through `Appliance`, and sideways through `Louder`. Both name the same method, one as
+        // a definition and one as a declaration.
+        //
+        // That is `Peripheral implements Driver` / `E1000 extends Peripheral implements NetworkCard`
+        // / `NetworkCard implements Driver`, exactly.
+        public abstract class Appliance implements Speaks {
+            private mutable int serial;
+            public constructor Appliance(int n) { this.serial = n; }
+            public override method speak() returns String { return "machine"; }
+            public method serial() returns int { return this.serial; }
+            protected abstract method model() returns String;
+        }
+
+        public class Widget extends Appliance implements Louder {
+            public constructor Widget(int n) { super(n); }
+            protected override method model() returns String { return "widget"; }
+            public override method shout() returns String { return "WIDGET"; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Standalone one = new Standalone() on heap;
+                System.IO.Console.println("direct " + one.speak());
+
+                Derived two = new Derived(7) on heap;
+                // THROUGH THE INTERFACE, which is the whole test. `speak` is declared by `Speaks`,
+                // reached by `Derived` through `Louder`, and DEFINED by `Base` -- three types, and
+                // the pointer names none of them.
+                Speaks* asSpeaks = two;
+                System.IO.Console.println("iface " + asSpeaks.speak());
+                // ...and the object is still itself afterwards. A dispatch that went to the wrong
+                // slot usually leaves the receiver looking fine and answers the next question wrong,
+                // so the check that the OTHER method still works is the one that catches it.
+                System.IO.Console.println("base " + two.held().toString());
+                Louder* asLouder = two;
+                System.IO.Console.println("louder " + asLouder.shout());
+
+                // THE DIAMOND, through both routes to the same method.
+                Widget w = new Widget(11) on heap;
+                Speaks* wSpeaks = w;
+                System.IO.Console.println("diamond " + wSpeaks.speak());
+                Louder* wLouder = w;
+                System.IO.Console.println("both " + wLouder.speak() + " " + wLouder.shout());
+                System.IO.Console.println("serial " + w.serial().toString());
+                delete w;
+                delete two;
+                delete one;
+                return;
+            }
+        }
+    }
+}

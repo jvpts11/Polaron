@@ -47,6 +47,10 @@ enum class Code {
     AssignImmutable,      // assignment to a value not declared mutable
     UseAfterMove,         // use of a value after it was moved out
     MoveMisuse,           // moving something that cannot be moved (a field, an immutable)
+    UniqueFieldForbidsCopy,  // copying a type that owns a `unique` value -- the message names which
+    ShareableRacyField,      // `shareable` over a mutable field that carries no synchronisation
+    ReentrantViolation,      // a `reentrant` method reaches the allocator, a lock, or shared state
+    EntityColumnHasNoWidth,  // an entity's field has no width decided at its declaration
     InvalidAssignTarget,  // assigning to / incrementing something that is not an assignable place
 
     // 05xx -- control flow
@@ -105,11 +109,13 @@ enum class Code {
     ShadowsBuiltinType,   // a user type with the name of one the compiler provides
     FieldNeverAssigned,   // a constructor that leaves a field of the new object unset
     WeakNeedsPointer,     // `weak` on something that is not a pointer
+    WeakFieldInStruct,    // `weak` on a field of a value struct, which nothing can unlink
     ImportNameMismatch,   // a name used differently from how the import brought it in
     BitFieldRange,        // a literal that does not fit the declared width of a bit field
     BitFieldAddress,      // `&f.bits` -- a packed field has no address of its own
     AtomicTooWide,        // an `atomic<T>` wider than the machine can do without a lock
     AsmUnknownInstruction, // a mnemonic inside asm("x86_64") { } the checker does not recognise
+    AsmOperandPlace,      // `out ("rdi": v)` -- a place that is not a register on this architecture
     IntegerAsAddress,     // a number turned into an address: the constant should have been one
     AddressAsInteger,     // an address put into a number, losing what it is
     StackReturnEscapes,   // `return new X() on stack` on a class: the placement cannot be honoured
@@ -118,6 +124,10 @@ enum class Code {
     InterruptMisuse,      // an interrupt handler that is called, duplicated, or reaches what it must not
     TransformerMisuse,    // a transformer contract a type does not meet, or a procedure that names no subject
     TestDeclaration,      // a [Test]/[Setup]/[Cases] annotation on something that cannot carry it
+    // A `layout`'s constraint that the arrangement did not meet. It is one code and not one per
+    // constraint on purpose: either an arrangement exists that satisfies the layout or none does,
+    // and what the reader needs from the message is which CONCESSION would have made one exist.
+    LayoutUnsatisfiable,
 
     // 09xx -- context restrictions
     FreestandingRestriction,  // a feature unavailable in freestanding mode (spec 36.3)
@@ -206,9 +216,49 @@ enum class Code {
     ConstantComputedAtRuntime,  // an expression the compiler can already evaluate
     SameGuardAtEveryCallSite,   // a precondition living at the call sites instead of on the method
     UnprovenNoAliasInLoop,      // two arrays of one type, written and read, nothing separating them
+    // A field left out of the generated `equalsKey`/`hash`/`compareTo` because it has no structural
+    // value to compare. It was reported with `fprintf(stderr, "warning: ...")` -- no code, no file,
+    // no line -- which made it the one warning in the compiler that could be neither located nor
+    // silenced. See the note at `Code::FieldOutsideGeneratedKey` in the catalogue.
+    FieldOutsideGeneratedKey,
     CallBlocksVectorization,    // element-wise arithmetic with a call the optimiser cannot see through
     KeptArgumentNeverReused,    // handed to something that stores it, and never read again
     OverrideRepeatsTheBase,     // an override whose body is the base's body
+    // `implements L` where `L` is a layout -- the spelling `arranges` replaces. A warning and not
+    // an error because the old spelling still means exactly what it meant; what it does not do is
+    // read as what it is, which is a thing the reader pays for and the compiler does not.
+    LayoutSpelledImplements,
+    // A method that allocates and frees three or more things by hand: a region, written out one
+    // `new`/`delete` pair at a time. `HeapWithLexicalLifetime` says it about ONE variable, where the
+    // answer is the stack; this is what the same shape means when there are several of them, where
+    // the answer is one allocation and one release for all of them.
+    AllocationsWantARegion,
+    // One pointer copied into a field of a second object that ALSO frees it: two owners, one object,
+    // and a double free with no `delete` written anywhere near it. Advice rather than a refusal only
+    // because the cure -- moving the field -- is not writable today for a non-partitionable class.
+    TwoOwnersForOneObject,
+    // `new T[n]() on stack` -- a placement an array cannot honour. Read by nothing at all until
+    // `on static` arrived and the check that lets one placement through had to look at the others.
+    ArrayPlacementIgnored,
+    // A static method called without its class. It belongs to the class, so the class is its
+    // subject, and a bare call is an action about nothing.
+    UnqualifiedStaticCall,
+    // `command DogTest(...) carries (...) returns T;` -- baggage written on a ROLE. A role says what
+    // will be called; what a command holds belongs to the command.
+    CommandTypeCarries,
+    // An inline `command (...)` written where there is no class to lift it onto.
+    InlineCommandHasNoClass,
+    // `command (int x) carries (int floor) into pack` inline -- a carried value with no value. The
+    // declared form supplies them at the use; the inline form has no other place to supply them.
+    InlineCommandCarriesNoValue,
+    // `channel.send(obj)` without `move`. A slot is 64 bits, so a non-trivial value crosses as a
+    // reference and both threads end up holding it.
+    ChannelSendNeedsMove,
+    // A method declared `readonly` that writes -- itself, or through something it calls.
+    ReadonlyWrites,
+    // `<int a>` -- a value type parameter without `fixed`. Reserved for the runtime-bound extent,
+    // so it is refused rather than quietly given the stamped meaning.
+    BareValueTypeParameter,
 };
 
 // Infer a code from a diagnostic message, for the many call-sites that pass no explicit code. First

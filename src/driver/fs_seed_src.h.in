@@ -1,0 +1,7 @@
+#pragma once
+// Generated from runtime/polaron_fs_seed.pol by CMake.
+namespace polaron {
+inline constexpr const char* kFreestandingSeedSource = R"POLARONSEED(
+@POLARON_FS_SEED_SOURCE@
+)POLARONSEED";
+}

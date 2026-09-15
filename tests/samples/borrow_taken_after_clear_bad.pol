@@ -1,0 +1,47 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+program BorrowTakenAfterClearBad;
+
+// The other half of `borrow_taken_after_clear.pol`: a borrow taken AFTER the clear is fine, and one
+// taken BEFORE it still is not -- even when a fresh borrow of the same source sits between the two.
+// Kept per borrow, the old one stays stale; kept per source, a rule "fixed" by forgetting the source
+// once it is borrowed again would let `before` through.
+public bundle Main {
+    public namespace App {
+        public class Row {
+            public mutable int value;
+            public constructor Row(int value) { this.value = value; }
+            public method read() returns int { return this.value; }
+        }
+
+        public class Table {
+            private mutable ArrayList<Row*> rows;
+            public constructor Table() { this.rows = new ArrayList<Row*>() on heap; }
+            public method insert(Row* row) returns void { this.rows.add(row); return; }
+            public method at(int position) returns Row* { return this.rows.get(position); }
+            public method clear() returns void {
+                for (mutable int i = 0; i < this.rows.size(); i++) { delete this.rows.get(i); }
+                this.rows.clear();
+                return;
+            }
+            public destructor ~Table() returns void {
+                this.clear();
+                delete this.rows;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Table* people = new Table() on heap;
+                people.insert(new Row(10) on heap);
+                Row* before = people.at(0);
+                people.clear();
+                people.insert(new Row(30) on heap);
+                Row* after = people.at(0);
+                System.IO.Console.printf("%d %d\n", after.read(), before.read());
+                delete people;
+                return;
+            }
+        }
+    }
+}

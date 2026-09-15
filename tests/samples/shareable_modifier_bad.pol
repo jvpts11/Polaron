@@ -1,0 +1,37 @@
+program ShareableModifierBad;
+
+// THE CHECK, AND IT IS THE HALF THAT MAKES THE WORD WORTH ANYTHING (ownership.md §14).
+//
+// A bare permission would be a one-word hole in the no-UB principle: write `shareable` over a type
+// with a plain mutable `int` and you have exactly the race the compiler otherwise refuses. That
+// refusal is what makes AP-33 invert — *aliasing and concurrency need a language rule, and this
+// language has one* — so trading it for a password would be handing the objection back after
+// winning it. The marker interface it replaces conceded as much in its own comment: *"the whole of
+// what it says is that its author thought about it."*
+//
+// The rule is decidable from the declaration alone, which is why the check can exist at all:
+//
+//   > legal when every mutable field is `atomic<T>`, or is itself `shareable` — or when the type is
+//   > entirely immutable.
+//
+// `hits` below is a plain mutable `int`. Two threads incrementing it would lose counts, and nothing
+// in the type says otherwise.
+
+public bundle Main {
+    public namespace App {
+        public shareable class Counter {
+            public mutable int hits;
+            public constructor Counter() { this.hits = 0; }
+            public method bump() returns void { this.hits = this.hits + 1; return; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Counter c = new Counter() on heap;
+                c.bump();
+                delete c;
+                return;
+            }
+        }
+    }
+}

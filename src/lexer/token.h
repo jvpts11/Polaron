@@ -63,6 +63,10 @@ enum class TokenKind : std::uint8_t {
     // Keywords -- modifiers / visibility
     KwPublic, KwPrivate, KwProtected, KwInternal,
     KwStatic, KwAbstract, KwFinal, KwOverride, KwMutable, KwNullable,
+    // `surveyed`: this method's lifetime summary is stated by its author, not derived from its
+    // body. See the region-binder chapter -- it is the one escape the analysis has, and it pays
+    // for itself at the boundary rather than at the body.
+    KwSurveyed,
 
     // Keywords -- OOP / memory / type ops
     KwExtends, KwImplements, KwThis, KwSuper,
@@ -78,6 +82,29 @@ enum class TokenKind : std::uint8_t {
 
     // Keywords -- ownership / regions / scoped resources (0.2 memory model)
     KwMove, KwMovable, KwUnique, KwWeak, KwPartitionable,
+    // `dynamic` (docs/design/dynamic.md) -- the universal prefix for *decided at run time*. On a
+    // class it means the instance carries its type: a vtable pointer, eight bytes on every instance,
+    // and membership of the `Object` root. Without it a class IS its fields, which is what AP-02 is
+    // about: `class Tag`, which nothing extends and nothing overrides, was eight bytes wide because
+    // nobody had written anything.
+    KwDynamic,
+    // `shareable` (docs/design/ownership.md §13a, §14, §20.4) -- this type is safe to reach from
+    // several threads at once. A MODIFIER and not a marker interface: it names no methods, it
+    // dispatches nothing, and under `dynamic` `implements Shared` would buy an eight-byte header
+    // and an indirection for a property that generates no calls -- the exact cost AP-02 is about,
+    // arriving through a word chosen for convenience.
+    //
+    // It is CHECKED, not trusted: legal when every mutable field is `atomic<T>` or itself
+    // shareable, or when the type is entirely immutable. A bare permission would be a one-word hole
+    // in the no-UB principle, and handing that back is handing AP-33 back after winning it.
+    KwShareable,
+    // `reentrant` (docs/design/reentrant.md) -- THIS MAY BE ENTERED AGAIN WHILE AN EARLIER ENTRY IS
+    // STILL RUNNING. A member modifier, and the wide property `interrupt` was a special case of:
+    // the handler's bespoke list of prohibitions -- must not allocate, must not free -- collapses
+    // into one property with one checker, and a method that is NOT a handler but must be equally
+    // careful (a scheduler entry, a page-fault path, a destructor during teardown) gains a way to
+    // say so, which it had not.
+    KwReentrant,
     KwRegion, KwOf, KwAccepts, KwRejects,
     KwItself, KwRelease,
     KwPersistent, KwEternal, KwTransient,
@@ -86,7 +113,26 @@ enum class TokenKind : std::uint8_t {
     KwDefer, KwUsing, KwSynchronized, KwAsync, KwAwait,
     KwExtern, KwCdecl, KwStdcall, KwFastcall, KwUnknown, KwFreestanding, KwNaked,
     KwVolatile, KwCascade, KwLazy, KwExternal, KwDelegate,
-    KwLambda, KwFunction, KwMethodref,
+    KwMethodref,
+    // `readonly` on a method (B.1/D.6): it writes nothing -- no field of its own, no field of
+    // anything it was handed, no static, no output. Declared, and checked.
+    KwReadonly,
+    // `cold` on a method (B.3): this path is rarely taken. Moves the body off the hot line and stops
+    // it being inlined into one. There is no `hot`, on purpose: hot is the default, so the word
+    // would carry no fact. (The same word also tags an `affinity cold { }` field group.)
+    KwCold,
+    // `mustuse` (B.2) on a type or a method: the answer is the point, so throwing it away is a
+    // mistake worth a word. `discard e;` is the valve -- deliberate, and visible at the line.
+    KwMustuse, KwDiscard,
+    // THE THIRD KIND OF MEMBER, beside `method` (an instance's behaviour) and `procedure` (a
+    // relation's): PORTABLE behaviour -- something handed to whoever knows WHEN to run it, which is
+    // what a lambda was for, said with a subject and a name.
+    //
+    // `carries` is the capture list, DECLARED, so that nothing is closed over implicitly: what a
+    // command holds is its declaration, and the region binder reads that list instead of discovering
+    // one. Both are HARD: the word is the member kind, and a member kind that a program could also
+    // use as a variable name is a word the reader has to disambiguate every time.
+    KwCommand, KwCarries,
     KwTypealias, KwNewtype, KwAnnotation,
     KwLabel, KwComefrom, KwGoto, KwAbstainfrom, KwReinstate, KwUnimport, KwReimport,
     KwExpecting, KwOnFailure, KwYield,

@@ -1,0 +1,32 @@
+import System.IO.Console;
+program NarrowInAndValue;
+
+// THE RIGHT OPERAND OF `&&` IS TYPED WITH WHAT THE LEFT ONE PROVES. `b != null && weigh(b)` only calls
+// `weigh` when `b` is not null -- the same fact an `if` reads for its body -- and it was refused as
+// passing a nullable, in a value where the `if` form narrowed. `||` likewise with the left one false.
+// Prints `true false true`.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            private mutable int held;
+            public constructor Box(int held) { this.held = held; }
+            public method value() returns int { return this.held; }
+        }
+        public class Main {
+            public static method weigh(Box* b) returns boolean { return b.value() > 2; }
+            public static method pick(int n) returns nullable Box* {
+                if (n == 0) { return null; }
+                return new Box(n) on heap;
+            }
+            public static method main(string[] args) returns void {
+                nullable Box* some = Main.pick(3);
+                nullable Box* none = Main.pick(0);
+                boolean heavy = some != null && Main.weigh(some);
+                boolean empty = none != null && Main.weigh(none);
+                boolean either = some == null || Main.weigh(some);
+                System.IO.Console.println($"{heavy} {empty} {either}");
+                return;
+            }
+        }
+    }
+}

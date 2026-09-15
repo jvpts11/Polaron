@@ -635,7 +635,7 @@ where it lands. A feature that appears in neither column below is front-end only
 | `extends` `super` `permits` `final` `abstract` | the class hierarchy in the type table | devirtualisation when the target set is closed |
 | `delegate` | resolved at declaration, recorded | one call, not a forwarding frame |
 | `transformer` `applies` `collective` `procedure` `satisfies` | monomorphised; `satisfies` kept as an obligation | verifier rule 17 |
-| `lambda` `methodref` `funcptr` `methodptr` | `closure` with its capture set | escape analysis |
+| `lambda` `methodref` `methodptr` | `closure` with its capture set (a `methodptr` has none) | escape analysis |
 | `try` `catch` `finally` `throw` `throws` | `call.unwind`, `landing`, `resume` | `nounwind` when absent |
 | `async` `await` `yield` | `suspend` | frame construction; verifier rule 20 |
 | `synchronized` | `lock.acquire`/`release` | ordering |
@@ -663,11 +663,25 @@ where it lands. A feature that appears in neither column below is front-end only
 | `catalog`, `enum` with data | `variant` | §7.12 |
 | `annotation` | metadata on the declaration | inline tests |
 
-### Still to design
+### The three spec-32 features — decided (Wave 4.5), and **none of them needs a node**
 
-Three spec-32 features have no representation here yet and are deliberately named rather than
-silently omitted: **bidirectional types** (32.6), **resource tokens** (32.7), and **mutable dispatch
-tables** (32.8). Each needs a decision before Stage 1 lowers a program that uses it.
+This section named three features as having no representation here: **bidirectional types** (32.6),
+**resource tokens** (32.7) and **mutable dispatch tables** (32.8), each requiring a decision before
+Stage 1 lowered a program that used one. All three are settled, and the answer is the same shape
+three times: **the representation exists, in a form that was already there.**
+
+| | what it needs | why no node |
+|---|---|---|
+| **32.6 bidirectional types** | nothing | `parser.cpp:2482` desugars `bidirectional double fahrenheit { celsius to fahrenheit: ...; fahrenheit to celsius: ...; }` into the **existing property machinery** — a computed getter and a `fahrenheit$set(value)` that assigns the backing field, with the names rewritten on the token stream. PIR never sees the construct; it sees two methods |
+| **32.7 resource tokens** | nothing of its own | `ownership.md` §5–7: §32.7 is capability-based security — a `FileAccessToken` proving permission — and it is a **client** of the ownership design rather than a peer of it. A token is a `unique` value that may not be copied, which is `unique` doing its job. `Mutex<T>`, a file descriptor, a region token and a `using` guard are the same shape |
+| **32.8 mutable dispatch tables** | **built, in Wave 3** | `Dog.methods.replace("bark", fn)` is `Module::replaceableMethods` (the method names that may be repointed) plus `Global::isConst = !rewritesItsVtable(c)` (a table that is written is not in `.rdata`). Both were needed by §11.8 for a different reason — a replaceable method must never be devirtualised, and a non-const vtable is not a fact — so the representation arrived as a **consequence of the pass rather than as a feature** |
+
+**What the three have in common is worth more than the three answers.** Each was recorded as a gap
+in this document while the compiler already had the mechanism: a desugaring, a keyword doing the
+work under another name, and a pair of module fields. `ownership.md` §19 states the rule that catches
+this — *"the method that keeps failing is trusting the notes; read the repository, not the record"* —
+and it was written after the ledger recorded a thread-closure restriction the compiler had already
+lifted. **Three more instances, found by going to look.**
 
 ## 11. The passes
 
@@ -1054,7 +1068,84 @@ Three preconditions, in order:
    `dereferenceable` and asks whether it vectorises the strided read it refuses to vectorise for C.
    If it does, the ceiling of §15.3 lifts and Stage 5 loses its sharpest argument. **If it does not,
    Stage 5 stops being an ambition and becomes the answer to a measured problem.**
+   **It has run — see §15.5a. The answer is neither of those two.**
 3. **Somebody wants it** for a reason bigger than elegance.
+
+### 15.5a Wave 4 — it ran, and the gap was the benchmark
+
+> **In one line: with the benchmark's own repetition made real, Polaron is level with clang and 24%
+> AHEAD of GCC on the loop it was recorded as being 5.7× behind on.**
+
+The ledger's largest performance target, reached from four directions — AP-02, AP-06, AP-08, AP-10 —
+was *"GCC vectorises the strided reduction; clang leaves it scalar,"* and Polaron sits on clang's
+number because Polaron **is** clang at the last step. Two hypotheses were written down: the facts
+change LLVM's answer, or LLVM's vectoriser does not do this shape.
+
+**Neither. The measurement was not measuring what it said.**
+
+**Step one — aliasing is not the reason.** The same reduction in C, four ways, `-O3`:
+
+| variant | clang | gcc |
+|---|---|---|
+| pointer parameter, nothing declared | scalar | scalar |
+| `__restrict` — C's whole vocabulary for *nothing else touches this* | scalar | scalar |
+| a 16-byte record (half the stride) | scalar | **vectorised** |
+| the field lifted into its own array (unit stride) | **vectorised** | **vectorised** |
+
+`restrict` changes clang's output **by not one instruction** — 282 both times, zero SIMD. Whatever
+stops it, it is not doubt about aliasing, and so not something `noalias` was ever going to fix.
+Hypothesis 1 is dead, for a reason worth keeping: *a fact can only help where the missing fact was
+the obstacle.*
+
+**Step two — GCC's assembly for the case it does NOT vectorise.**
+
+```
+.L2: movslq (%r8), %rcx          ; load a[i].who ONCE
+     movl   $20, %eax
+.L3: leaq   (%rdx,%rcx,2), %rdx  ; and add it twenty times, in a register
+     subl   $2, %eax
+     jne    .L3
+     addq   $32, %r8             ; only THEN move to the next record
+```
+
+**GCC interchanged the loops.** The benchmark walks the array twenty times to get a measurable
+duration; GCC swapped them so the walk happens *once* and each value is added twenty times, then
+strength-reduced that twenty into ten `+2x`. **One twentieth of the memory traffic, in a benchmark
+whose whole subject is memory traffic.** It is not vectorisation and it never was.
+
+**Step three — the same loop with the rounds made real.** One empty `asm` with a memory clobber per
+round: it emits nothing, so what is timed is still the walk, but interchange becomes illegal and all
+twenty walks must happen. Picoseconds per read, five runs, median:
+
+| | declared (32 B) | arranged / sorted (16 B) |
+|---|---|---|
+| **Polaron `-O3`** | **257** | **163** |
+| C, `clang -O3` | 265 | 162 |
+| C, `gcc -O3` | 337 | 197 |
+| *C, `gcc -O3`, as the benchmark was written* | *113* | *57* |
+
+Polaron is **level with clang** and **24% / 17% ahead of GCC**. The entire recorded gap — the single
+biggest performance target found so far — was GCC exploiting a repetition loop that exists only
+because the program is a benchmark.
+
+**What survives, smaller and truer:**
+
+- **LLVM does not do loop interchange; GCC does.** Real, and worth 2.9× *here*. On a program that
+  walks an array once — which is what a program does — it is worth nothing. Something to know, not
+  something to build a back end for.
+- **LLVM's vectoriser wants unit stride; GCC's manages 16-byte stride.** Also real, also narrower
+  than recorded: at 32 bytes neither vectorises. `layout` + `fitWithin` gets records to 16 bytes,
+  which is exactly the band where GCC's vectoriser reaches and LLVM's does not — so the language
+  feature pays, and would pay *more* under a back end that vectorised there.
+- **Nothing here argues for Stage 5.** Precondition 2 is discharged in the direction that removes
+  its sharpest argument. A back end of our own would have to beat clang, and clang is currently the
+  faster of the two production compilers on this loop.
+
+**The lesson that outlives the numbers.** Four findings agreed, and all four were downstream of one
+benchmark shape. **Agreement between measurements that share a defect is not corroboration — it is
+one reading taken four times.** Every timing loop in `anti-procedural-tests` repeats its work to get
+a duration, and every one is exposed to this; `LEDGER.md` and the four findings are re-measured in
+Wave 8 against the honest form.
 
 ### 15.6 IA-64 stops being the target and becomes the proof
 

@@ -1,0 +1,41 @@
+import System.Collections.ArrayList;
+import System.IO.Console;
+program BorrowOfAnOwnedElementBad;
+
+// A CONTAINER'S ACCESSOR HANDING OUT AN ELEMENT ITS OWNER FREES.
+//
+// `Bag.at` returns `this.items.get(i)`. `ArrayList.get` declares its return type as `T`, so nothing
+// about the shape of that call says a reference is being lent -- which left every `at`, `get` and
+// `first` in the language outside the rule, and those are most of the accessors there are.
+//
+// The class says the thing that matters somewhere else: `~Bag` walks `items` and deletes each
+// element, so `Bag` OWNS them. A method that reads one out and hands it back is lending storage this
+// object frees, whatever the container in the middle spells its type parameter. Ownership answers
+// what the generic could not.
+//
+// Refused with Polaron-1724.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Bag {
+        public mutable ArrayList<Leaf*>* items;
+        public constructor Bag() {
+            this.items = new ArrayList<Leaf*>() on heap;
+            this.items.add(new Leaf(1) on heap);
+        }
+        public destructor ~Bag() returns void {
+            for (mutable int i = 0; i < this.items.size(); i++) { delete this.items.get(i); }
+            delete this.items;
+            return;
+        }
+        public method at(int i) returns Leaf* { return this.items.get(i); }
+    }
+    public class Main {
+        public static method main(string[] args) returns void {
+            Bag* b = new Bag() on heap;
+            Leaf* borrowed = b.at(0);
+            delete b;                                 // liberta os elementos
+            System.IO.Console.println($"{borrowed.n}");
+            return;
+        }
+    }
+} }

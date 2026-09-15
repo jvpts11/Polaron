@@ -1,0 +1,31 @@
+program BorrowCallArgument;
+
+public bundle Main {
+    public namespace App {
+        public class Item {
+            public mutable int value;
+            public constructor Item() { this.value = 7; }
+        }
+        public class Owner {
+            private mutable Item* item;
+            public constructor Owner() { this.item = new Item() on heap; }
+            public method borrow() returns Item* { return this.item; }
+            public method consume(Item* borrowed) returns void {
+                int value = borrowed.value;
+                delete this.item;
+                return;
+            }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Owner* owner = new Owner() on heap;
+                Item* borrowed = owner.borrow();
+                // Arguments are read before consume invalidates the owner's storage.
+                owner.consume(borrowed);
+                int stale = borrowed.value; // must still report Polaron-1724
+                delete owner;
+                return;
+            }
+        }
+    }
+}

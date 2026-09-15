@@ -1,15 +1,27 @@
     public namespace Concurrency {
-        // An OS thread (spec 20.1). Holds a function<void> and its OS handle; start()/join() call
-        // the low-level thread builtins, which lower to CreateThread / WaitForSingleObject.
+        // An OS thread (spec 20.1). Holds an `Action` -- the work -- and its OS handle; start()/join()
+        // call the low-level thread builtins, which lower to CreateThread / WaitForSingleObject.
         public class Thread {
-            private function<void> work;
+            private Action* work;
             private mutable long handle;
-            public constructor Thread(function<void> w) {
+            public constructor Thread(Action* w) {
                 this.work = w;
                 this.handle = cast<long>(0);
             }
             public method start() returns void {
-                this.handle = System.Concurrency.__threadStart(this.work);
+                this.handle = System.Concurrency.__threadStart(Thread.enter, cast<address>(this.work));
+            }
+            // WHERE THE NEW THREAD STARTS, and it is a method like any other.
+            //
+            // An operating system's spawn call carries one code address and one argument, and it
+            // knows nothing about commands, vtables or Polaron. `Thread.enter` without a call IS
+            // that code address (a `methodptr<void, address>`), so the crossing needs no runtime
+            // that understands this language: the C side calls `enter(object)`, and the dispatch
+            // back into the command happens here, in Polaron, where a reader can follow it.
+            private static method enter(address env) returns void {
+                Action* w = cast<Action*>(env);
+                w();
+                return;
             }
             public method join() returns void {
                 System.Concurrency.__threadJoin(this.handle);
@@ -45,7 +57,17 @@
             // and returns when all of them have finished. `body` must be safe to run at the same time
             // as itself on different i -- which the language says with `Shared` on what it touches,
             // and which this cannot check for you.
-            public static method forRange(int from, int to, function<void, int> body) returns void {
+            // ONE WORKER'S SHARE OF A PER-ITEM LOOP. What it holds is its half-open range and the
+            // body to run -- three things, written down, copied when the worker is built. As a
+            // lambda this was a capture list, which said the same three names and nothing about
+            // what they were.
+            private command runSlice() carries (int lo, int hi, Action1<int>* body) into share
+                returns void {
+                for (mutable int i = share.lo; i < share.hi; i++) { share.body(i); }
+                return;
+            }
+
+            public static method forRange(int from, int to, Action1<int>* body) returns void {
                 int n = to - from;
                 if (n <= 0) { return; }
                 mutable int workers = Machine.threads();
@@ -61,11 +83,7 @@
                     int lo = from + w * chunk;
                     mutable int hi = lo + chunk;
                     if (hi > to) { hi = to; }             // the last chunk is the short one
-                    function<void> slice =
-                        lambda[captures: byvalue lo, byvalue hi, byvalue body]() returns void {
-                            for (mutable int i = lo; i < hi; i++) { body(i); }
-                        };
-                    pool[w] = new Thread(slice) on heap;
+                    pool[w] = new Thread(Parallel.runSlice(lo, hi, body)) on heap;
                     pool[w].start();
                 }
                 for (mutable int w = 0; w < pool.length(); w++) { pool[w].join(); }
@@ -76,7 +94,15 @@
             // The same split, but each worker is handed its chunk rather than each item: for work that
             // is cheap per item, where a call per element is most of the cost. `body(lo, hi)` sees a
             // half-open range.
-            public static method forChunks(int from, int to, function<void, int, int> body) returns void {
+            // ...and one worker's share when the body is handed the whole chunk. Same three things
+            // carried; what differs is that the range goes THROUGH rather than being walked here.
+            private command runChunk() carries (int lo, int hi, Action2<int, int>* body) into share
+                returns void {
+                if (share.lo < share.hi) { share.body(share.lo, share.hi); }
+                return;
+            }
+
+            public static method forChunks(int from, int to, Action2<int, int>* body) returns void {
                 int n = to - from;
                 if (n <= 0) { return; }
                 mutable int workers = Machine.threads();
@@ -89,11 +115,7 @@
                     int lo = from + w * chunk;
                     mutable int hi = lo + chunk;
                     if (hi > to) { hi = to; }
-                    function<void> slice =
-                        lambda[captures: byvalue lo, byvalue hi, byvalue body]() returns void {
-                            if (lo < hi) { body(lo, hi); }
-                        };
-                    pool[w] = new Thread(slice) on heap;
+                    pool[w] = new Thread(Parallel.runChunk(lo, hi, body)) on heap;
                     pool[w].start();
                 }
                 for (mutable int w = 0; w < pool.length(); w++) { pool[w].join(); }
@@ -106,27 +128,33 @@
             // is what makes this safe without a lock, and what a version returning a fresh collection
             // would have to synchronize to do.
             [Allow(code: "Polaron-0B40", why: "a worker writes the chunk [lo, hi), which is a share of the array and never its length; the relation that would prove the index is between the chunking and the array, and there is no declaration between them to write it on")]
-            public static method mapInts(int[] src, int[] dst, function<int, int> f) returns void {
+            private command mapChunk(int lo, int hi)
+                carries (int[] src, int[] dst, Mapper<int, int>* f) into share returns void {
+                for (mutable int i = lo; i < hi; i++) { share.dst[i] = share.f(share.src[i]); }
+                return;
+            }
+
+            public static method mapInts(int[] src, int[] dst, Mapper<int, int>* f) returns void {
                 int n = src.length() < dst.length() ? src.length() : dst.length();
-                Parallel.forChunks(0, n,
-                    lambda[captures: byvalue src, byvalue dst, byvalue f](int lo, int hi) returns void {
-                        for (mutable int i = lo; i < hi; i++) { dst[i] = f(src[i]); }
-                    });
+                Parallel.forChunks(0, n, Parallel.mapChunk(src, dst, f));
                 return;
             }
 
             // A sum over a range, in parallel. The accumulation is atomic per CHUNK and not per item:
             // one atomic add per worker instead of one per element, which is the difference between a
             // parallel reduction and a very expensive way to serialise.
-            [Allow(code: "Polaron-0B1A", why: "the accumulator has to be one object at one address for every worker: captured by value, a stack one would be copied into each closure and every thread would add into its own")]
+            [Allow(code: "Polaron-0B1A", why: "the accumulator has to be one object at one address for every worker: carried as a pointer, which is what the baggage list says out loud -- a value one would be copied into each command and every thread would add into its own")]
+            private command sumChunk(int lo, int hi)
+                carries (int[] data, atomic<long>* total) into share returns void {
+                mutable long part = cast<long>(0);
+                for (mutable int i = lo; i < hi; i++) { part = part + cast<long>(share.data[i]); }
+                share.total.add(part);
+                return;
+            }
+
             public static method sumInts(int[] data) returns long {
                 atomic<long> total = new atomic<long>(cast<long>(0)) on heap;
-                Parallel.forChunks(0, data.length(),
-                    lambda[captures: byvalue data, byvalue total](int lo, int hi) returns void {
-                        mutable long part = cast<long>(0);
-                        for (mutable int i = lo; i < hi; i++) { part = part + cast<long>(data[i]); }
-                        total.add(part);
-                    });
+                Parallel.forChunks(0, data.length(), Parallel.sumChunk(data, total));
                 long r = total.get();
                 delete total;
                 return r;
@@ -182,7 +210,11 @@
         }
         // A counting semaphore (spec 20): `n` permits over a bounded channel. acquire() blocks until a
         // permit is free; release() returns one. The channel's blocking send/receive do the waiting.
-        public class Semaphore {
+        // `shareable`, and CHECKED: everything it holds is a `Channel<int>`, which is one of the
+        // four ways this language says two threads may reach a thing. A synchroniser that could not
+        // cross a thread boundary would be furniture; the word is what lets it, and the compiler
+        // confirms it from the fields rather than taking it on trust.
+        public shareable class Semaphore {
             private mutable Channel<int> tokens;   // 'permits' is a reserved word
             public constructor Semaphore(int n) {
                 this.tokens = new Channel<int>(n) on heap;
@@ -193,7 +225,7 @@
         }
         // A one-shot latch (spec 20): threads await() until `n` countDown() calls have happened. Once the
         // count reaches zero a token is placed in the gate and every waiter passes (take-then-return).
-        public class CountdownLatch {
+        public shareable class CountdownLatch {
             private mutable atomic<int> count;
             private mutable Channel<int> gate;
             public constructor CountdownLatch(int n) {
@@ -213,8 +245,11 @@
         }
         // A cyclic-style barrier (spec 20): `n` threads await() until all have arrived, then all proceed.
         // The n-th arrival releases n tokens; each thread (including it) takes one. Single use.
-        public class Barrier {
-            private mutable int parties;
+        public shareable class Barrier {
+            // `final`, not `mutable`: the party count is decided at construction and never changes,
+            // which is the OTHER way a field satisfies `shareable` -- nothing writes it, so there is
+            // nothing for two threads to disagree about.
+            private final int parties;
             private mutable atomic<int> arrived;
             private mutable Channel<int> gate;
             public constructor Barrier(int n) {
@@ -233,7 +268,7 @@
         // A reader/writer lock (spec 20), reader-preference: any number of readers, or one writer. Built
         // from two semaphores plus a reader counter (the first reader takes the write lock, the last frees
         // it).
-        public class ReadWriteLock {
+        public shareable class ReadWriteLock {
             private mutable Semaphore readerMutex;
             private mutable Semaphore writeSem;
             private mutable atomic<int> readers;

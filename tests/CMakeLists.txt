@@ -4,6 +4,9 @@
 # unit tests (doctest) over the lexer/parser/semantic libraries.
 
 # ---- Integration tests (driver) ----
+add_test(NAME borrow_call_arguments COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>" "-DSAMPLES=${CMAKE_CURRENT_SOURCE_DIR}/samples"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_borrow_call_arguments.cmake")
 # The toolchain version lives in six places and every bump has to touch all of them. Pinning them
 # one at a time is what let them drift -- polc said 1.0.0 while polaron said 1.0.13, and the language
 # reference's stamp sat 30 versions behind because no test looked at it. `version_sites` below reads
@@ -617,7 +620,15 @@ if(POLARON_QEMU_AARCH64)
         "-DQEMU=${POLARON_QEMU_AARCH64}"
         "-DMACHINE=virt"
         "-DCPU=cortex-a57"
-        "-DEXPECTED=sum1..100^2 = 0x00000000000529ae"
+        # ...AND A FLAVOURED REGION, which is the region CORE rather than the arena: a descriptor the
+        # runtime lays out, a per-slot header, and a free-list. Six hundred objects through a region
+        # of one kilobyte, so the answer arriving at all is slot reclaim working and the answer being
+        # right is every slot reading back as what was stored in it.
+        #
+        # ON THIS ROW AND NOT ON i686, and that is a finding rather than a preference: the core is
+        # C++ and divides 64-bit numbers, so a 32-bit freestanding link asks for `__udivdi3` and
+        # `__umoddi3` and fails. Flavoured regions have never worked on a 32-bit bare-metal target.
+        "-DEXPECTED=sum1..100^2 = 0x00000000000529ae;pool = 0x0000000000007404"
         "-DSERIAL=${CMAKE_CURRENT_BINARY_DIR}/arm64boot.serial.txt"
         "-DTIMEOUT=20"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/run_qemu_boot_test.cmake")
@@ -641,13 +652,19 @@ if(POLARON_QEMU_I386)
         "-DQEMU=${POLARON_QEMU_I386}"
         "-DMACHINE=pc"
         "-DCPU=pentium3"
-        "-DEXPECTED=sum1..100^2 = 0x00000000000529ae"
-        # A REGION CLASS ON BARE METAL, in the same boot. Its arena is static here rather than
-        # reserved address space, and its `Descriptor*` fields are 32-bit offsets from that arena's
-        # base -- so this sum comes out right only if each narrow pointer read back as the object that
-        # was stored. A wrong base does not fail to link; it walks into the arena.
-        # 0x3f8 + 0x2f8 + 0x3e8 = 2776 = 0xad8.
-        "-DALSO_EXPECTED=ports = 0x0000000000000ad8"
+        # THREE CLAIMS, ONE BOOT. The sum is the 64-bit arithmetic. The ports are a region class on
+        # bare metal: its arena is static here rather than reserved address space, and its
+        # `Descriptor*` fields are 32-bit offsets from that arena's base, so the sum comes out right
+        # only if each narrow pointer read back as the object that was stored -- a wrong base does
+        # not fail to link, it walks into the arena. 0x3f8 + 0x2f8 + 0x3e8 = 2776 = 0xad8.
+        #
+        # AND THE THIRD IS THE FAILURE REPORTER, which is Polaron now rather than a generated C++
+        # translation unit, and which had nothing asserting it beyond the fact that it linked. The
+        # first time this ran it said `jÔ = 8591002698, Sÿ = 412318131120`: the three texts were
+        # declared `address`, which means SIXTY-FOUR BITS in Polaron, against the `ptr` codegen
+        # emits -- four bytes wide on this machine -- so every argument after the first was read from
+        # the wrong offset. A 64-bit target cannot show that, which is what puts this on the i686 row.
+        "-DEXPECTED=sum1..100^2 = 0x00000000000529ae;ports = 0x0000000000000ad8;index = 2776, length = 12"
         "-DSERIAL=${CMAKE_CURRENT_BINARY_DIR}/i686boot.serial.txt"
         "-DTIMEOUT=20"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/run_qemu_boot_test.cmake")
@@ -872,6 +889,70 @@ add_test(NAME codegen_record_array_field_runs COMMAND "${CMAKE_COMMAND}"
     "-DEXPECTED=Slot(/Contents, byte[128], byte[9482]) 9482"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# A CODE ADDRESS, TAKEN AND CALLED. `methodptr<Ret, Params...>` is the FFI's near side and the type
+# a destructor registry stores; `Class.method` without a call is where one comes from. The TYPE
+# worked and the CALL did not: the predicate deciding whether a value is callable knew only the
+# closure spelling while carrying a comment naming both, so `f(21)` fell through to method
+# resolution by name and came out as `call i32 %21()` -- the argument called, with no arguments.
+# Compiled clean, every time, and the type had no test anywhere in the repository.
+add_test(NAME codegen_methodptr_calls_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/methodptr_calls.pol"
+    "-DEXPECTED=42 30 done"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# ...and the SHAPE of that call, because a right answer does not prove a right instruction.
+#
+# `call void %` is the assertion, and it is the one the bug could never satisfy: the broken path had
+# no return type to give the instruction and fell back to `i32` every time, so a `methodptr<void,
+# int>` came out as `call i32 %n()`. Written without register numbers, so it survives any
+# renumbering of the lowering; written as the VOID call, so it fails on the exact defect.
+add_test(NAME ir_methodptr_call_carries_its_return_type COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/methodptr_calls.pol"
+    "-DFUNCTION=Main.main"
+    "-DNEEDLE=call void %"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_fn_contains_test.cmake")
+
+# STORAGE THAT EXISTS BEFORE THE PROGRAM DOES: `new T[N]() on static`. Two arrays, so that separate
+# storage is proven rather than assumed, and both ends of each one written and read back -- the
+# length word lives at offset zero and an off-by-a-header reads it as an element.
+add_test(NAME codegen_static_array_storage_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_array_storage.pol"
+    "-DEXPECTED=1024 7 9 256 3"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# ...AND IT IS ZEROES IN THE IMAGE, which is the half the printed answer cannot show. A global whose
+# initialiser carries the length word is a `.data` global, and 65 536 zeroes then travel in the file:
+# measured on the four bootstrap buffers this exists for, some 450 KiB against a kernel of 1.9 MB.
+# The exact spelling is pinned because "all zero" is the whole claim -- `1032` is `int[256]` plus the
+# eight-byte header, and a change to either shows up here rather than as a fatter image.
+add_test(NAME ir_static_array_is_zeroed_in_the_image COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_array_storage.pol"
+    "-DNEEDLE=@Vault.counts.storage = internal global [1032 x i8] zeroinitializer"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+# AND TOUCHING ONE COSTS NO ALLOCATION, which is the entire reason the placement exists: the layer
+# that needs it is the one the allocator is built on. `on stack` said this and did the opposite --
+# an array's placement was read by nothing, so `new byte[1024]() on stack` in this compiler's own
+# bare-metal failure reporter called `__polaron_malloc(1032)` from inside a fired guard.
+add_test(NAME ir_static_array_costs_no_allocation COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_array_storage.pol"
+    "-DFUNCTION=Vault.poke"
+    "-DNEEDLE=__polaron_malloc"
+    "-DABSENT=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_fn_contains_test.cmake")
 
 # A RECORD INSIDE A RECORD INSIDE A RECORD, with a `String` at the bottom. The deep copy treated a
 # field whose type is a RECORD the way it treats one whose type is a reference class -- allocate a
@@ -1679,6 +1760,12 @@ add_test(NAME lint_kept_argument_never_reused
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
 set_tests_properties(lint_kept_argument_never_reused PROPERTIES
     PASS_REGULAR_EXPRESSION "0B4B\\]: 'take' keeps 'later'")
+
+# ...but a `weak` field keeps nothing: storing an argument in one is no handover, and `move` is wrong.
+add_test(NAME lint_weak_link_is_not_kept
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_weak_link_is_not_kept.pol")
+set_tests_properties(lint_weak_link_is_not_kept PROPERTIES
+    FAIL_REGULAR_EXPRESSION "Polaron-0B4B|error")
 
 add_test(NAME lint_override_repeats_the_base
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_proof.pol")
@@ -2983,10 +3070,13 @@ add_test(NAME sema_rejects_missing_move_at_call
 set_tests_properties(sema_rejects_missing_move_at_call PROPERTIES
     PASS_REGULAR_EXPRESSION "has to say so")
 
-# A lambda body is type-checked like any other body.
-add_test(NAME sema_checks_lambda_body
-    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_body_bad.pol")
-set_tests_properties(sema_checks_lambda_body PROPERTIES
+# A command's body is type-checked like any other body. Written when the construct was a lambda,
+# whose `typeOf` built the signature and returned without visiting the body -- a blind spot the size
+# of every callback in the language. A command cannot have it by construction (it becomes an ordinary
+# method before the analyzer runs), and the promise is still worth holding a program against.
+add_test(NAME sema_checks_command_body
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/command_body_bad.pol")
+set_tests_properties(sema_checks_command_body PROPERTIES
     PASS_REGULAR_EXPRESSION "Polaron-0101")
 
 # `movable` is enforced at all four destinations a value can reach, not only at a local's declaration
@@ -3120,7 +3210,7 @@ set_tests_properties(sema_rejects_wide_atomic_freestanding PROPERTIES
 add_test(NAME sema_rejects_unshared_type_in_thread
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/thread_unshared_type_bad.pol")
 set_tests_properties(sema_rejects_unshared_type_in_thread PROPERTIES
-    PASS_REGULAR_EXPRESSION "thread closure captures shared mutable")
+    PASS_REGULAR_EXPRESSION "this thread's work carries 'into'")
 
 # `transformer` -- what a type GAINS by applying it, which is the one thing none of the other
 # declarations said. A procedure with no body is a SOCKET, and the error lands on the `applies` line
@@ -3456,6 +3546,19 @@ add_test(NAME sema_rejects_out_parameter_escape
 set_tests_properties(sema_rejects_out_parameter_escape PROPERTIES
     PASS_REGULAR_EXPRESSION "Polaron-1721")
 
+# A NUMBER FILED IN A STATIC FIELD IS NOT A KEEP, and the pointer still is. The number check read
+# only `this.field = ...`, so a static method storing an `address` it read out of its argument was
+# recorded as keeping the argument -- the Horizon kernel's `Ram.open(&frames)` was refused while the
+# compiler's own advice said `open` only reads through `frames`.
+add_test(NAME sema_number_into_static_is_not_a_keep
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_number_into_static_ok.pol")
+set_tests_properties(sema_number_into_static_is_not_a_keep PROPERTIES
+    FAIL_REGULAR_EXPRESSION "error")
+add_test(NAME sema_rejects_pointer_into_static
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/escape_pointer_into_static_bad.pol")
+set_tests_properties(sema_rejects_pointer_into_static PROPERTIES
+    PASS_REGULAR_EXPRESSION "error\\[Polaron-1721\\]: region-binder: 'open' keeps that argument")
+
 # AND THE ADVICE THAT MAKES REGIONS SOMETHING THE ANALYSIS ASKS FOR rather than something an author
 # has to think of unprompted: three or more hand-paired allocations are a region written longhand,
 # and the flavour is chosen from what the method does -- `pool` when the pairs are inside a loop,
@@ -3524,14 +3627,16 @@ add_test(NAME codegen_borrow_used_and_owner_freed_runs COMMAND "${CMAKE_COMMAND}
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-# A LAMBDA IS A BODY THAT RUNS SOMEWHERE ELSE. Analysed where it is written, with the state that
+# A COMMAND IS A BODY THAT RUNS SOMEWHERE ELSE. Analysed where it is written, with the state that
 # holds there, it is always innocent; the call site knows what has been freed since and never looked
-# inside. Answered by analysing the body AT THE CALL -- and the call ABOVE the delete stays silent,
-# which is the difference between this and a rule about lambdas capturing pointers.
-add_test(NAME sema_rejects_lambda_called_after_free
-    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_called_after_free_bad.pol")
-set_tests_properties(sema_rejects_lambda_called_after_free PROPERTIES
-    PASS_REGULAR_EXPRESSION "this call runs a body that was written above")
+# inside. A lambda needed its body REPLAYED at the call to answer this; a command's baggage is a
+# declared list, so the two lines above the call are the whole summary -- which is the concrete form
+# of what `carries` buys. The call ABOVE the delete stays silent, which is the difference between
+# this and a rule about commands that carry pointers.
+add_test(NAME sema_rejects_command_called_after_free
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/command_called_after_free_bad.pol")
+set_tests_properties(sema_rejects_command_called_after_free PROPERTIES
+    PASS_REGULAR_EXPRESSION "carries 'b', and 'b' is gone by here")
 
 # A METHOD THAT FREES WHAT IT WAS GIVEN IS NOT A METHOD THAT LETS IT ESCAPE -- and §11.5's summary
 # only asked the second question, so an object whose method does `delete this` was given a frame slot
@@ -3757,13 +3862,36 @@ add_test(NAME codegen_rejects_static_init_cycle
 set_tests_properties(codegen_rejects_static_init_cycle PROPERTIES
     PASS_REGULAR_EXPRESSION "Polaron-0608")
 
-# The this./ClassName. receiver on a same-class method call is optional: a bare `name(...)` resolves to
-# this.name / ClassName.name (static, instance, and inside constructors) and runs.
+# THE `this.` RECEIVER IS OPTIONAL AND THE CLASS NAME IS NOT. An instance method written bare is not
+# missing a subject -- `this` is the subject, and the language supplies it. A static method has none:
+# it belongs to the class, so the class is named at the call. The reference always said so ("Belongs
+# to the class, not an instance. Called via `ClassName.member`"); only the compiler disagreed.
 add_test(NAME codegen_unqualified_self_call_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"
     "-DCLANG=${POLARON_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/unqualified_self_call.pol"
     "-DCONTAINS=self=7 20 14"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+# ...and the refusal, which the running program above cannot prove. A rule tested only by what it
+# allows is a rule that can quietly stop working.
+add_test(NAME sema_rejects_unqualified_static_call
+    COMMAND polc "${CMAKE_CURRENT_SOURCE_DIR}/samples/unqualified_static_call_bad.pol"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/unqualified_static_call_bad.ll")
+set_tests_properties(sema_rejects_unqualified_static_call PROPERTIES
+    WILL_FAIL TRUE)
+
+# AND WHEN THE CLASS NAME IS AMBIGUOUS, the namespace is what separates the two -- at a static call,
+# which is where it could not be said. `text.Reader` in an expression is a chain of nodes and not one
+# name, so the substitution that renames colliding types never matched it; the compiler's own
+# diagnostic said the case was "not resolved yet" and offered two ways to avoid needing it. It is
+# collapsed in the renaming pass now, so everything downstream sees the ordinary `Class.method`.
+add_test(NAME codegen_static_call_by_namespace_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/static_call_by_namespace.pol"
+    "-DEXPECTED=2 101"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -4695,93 +4823,71 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # lambdas (function values, MVP no captures): assign to function<...> and call.
-        add_test(NAME codegen_lambda_runs COMMAND "${CMAKE_COMMAND}"
+        # ---- COMMAND VALUES (reference 14.1), which is what the lambda tests became ----
+        #
+        # `lambda.pol`, `lambda_bool.pol`, `lambda_char.pol` and `lambda_void.pol` were one test
+        # written four times, differing only in the return type of the value they built. They are one
+        # file now: a command value of each kind of answer -- int, boolean, char, and none at all --
+        # including a `char` decided by an `if`, which is the case that proves the body is a body and
+        # not one expression wearing braces.
+        add_test(NAME codegen_command_values_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda.pol"
-            "-DEXPECTED=add=8 square=36"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_values.pol"
+            "-DEXPECTED=add=8 square=36 p=1 q=0 g=A h=B hi=7"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # lambda passed as a callback argument (function-typed parameter).
-        add_test(NAME codegen_lambda_callback_runs COMMAND "${CMAKE_COMMAND}"
+        # A command passed as an argument -- the shape every callback in the language now has, and
+        # the reason a command TYPE exists: `apply` is compiled without knowing `square` was written.
+        add_test(NAME codegen_command_callback_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_callback.pol"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_callback.pol"
             "-DEXPECTED=r=49"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # void lambda with no parameters (function<void>).
-        add_test(NAME codegen_lambda_void_runs COMMAND "${CMAKE_COMMAND}"
+        # A command that answers with a command. This was `function<function<int,int>>`, and the test
+        # largely existed to prove the parser could split the `>>`; a command type is a NAME, so
+        # there is nothing to nest and the factory reads like any method returning an object.
+        add_test(NAME codegen_command_returns_command_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_void.pol"
-            "-DEXPECTED=hi=7"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_returns_command.pol"
+            "-DEXPECTED=d=42 t=63"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # higher-order lambda: returns a lambda (nested function type + ">>" splitting).
-        add_test(NAME codegen_lambda_hof_runs COMMAND "${CMAKE_COMMAND}"
+        # A command in a class field -- the strategy pattern, called as `this.op(x)`.
+        add_test(NAME codegen_command_field_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_hof.pol"
-            "-DEXPECTED=d=42"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_field.pol"
+            "-DEXPECTED=v=105 w=25"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # lambda stored in a class field (strategy pattern): this.op(x).
-        add_test(NAME codegen_lambda_field_runs COMMAND "${CMAKE_COMMAND}"
+        # WHAT A COMMAND HOLDS, AND WHEN IT TOOK IT. The closure test, and the answer has changed:
+        # baggage is always copied at construction, so the value the command answers with does not
+        # move when the local it came from does. `lambda_byref.pol` has no successor and is gone with
+        # the feature -- a command that shared a caller's local could not outlive the frame it was
+        # written in, which is the one thing a command is for.
+        add_test(NAME codegen_command_carries_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_field.pol"
-            "-DEXPECTED=v=105"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_carries.pol"
+            "-DEXPECTED=c=15 after=15 far=115"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # lambda returning a non-int type (boolean).
-        add_test(NAME codegen_lambda_bool_runs COMMAND "${CMAKE_COMMAND}"
+        # ...and the three together in one program, because that is how they appear in real code and
+        # a test per shape never exercises the seams between them.
+        add_test(NAME codegen_command_showcase_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_bool.pol"
-            "-DEXPECTED=p=1 q=0"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
-
-        # lambda returning char, with control flow (if) in the body.
-        add_test(NAME codegen_lambda_char_runs COMMAND "${CMAKE_COMMAND}"
-            "-DPOLC=$<TARGET_FILE:polc>"
-            "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_char.pol"
-            "-DEXPECTED=g=A h=B"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
-
-        # lambda integration: value + callback + field together.
-        add_test(NAME codegen_lambda_showcase_runs COMMAND "${CMAKE_COMMAND}"
-            "-DPOLC=$<TARGET_FILE:polc>"
-            "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_showcase.pol"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_showcase.pol"
             "-DEXPECTED=r=25"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
-
-        # closure: lambda captures a local byvalue.
-        add_test(NAME codegen_lambda_capture_runs COMMAND "${CMAKE_COMMAND}"
-            "-DPOLC=$<TARGET_FILE:polc>"
-            "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_capture.pol"
-            "-DEXPECTED=c=15"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
-
-        # closure: lambda captures a local byref (sees post-capture mutation).
-        add_test(NAME codegen_lambda_byref_runs COMMAND "${CMAKE_COMMAND}"
-            "-DPOLC=$<TARGET_FILE:polc>"
-            "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambda_byref.pol"
-            "-DEXPECTED=b=9"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -5276,17 +5382,17 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # THE COMPILER BUG THE SCIENCE SLICE FOUND, pinned on its own. Calling a `function<>` value has
-        # the function's return type, and codegen's `typeName` had no rule for it -- so `f(x)` typed as
+        # THE COMPILER BUG THE SCIENCE SLICE FOUND, pinned on its own. Calling a callable value has
+        # that value's return type, and codegen's `typeName` had no rule for it -- so `f(x)` typed as
         # an integer. Invisible until two such calls met in ONE expression: `f(a) - f(b)` emitted an
         # integer subtraction over two doubles, sign-extending each and converting back, which the
-        # module verifier refuses. One call per statement was fine, which is why every existing use of
-        # a lambda in the library (map/filter/sortedBy, all of which hand the value straight back)
-        # never showed it.
-        add_test(NAME codegen_function_value_return_type COMMAND "${CMAKE_COMMAND}"
+        # module verifier refuses. One call per statement was fine, which is why every existing use in
+        # the library (map/filter/sortedBy, all of which hand the value straight back) never showed
+        # it. The value is a `command` now and the promise is the same one.
+        add_test(NAME codegen_command_value_return_type COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/function_value_arithmetic.pol"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_value_arithmetic.pol"
             "-DEXPECTED=diff=0.500000 both=7.500000"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
@@ -5936,6 +6042,111 @@ if(POLARON_WITH_LLVM)
             COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/shareable_modifier_bad.pol")
         set_tests_properties(sema_rejects_shareable_over_a_racy_field PROPERTIES
             PASS_REGULAR_EXPRESSION "is .shareable., but its field 'hits' is mutable")
+
+        # ---- `readonly` -- declared, and then checked (B.1 / D.6) ----
+        #
+        # The analysis existed already: every body records what it writes, and the call graph is
+        # recorded beside it. What was missing was the DECLARATION, which is what turns an inference
+        # the compiler kept to itself into a promise a reader can rely on.
+        add_test(NAME codegen_readonly_methods_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/readonly_methods.pol"
+            "-DEXPECTED=area=12 perimeter=14 grown=48"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ...and the refusal, which is the half that makes the word worth anything. TWO of them: one
+        # body that writes a field (a cache is a write), and one that writes nothing itself and calls
+        # the first -- because a promise about a body that mostly calls other bodies is a promise
+        # about them, or it is not a promise.
+        add_test(NAME sema_rejects_readonly_that_writes
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/readonly_writes_bad.pol")
+        set_tests_properties(sema_rejects_readonly_that_writes PROPERTIES
+            PASS_REGULAR_EXPRESSION "Polaron-0815.*calls something that writes")
+
+        # ---- CONST GENERICS: `fixed` in the brackets (A.3) ----
+        #
+        # `ArrayList<T>` has a hole where a TYPE goes; until now there was none where a NUMBER goes.
+        # Four things at once, and each is a case a region cannot reach: the extent is IN THE TYPE
+        # (`T[R * C]`, no header, no allocation), so the value EMBEDS as a field; the dimensions are
+        # CONSTANTS in the body; and they UNIFY in a signature.
+        add_test(NAME codegen_const_generics_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/const_generics.pol"
+            "-DEXPECTED=rows=2 cols=3 cell=7 sum=7 product=2,4 embedded=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # THE CLAIM THE FEATURE IS FOR, HELD: a 4x3 times a 7x9 does not compile. With the
+        # dimensions as runtime FIELDS -- what `Math.Matrix` does -- it compiles and fails while
+        # somebody is using it, which is a failure of text dying in the user's hands.
+        add_test(NAME sema_rejects_a_shape_that_does_not_meet
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/const_generics_shape_bad.pol")
+        set_tests_properties(sema_rejects_a_shape_that_does_not_meet PROPERTIES
+            PASS_REGULAR_EXPRESSION "has type 'Grid.int.7.9' but the parameter type is 'Grid.int.3.9&'")
+
+        # ...and a bare value parameter is RESERVED, not spent: `<int a>` is the runtime-bound extent
+        # that arrives later, so it is refused with a message rather than quietly given the stamped
+        # meaning -- a form that silently means the wrong thing today cannot be given the right one
+        # tomorrow.
+        add_test(NAME sema_rejects_a_bare_value_type_parameter
+            COMMAND polc --check
+                    "${CMAKE_CURRENT_SOURCE_DIR}/samples/const_generics_bare_value_bad.pol")
+        set_tests_properties(sema_rejects_a_bare_value_type_parameter PROPERTIES
+            PASS_REGULAR_EXPRESSION "Polaron-010B.*VALUE parameter that binds at run time")
+
+        # ---- `mustuse` and its valve (B.2) ----
+        #
+        # The rule existed for two type names written into the compiler -- `Result` and `Option`.
+        # The property was never theirs alone, and now a library can say it: on the TYPE (once, for
+        # every method that will ever return one) or on a single METHOD. `discard` is the answer,
+        # at the line, because a rule that cannot be answered is a rule people switch off.
+        add_test(NAME codegen_mustuse_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/mustuse.pol"
+            "-DEXPECTED=ticket=1 reading=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ...and the same three calls without it, where two are reported and the third is not.
+        add_test(NAME sema_reports_a_dropped_mustuse
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/mustuse_dropped_bad.pol")
+        set_tests_properties(sema_reports_a_dropped_mustuse PROPERTIES
+            PASS_REGULAR_EXPRESSION "Polaron-0B19.*returns a 'int' and the statement drops it")
+
+        # ---- `Channel<T>.send` transfers (docs/design, C.3) ----
+        #
+        # A slot is 64 bits, so an object crosses as a REFERENCE and the sender keeps holding it:
+        # two threads, one object, and nothing on the line saying so. Everywhere else a travelling
+        # value is copied -- assignment deep-copies, a command's baggage is copied at construction --
+        # so the channel was the one place where the easy spelling was the sharing one. The same
+        # sample proves the exemption: `ints.send(1)` on a `Channel<int>` stays legal, because a
+        # number in a slot IS the value and there is nothing on the other side to alias.
+        add_test(NAME sema_rejects_channel_send_without_move
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/channel_send_needs_move_bad.pol")
+        set_tests_properties(sema_rejects_channel_send_without_move PROPERTIES
+            PASS_REGULAR_EXPRESSION "Polaron-0814.*by reference, so .send. transfers it")
+
+        # ---- `command` -- the two refusals the two forms need (reference 14.1) ----
+        #
+        # A command TYPE is a role, and a role says what will be CALLED. What a command holds is the
+        # other half and differs between commands playing the same role, so baggage written here
+        # would demand they all carry the same things.
+        add_test(NAME sema_rejects_carries_on_a_command_type
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/command_type_carries_bad.pol")
+        set_tests_properties(sema_rejects_carries_on_a_command_type PROPERTIES
+            PASS_REGULAR_EXPRESSION "Polaron-0108.*says what will be called, not what it holds")
+
+        # ...and the inline form is written AT the use, so a carried name with nothing behind it is a
+        # field that stays empty forever. The declared form gets to separate the two because there
+        # the declaration and the use are in different places; here they are the same place.
+        add_test(NAME sema_rejects_inline_command_without_values
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/command_inline_no_value_bad.pol")
+        set_tests_properties(sema_rejects_inline_command_without_values PROPERTIES
+            PASS_REGULAR_EXPRESSION "Polaron-010A.*carries its values with it")
 
         # ---- `unique` over a value type (Wave 5) ----
         #
@@ -8148,11 +8359,14 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # Closures via automatic free-variable capture (spec 22): capture a primitive and function values.
-        add_test(NAME codegen_closures_runs COMMAND "${CMAKE_COMMAND}"
+        # COMMANDS THAT CARRY COMMANDS -- composition, which is what closures were mostly used for.
+        # The old test's subject was automatic free-variable capture: a returned lambda held `n`
+        # because its body mentioned it. `addBy` holds `n` because its declaration says so, and
+        # `composed` holds the two commands it runs for the same reason.
+        add_test(NAME codegen_command_composition_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/closures.pol"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_composition.pol"
             "-DCONTAINS=add5=15 dbl=20 composed=30"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
@@ -9537,6 +9751,327 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/delete_from_region.pol"
             "-DEXPECTED=before ~Dog 1 mid ~Dog 2 after"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # THE `static_assert` THE C++ REGION CORE CARRIED. It ended with
+        #   static_assert(sizeof(PolaronRegionDesc) <= POLARON_REGION_HDR, ...)
+        # and the Polaron core that replaced it cannot say that: there is no `sizeof` to write it
+        # with. The claim is sharp -- the compiler hardcodes 448 as the offset where a region's
+        # OBJECTS begin, and a descriptor past 448 writes its own fields over the first one, silently
+        # -- so it is checked by consequence. The free-list table is the descriptor's last field, and
+        # a >512-byte object freed from a pool writes its final entry, at +384. The marker in the
+        # first slot is read back afterwards.
+        # AN `int` AGAINST AN `address`, narrowed afterwards. The mixed-width widening read only
+        # `Int` pairs, so `8192 - (at & 4095)` was typed after its 32-bit literal while the backend
+        # computed 64 bits; the `cast<int>` then emitted nothing, and the division stored an i64 into
+        # an i32 local, which the optimiser folded to `undef`. It hung Horizon's NVMe multi-block read.
+        # `-O2` is the whole test: unoptimised, the oversized store lands on the stack beside the
+        # local and the right low half is read back, so the defect is invisible there.
+        add_test(NAME codegen_int_minus_address_cast_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DOPT=-O2"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/int_minus_address_cast.pol"
+            "-DEXPECTED=16 8192 15 7936"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A NULL-TEST CHAIN NARROWS EVERY NAME IN IT on the arm where all the tests agree (`||` in the
+        # else, `&&` in the then); an `&&` guard clause still narrows nothing below it.
+        add_test(NAME codegen_narrow_null_chain_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/narrow_null_chain.pol"
+            "-DEXPECTED=5 12"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME sema_narrow_null_chain_and_guard_refused
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/narrow_null_chain_bad.pol")
+        set_tests_properties(sema_narrow_null_chain_and_guard_refused PROPERTIES
+            PASS_REGULAR_EXPRESSION "error\\[Polaron-0300\\]")
+
+        # AN INLINE ARRAY ASSIGNED TO AN INLINE ARRAY FIELD copies its elements. It stored the source's
+        # address into the field's first eight bytes. Checked at -O0 and -O2: they failed differently.
+        add_test(NAME codegen_inline_array_field_assign_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/inline_array_field_assign.pol"
+            "-DEXPECTED=7 8 9 0 | 1 2 3 4"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_inline_array_field_assign_o2_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DOPT=-O2"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/inline_array_field_assign.pol"
+            "-DEXPECTED=7 8 9 0 | 1 2 3 4"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A `weak` FIELD IN A STRUCT IS REFUSED: a struct is copied by value and has no end of life a
+        # weak node can be unlinked at, so the target's list ended up pointing into dead stack.
+        add_test(NAME sema_weak_field_in_struct_refused
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/weak_field_in_struct_bad.pol")
+        set_tests_properties(sema_weak_field_in_struct_refused PROPERTIES
+            PASS_REGULAR_EXPRESSION "'weak' is not allowed on a field of struct 'Place'")
+
+        # A VALUE STRUCT RETURNED BY A DISPATCHED CALL is given a home like a direct call's result;
+        # reassigning a struct local from one crashed. Both optimisation levels, which fail differently.
+        add_test(NAME codegen_virtual_struct_return_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/virtual_struct_return.pol"
+            "-DEXPECTED=perm 1 | none 0 7 | 0 5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_virtual_struct_return_o2_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DOPT=-O2"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/virtual_struct_return.pol"
+            "-DEXPECTED=perm 1 | none 0 7 | 0 5"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # EACH ARM OF A `match` STARTS FROM THE STATE BEFORE IT: a guard in one arm narrowed the same name
+        # in the arms below. What every arm that falls through proves still holds after the `match`.
+        add_test(NAME sema_match_arm_narrowing_refused
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/match_arm_narrowing_bad.pol")
+        set_tests_properties(sema_match_arm_narrowing_refused PROPERTIES
+            PASS_REGULAR_EXPRESSION "argument 1 to 'weigh' is 'nullable Box\\*', which is nullable")
+        add_test(NAME codegen_match_arm_narrowing_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/match_arm_narrowing.pol"
+            "-DEXPECTED=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # THE RIGHT OPERAND OF `&&`/`||` IS TYPED WITH THE LEFT ONE'S PROOF, as an `if` body is -- and
+        # only with what it proves: `b == null && weigh(b)` stays refused.
+        add_test(NAME codegen_narrow_in_and_value_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/narrow_in_and_value.pol"
+            "-DEXPECTED=true false true"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME sema_narrow_in_and_value_refused
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/narrow_in_and_value_bad.pol")
+        set_tests_properties(sema_narrow_in_and_value_refused PROPERTIES
+            PASS_REGULAR_EXPRESSION "argument 1 to 'weigh' is 'nullable Box\\*', which is nullable")
+
+        # ...AND EACH ARM OF `?:` WITH WHAT THE CONDITION PROVES FOR IT, a `nullable int` included so
+        # the narrowed value reaches the code generator; the arm it does not clear stays refused.
+        add_test(NAME codegen_narrow_in_ternary_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/narrow_in_ternary.pol"
+            "-DEXPECTED=3 0 6 -1"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME sema_narrow_in_ternary_refused
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/narrow_in_ternary_bad.pol")
+        set_tests_properties(sema_narrow_in_ternary_refused PROPERTIES
+            PASS_REGULAR_EXPRESSION "argument 1 to 'weigh' is 'nullable Box\\*', which is nullable")
+
+        # A `nullable int` PROVEN PRESENT IS READ AS THE NUMBER, and a number going to a `nullable`
+        # parameter or result is boxed. The code generator has no narrowing, so a proven box arrived
+        # as its address: `n + 1` added to the pointer and `int m = n;` stored `undef`, silently.
+        add_test(NAME codegen_nullable_primitive_proven_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/nullable_primitive_proven.pol"
+            "-DEXPECTED=6 -1 5 5 0 true 10 5 -7 3 7 42 -7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_nullable_primitive_proven_o2_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DOPT=-O2"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/nullable_primitive_proven.pol"
+            "-DEXPECTED=6 -1 5 5 0 true 10 5 -7 3 7 42 -7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A STRUCT OVER SIXTEEN BYTES IS RETURNED THROUGH A CALLER-OWNED `sret` SLOT, not as a
+        # first-class aggregate: a method with several exits had them joined by a `phi` of the struct,
+        # every byte of it spilled -- a 10,952-byte frame in Horizon's path walk. The values arrive
+        # from four exits, through an interface and from a static factory; the IR says `sret`.
+        add_test(NAME codegen_big_struct_return_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/big_struct_return.pol"
+            "-DEXPECTED=3 198 -2 -1 -3 7 198"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_big_struct_return_o2_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DOPT=-O2"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/big_struct_return.pol"
+            "-DEXPECTED=3 198 -2 -1 -3 7 198"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME ir_big_struct_returns_through_a_slot COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/big_struct_return.pol"
+            "-DNEEDLE=sret(%class.Answer)"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+
+        # A POINTER FIELD IN A COPIED STRUCT IS SHARED, NOT CLONED. The field's type name is kept
+        # without its stars, so `Box*` read as `Box` and the copy allocated a fresh Box.
+        add_test(NAME codegen_struct_pointer_field_shared_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/struct_pointer_field_shared.pol"
+            "-DEXPECTED=true 9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A NUMBER BACK TO AN ENUM WITH DATA: `cast<Pair>(i)` picks the constant, and a number outside
+        # the set is a ClassCastException. It was refused by the analyzer and miscompiled past it.
+        add_test(NAME codegen_data_enum_from_ordinal_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/data_enum_from_ordinal.pol"
+            "-DEXPECTED=37 1 refused"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_data_enum_from_ordinal_o2_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DOPT=-O2"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/data_enum_from_ordinal.pol"
+            "-DEXPECTED=37 1 refused"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ...and on bare metal the refusal is the failure report, never a throw nothing can catch.
+        # Built for the bare-metal target, as a kernel is: without one, a `freestanding` program is
+        # lowered for the host and has the host's unwinder.
+        add_test(NAME codegen_freestanding_data_enum_from_ordinal_throws_nothing COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/freestanding_data_enum_from_ordinal.pol"
+            "-DPOLARONFLAGS=--target=x86_64-unknown-none-elf"
+            "-DNEEDLE=__cxa_throw"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+
+        # AN `eternal` OBJECT IN `main` MAY BE KEPT BY ANOTHER ONE: the entry point's frame lasts the run.
+        # The same lines in a method that returns stay refused.
+        add_test(NAME codegen_eternal_in_entry_is_kept_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/eternal_in_entry_is_kept.pol"
+            "-DEXPECTED=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME sema_eternal_outside_entry_refused
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/eternal_outside_entry_bad.pol")
+        set_tests_properties(sema_eternal_outside_entry_refused PROPERTIES
+            PASS_REGULAR_EXPRESSION "region-binder: 'register' keeps that argument")
+
+        # A `weak` FIELD LEAVES ITS TARGET'S LIST WHEN ITS HOLDER DIES, including a holder deleted from a
+        # region through its base class. The target's delete nulled a field in the reused slot.
+        add_test(NAME codegen_weak_holder_dies_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/weak_holder_dies.pol"
+            "-DEXPECTED=reused 1 sees 7 after 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME codegen_weak_holder_dies_o2_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DOPT=-O2"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/weak_holder_dies.pol"
+            "-DEXPECTED=reused 1 sees 7 after 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A PROGRAM'S OWN TYPE NAMED LIKE A LIBRARY GENERIC (`Result`) is visible where it is declared.
+        # It was warned "yours wins" and then refused at its own declaration, told to import the other.
+        add_test(NAME codegen_own_type_named_like_library_generic_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/own_type_named_like_library_generic.pol"
+            "-DEXPECTED=7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A BORROW TAKEN AFTER ITS SOURCE WAS EMPTIED is a borrow of what the source holds now: an
+        # emptying strands the borrows live at that moment and no later one. It was kept per source,
+        # so every `people.at(0)` after a `people.clear()` was refused, and a destructor could not
+        # read a field after its own cleanup. The old borrow is still refused (the `_bad` twin).
+        add_test(NAME codegen_borrow_taken_after_clear_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_taken_after_clear.pol"
+            "-DEXPECTED=10 30 spare 7"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME sema_borrow_taken_before_clear_refused
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_taken_after_clear_bad.pol")
+        set_tests_properties(sema_borrow_taken_before_clear_refused PROPERTIES
+            PASS_REGULAR_EXPRESSION "use of 'before' after 'people' was emptied"
+            FAIL_REGULAR_EXPRESSION "use of 'after' after")
+
+        # DELETING WHAT A CARRIER HANDED OVER. A result struct that frees nothing lends no storage it
+        # owns, so deleting what `file()` returned is the owner's cleanup, not a second free. It was
+        # refused as one (sema_rejects_deleting_a_borrow keeps the owning case refused).
+        add_test(NAME codegen_delete_what_a_carrier_handed_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/delete_what_a_carrier_handed.pol"
+            "-DEXPECTED=made 7 ~Box 7 refused 22"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # A VALUE STRUCT ARGUMENT TO A DISPATCHED CALL travels by value, as it does to a direct one.
+        # The virtual path pushed arguments unconverted, so a struct in storage went as its address.
+        add_test(NAME codegen_virtual_struct_argument_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/virtual_struct_argument.pol"
+            "-DEXPECTED=7 7 15"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # IDENTITY BETWEEN A `nullable T*` AND A `T*` compiles and answers correctly; a pointer to an
+        # unrelated type is still refused (sema_nullable_pointer_identity_other_type_refused).
+        add_test(NAME codegen_nullable_pointer_identity_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/nullable_pointer_identity.pol"
+            "-DEXPECTED=found second, head is not second, nothing is null"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+        add_test(NAME sema_nullable_pointer_identity_other_type_refused
+            COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/nullable_pointer_identity_bad.pol")
+        set_tests_properties(sema_nullable_pointer_identity_other_type_refused PROPERTIES
+            PASS_REGULAR_EXPRESSION "operator '==' requires operands of the same type")
+
+        add_test(NAME codegen_region_header_fits_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/region_header_fits.pol"
+            "-DEXPECTED=header fits"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ...and the same thing over a POOL region, which the test above does not reach: the three
+        # flavors took three arms of one `else if` in the lowering, and only the arm the bump region
+        # took emptied the local. A pool RECLAIMS the slot, so the second destruct landed on the
+        # object that had reused it -- `~Dog 3 ~Dog 2 ~Dog 3`. `reused 1` holds the pool to actually
+        # reclaiming, without which the bug stops being observable and this stops testing for it.
+        add_test(NAME codegen_delete_from_pool_region_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/delete_from_pool_region.pol"
+            "-DEXPECTED=before ~Dog 1 mid reused 1 ~Dog 3 ~Dog 2 after"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -12143,13 +12678,15 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
-        # First-class functions (spec 22): lambda values, byvalue/byref captures, functions as
-        # parameters and return values, and methodref (bound method ref with virtual dispatch).
-        add_test(NAME codegen_lambdas_runs COMMAND "${CMAKE_COMMAND}"
+        # COMMANDS, END TO END (reference 14.1): a command as a value, as a parameter, handed back by
+        # a method, carrying baggage, and a bound `methodref` with virtual dispatch through it. The
+        # part that is not a rewrite of the old lambda test is the last field: the baggage is copied
+        # at construction, so changing the local afterwards does not change the command.
+        add_test(NAME codegen_commands_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
             "-DCLANG=${POLARON_CLANG}"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lambdas.pol"
-            "-DEXPECTED=a=10 b=107 counter=3 c=12 d=15 e=400"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/commands.pol"
+            "-DEXPECTED=a=10 b=107 c=12 d=15 e=400 f=107"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
@@ -12786,6 +13323,32 @@ add_test(NAME codegen_partial_across_files_runs COMMAND "${CMAKE_COMMAND}"
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/variance_contravariant.pol"
             "-DEXPECTED=tag=9"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ---- `command` -- the third kind of member (reference 14.1) ----
+        #
+        # The declared form built by naming it, the ROLE that lets an API take one without naming any
+        # particular command, the call written as a call, and a command held in a field. The
+        # structural conformance is what makes this worth a RUNNING test rather than an IR check:
+        # `Gate` does not name `IntTest`, `count` does not name `aboveFloor`, and the numbers printed
+        # are the proof that the two met anyway.
+        add_test(NAME codegen_command_member_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_member.pol"
+            "-DEXPECTED=over10=2 all=5 field=1 0"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # ...and the inline form, which is the same construct written at the use. Two of them in one
+        # call site, each with its own baggage, because the names the compiler gives them are its own
+        # business and nothing an author writes can collide with them.
+        add_test(NAME codegen_command_inline_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_inline.pol"
+            "-DEXPECTED=above6=3 isSeven=1 sum=58"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

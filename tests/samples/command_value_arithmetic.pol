@@ -1,0 +1,55 @@
+import System.IO.Console;
+import System.Commands.Mapper;
+program CommandValueArithmetic;
+
+// CALLING A COMMAND HAS THE COMMAND'S RETURN TYPE.
+//
+// Written when the value was a `function<double, double>`: codegen's own `typeName` had no rule for
+// calling one, so `f(x)` fell through every case to the default and was typed as an INTEGER. One
+// such call per statement was harmless -- nothing had to agree with it about a type. Two in ONE
+// expression was not. `f(a) - f(b)` emitted an integer subtraction over two doubles:
+//
+//     %9  = sext double %5 to i32
+//     %10 = sext double %8 to i32
+//     %11 = sub i32 %9, %10
+//     %13 = sitofp i32 %11 to double
+//
+// which the module verifier refuses outright, so the compile failed rather than the answer being
+// quietly wrong -- the one mercy in it. It survived every existing use in the standard library
+// because `map`, `filter` and `sortedBy` all take the value and hand it straight back; nothing did
+// ARITHMETIC on two results at once until a numerical derivative did.
+//
+// The kept promise is the same now that the value is a command: two calls in one expression agree
+// about being floating point.
+//
+// Prints: diff=0.500000 both=7.500000
+
+public bundle Main {
+    public namespace App {
+        public class Halving {
+            public command half(double x) returns double { return x / 2.0; }
+        }
+
+        public class Calls {
+            // Two calls in one expression -- the shape that failed.
+            public static method difference(Mapper<double, double>* f, double a, double b)
+                returns double {
+                return f(a) - f(b);
+            }
+            // And mixed with a literal, so the whole expression has to agree on being floating point.
+            public static method scaled(Mapper<double, double>* f, double a) returns double {
+                return f(a) * 2.0 + 0.5;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Mapper<double, double>* half = Halving.half();
+                System.IO.Console.printf("diff=%.6f both=%.6f\n",
+                                         Calls.difference(half, 3.0, 2.0),
+                                         Calls.scaled(half, 7.0));
+                return;
+            }
+        }
+    }
+}

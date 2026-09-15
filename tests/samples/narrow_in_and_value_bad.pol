@@ -1,0 +1,29 @@
+import System.IO.Console;
+program NarrowInAndValueBad;
+
+// ...AND ONLY WHAT IT PROVES. `b == null && weigh(b)` calls `weigh` exactly when `b` IS null, so the
+// right operand learns nothing and passing `b` stays refused.
+//
+// Refused: "argument 1 to 'weigh' is 'nullable Box*', which is nullable".
+public bundle Main {
+    public namespace App {
+        public class Box {
+            private mutable int held;
+            public constructor Box(int held) { this.held = held; }
+            public method value() returns int { return this.held; }
+        }
+        public class Main {
+            public static method weigh(Box* b) returns boolean { return b.value() > 2; }
+            public static method pick(int n) returns nullable Box* {
+                if (n == 0) { return null; }
+                return new Box(n) on heap;
+            }
+            public static method main(string[] args) returns void {
+                nullable Box* none = Main.pick(0);
+                boolean wrong = none == null && Main.weigh(none);
+                System.IO.Console.println($"{wrong}");
+                return;
+            }
+        }
+    }
+}

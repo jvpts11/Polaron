@@ -1,0 +1,41 @@
+import System.IO.Console;
+program BorrowUsedAndOwnerFreedOk;
+
+// THE CONTROL FOR `delete_a_borrow_bad.pol`: the same borrow, used properly.
+//
+// A method handing back its own storage is the commonest thing a class does, and reading what it
+// hands back is the commonest thing a caller does. Everything here is what the rule next door
+// refuses one line of -- the borrow is taken, read, and the OWNER is the thing deleted. Nobody frees
+// what they did not allocate, and the compiler says nothing at all.
+//
+// It is worth having as a running program rather than a `--check`: the rule is about ownership, and
+// the proof that the ownership is right is that the process exits cleanly with the allocator intact.
+//
+// Prints:
+//   7
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int n;
+            public constructor Box() { this.n = 1; }
+        }
+
+        public class Owner {
+            private mutable Box* inner;
+            public constructor Owner() { this.inner = new Box() on heap; }
+            public destructor ~Owner() returns void { delete this.inner; }
+            public method borrow() returns Box* { return this.inner; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Owner* o = new Owner() on heap;
+                Box* b = o.borrow();
+                b.n = 7;
+                System.IO.Console.println($"{b.n}");
+                delete o;      // the owner, and only the owner
+                return;
+            }
+        }
+    }
+}

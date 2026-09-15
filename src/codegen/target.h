@@ -43,6 +43,17 @@ void applyTarget(llvm::Module& module, const std::string& triple);
 // refuses it at the moment the target is chosen.
 bool targetArchIsKnown(const std::string& triple);
 
+// WHETHER THERE IS AN OPERATING SYSTEM UNDER THIS TRIPLE, which decides more than the red zone: it
+// decides who supplies the runtime. `program X freestanding;` is a statement about the LANGUAGE
+// subset the source may use, and that is not the same question -- a freestanding program is
+// regularly compiled for a HOSTED triple and linked against the hosted runtime, which is how
+// several of this suite's own samples are run. Asking the keyword instead of the triple put a
+// second `__polaron_fail` into those links, and the linker was what noticed.
+//
+// The rule is `applyBareMetalAttrs`' rule, and it lives here so that the two cannot drift: an arch
+// LLVM can name, and either no OS or UEFI -- see the long note below for why UEFI counts.
+bool targetIsBareMetal(const std::string& triple);
+
 // BARE METAL HAS NO RED ZONE. Marks every method in `module` `noredzone` when the target names no
 // operating system. Call it once, after every body has been emitted -- an attribute cannot be put on
 // a function that does not exist yet, which is why this is not folded into `applyTarget`.
@@ -75,6 +86,14 @@ bool targetArchIsKnown(const std::string& triple);
 // "No OS in the triple" is the condition rather than a build-mode flag, because it is the true one:
 // the red zone is a promise by an operating system, so a target that names none has nobody to make
 // it. A hosted program keeps the red zone and the optimisation it buys.
+//
+// UEFI IS THE SECOND TARGET THAT QUALIFIES, and it names an OS in the triple, which is why it had to
+// be added by hand. `x86_64-unknown-uefi` parses with OS = UEFI, so the rule above let it through and
+// a UEFI application was built with the red zone live. UEFI is not an operating system in the sense
+// this rule cares about: an EFI application runs in ring 0 on the firmware's own IDT, with interrupts
+// enabled and the firmware's timer arriving on whatever stack is current. That interrupt pushes its
+// frame starting at RSP and going down -- the red zone, byte for byte -- exactly as it does on bare
+// metal. Nobody promises anything; there is only firmware that happens to be running first.
 void applyBareMetalAttrs(llvm::Module& module);
 
 // A pointer to a private, null-terminated constant string. LLVM 21 removed

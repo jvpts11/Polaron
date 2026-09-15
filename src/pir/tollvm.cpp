@@ -15,7 +15,9 @@
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
 #include <llvm/IR/Verifier.h>
+#include <llvm/Passes/PassBuilder.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/IPO/GlobalDCE.h>
 // The assembly dialect follows the ARCHITECTURE when an `asm` block does not name one, and the
 // triple is what says which architecture that is.
 #include <llvm/TargetParser/Triple.h>
@@ -247,6 +249,13 @@ private:
             const bool boundary = f->conv == Conv::Unknown || f->conv == Conv::Naked ||
                                   f->conv == Conv::Interrupt || f->kind == FnKind::Interrupt ||
                                   f->cut;
+            // ...AND A RUNTIME THE COMPILER APPENDED IS NOT A BOUNDARY, however it is spelled. Its C
+            // ABI exists so that the calls the compiler emits can name it, and every one of those
+            // calls is in this module -- so "might somebody outside want this symbol", which is what
+            // the tests above are really asking, is answered no. See `Function::appendedRuntime`.
+            if (f->appendedRuntime) {
+                continue;
+            }
             if (boundary || !f->symbol.empty()) {
                 keep.insert(f->symbol.empty() ? f->key : f->symbol);
             }
@@ -265,6 +274,56 @@ private:
                 g.setLinkage(llvm::GlobalValue::InternalLinkage);
             }
         }
+        sweepUnreferencedInternals();
+    }
+
+    /* AND THEN TAKE AWAY WHAT NOTHING REACHES.
+     *
+     * The immediate reason is the region core. It is appended to every program, because deciding
+     * beforehand whether a program uses a flavored region cannot be done: the standard library's own
+     * `LinkedList` holds a `pool region`, so the answer at the source level is always yes, and the
+     * honest answer only exists after monomorphization has decided which generics are real. So it is
+     * appended always and removed here -- which is the same condition the driver used to reach by
+     * grepping the emitted IR before deciding whether to compile the C++ core for bare metal.
+     *
+     * It is not scoped to the core, because scoping it there left the residue behind. A guard inside
+     * the core mentions `DivideByZeroException`, and materialising that class emits its constructor
+     * and its `message`, which calls the string runtime. Erase the core and those stay: internal,
+     * uncalled, and in the emitted IR of a freestanding image that has no allocator to build an
+     * exception with. `codegen_freestanding_has_no_string_runtime` reads the IR and is right to.
+     *
+     * LLVM'S OWN GlobalDCE and not a loop of our own, because the residue is not only functions. A
+     * dead exception class leaves its VTABLE behind, the vtable names `message`, and `message` is
+     * therefore not unreferenced -- so a sweep that erased functions alone cleared the guards and
+     * left the class standing. Reaching globals means reaching vtables, and reaching vtables means
+     * knowing which of them anything still dispatches through; that is what this pass is for, and
+     * writing a worse one here would be writing it twice.
+     *
+     * It touches nothing with external linkage, so what a program EXPORTS is unchanged; internalize
+     * above has already decided what that is. */
+    void sweepUnreferencedInternals() {
+        // NOT WHILE THE MODULE IS STILL BEING WRITTEN. Under `--test` the runner is built after this
+        // backend returns, and it finds each `[Test]` method by key in this very module -- methods
+        // nothing calls YET, which is exactly what a sweep takes. It printed `tests: 0 passed` for
+        // eleven suites. The runner's own linker does the sweeping for a test binary instead.
+        if (pir_.testRunnerEntry) {
+            return;
+        }
+        const auto before = static_cast<int>(mod_.getFunctionList().size());
+        llvm::PassBuilder pb;
+        llvm::LoopAnalysisManager lam;
+        llvm::FunctionAnalysisManager fam;
+        llvm::CGSCCAnalysisManager cgam;
+        llvm::ModuleAnalysisManager mam;
+        pb.registerModuleAnalyses(mam);
+        pb.registerCGSCCAnalyses(cgam);
+        pb.registerFunctionAnalyses(fam);
+        pb.registerLoopAnalyses(lam);
+        pb.crossRegisterProxies(lam, fam, cgam, mam);
+        llvm::ModulePassManager mpm;
+        mpm.addPass(llvm::GlobalDCEPass());
+        mpm.run(mod_, mam);
+        r_.sweptInternal += before - static_cast<int>(mod_.getFunctionList().size());
     }
 
     // ---- the C entry point ----
@@ -608,6 +667,23 @@ private:
             ++r_.internalLinkage;
             return;
         }
+        // AN ARRAY THAT IS PART OF THE IMAGE, from `new T[N]() on static`. Same layout as the block
+        // below and the opposite emission: ALL ZERO, header word included, so the linker puts it in
+        // `.bss`. The `store i64 N` at the top of the entry is what makes it an array, and
+        // `Global::arrayBytes` says why that beats an initialiser that says so here.
+        if (g.arrayBytes >= 0) {
+            llvm::ArrayType* block = llvm::ArrayType::get(
+                llvm::Type::getInt8Ty(ctx_), static_cast<uint64_t>(g.arrayBytes) + 8);
+            auto* storage =
+                new llvm::GlobalVariable(mod_, block, /*isConstant=*/false, linkageOf(g.linkage),
+                                         llvm::ConstantAggregateZero::get(block), g.name);
+            storage->setAlignment(llvm::Align(8));
+            ++r_.alignAttrs;
+            if (g.linkage == Linkage::Internal || g.linkage == Linkage::Private) {
+                ++r_.internalLinkage;
+            }
+            return;
+        }
         // A BLOCK OF BYTES from `embed("file")`: `[i64 length | bytes...]`, the layout every Polaron
         // array has, so the same `.length()` and the same indexing work on it. Emitted as its own
         // struct type rather than through `llty`, because the length word is part of the VALUE here
@@ -638,6 +714,14 @@ private:
                 init = llvm::ConstantInt::get(t, g.initInt, true);
             } else if (t->isFloatingPointTy()) {
                 init = llvm::ConstantFP::get(t, g.initFloat);
+            }
+        }
+        // ...OR THE ADDRESS OF ANOTHER GLOBAL, which is what a static field declared `on static`
+        // holds. A relocation is a constant initialiser, so this needs no code to run: the field is
+        // pointing at its storage before the first instruction.
+        if (!g.initGlobal.empty()) {
+            if (llvm::GlobalVariable* target = mod_.getNamedGlobal(g.initGlobal)) {
+                init = target;
             }
         }
         auto* gv = new llvm::GlobalVariable(mod_, t, g.isConst, linkageOf(g.linkage), init, g.name);
@@ -725,6 +809,83 @@ private:
         return llvm::FunctionType::get(ft->getReturnType(), ps, ft->isVarArg());
     }
 
+    // ---- a struct too big for the return registers travels through memory the caller owns ----
+    //
+    // A method returning a value struct returned it as a first-class aggregate: `ret %Walked`, and
+    // `call %Walked` at every site. Both are legal, and the machine ABI is the same either way --
+    // the x86-64 backend demotes an oversized return to a hidden pointer on its own. What was not
+    // the same was the IR on the way there. A method with several `return`s had them merged into
+    // one block by SimplifyCFG, joined by a `phi %Walked` -- and a phi of a struct holding a
+    // `byte[256]` is 256 separate byte values, every one of them live across the join and spilled
+    // to the frame. Horizon's `PathWalker.run` came out with a 10,952-byte frame on a four-page
+    // kernel stack, and the first `openat` from ring 3 ran off the end of it.
+    //
+    // So a struct over sixteen bytes goes the way every C compiler sends it: the caller passes a
+    // slot as a hidden first argument marked `sret`, the callee copies its result into it, and no
+    // value of the struct's type ever exists as a register. Sixteen is the line both x86-64 ABIs
+    // draw between "returned in registers" and "returned in memory", so nothing changes at a C
+    // boundary either: this is what the backend was already doing, said out loud in the IR.
+    bool returnsThroughMemory(llvm::Type* t) const {
+        return t != nullptr && t->isStructTy() && mod_.getDataLayout().getTypeAllocSize(t) > 16;
+    }
+
+    llvm::FunctionType* withResultSlot(llvm::FunctionType* ft) const {
+        if (!returnsThroughMemory(ft->getReturnType())) {
+            return ft;
+        }
+        std::vector<llvm::Type*> ps;
+        ps.push_back(llvm::PointerType::get(ctx_, 0));
+        ps.insert(ps.end(), ft->param_begin(), ft->param_end());
+        return llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), ps, ft->isVarArg());
+    }
+
+    static bool hasResultSlot(const llvm::Function* fn) {
+        return fn != nullptr && fn->arg_size() > 0 &&
+               fn->hasParamAttribute(0, llvm::Attribute::StructRet);
+    }
+
+    // Storage for a result, in the entry block like every other slot -- see `Op::Alloca` for why a
+    // slot made at the call would grow the frame on every turn of a loop.
+    llvm::Value* resultRoom(llvm::Type* shape) {
+        llvm::Function* into = b_.GetInsertBlock()->getParent();
+        llvm::BasicBlock& entry = into->getEntryBlock();
+        llvm::IRBuilder<> front(&entry, entry.getFirstInsertionPt());
+        auto* room = front.CreateAlloca(shape, nullptr, "result");
+        room->setAlignment(llvm::Align(8));
+        return room;
+    }
+
+    // A call that returns through `room`: the attribute on the call, then the result read back as
+    // the value the PIR asked for. A store of that value into the caller's own storage is what
+    // follows almost every call, and MemCpyOpt turns the pair into a copy.
+    llvm::Value* resultOf(llvm::CallBase* call, llvm::Type* shape, llvm::Value* room) {
+        call->addParamAttr(0, llvm::Attribute::getWithStructRetType(ctx_, shape));
+        return b_.CreateLoad(shape, room, "result.v");
+    }
+
+    // An `invoke` ENDS its block, so the result is read where the call returns normally: at the top
+    // of that successor, which only this edge reaches with the slot filled.
+    llvm::Value* readAfterInvoke(llvm::InvokeInst* call, llvm::Type* shape, llvm::Value* room,
+                                 llvm::BasicBlock* ok) {
+        call->addParamAttr(0, llvm::Attribute::getWithStructRetType(ctx_, shape));
+        llvm::IRBuilder<> there(ok, ok->getFirstInsertionPt());
+        return there.CreateLoad(shape, room, "result.v");
+    }
+
+    // ...and for a call through a pointer, whose type is built from the arguments at the site: the
+    // slot goes in front of them, so the type built afterwards is the one the callee was declared
+    // with. Null when the result travels in registers.
+    llvm::Value* indirectRoom(llvm::Type* ret, std::vector<llvm::Value*>& args,
+                              std::vector<llvm::Type*>& types) {
+        if (!returnsThroughMemory(ret)) {
+            return nullptr;
+        }
+        llvm::Value* room = resultRoom(ret);
+        args.insert(args.begin(), room);
+        types.insert(types.begin(), llvm::PointerType::get(ctx_, 0));
+        return room;
+    }
+
     void declare(const Function& f) {
         auto* ft = llvm::cast<llvm::FunctionType>(llty(f.signature));
         ft = withTargetSize(f.symbol.empty() ? f.key : f.symbol, ft);
@@ -734,6 +895,10 @@ private:
             std::vector<llvm::Type*> ps(ft->param_begin(), ft->param_end());
             ft = llvm::FunctionType::get(ft->getReturnType(), ps, true);
         }
+        // A big struct result becomes a hidden first parameter -- see `returnsThroughMemory`.
+        llvm::Type* result = ft->getReturnType();
+        const bool viaSlot = returnsThroughMemory(result);
+        ft = withResultSlot(ft);
         // THE FOREIGN SYMBOL WINS. An `extern printf` is the C `printf`; emitting it under its
         // Polaron key produces an undefined symbol at link time named after something that was
         // never supposed to exist. §6 keeps the two apart precisely so this cannot be confused.
@@ -747,6 +912,10 @@ private:
         if (fn == nullptr) {
             fn = llvm::Function::Create(ft, linkageOf(f.linkage), emitted, mod_);
             fn->setCallingConv(convOf(f.conv));
+            if (viaSlot) {
+                fn->addParamAttr(0, llvm::Attribute::getWithStructRetType(ctx_, result));
+                fn->addParamAttr(0, llvm::Attribute::NoAlias);
+            }
             // ...AND `x86_intrcc` NEEDS `byval` ON THE FRAME. It is not decoration: it is how the
             // convention is told how much stack the CPU's frame occupies, and LLVM refuses the
             // convention without it. The frame is the handler's declared `Trap`; a handler that
@@ -872,8 +1041,12 @@ private:
         // emits -- which two tests pin, because the shape of an interrupt entry is a promise to the
         // hardware and not an implementation detail.
         if (f.signature != nullptr && f.conv != Conv::Interrupt) {
-            for (unsigned i = 0; i < f.signature->fields.size() && i < fn->arg_size(); ++i) {
+            // PIR parameter `i` is LLVM argument `i + shift`: a result slot, when there is one, is
+            // argument zero and belongs to no parameter the program wrote.
+            const unsigned shift = hasResultSlot(fn) ? 1 : 0;
+            for (unsigned i = 0; i < f.signature->fields.size() && i + shift < fn->arg_size(); ++i) {
                 const Type* pt = f.signature->fields[i].type;
+                const unsigned at = i + shift;
                 if (pt == nullptr) {
                     continue;
                 }
@@ -881,7 +1054,7 @@ private:
                 // statements about an ADDRESS; LLVM rejects them on a struct passed by value, and
                 // it was right to -- the PIR kind says what the parameter IS, and the question here
                 // is how it TRAVELS. Asking the emitted type is asking the right one.
-                if (!fn->getArg(i)->getType()->isPointerTy()) {
+                if (!fn->getArg(at)->getType()->isPointerTy()) {
                     continue;
                 }
                 // WHAT THE POINTER POINTS AT, recovered from the declaration.
@@ -902,7 +1075,7 @@ private:
                 // `unique` -- AT MOST ONE LIVE REFERENCE (spec 19.9), which is exactly what
                 // `noalias` claims and the strongest single thing an alias analysis can be told.
                 if (pointee != nullptr && pointee->facts.isUnique) {
-                    fn->addParamAttr(i, llvm::Attribute::NoAlias);
+                    fn->addParamAttr(at, llvm::Attribute::NoAlias);
                     ++r_.noalias;
                 }
                 // ...EXCEPT THE ONE THE LANGUAGE SAYS MAY BE ABSENT. The comment above says "a
@@ -913,7 +1086,7 @@ private:
                 const bool mayBeAbsent =
                     i < f.params.size() && ast::typeIsNullable(f.params[i].typeName);
                 if (!mayBeAbsent) {
-                    fn->addParamAttr(i, llvm::Attribute::NonNull);
+                    fn->addParamAttr(at, llvm::Attribute::NonNull);
                     ++r_.nonnull;
                 }
                 // `dereferenceable(N)` IMPLIES NON-NULL, so it carries the same promise and the
@@ -923,7 +1096,7 @@ private:
                 // of a branch or a loop even when the branch is not known to be taken -- which is
                 // what turns a field read inside an `if` into a read before it.
                 if (!mayBeAbsent && pointee != nullptr && pointee->facts.size > 0) {
-                    fn->addParamAttr(i, llvm::Attribute::getWithDereferenceableBytes(
+                    fn->addParamAttr(at, llvm::Attribute::getWithDereferenceableBytes(
                                             ctx_, pointee->facts.size));
                     ++r_.dereferenceable;
                 }
@@ -933,8 +1106,8 @@ private:
                 const uint32_t align = pointee != nullptr && pointee->facts.align > 0
                                            ? pointee->facts.align
                                            : pt->facts.align;
-                fn->addParamAttr(i, llvm::Attribute::getWithAlignment(
-                                        ctx_, llvm::Align(std::max<uint32_t>(1, align))));
+                fn->addParamAttr(at, llvm::Attribute::getWithAlignment(
+                                         ctx_, llvm::Align(std::max<uint32_t>(1, align))));
                 ++r_.alignAttrs;
             }
         }
@@ -1145,8 +1318,9 @@ private:
         for (const Block& b : f.blocks) {
             b_.SetInsertPoint(blocks_[b.id]);
             if (b.id == f.blocks.front().id) {
-                // The entry block's parameters are the function's arguments, not phis.
-                unsigned i = 0;
+                // The entry block's parameters are the function's arguments, not phis -- after the
+                // result slot, when there is one, which no PIR parameter names.
+                unsigned i = hasResultSlot(fn) ? 1 : 0;
                 for (ValueId p : b.params) {
                     if (i < fn->arg_size()) {
                         vals_[p] = fn->getArg(i);
@@ -1572,16 +1746,22 @@ private:
                 }
                 llvm::Type* ret = in.type != nullptr ? llty(in.type)
                                                      : llvm::Type::getVoidTy(ctx_);
-                auto* ft = llvm::FunctionType::get(ret, types, false);
+                llvm::Value* room = indirectRoom(ret, args, types);
+                auto* ft = llvm::FunctionType::get(
+                    room != nullptr ? llvm::Type::getVoidTy(ctx_) : ret, types, false);
                 // A CALL THROUGH A VTABLE SLOT GETS AN INLINE CACHE FIRST, when the program has few
                 // enough implementations of it to make one worth building. Null means it was not
-                // worth it, and the ordinary indirect call below is what happens.
-                if (llvm::Value* fast = speculate(in, ft, callee, args); fast != nullptr) {
-                    out = ret->isVoidTy() ? nullptr : fast;
+                // worth it, and the ordinary indirect call below is what happens. With a result
+                // slot every candidate returns through it, so the value is read once, after.
+                llvm::Type* slotShape = room != nullptr ? ret : nullptr;
+                if (llvm::Value* fast = speculate(in, ft, callee, args, slotShape); fast != nullptr) {
+                    out = room != nullptr ? b_.CreateLoad(ret, room, "result.v")
+                                          : (ret->isVoidTy() ? nullptr : fast);
                     break;
                 }
                 llvm::CallInst* call = b_.CreateCall(ft, callee, args);
-                out = ret->isVoidTy() ? nullptr : call;
+                out = room != nullptr ? resultOf(call, ret, room)
+                                      : (ret->isVoidTy() ? nullptr : call);
                 break;
             }
             case Op::VtableLoad: {
@@ -2281,9 +2461,11 @@ private:
                 // size on every call. `codegen_stdcall_is_real_on_i686` looks for exactly
                 // `call x86_stdcallcc i32 @MessageBeep`, and it is looking at the caller for a
                 // reason -- the declaration alone does not make the call site right.
-                llvm::CallInst* direct = b_.CreateCall(callee, argumentsFor(callee, in));
+                llvm::Value* room = nullptr;
+                llvm::CallInst* direct = b_.CreateCall(callee, argumentsFor(callee, in, &room));
                 direct->setCallingConv(callee->getCallingConv());
-                out = direct;
+                out = room != nullptr ? resultOf(direct, callee->getParamStructRetType(0), room)
+                                      : direct;
                 break;
             }
 
@@ -2312,9 +2494,13 @@ private:
                     llvm::Value* got = nullptr;
                     if (callee != nullptr) {
                         // The callee's convention, for the reason `Op::Call` gives.
-                        llvm::CallInst* plain = b_.CreateCall(callee, argumentsFor(callee, in));
+                        llvm::Value* room = nullptr;
+                        llvm::CallInst* plain =
+                            b_.CreateCall(callee, argumentsFor(callee, in, &room));
                         plain->setCallingConv(callee->getCallingConv());
-                        got = plain;
+                        got = room != nullptr
+                                  ? resultOf(plain, callee->getParamStructRetType(0), room)
+                                  : plain;
                     } else if (llvm::Value* fp =
                                    coerce(operand(in, 0), llvm::PointerType::get(ctx_, 0))) {
                         std::vector<llvm::Value*> args;
@@ -2327,7 +2513,13 @@ private:
                         }
                         llvm::Type* ret =
                             in.type != nullptr ? llty(in.type) : llvm::Type::getVoidTy(ctx_);
-                        got = b_.CreateCall(llvm::FunctionType::get(ret, types, false), fp, args);
+                        llvm::Value* room = indirectRoom(ret, args, types);
+                        llvm::CallInst* call = b_.CreateCall(
+                            llvm::FunctionType::get(room != nullptr ? llvm::Type::getVoidTy(ctx_)
+                                                                    : ret,
+                                                    types, false),
+                            fp, args);
+                        got = room != nullptr ? resultOf(call, ret, room) : call;
                     }
                     if (got != nullptr && !got->getType()->isVoidTy()) {
                         out = got;
@@ -2347,10 +2539,13 @@ private:
                     // argument. `printf("caught code=%d\n", code)` written inside a `try` became an
                     // `invoke` with the format string and nothing after it, and printed whatever
                     // was in the register. Two builders for one thing is how they came to differ.
+                    llvm::Value* room = nullptr;
                     llvm::InvokeInst* two =
-                        b_.CreateInvoke(callee, ok, land, argumentsFor(callee, in));
+                        b_.CreateInvoke(callee, ok, land, argumentsFor(callee, in, &room));
                     two->setCallingConv(callee->getCallingConv());
-                    out = two;
+                    out = room != nullptr ? readAfterInvoke(two, callee->getParamStructRetType(0),
+                                                            room, ok)
+                                          : two;
                     break;
                 }
                 // AN INDIRECT CALL UNWINDS TOO. Whatever a closure or a vtable slot points at can
@@ -2368,9 +2563,12 @@ private:
                 }
                 llvm::Type* ret =
                     in.type != nullptr ? llty(in.type) : llvm::Type::getVoidTy(ctx_);
-                auto* ft = llvm::FunctionType::get(ret, types, false);
+                llvm::Value* room = indirectRoom(ret, args, types);
+                auto* ft = llvm::FunctionType::get(
+                    room != nullptr ? llvm::Type::getVoidTy(ctx_) : ret, types, false);
                 llvm::InvokeInst* inv = b_.CreateInvoke(ft, fp, ok, land, args);
-                out = ret->isVoidTy() ? nullptr : inv;
+                out = room != nullptr ? readAfterInvoke(inv, ret, room, ok)
+                                      : (ret->isVoidTy() ? nullptr : inv);
                 break;
             }
             case Op::Raise: {
@@ -2477,7 +2675,37 @@ private:
                 break;
             }
             case Op::Ret: {
-                llvm::Type* want = fns_[f.key]->getReturnType();
+                llvm::Function* self = fns_[f.key];
+                // THROUGH THE CALLER'S SLOT, as a copy of the storage the value was read from --
+                // which is what almost every returned struct is: a load of a local. A value built
+                // some other way is stored whole. Either way nothing of the struct's type crosses
+                // the return, so there is nothing for a merged exit to join.
+                //
+                // THE COPY ONLY IF NOTHING HAS WRITTEN SINCE THE READ. Scope-end destructors and
+                // `defer` bodies run between computing a return value and returning, and one of
+                // them may touch the very storage the value came from; the load already holds what
+                // the program returned, so after a write it is the load that has to be stored.
+                if (hasResultSlot(self)) {
+                    llvm::Type* shape = self->getParamStructRetType(0);
+                    llvm::Value* slot = self->getArg(0);
+                    llvm::Value* v = operand(in, 0);
+                    auto* ld = llvm::dyn_cast_or_null<llvm::LoadInst>(v);
+                    bool untouched = ld != nullptr && ld->getType() == shape && !ld->isVolatile() &&
+                                     ld->getParent() == b_.GetInsertBlock();
+                    for (auto it = untouched ? std::next(ld->getIterator()) : b_.GetInsertPoint();
+                         untouched && it != b_.GetInsertPoint(); ++it) {
+                        untouched = !it->mayWriteToMemory();
+                    }
+                    if (untouched) {
+                        b_.CreateMemCpy(slot, llvm::Align(8), ld->getPointerOperand(), ld->getAlign(),
+                                        mod_.getDataLayout().getTypeAllocSize(shape));
+                    } else if (v != nullptr) {
+                        b_.CreateStore(coerce(v, shape), slot);
+                    }
+                    b_.CreateRetVoid();
+                    break;
+                }
+                llvm::Type* want = self->getReturnType();
                 if (want->isVoidTy()) {
                     b_.CreateRetVoid();
                 } else {
@@ -2488,6 +2716,40 @@ private:
             case Op::Unreachable:
                 b_.CreateUnreachable();
                 break;
+            // THE TABLE `switch`, which this backend never learned to say. `lowerSwitchTable` emits
+            // one terminator for a closed-integer switch -- the default as edge 0, each arm on its
+            // own edge carrying `caseValue` -- and it fell into `default:` below, which emits
+            // nothing. The block was left without a terminator, closed with `unreachable`, and LLVM
+            // then did what `unreachable` licenses: every path through the switch was deleted, the
+            // enclosing method became `noreturn`, and the `if` just before it was folded into an
+            // assumption that its condition held. `switch.pol` printed nothing at all; Horizon's
+            // syscall dispatch lost its whole body and printed `call: 1` for every write a guest
+            // made, because the trace flag had been "proven" true. Four `codegen_switch_*` tests had
+            // been failing for exactly this reason.
+            //
+            // The FIRST arm with a value wins, as it does in the compare chain this replaces: LLVM
+            // refuses a switch with a repeated case, and the chain would never have reached the
+            // second one anyway.
+            case Op::Switch: {
+                llvm::BasicBlock* fallback = blockOf(in, 0);
+                llvm::Value* subject = operand(in, 0);
+                if (fallback == nullptr || subject == nullptr ||
+                    !subject->getType()->isIntegerTy()) {
+                    break;
+                }
+                auto* width = llvm::cast<llvm::IntegerType>(subject->getType());
+                llvm::SwitchInst* table =
+                    b_.CreateSwitch(subject, fallback, static_cast<unsigned>(in.edges.size() - 1));
+                std::set<int64_t> seen;
+                for (size_t k = 1; k < in.edges.size(); ++k) {
+                    llvm::BasicBlock* arm = blockOf(in, k);
+                    if (arm == nullptr || !seen.insert(in.edges[k].caseValue).second) {
+                        continue;
+                    }
+                    table->addCase(llvm::ConstantInt::get(width, in.edges[k].caseValue, true), arm);
+                }
+                break;
+            }
 
             // ---- facts, LAST ----
             //
@@ -2638,8 +2900,15 @@ private:
                 // promise did not hold. A differential compares the text.
                 const bool deref =
                     std::find(in.extra.begin(), in.extra.end(), "dereference") != in.extra.end();
-                emitGuard(ok, deref ? "null reference dereference" : "null reference", nullptr,
-                          nullptr, nullptr, nullptr, deref ? 70 : 72, /*tagged=*/true, in.loc);
+                // ...and a number cast to an enum that has no constant with that ordinal is a third:
+                // the same broken `cast` promise as code 72, said about what was actually cast.
+                const bool ordinal =
+                    std::find(in.extra.begin(), in.extra.end(), "ordinal") != in.extra.end();
+                emitGuard(ok,
+                          deref     ? "null reference dereference"
+                          : ordinal ? "cast to an enum: no constant has this ordinal"
+                                    : "null reference",
+                          nullptr, nullptr, nullptr, nullptr, deref ? 70 : 72, /*tagged=*/true, in.loc);
                 break;
             }
             case Op::GuardContract: {
@@ -2981,14 +3250,16 @@ private:
     // the receiver's type anywhere in it, so there is nothing about the receiver to get wrong.
     //
     // Returns null when speculation is declined; the caller then emits its ordinary indirect call.
+    // `slotShape`: the result's type when it returns through a slot (`args[0]`), so each call made
+    // here carries the attribute that says so.
     llvm::Value* speculate(const Inst& in, llvm::FunctionType* ft, llvm::Value* callee,
-                           const std::vector<llvm::Value*>& args) {
+                           const std::vector<llvm::Value*>& args, llvm::Type* slotShape) {
         if (in.operands.empty()) {
             return nullptr;
         }
         const auto slot = fromSlot_.find(in.operands[0]);
         if (slot == fromSlot_.end()) {
-            return nullptr;   // an ordinary funcptr or closure call: no table, no candidates
+            return nullptr;   // an ordinary methodptr or closure call: no table, no candidates
         }
         std::vector<llvm::Function*> cands;
         for (const Global& g : pir_.globals) {
@@ -3031,14 +3302,20 @@ private:
             auto* miss = llvm::BasicBlock::Create(ctx_, "dv.miss", fn);
             b_.CreateCondBr(b_.CreateICmpEQ(callee, c, "dv.is"), hit, miss);
             b_.SetInsertPoint(hit);
-            llvm::Value* r = b_.CreateCall(ft, c, args);
+            llvm::CallInst* r = b_.CreateCall(ft, c, args);
+            if (slotShape != nullptr) {
+                r->addParamAttr(0, llvm::Attribute::getWithStructRetType(ctx_, slotShape));
+            }
             if (!isVoid) {
                 incoming.push_back({r, b_.GetInsertBlock()});
             }
             b_.CreateBr(join);
             b_.SetInsertPoint(miss);
         }
-        llvm::Value* fallback = b_.CreateCall(ft, callee, args);
+        llvm::CallInst* fallback = b_.CreateCall(ft, callee, args);
+        if (slotShape != nullptr) {
+            fallback->addParamAttr(0, llvm::Attribute::getWithStructRetType(ctx_, slotShape));
+        }
         if (!isVoid) {
             incoming.push_back({fallback, b_.GetInsertBlock()});
         }
@@ -3373,11 +3650,22 @@ private:
     // the right type keeps the module well-formed, and the differential test against the trusted
     // path is what reveals the value was wrong. That is the division of labour: the verifier checks
     // shape, the oracle checks meaning.
-    std::vector<llvm::Value*> argumentsFor(llvm::Function* callee, const Inst& in) {
+    // `room`, when the callee returns through a slot: the slot, made here and passed first, for the
+    // call site to read the result back out of (`resultOf`).
+    std::vector<llvm::Value*> argumentsFor(llvm::Function* callee, const Inst& in,
+                                           llvm::Value** room = nullptr) {
         std::vector<llvm::Value*> args;
-        for (unsigned i = 0; i < callee->arg_size(); ++i) {
+        const unsigned shift = hasResultSlot(callee) ? 1 : 0;
+        if (shift != 0) {
+            llvm::Value* made = resultRoom(callee->getParamStructRetType(0));
+            args.push_back(made);
+            if (room != nullptr) {
+                *room = made;
+            }
+        }
+        for (unsigned i = shift; i < callee->arg_size(); ++i) {
             llvm::Type* want = callee->getArg(i)->getType();
-            llvm::Value* a = i < in.operands.size() ? valueOf(in.operands[i]) : nullptr;
+            llvm::Value* a = i - shift < in.operands.size() ? valueOf(in.operands[i - shift]) : nullptr;
             args.push_back(coerce(a, want));
         }
         // THE VARIADIC TAIL. `printf(fmt, 42)` declares one parameter and takes two; cutting the
@@ -3386,7 +3674,7 @@ private:
         if (!callee->isVarArg()) {
             return args;
         }
-        for (size_t i = callee->arg_size(); i < in.operands.size(); ++i) {
+        for (size_t i = callee->arg_size() - shift; i < in.operands.size(); ++i) {
             llvm::Value* a = valueOf(in.operands[i]);
             if (a == nullptr) {
                 continue;
@@ -3524,6 +3812,7 @@ std::string renderHandoff(const ToLlvmResult& r) {
     out += " pure=" + std::to_string(r.pureAttrs);
     out += " cold=" + std::to_string(r.coldAttrs);
     out += " internal=" + std::to_string(r.internalLinkage);
+    out += " swept=" + std::to_string(r.sweptInternal);
     out += " checked=" + std::to_string(r.checkedArith);
     out += " assume=" + std::to_string(r.assumes);
     out += " tbaa=" + std::to_string(r.aliasTags);

@@ -25,7 +25,10 @@ bool evalConstInt(const ast::Expr& e, long long& out,
                   const std::unordered_map<std::string, long long>* consts = nullptr,
                   const std::unordered_map<std::string, const ast::MethodDecl*>* methods = nullptr,
                   const std::unordered_map<std::string, double>* dconsts = nullptr,
-                  const std::unordered_map<std::string, std::vector<std::string>>* enums = nullptr);
+                  const std::unordered_map<std::string, std::vector<std::string>>* enums = nullptr,
+                  // Which machine this build is for (`comptime::TargetArch`), so a `comptime if`
+                  // over `__target_arch` folds. 0 -- nobody said -- is `Other`, the portable arm.
+                  long long targetArch = 0);
 
 // Evaluates a constant floating-point expression at compile time (integers promote), resolving consts
 // and `comptime` method calls via the same evaluator.

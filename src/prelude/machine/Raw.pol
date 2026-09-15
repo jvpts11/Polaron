@@ -1,0 +1,191 @@
+    // ---- Machine.Raw: bytes, and where they physically are ----
+    //
+    // `set`, `copy`, `compare` and the physical-address helpers. The compiler already bridges the
+    // first three for freestanding -- `memcpy`, `memset` and `memmove` are generated into the image
+    // rather than linked -- so this is a named door onto machinery that exists, not new code
+    // (freestanding-prelude.md ?S4).
+    //
+    // WHY IT IS NOT `System.Memory`. The hosted one talks about the heap; this one talks about
+    // ADDRESSES, which is a different subject with the same nouns. A kernel mapping a page, a driver
+    // reaching a device register and a bootloader relocating itself are all doing the thing this
+    // namespace is for, and none of them is allocating.
+    public namespace Raw {
+
+        // ---- A BLOCK OF BYTES SOMEBODY ELSE OWNS ----
+        //
+        // The type this tier could not do without, and did without anyway. A bare-metal method that
+        // fills a caller's buffer has to know where it starts and how much of it there is, and both
+        // of the ways to say that without a type are wrong here:
+        //
+        //   * `byte[] into` -- which is what `Machine.Format` asked for. A `T[]` in this ABI is ONE
+        //     POINTER to a heap block whose first eight bytes are its length, so the only way to
+        //     make one is to allocate. In the tier whose two stated premises are NO HEAP and NO
+        //     `String`, that parameter cannot be satisfied at all: an inline `byte[16]` is bare
+        //     storage with no header and does not convert, correctly. The gap went unseen because
+        //     the library's own demonstration wrote `new byte[64]()` and passed -- it happened to
+        //     run in a program that has an allocator, which a kernel does not have to.
+        //   * `byte* at, int capacity` -- two parameters of two primitive types, in an order nothing
+        //     at the call site enforces. That is a missing type written out longhand, and swapping
+        //     them compiles.
+        //
+        // So it is a type, and a VALUE one: two machine words on the frame, no header, no
+        // allocation, and the length travels with the pointer it belongs to.
+        //
+        // AND IT IS CALLED `Extent` BECAUSE `Span` WAS TAKEN, which cost a debugging session before
+        // it cost a rename. `System.Units.Span` is a length of TIME -- the same word for an idea
+        // with nothing in common -- and a program importing this one got that one: a struct of one
+        // `long`, read as a pointer and a capacity. The formatter returned the right COUNT and wrote
+        // its digits through whatever the first eight bytes of a duration look like. Nothing said a
+        // word, because a name that resolves is a name that resolves.
+        //
+        // `capacity` AND NOT `length`, deliberately. This says how much ROOM there is, not how much
+        // has been written -- a formatter takes one and returns the count -- and conflating the two
+        // is how a buffer comes to report itself full of the bytes it has not written yet.
+        public struct Extent {
+            // NEITHER IS `mutable`, and the compiler is what settled that. A `reentrant` method may
+            // not reach mutable state -- *two live entries of it would both touch it* -- and `get`
+            // and `put` are reentrant because a fault handler formats an address. Written `mutable`
+            // they drew that refusal, and the refusal was right about the word: a span's extent does
+            // not change. Where it points and how much room there is are decided once, by whoever
+            // made it; what changes is the BYTES, which are somebody else's storage and not fields
+            // of this at all.
+            [Allow(code: "Polaron-0B3C", why: "the rule's fix is `wrap the address in a type that owns it and frees it`, and an Extent is the type that deliberately does NOT. It is a BORROWED view: the bytes belong to whoever made it -- a frame, a device window, a page somebody else mapped -- and an Extent that freed them would be freeing another owner's storage. It carries no destructor for the same reason. This is the shape the rule exists to steer people towards, seen from the one side where owning is the bug")]
+            public address at;
+            public int capacity;
+
+            public constructor Extent(address where, int bytes) {
+                this.at = where;
+                this.capacity = bytes;
+            }
+
+            // Reading and writing go through here rather than through a raw index at each call
+            // site, so the ONE bounds test lives in one place. Out of range reads as zero and writes
+            // nothing: a `Span` given a capacity it does not have is a caller's mistake, and it
+            // should be a refusal rather than a write into whatever follows the buffer.
+            public reentrant method get(int i) returns int {
+                if (i < 0 || i >= this.capacity) {
+                    return 0;
+                }
+                byte* p = cast<byte*>(this.at);
+                return cast<int>(p[i]) & 255;
+            }
+
+            public reentrant method put(int i, int value) returns boolean {
+                if (i < 0 || i >= this.capacity) {
+                    return false;
+                }
+                byte* p = cast<byte*>(this.at);
+                p[i] = cast<byte>(value & 255);
+                return true;
+            }
+        }
+
+        [Allow(code: "Polaron-0B24", why: "`copy(to, from, count)` is the shape every machine's block-move instruction has, and the one every reader already knows in that order. Naming the three would be renaming `memcpy` -- and a bare-metal primitive that reads unlike the instruction underneath it is harder to check against the hardware, not easier")]
+        public class Bytes {
+            // A DEVICE REGISTER IS NOT MEMORY, and reading it twice is not the same as reading it
+            // once. These four go through `volatile`, so the optimiser may not fold, reorder or
+            // elide them -- which is the difference between a driver and a program that happens to
+            // touch the same addresses.
+            public static reentrant method read8(address at) returns int {
+                volatile byte* p = cast<byte*>(at);
+                return cast<int>(p[0]) & 255;
+            }
+            public static reentrant method write8(address at, int value) returns void {
+                volatile byte* p = cast<byte*>(at);
+                p[0] = cast<byte>(value & 255);
+                return;
+            }
+            public static reentrant method read32(address at) returns int {
+                volatile int* p = cast<int*>(at);
+                return p[0];
+            }
+            public static reentrant method write32(address at, int value) returns void {
+                volatile int* p = cast<int*>(at);
+                p[0] = value;
+                return;
+            }
+            public static reentrant method read64(address at) returns address {
+                volatile address* p = cast<address*>(at);
+                return p[0];
+            }
+            public static reentrant method write64(address at, address value) returns void {
+                volatile address* p = cast<address*>(at);
+                p[0] = value;
+                return;
+            }
+
+            // ---- bulk, and NOT volatile: this is memory, not a device ----
+            //
+            // Written as loops rather than as calls to the generated `memset`/`memcpy` because a
+            // freestanding image may be using this BEFORE those exist -- relocating itself, or
+            // clearing the BSS that the generated ones would be reading their own state out of.
+            public static reentrant method fill(address at, int value, address count) returns void {
+                volatile byte* p = cast<byte*>(at);
+                mutable address i = cast<address>(0);
+                byte v = cast<byte>(value & 255);
+                while (i < count) {
+                    p[i] = v;
+                    i = i + cast<address>(1);
+                }
+                return;
+            }
+
+            // FORWARD, so it is `copy` and not `move`: overlapping regions where the destination is
+            // above the source will smear. That is stated rather than silently handled, because the
+            // one that handles it costs a comparison per call and this is the primitive.
+            public static reentrant method copy(address to, address from, address count) returns void {
+                volatile byte* d = cast<byte*>(to);
+                volatile byte* s = cast<byte*>(from);
+                mutable address i = cast<address>(0);
+                while (i < count) {
+                    d[i] = s[i];
+                    i = i + cast<address>(1);
+                }
+                return;
+            }
+
+            // ...and the one that does handle it, by choosing a direction.
+            public static reentrant method move(address to, address from, address count) returns void {
+                if (to < from || to >= from + count) {
+                    Bytes.copy(to, from, count);
+                    return;
+                }
+                volatile byte* d = cast<byte*>(to);
+                volatile byte* s = cast<byte*>(from);
+                mutable address i = count;
+                while (i > cast<address>(0)) {
+                    i = i - cast<address>(1);
+                    d[i] = s[i];
+                }
+                return;
+            }
+
+            public static reentrant method compare(address a, address b, address count) returns int {
+                volatile byte* x = cast<byte*>(a);
+                volatile byte* y = cast<byte*>(b);
+                mutable address i = cast<address>(0);
+                while (i < count) {
+                    int lhs = cast<int>(x[i]) & 255;
+                    int rhs = cast<int>(y[i]) & 255;
+                    if (lhs != rhs) {
+                        return lhs - rhs;
+                    }
+                    i = i + cast<address>(1);
+                }
+                return 0;
+            }
+
+            // ---- and the arithmetic a page table does ----
+            public fixed address PageSize = 4096;
+
+            public static reentrant method pageDown(address at) returns address {
+                return at & ~(Bytes.PageSize - cast<address>(1));
+            }
+            public static reentrant method pageUp(address at) returns address {
+                return Bytes.pageDown(at + Bytes.PageSize - cast<address>(1));
+            }
+            public static reentrant method pages(address bytes) returns address {
+                return Bytes.pageUp(bytes) / Bytes.PageSize;
+            }
+        }
+    }

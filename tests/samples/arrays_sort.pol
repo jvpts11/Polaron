@@ -41,7 +41,7 @@ public bundle Main {
                 // The generic form, over Strings, with the ordering stated at the call site.
                 mutable String[] words = new String[4]();
                 words[0] = "cherry"; words[1] = "apple"; words[2] = "date"; words[3] = "banana";
-                Arrays.sort<String>(words, lambda(String a, String b) returns int { return a.compareTo(b); });
+                Arrays.sort<String>(words, command (String a, String b) returns int { return a.compareTo(b); });
                 mutable StringBuilder joined = new StringBuilder() on heap;
                 for (mutable int i = 0; i < words.length(); i++) {
                     if (i > 0) { joined.append("/"); }
@@ -50,7 +50,7 @@ public bundle Main {
                 System.IO.Console.printf("words=%s\n", joined.toString());
 
                 // ...and the same numbers the other way round, which is what a comparator is for.
-                Arrays.sort<int>(xs, lambda(int a, int b) returns int { return b - a; });
+                Arrays.sort<int>(xs, command (int a, int b) returns int { return b - a; });
                 mutable StringBuilder desc = new StringBuilder() on heap;
                 for (mutable int i = 0; i < xs.length(); i++) {
                     desc.append($"{xs[i]}");

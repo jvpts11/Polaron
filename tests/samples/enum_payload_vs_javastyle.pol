@@ -1,0 +1,60 @@
+import System.IO.Console;
+program EnumPayloadVsJavaStyle;
+
+// THE DISCRIMINATION, on the case that is actually hard.
+//
+// `NAME(...)` is two different declarations. `Bright(Level.HIGH)` gives THE constant `Bright` its
+// data, once, at the declaration. `Circle(double radius)` says every `Circle` brings its own. The
+// parentheses look identical and nothing outside them separates the two, so the parser decides by
+// what is inside -- and the case where a wrong guess is easy is the one below: a java-style argument
+// that is a QUALIFIED NAME. `Level.HIGH` ends in an identifier exactly the way `Errors.Fault f`
+// does, and the only thing that tells them apart is that the value's final name IS the qualified
+// tail while the payload's name FOLLOWS a complete type.
+//
+// Both forms are in one file so a change to either reading is caught by one test rather than by
+// whichever suite somebody happens to run.
+//
+// Prints:
+//   level 2
+//   ordinal 1
+//   radius 3
+public bundle Main {
+    public namespace Mixed {
+
+        public enum Level {
+            LOW, MEDIUM, HIGH
+        }
+
+        // Java-style: the constants carry data fixed at the declaration, and `Level.HIGH` is a
+        // VALUE. If this were read as a payload, `Bright` would take a `Level` at construction and
+        // `Lamp.BRIGHT` would not exist at all.
+        public enum Lamp {
+            DIM(Level.LOW),
+            BRIGHT(Level.HIGH);
+            public Level level;
+            public constructor Lamp(Level level) { this.level = level; }
+            public method brightness() returns int { return cast<int>(this.level); }
+        }
+
+        // A sum in the same file, so neither reading can be reached by turning the other off.
+        public enum Figure {
+            Circle(int radius),
+            Blank
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                System.IO.Console.println("level " + Lamp.BRIGHT.brightness().toString());
+                System.IO.Console.println("ordinal " + cast<int>(Level.MEDIUM).toString());
+
+                Figure f = Circle(3);
+                match (f) {
+                    case Circle(int radius) {
+                        System.IO.Console.println("radius " + radius.toString());
+                    }
+                    case Blank() { System.IO.Console.println("blank"); }
+                }
+            }
+        }
+    }
+}

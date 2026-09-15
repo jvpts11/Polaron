@@ -107,6 +107,11 @@ void MarkExpr::dump(std::string& out, int indent) const {
     line(out, indent, "Mark of region " + region);
 }
 
+void RegionSpaceExpr::dump(std::string& out, int indent) const {
+    const char* what = ask == Ask::Capacity ? "Capacity" : (ask == Ask::Used ? "Used" : "Room");
+    line(out, indent, std::string(what) + " of region " + region);
+}
+
 void RollbackStmt::dump(std::string& out, int indent) const {
     line(out, indent, "Rollback region " + region);
     if (checkpoint) {

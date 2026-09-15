@@ -1,0 +1,36 @@
+import System.IO.Console;
+program NarrowInTernary;
+
+// EACH ARM OF `?:` IS TYPED WITH WHAT THE CONDITION PROVES FOR IT. `b == null ? 0 : weigh(b)` only
+// calls `weigh` where `b` is not null -- the fact an `if` reads for its `else` -- and it was refused
+// as passing a nullable. The `nullable int` arm is here for the code generator: a narrowed value
+// optional is read as its value, and `n + 1` must add to the number, not to the optional.
+// Prints `3 0 6 -1`.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            private mutable int held;
+            public constructor Box(int held) { this.held = held; }
+            public method value() returns int { return this.held; }
+        }
+        public class Main {
+            public static method weigh(Box* b) returns int { return b.value(); }
+            public static method pick(int n) returns nullable Box* {
+                if (n == 0) { return null; }
+                return new Box(n) on heap;
+            }
+            public static method main(string[] args) returns void {
+                nullable Box* some = Main.pick(3);
+                nullable Box* none = Main.pick(0);
+                int heavy = some == null ? 0 : Main.weigh(some);
+                int light = none != null ? Main.weigh(none) : 0;
+                nullable int n = 5;
+                nullable int gone = null;
+                int next = n == null ? 0 - 1 : n + 1;
+                int missing = gone != null ? gone + 1 : 0 - 1;
+                System.IO.Console.println($"{heavy} {light} {next} {missing}");
+                return;
+            }
+        }
+    }
+}

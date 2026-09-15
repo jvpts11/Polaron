@@ -1,0 +1,141 @@
+import System.IO.Console;
+program LayoutConcessionIsExplicit;
+
+// THE DEFECT THIS SAMPLE EXISTS FOR: a `layout` written for a wire format was reordered by the act
+// of asking for a size.
+//
+// The repository's own example was called `WireRecord` and its refusal message read *"a wire record
+// is 32 bytes; both ends index it"* -- and under the first design, naming any layout at all was what
+// authorised the compiler to permute the fields. So the declaration whose entire purpose was to say
+// *these bytes are indexed by somebody else* was the one whose bytes moved, silently, on every
+// build.
+//
+// IT COULD NOT BE CAUGHT BY MEASURING, which is why it survived: two declarations that differ only
+// in the order of their fields come out the SAME SIZE once both are sorted, and that is exactly the
+// number a test would have checked. What differs is the offsets, and nothing in the language exposes
+// an offset.
+//
+// So the test has to do two things a size check does not. It reads the first byte of a value through
+// its own address rather than through any field name -- naming a field asks the compiler where it
+// put the field, and the compiler would agree with itself whatever it had done. And it declares the
+// SAME four fields in two orders, so that agreeing becomes visible: under the declared arrangement
+// the pair differs, under a permuted one it cannot.
+//
+// Prints:
+//   wire 12 8
+//   first 1 100
+//   compact 8 8
+//   sorted 100 100
+//
+// Under the first design the first two lines read `wire 8 8` and `first 100 100`: WireA had been
+// sorted into WireB, which is the bug written out in four numbers.
+
+public bundle Main {
+
+    public namespace App {
+
+        // CONCEDES NOTHING, which is now the default -- and it is the default because this is what
+        // a layout is most often reached for: a format some other program also indexes.
+        public layout WireRecord {
+            onArrange {
+                itself.fitWithin(12 bytes);
+                itself.refuse("a wire record is indexed at both ends");
+            }
+        }
+
+        // ...AND ONE THAT CONCEDES, so the sample proves the two answers DIFFER rather than merely
+        // proving one of them. Same four fields below, same ceiling, same declaration orders:
+        // everything that could vary between the two pairs is held still except the word on this
+        // line.
+        public layout Compact permits reorder {
+            onArrange {
+                itself.fitWithin(12 bytes);
+                itself.refuse("three to a cache line");
+            }
+        }
+
+        // A one-byte field first, then an int, then two more bytes. As declared that is
+        // 1 + 3 padding + 4 + 1 + 1 = 10, rounded to 12. Widest-first it would be 4 + 1 + 1 + 1 = 7,
+        // rounded to 8 -- so if this ever measures 8, the fields moved.
+        public struct WireA arranges WireRecord {
+            public mutable byte tag;
+            public mutable int  body;
+            public mutable byte kind;
+            public mutable byte flags;
+            public constructor WireA() { this.tag = 0; this.body = 0; this.kind = 0; this.flags = 0; }
+        }
+
+        // THE OTHER END OF THE WIRE, written by somebody who put the int first. It measures 8 either
+        // way, and that is why it is here: it is the CONTROL. Two declarations that say different
+        // things about the same record must come out different, and under the first design they came
+        // out identical -- the compiler made both ends agree by overruling both of them.
+        public struct WireB arranges WireRecord {
+            public mutable int  body;
+            public mutable byte tag;
+            public mutable byte kind;
+            public mutable byte flags;
+            public constructor WireB() { this.body = 0; this.tag = 0; this.kind = 0; this.flags = 0; }
+        }
+
+        // The same pair under the layout that concedes. Here the compiler SHOULD make them agree,
+        // and that is what `permits reorder` is: an author saying nothing outside this program reads
+        // these bytes, so take the eight.
+        public struct CompactA arranges Compact {
+            public mutable byte tag;
+            public mutable int  body;
+            public mutable byte kind;
+            public mutable byte flags;
+            public constructor CompactA() { this.tag = 0; this.body = 0; this.kind = 0; this.flags = 0; }
+        }
+
+        public struct CompactB arranges Compact {
+            public mutable int  body;
+            public mutable byte tag;
+            public mutable byte kind;
+            public mutable byte flags;
+            public constructor CompactB() { this.body = 0; this.tag = 0; this.kind = 0; this.flags = 0; }
+        }
+
+        public class Main {
+            // The byte at offset zero of a value, read through its address. `& 255` because a byte
+            // is signed on the way into an `int` and 200 would print as -56 -- which is the right
+            // number wearing a shape that makes a reader stop and work out whether the test failed.
+            public static method firstByte(address at) returns int {
+                byte* raw = cast<byte*>(at);
+                return cast<int>(raw[0]) & 255;
+            }
+
+            public static method main(string[] args) returns void {
+                // NOT `mutable`, and the compiler is the reason. `mutable` on a local governs
+                // rebinding the NAME; storing into a field of a value-typed local needs no such
+                // word, so writing one draws `Polaron-0B0D` -- nothing ever assigns to `a` itself.
+                WireA a = new WireA();
+                WireB b = new WireB();
+                a.tag = 1;
+                a.body = 100;
+                b.body = 100;
+                b.tag = 1;
+                // 12 AND 8, NOT 8 AND 8. The two declarations disagree about these bytes, and the
+                // compiler is no longer entitled to settle the disagreement on their behalf.
+                System.IO.Console.println($"wire {WireA.sizeof()} {WireB.sizeof()}");
+                // 1 AND 100. `a`'s first declared field is `tag`, so byte zero is 1; `b`'s is
+                // `body`, so byte zero is 100's low byte. Sorted widest-first BOTH would start with
+                // `body` and both would read 100 -- which is what this printed before the fix.
+                System.IO.Console.println($"first {Main.firstByte(&a)} {Main.firstByte(&b)}");
+
+                CompactA ca = new CompactA();
+                CompactB cb = new CompactB();
+                ca.tag = 1;
+                ca.body = 100;
+                cb.body = 100;
+                cb.tag = 1;
+                System.IO.Console.println($"compact {CompactA.sizeof()} {CompactB.sizeof()}");
+                // ...AND HERE THE TWO DO AGREE, which is the concession doing its job rather than
+                // the compiler doing it uninvited. `ca` reads 100 and not 1: `body` was moved to the
+                // front, which is the whole eight-instead-of-twelve, and the author asked for it.
+                System.IO.Console.println($"sorted {Main.firstByte(&ca)} {Main.firstByte(&cb)}");
+                return;
+            }
+        }
+    }
+}

@@ -10,7 +10,8 @@ public bundle main {
     public namespace app {
 
         public typealias Celsius = int;               // transparent: Celsius == int
-        public typealias IntFn = function<int, int>;  // a function-type alias
+        public command IntStep(int x) returns int;    // a command TYPE -- the role, named
+        public typealias IntFn = IntStep*;            // ...and an alias for it
 
         public newtype OrderId = long;                // distinct: needs a cast to/from long
         public newtype UserId = long;                 // distinct from OrderId as well
@@ -40,7 +41,7 @@ public bundle main {
                 // typealias: Celsius and int are the same type, so arithmetic just works.
                 Celsius t = 20;
                 int sum = t + 5;                      // 25
-                IntFn inc = lambda(int x) returns int { return x + 1; };
+                IntFn inc = command (int x) returns int { return x + 1; };
                 int r = Main.apply(inc, sum);         // 26
 
                 // newtype: a distinct identity; cast across the boundary to use the raw value.

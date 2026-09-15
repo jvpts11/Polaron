@@ -1,0 +1,81 @@
+import System.IO.Console;
+import Machine.Format.Digits;
+import Machine.Raw.Extent;
+program MachineFormatRuns;
+
+// THE BARE-METAL FORMATTER, RUN RATHER THAN CHECKED.
+//
+// `Machine.Format` had two tests: `polc --check` on a sample, and a grep of the emitted IR for a
+// port instruction. Neither of those executes anything, so the formatter that every kernel would
+// otherwise write by hand had **never produced a digit**. It was correct as far as anybody had
+// looked, and two things were wrong with it that only running finds:
+//
+//   1. It asked for `byte[] into`. A `T[]` in this ABI is one pointer to a HEAP block whose first
+//      eight bytes are its length, so the only way to make one is to allocate -- in the tier whose
+//      two stated premises are no heap and no `String`. An inline `byte[16]`, which is what a kernel
+//      has, is bare storage with no header and does not convert to it, correctly. The parameter
+//      could not be satisfied by the programs the entry exists for. It went unseen because the
+//      demonstration sample wrote `new byte[64]()` and passed -- it happens to run in a program with
+//      an allocator.
+//
+//   2. Its replacement was called `Span`, and `System.Units.Span` is a length of TIME. A program
+//      importing one got the other: a struct of a single `long`, read as a pointer and a capacity.
+//      The formatter returned the right COUNT and wrote its digits through whatever the first eight
+//      bytes of a duration look like -- so a kernel printed `F:OK` followed by two NUL bytes where
+//      `F:OK16` belonged, and printed it from a hundred and fifty call sites at once.
+//
+// So this asserts the BYTES, not the count. A count is what both bugs got right.
+//
+// The buffer is on this method's frame and nothing here calls an allocator, which is the other half
+// of the claim: the tier is usable by a program that has no heap at all.
+//
+// Prints:
+//   dec 2 [49 54]
+//   neg 3 [45 52 50]
+//   hex 6 [48 120 48 48 102 102]
+//   pad 4 [48 48 48 55]
+//   text 5 [104 105 33 33 33]
+
+public bundle Main {
+
+    public namespace App {
+
+        public class Main {
+            // The bytes as numbers rather than as characters, because a character is what a broken
+            // formatter also prints -- `F:OK` followed by two NULs looked like a missing number and
+            // was a wrong pointer. Printing the codes makes a zero byte visible as a zero.
+            public static method show(String tag, Extent buf, int n) returns void {
+                mutable String line = tag + " " + n.toString() + " [";
+                for (mutable int i = 0; i < n; i = i + 1) {
+                    if (i != 0) { line = line + " "; }
+                    line = line + buf.get(i).toString();
+                }
+                System.IO.Console.println(line + "]");
+                return;
+            }
+
+            public static method main(string[] args) returns void {
+                byte[32] storage;
+                Extent buf = new Extent(cast<address>(&storage[0]), 32) on stack;
+
+                // 16 -> '1','6'
+                Main.show("dec", buf, Digits.signed(buf, 0, cast<long>(16)));
+
+                // -42 -> '-','4','2'. Through `signed`, which negates as an unsigned widening, so
+                // the one value whose sign flip wraps back to itself still prints negative.
+                Main.show("neg", buf, Digits.signed(buf, 0, cast<long>(0) - cast<long>(42)));
+
+                // 255 in hex with the `0x` this entry adds and a width of 4: '0','x','0','0','f','f'
+                Main.show("hex", buf, Digits.hex(buf, 0, cast<address>(255), 4));
+
+                // Width padding on its own: 7 to four places is '0','0','0','7'. What an address
+                // wants, so a column of them lines up.
+                Main.show("pad", buf, Digits.unsigned(buf, 0, cast<address>(7), 10, 4));
+
+                // ...and raw text, so a caller can build a whole line in one buffer.
+                Main.show("text", buf, Digits.text(buf, 0, b"hi!!!"));
+                return;
+            }
+        }
+    }
+}

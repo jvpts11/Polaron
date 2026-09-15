@@ -1,0 +1,51 @@
+program DevirtHiddenLib;
+
+// THE CASE §11.8 HAS TO BE WRONG ABOUT, IF IT IS GOING TO BE WRONG.
+//
+// A library ships an abstract base and TWO classes under it, and only one of them is public. The
+// consumer's headers therefore name `Visible` and never name `Internal` -- but a `Source*` handed
+// back by `origin()` can be either, because the library is what decides.
+//
+// So a consumer that answers "how many implementations of `rate` are there" by looking at what it
+// can SEE gets one, and compiles `s.rate()` into a call to `Visible.rate`. The program then prints
+// 3 for an object whose answer is 9, links without a word, and runs.
+//
+// That is the same shape as the defect Wave 2 found on the other side of this boundary -- `total =
+// 17` where the answer was 57 -- and it is the reason `openWorld` exists. This file is here so the
+// question is asked by a machine rather than by me reading the pass and believing myself.
+public bundle DevirtHiddenLib {
+    public namespace Feed {
+
+        public abstract class Source {
+            public abstract method rate() returns int;
+        }
+
+        // The one the consumer's headers name.
+        public class Visible extends Source {
+            public override method rate() returns int {
+                return 3;
+            }
+        }
+
+        // ...AND THE ONE THEY DO NOT. Nothing outside this bundle can write the name `Internal`,
+        // which is exactly why a consumer counting implementations by name would miss it -- and
+        // missing it is not harmless, because `origin` hands one out.
+        class Internal extends Source {
+            public override method rate() returns int {
+                return 9;
+            }
+        }
+
+        public class Factory {
+            // The library chooses, and the choice is not visible from the call site. `1 == 1` and
+            // not a literal `true` so nothing folds the branch away and turns this into a `new`
+            // the consumer could see through.
+            public static method origin(int pick) returns Source* {
+                if (pick > 0) {
+                    return cast<Source*>(new Internal() on heap);
+                }
+                return cast<Source*>(new Visible() on heap);
+            }
+        }
+    }
+}

@@ -1,0 +1,30 @@
+import System.IO.Console;
+program NarrowNullChainBad;
+
+// THE ARM THAT LEARNS NOTHING STILL LEARNS NOTHING. `if (a == null && b == null) { return; }` goes on
+// when EITHER is non-null, so neither is proven -- narrowing a chain must not narrow this one.
+//
+// Refused: 'nullable Box*' passed where 'Box*' is required.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int value;
+            public constructor Box(int v) { this.value = v; }
+        }
+        public class Main {
+            static method need(Box* x) returns int { return x.value; }
+
+            static method wrong(nullable Box* a, nullable Box* b) returns int {
+                if (a == null && b == null) { return 0; }
+                return Main.need(a);
+            }
+
+            public static method main(string[] args) returns void {
+                Box* one = new Box(1) on heap;
+                System.IO.Console.println($"{Main.wrong(one, null)}");
+                delete one;
+                return;
+            }
+        }
+    }
+}

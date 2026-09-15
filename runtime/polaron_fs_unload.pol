@@ -1,0 +1,191 @@
+program PolaronUnloadVault freestanding;
+
+/* WHAT `unimport` AND `reimport` MEAN ON BARE METAL.
+
+   `unimport` physically rips a method's machine code out of RAM and `reimport` puts it back.
+   Hosted, that second half re-reads the original bytes out of the executable on disk --
+   GetModuleFileNameW, /proc/self/exe -- and a kernel has neither: it IS the image, and nothing has
+   kept a copy of its own .text.
+
+   So this does not copy the hosted mechanism. It keeps the CONTRACT and does the better thing
+   available here: SAVE THE BYTES BEFORE OVERWRITING THEM. What comes back comes out of the vault
+   below, which makes it faster than a file, immune to the binary being rebuilt underneath a running
+   system, and the only one of the two that works on a machine with no filesystem at all.
+
+   EVERY POINTER AT THE BOUNDARY IS A POINTER TYPE, and this is the second time that has had to be
+   said. `address` means SIXTY-FOUR BITS in Polaron -- the width family, with `half address` beside
+   it -- while codegen emits this call as `(ptr, ptr, i64)`, and a `ptr` is four bytes on a 32-bit
+   machine. `table` is worse than the others: written `address*` it would stride EIGHT bytes over a
+   table of four-byte entries, so it would read every second entry as a splice of two. It is
+   `byte**` -- an array of pointers, whatever a pointer is here -- and the addresses are taken out
+   of it one at a time. */
+
+public bundle Runtime {
+    public namespace Unload {
+        public class CodeVault {
+            /* THE VAULT ITSELF, and it is `on static` for the reason the whole layer exists: this
+               runs when a driver is torn out of a running kernel, and asking the allocator for room
+               to save code is the wrong question at the wrong moment. In C++ this was
+               `u8 bytes_[65536]` at file scope; it is the same storage, said in Polaron. */
+            public fixed int Vault = 65536;
+            public fixed int Slots = 256;
+            /* A method longer than this is not saved whole. A linker can order methods so the next
+               one starts a megabyte away, and writing a megabyte of int3 over whatever follows is
+               worse than unloading too little. */
+            public fixed long Longest = 4096;
+            public fixed long Unknown = 64;   // nothing starts after it: assume a short method
+
+            private static mutable byte[] bytes = new byte[CodeVault.Vault]() on static;
+
+            /* THREE ARRAYS ARE A ROW SPREAD SIDEWAYS, and the C++ this replaces said so in a comment
+               before making a class of it. They are three here for a language reason and not a
+               preference: `on static` gives an array of BYTES its storage before the program starts,
+               and an array of structs would need constructors to have run by then. `slotFor`,
+               `remember` and `forget` are the only three places that touch them, so what keeps them
+               in step is stated three times rather than at every use -- and the day `on static`
+               covers value types this becomes one array of one type. */
+            private static mutable address[] where = new address[CodeVault.Slots]() on static;
+            private static mutable long[] length = new long[CodeVault.Slots]() on static;
+            private static mutable long[] at = new long[CodeVault.Slots]() on static;
+            private static mutable int count;
+            private static mutable long used;
+
+            private static method remember(int slot, address code, long len, long offset)
+                returns void {
+                CodeVault.where[slot] = code;
+                CodeVault.length[slot] = len;
+                CodeVault.at[slot] = offset;
+                return;
+            }
+
+            // The last row moved into the hole the freed one left, which is what keeps `count` the
+            // number of live rows and the scan free of gaps.
+            private static method forget(int slot) returns void {
+                CodeVault.remember(slot, CodeVault.where[CodeVault.count - 1],
+                                   CodeVault.length[CodeVault.count - 1],
+                                   CodeVault.at[CodeVault.count - 1]);
+                CodeVault.count = CodeVault.count - 1;
+                if (CodeVault.count == 0) { CodeVault.used = 0; }
+                return;
+            }
+
+            /* HOW LONG A METHOD IS: the distance to the NEXT method that starts after it, out of the
+               table the compiler passes in. The same rule the hosted runtime uses, and the same cap. */
+            // `nullable` IS LOAD-BEARING. The table comes out of `__polaron_code_base`, a global the
+            // BACKEND fills once every function is emitted, and a program that unloads something
+            // before that is a program handed a null table. A plain `byte**` is a promise the
+            // optimiser may act on, and the guard below is what it would fold away.
+            public static method lengthOf(address code, nullable byte** table, long entries)
+                returns long {
+                if (table == null) { return CodeVault.Unknown; }
+                mutable address next = 0;
+                mutable long i = 0;
+                while (i < entries) {
+                    address a = cast<address>(table[i]);
+                    if (a > code && (next == 0 || a < next)) { next = a; }
+                    i = i + 1;
+                }
+                long len = next != 0 ? cast<long>(next - code) : CodeVault.Unknown;
+                return len > CodeVault.Longest ? CodeVault.Longest : len;
+            }
+
+            public static method slotFor(address code) returns int {
+                mutable int i = 0;
+                while (i < CodeVault.count) {
+                    if (CodeVault.where[i] == code) { return i; }
+                    i = i + 1;
+                }
+                return 0 - 1;
+            }
+
+            /* Keep a copy, then answer whether there was room. A caller told no must NOT go on to
+               overwrite the code: ripping out instructions that can never come back is a decision,
+               and not one to make because a buffer filled up. */
+            public static method keep(address code, long len) returns boolean {
+                if (CodeVault.count >= CodeVault.Slots) { return false; }
+                if (CodeVault.used + len > cast<long>(CodeVault.Vault)) { return false; }
+                byte* from = cast<byte*>(code);
+                mutable long i = 0;
+                while (i < len) {
+                    CodeVault.bytes[cast<int>(CodeVault.used + i)] = from[i];
+                    i = i + 1;
+                }
+                CodeVault.remember(CodeVault.count, code, len, CodeVault.used);
+                CodeVault.count = CodeVault.count + 1;
+                CodeVault.used = CodeVault.used + len;
+                return true;
+            }
+
+            /* Put one method's bytes back and give up its slot.
+
+               THE VAULT SPACE comes back only when this was the last thing written into it, which is
+               the common case and is stated rather than hidden: a driver is unloaded and reloaded as
+               a unit, so its methods return in the order they left. Where they do not, the space
+               stays taken until the vault is empty -- a bump allocator's honest limitation, and the
+               reason `keep` refuses out loud rather than letting a later reimport restore nothing. */
+            public static method restore(int slot) returns void {
+                address code = CodeVault.where[slot];
+                long len = CodeVault.length[slot];
+                long offset = CodeVault.at[slot];
+                byte* into = cast<byte*>(code);
+                mutable long i = 0;
+                while (i < len) {
+                    into[i] = CodeVault.bytes[cast<int>(offset + i)];
+                    i = i + 1;
+                }
+                if (offset + len == CodeVault.used) { CodeVault.used = offset; }
+                CodeVault.forget(slot);
+                return;
+            }
+        }
+
+        public class Unloader {
+            private extern cdecl static method panic(byte* message) returns void
+                symbol("__polaron_panic");
+
+            /* 0xCC is `int3`, and it is the right filler rather than zeroes: a zero byte is a valid
+               instruction and execution would run on into whatever follows. A breakpoint trap is the
+               machine saying, at the exact instruction, that something called code that was taken
+               away. */
+            public fixed int Trap = 204;
+
+            /**
+             * Take a method's code out of RAM, having saved it.
+             *
+             * `surveyed` for the panic, whose other side is read: it writes the bytes and halts and
+             * keeps nothing -- the same call and the same reason as the failure reporter's.
+             */
+            public unknown c static surveyed method __polaron_unload_fn(byte* fn,
+                nullable byte** table, long entries) returns void {
+                if (fn == null) { return; }
+                address code = cast<address>(fn);
+                // ALREADY GONE. Unloading twice must not save the int3s over the real bytes -- that
+                // is how a reimport succeeds and restores a method full of breakpoints.
+                if (CodeVault.slotFor(code) >= 0) { return; }
+                long len = CodeVault.lengthOf(code, table, entries);
+                if (!CodeVault.keep(code, len)) {
+                    Unloader.panic(b"unimport: no room to save the method's code for reimport");
+                    return;
+                }
+                mutable long i = 0;
+                while (i < len) {
+                    fn[i] = cast<byte>(Unloader.Trap);
+                    i = i + 1;
+                }
+                return;
+            }
+
+            /** The bytes back, from the vault rather than from a disk this machine may not have. */
+            public unknown c static method __polaron_reload_fn(byte* fn, nullable byte** table,
+                                                               long entries) returns void {
+                if (fn == null) { return; }
+                // Nothing saved means nothing was ever unloaded, and writing anything here would be
+                // writing over live code. Reimporting what is already present is a no-op.
+                int slot = CodeVault.slotFor(cast<address>(fn));
+                if (slot < 0) { return; }
+                CodeVault.restore(slot);
+                return;
+            }
+        }
+    }
+}

@@ -94,6 +94,11 @@ two copies come to disagree.
 | `Polaron-0104` | unknown type |
 | `Polaron-0105` | no such name |
 | `Polaron-0106` | this name was brought in under a different path |
+| `Polaron-0107` | a static method is called through its class |
+| `Polaron-0108` | a command type says what will be called, not what it holds |
+| `Polaron-0109` | an inline command has no class to belong to |
+| `Polaron-010A` | an inline command carries its values with it |
+| `Polaron-010B` | a value type parameter needs `fixed`, and a bare one is reserved |
 | `Polaron-0201` | not accessible from here |
 | `Polaron-0300` | null where a value is required |
 | `Polaron-0301` | wrong type here |
@@ -131,7 +136,13 @@ two copies come to disagree.
 | `Polaron-0703` | printf needs a literal format string |
 | `Polaron-0704` | this value does not fit the bits the field was given |
 | `Polaron-0705` | a packed bit field has no address of its own |
+| `Polaron-0407` | this type cannot be copied: it owns a `unique` value |
+| `Polaron-0408` | `shareable` over a field nothing synchronises |
+| `Polaron-0409` | a `reentrant` method reaches something it may have interrupted |
+| `Polaron-0410` | an entity's field has no width decided here |
+| `Polaron-0411` | a struct cannot hold a `weak` field |
 | `Polaron-0706` | this is not an instruction the assembly checker knows |
+| `Polaron-0707` | this operand cannot be put where the block says |
 | `Polaron-0801` | malformed operator overload |
 | `Polaron-0802` | reflection used incorrectly |
 | `Polaron-0803` | region used incorrectly |
@@ -144,6 +155,9 @@ two copies come to disagree.
 | `Polaron-0810` | an interrupt is entered, not called, and it runs where almost nothing is safe |
 | `Polaron-0811` | this transformer's contract is not met here |
 | `Polaron-0812` | this annotation cannot go on this method |
+| `Polaron-0813` | no arrangement satisfies this layout |
+| `Polaron-0814` | a channel hands the object over, so `send` transfers it |
+| `Polaron-0815` | `readonly` is a promise this body does not keep |
 | `Polaron-0901` | not available in freestanding mode |
 | `Polaron-0A01` | not implemented yet |
 | `Polaron-0B01` | this name reads against the convention the rest of the language follows |
@@ -171,7 +185,7 @@ two copies come to disagree.
 | `Polaron-0B16` | these branches all compare the same thing, one after another |
 | `Polaron-0B17` | this number is written out several times in one method |
 | `Polaron-0B18` | this try raises and catches its own exception |
-| `Polaron-0B19` | this call returns a Result or Option and the statement drops it |
+| `Polaron-0B19` | this call's answer is the point, and the statement drops it |
 | `Polaron-0B1A` | this is allocated on the heap and deleted in the same block |
 | `Polaron-0B1B` | this cleanup is repeated before more than one return |
 | `Polaron-0B1C` | this throw is inside a loop |
@@ -226,6 +240,11 @@ two copies come to disagree.
 | `Polaron-0B4D` | this number is being used as an address, and it is not typed as one |
 | `Polaron-0B4E` | an address put into a number stops being an address |
 | `Polaron-0B4F` | `on stack` cannot be honoured on a returned object |
+| `Polaron-0B50` | this field is left out of the generated equality |
+| `Polaron-0B51` | a layout is `arranges`, not `implements` |
+| `Polaron-0B52` | this hand-allocates and hand-frees several things: a region written longhand |
+| `Polaron-0B53` | two objects now own one object, and both destructors free it |
+| `Polaron-0B54` | an array cannot honour `on stack`, and this one was accepted and ignored |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

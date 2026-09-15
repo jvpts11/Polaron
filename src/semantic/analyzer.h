@@ -44,6 +44,14 @@ struct LocalVar {
     // anything it changes is changed in the copy. Recorded because that is invisible at the call
     // site and silent at run time: see the by-value mutation check.
     bool isByValueClassParam = false;
+    // HOW LONG THIS ARRAY IS, when the declaration says so with a literal: `new byte[12]()`. Zero
+    // for everything else, including an array whose size is computed -- the point is a length known
+    // HERE, not a length that exists.
+    //
+    // Read by the loop-bound advice (`0B40`), which asks whether the bounds check can be proved
+    // away. A loop counted to a constant over an array of a constant length is the case where it
+    // most certainly can, and the rule reported it because the bound was not spelled `a.length()`.
+    long long constExtent = 0;
 };
 
 // What the compiler knows about a variable AT A POINT IN THE PROGRAM, as opposed to what its declaration
@@ -77,6 +85,11 @@ struct FlowFacts {
     // checker complaining about correct code, which is worse than the bug it was added to catch.
     std::unordered_set<std::string> invalidated;
     std::unordered_map<std::string, std::string> borrows;
+    // WHICH BORROWS WERE LIVE WHEN THEIR SOURCE WAS EMPTIED -- local -> that source. The emptying
+    // strands the borrows that exist at that moment and no others: one taken afterwards is a borrow
+    // of what the source holds now. Asked of `invalidated` alone, `people.clear()` refused every
+    // later `people.at(0)` in the method, and a destructor could not read a field after a cleanup.
+    std::unordered_map<std::string, std::string> stale;
 };
 
 // Class members collected in pass 1, for name resolution / type checking.
@@ -114,6 +127,18 @@ struct MethodInfo {
     std::size_t paramCount = 0;  // declared parameter count (for arg-count checking)
     bool isFinal = false;     // `final` method -- cannot be overridden
     bool isAsync = false;     // spec 20.2: the call site yields a Task<returnType>
+    // `surveyed` -- part of the contract that is INHERITED, not a local decision. A caller holding
+    // a base reference reads the base's promise, so an override that surveyed itself while its base
+    // did not would widen what the method may do with nobody at the call site able to see it.
+    //
+    // DECLARED AFTER THE POSITIONAL ONES, and that is load-bearing: this struct is built with an
+    // aggregate initialiser listing seven fields in order, so a new member anywhere above `isAsync`
+    // silently shifts a value into the wrong field. Put between `isFinal` and `isAsync` for one
+    // build, it made every method's async-ness land here instead.
+    bool isSurveyed = false;
+    // `mustuse` on this method (B.2): its answer is the point, so a statement that drops it is
+    // warned about. Below `isAsync` for the reason the note above gives.
+    bool isMustUse = false;
     bool isVariadic = false;  // spec 26: an extern C function with a trailing `...` (arg count is open)
     // spec 26: declared `extern` -- there is no Polaron body, so no escape summary can exist and
     // nothing can be said about what it does with a pointer it is handed. The region binder has to
@@ -133,6 +158,13 @@ struct MethodInfo {
     // two places only: the call site, which must refuse it, and `obj.interrupt`, which is how it is
     // installed and yields an `address` rather than anything callable.
     bool isInterrupt = false;
+    // `public pass advance(int dt) reads (vx, vy) writes (x, y)` (entity.md 5) -- written for one
+    // row, run over the whole population. Read at the call site, which is the one place in the
+    // language where a member of `T` is reached through a `T[]`.
+    bool isPass = false;
+    std::vector<std::string> readsFields;   // what the pass touches, and what it changes: two
+    std::vector<std::string> writesFields;  // passes with disjoint writes can run at once
+    std::string indexBinding;               // `index i` -- the row's position, or empty
     // See FieldInfo: the word the author wrote, and the class that declared it. Absent from this
     // struct for as long as it existed, which is the whole of why `private` denied nobody.
     std::string visibility;
@@ -147,6 +179,14 @@ struct ClassInfo {
     bool isAbstract = false;
     bool isFinal = false;    // `final class` -- cannot be extended
     bool isInterface = false;
+    // Declared with the namespace-level `command Name(args) returns T;` -- a ROLE. It is an
+    // interface and `isInterface` is set too; this says WHICH KIND, for the rules that would
+    // otherwise give advice about a shape the author did not choose.
+    bool isCommandType = false;
+    // `mustuse` on this type (B.2): a value of it is the point of the call that produced it, so a
+    // statement that drops one is warned about -- once on the type, for every method that returns
+    // one, including the ones written next year.
+    bool isMustUse = false;
     bool isStruct = false;   // value type, no inheritance
     bool isSealed = false;   // only `permits` types may extend it
     // `region class` (docs/design/region-classes.md): every instance comes from one region owned by
@@ -155,6 +195,15 @@ struct ClassInfo {
     bool isRegionClass = false;
     bool isMovable = false;  // move discipline
     bool isUnique = false;   // single-live-reference discipline
+    // `shareable`: safe to reach from several threads (ownership.md §13a). Read by `declaresShared`
+    // beside the older `implements Shared`, which keeps working -- there is one question and two
+    // spellings of it, and the modifier is the one that does not buy a dispatch pointer.
+    bool isShareable = false;
+    // `entity` (entity.md 1): a value type whose ARRAYS are transposed. A lone one is a struct and
+    // sets `isStruct` too; what the word changes is `T[]`, so this is read where an array's element
+    // type decides something -- a `pass` reached through the array, and what a row reference means.
+    bool isEntity = false;
+    bool isStable = false;   // `stable entity`: rows never move, so an index is a permanent handle
     bool isPartitionable = false;  // fields movable separately (spec 19.9)
     bool hasConstructor = false;
     bool hasDestructor = false;
@@ -225,6 +274,44 @@ public:
     // storing a reference to a shorter-lived object into a longer-lived location (the dangling store).
     void setRegionBinder(bool on) { regionBinder_ = on; }
 
+    // WHICH MACHINE THIS BUILD IS FOR, as `comptime::archCode` numbers it.
+    //
+    // The analyzer needs it for exactly one thing and it is not a small one: a `comptime if` over
+    // `__target_arch` selects which half of `Machine` is the program, and the untaken half is not
+    // analysed. Without the target here the condition does not fold, so the analyzer refuses the
+    // program for having a non-constant `comptime if` -- and the library that serves every target
+    // compiles for none.
+    //
+    // Zero means nobody said, which folds to `Target.Other` and selects the portable arm. That is
+    // the right default for a hosted build, where the answer is *no machine in particular*.
+    void setTargetArch(long long code) { targetArch_ = code; }
+
+    // ...AND HOW WIDE A POINTER IS ON IT. A second fact because it is a second question: `in al, dx`
+    // is the same instruction on i686 and x86_64, so the two are ONE architecture as far as the I/O
+    // address space is concerned -- what differs is the register file, which is what the `asm` block
+    // has to declare. A library serving both needs to ask which, and splitting the architecture
+    // number instead would partition it along a line the hardware does not have.
+    void setTargetBits(long long bits) { targetBits_ = bits; }
+
+    // THE REGION BINDER'S CENTRAL ANSWER, handed out so a second, independent one can be held
+    // against it (`polaron-ir.md` §11.7).
+    //
+    // "Class.method" -> per DECLARED parameter (`this` is not one of them), true when that parameter
+    // is stored into the receiver. It is read off the AST by pattern -- `this.field = param`,
+    // directly or through an alias, to a fixpoint -- which is exactly the shape §11.7 says ought to
+    // be a dataflow question over the graph. Moving the DIAGNOSTIC there is a large change and is
+    // not what this accessor is for. What it is for is that §11.5's pass now answers the same
+    // question from the other side, off the instructions rather than off the tree, and two answers
+    // that disagree mean one of them is wrong.
+    //
+    // THE CHECK IS ONE-DIRECTIONAL, and that is stated here rather than left for a reader of the
+    // comparison to work out. "Stored into the receiver" IMPLIES "escapes"; the converse is false,
+    // because a parameter that is returned escapes without ever reaching a field. So the only
+    // contradiction is this being true where the graph proved the parameter never leaves at all.
+    const std::unordered_map<std::string, std::vector<bool>>& escapesToReceiver() const {
+        return escapesToReceiver_;
+    }
+
     bool hasErrors() const { return !errors_.empty(); }
     // Classes whose dispatch table is patched at runtime (spec 32.8). Codegen must give them a vtable
     // and never devirtualize their calls, or a replacement would not be seen at the call sites.
@@ -247,6 +334,7 @@ private:
     // from the catalog. The message is still the specific one-line title (it names the actual thing).
     void error(diag::Code code, std::string message, SourceLocation loc);
     void warn(diag::Code code, std::string message, SourceLocation loc);
+    void report(SemaError e);   // the one place errors land -- see the note there about duplicates
     // `[Allow(code:, why:)]` -- the escape valve for structural advice, per declaration.
     //
     // Advice is a rule about a SHAPE, and a shape can be right for a reason the compiler cannot see.
@@ -303,6 +391,7 @@ private:
     void warnRepeatedMagicNumber(const ast::MethodDecl& m);
     void warnThrowCaughtHere(const ast::Block& body);
     void warnHeapWithLexicalLifetime(const ast::Block& body);
+    void warnAllocationsWantARegion(const ast::Block& body);
     void warnRepeatedCleanup(const ast::MethodDecl& m);
     void warnThrowInLoop(const ast::Block& body);
     void warnConstantComputedAtRuntime(const ast::MethodDecl& m);
@@ -407,6 +496,10 @@ private:
     // True if `className` owns a `unique` field, directly, through a superclass, or through a value
     // sub-object -- such an object may not be value-copied (spec 19.2).
     bool classHasUniqueField(const std::string& className);
+    // ...AND WHICH ONE, as a path a reader can follow (`head`, or `outer.inner.slot`). Empty when
+    // the type may be copied. `ownership.md` §6.1 requires the diagnostic to name the field, and the
+    // cause is often two types down from the line being refused.
+    std::string uniqueFieldPath(const std::string& className);
     // Checks a type against a region's accepts/rejects constraints (spec 17.3).
     void checkRegionAccepts(const std::string& region, const std::string& type, SourceLocation loc);
     // A type from another namespace must be imported (or be a primitive / a
@@ -495,6 +588,12 @@ private:
     // Whether a type declares itself safe to reach from several threads at once (implements
     // System.Concurrency.Shared) -- the one way a program's own type may cross a thread boundary.
     bool declaresShared(const std::string& name) const;
+    // §14: `shareable` is CHECKED. Legal when every mutable field is `atomic<T>` or itself
+    // shareable, or when the type is entirely immutable -- decidable from the declaration alone, so
+    // it needs no whole-program knowledge and travels in the `.polh`.
+    void checkShareable(const ast::ClassDecl& cls);
+    // An entity's fields each become a column, so each needs a width decided at the declaration.
+    void checkEntityColumns(const ast::ClassDecl& cls);
 
     // Lexical scopes (innermost last); shadowing is forbidden.
     void pushScope();
@@ -508,7 +607,10 @@ private:
     // Merge two branch outcomes into the state after the branch. A fact survives only if it holds on
     // BOTH paths -- that is what makes the analysis sound rather than optimistic: a proof established in
     // the `then` arm says nothing about the program that took the `else`.
+    void keepObligationsAfterLoop(const FlowFacts& bodyEnd);
     void joinFlow(const FlowFacts& a, const FlowFacts& b);
+    // The same for a `match`: every arm that falls through, joined; the entry when none does.
+    void joinArms(const FlowFacts& entry, const std::vector<FlowFacts>& reaching);
     // A loop body may run again, so any proof its own body can falsify must not survive to the top. The
     // cheap and correct answer is to drop what the body could have changed, which is what this does.
     void invalidateAcrossBackEdge(const FlowFacts& before);
@@ -525,7 +627,8 @@ private:
     static bool blockAlwaysExits(const ast::Block& b);
     // What a null test proves, and for which arm. Only unambiguous shapes are recognised; being
     // incomplete costs a cast, being wrong would cost the guarantee.
-    void proofFromCondition(const ast::Expr& cond, std::string& provenThen, std::string& provenElse);
+    void proofFromCondition(const ast::Expr& cond, std::vector<std::string>& provenThen,
+                            std::vector<std::string>& provenElse);
 
     std::vector<SemaError> errors_;
     std::vector<SemaError> warnings_;
@@ -706,6 +809,8 @@ private:
     std::string currentBundle_;     // bundle being analyzed (stdlib-cohesion visibility)
     bool freestanding_ = false;     // spec 36: no managed-runtime features in this program
     bool regionBinder_ = false;     // --region-binder: static escape checks (Rust-level temporal safety)
+    long long targetArch_ = 0;      // comptime::TargetArch, for `comptime if (__target_arch == ...)`
+    long long targetBits_ = 64;     // pointer width on it, for `__target_bits`
     bool libraryMode_ = false;      // compiling a bundle to a .polb: a missing `main` is allowed
     bool testMode_ = false;         // `polc --test`: a missing `main` is allowed (runner is synthetic)
     std::unordered_set<std::string> currentImports_;  // imported symbol names (current bundle)
@@ -774,6 +879,12 @@ private:
         // Rule 3: mutable state touched that is neither `volatile` nor `atomic<T>`, i.e. shared with
         // no way of saying so. "Class.field" plus where it was touched.
         std::vector<std::pair<std::string, SourceLocation>> unsharedState;
+        // WHETHER THIS BODY WRITES ANYTHING THAT OUTLIVES IT (B.1/D.6). Any assignment whose target
+        // is not a plain local: a field, a static, an array slot. Composed by fixpoint over
+        // `callees`, so `readonly` is a promise about everything the method reaches and not only
+        // about the lines in front of the reader.
+        bool writesState = false;
+        SourceLocation firstWrite;   // where, so a refusal can point at the write and not the word
     };
     std::map<std::string, MethodFacts> methodFacts_;   // "Class.method" -> what it did and called
     // A method called ON A BY-VALUE PARAMETER: where it happened, which parameter, and what was
@@ -791,6 +902,9 @@ private:
     std::string lookupLocalType(const std::string& methodKey, const std::string& param) const;
     // Reports every call that changes a copy the caller will never see. Run after the walk.
     void checkByValueMutations();
+    // `readonly` (B.1/D.6): the declaration is refused over a body that writes, directly or through
+    // anything it calls. Run after the walk, so the call graph is whole.
+    void checkReadonly(const ast::Program& program);
     // The field a `if (this.f == null)` arm is currently filling in, or empty. A write to THAT field
     // inside THAT arm is lazy initialisation and not a change: the guard is the proof that the field
     // held nothing, so filling it in cannot alter what the object already meant. Without this, every
@@ -811,6 +925,12 @@ private:
     // this one answers "whose code is this, for the purpose of what it drags in".
     std::string owningClassForRefs_;
     std::string currentMethodKey_;                     // "Class.method" being analyzed, "" outside one
+    // True while the body being analyzed is the program's entry point. Its frame is the one frame
+    // that lasts the whole run, which is what makes an `eternal ... on stack` there honest.
+    bool inEntryPoint_ = false;
+    // `pass advance(float dt) index i` -- the row's position, handed to the body analysis the way a
+    // parameter is and cleared the moment it is taken, so the next body does not inherit it.
+    std::string pendingIndexBinding_;
     // The trap parameter's name while an interrupt body is being analyzed ("" otherwise). Writing
     // through it must be refused -- see the assignment check for the measurement that decided it.
     std::string interruptTrapParam_;
@@ -820,6 +940,21 @@ private:
     std::string freestandingFrom_;
     // Every `interrupt` declared in the program: its class and where to point the diagnostic.
     std::vector<std::pair<std::string, SourceLocation>> interruptRoots_;
+    // ...AND EVERY `reentrant` METHOD, walked by the same machinery from a different set of roots.
+    //
+    // `interrupt` is one special case of the wide property (`reentrant.md` §4): a handler carries a
+    // bespoke list of prohibitions -- must not allocate, must not free, must not reach shared
+    // mutable state -- and every one of them is an implication of *may be entered again while an
+    // earlier entry is still running*. So the list collapses into a property anything can declare,
+    // with one checker, and the method that is NOT a handler but must be equally careful -- a
+    // scheduler entry, a page-fault path, a destructor during teardown -- gains a way to say so.
+    //
+    // The key is the full `Class.method`, where an interrupt root is just a class (a class has one
+    // handler, §6a), and that difference is the only thing separating the two walks.
+    std::vector<std::pair<std::string, SourceLocation>> reentrantRoots_;
+    // The reachability walk itself, from one root. `asInterrupt` picks which sentence the message
+    // uses; everything else is the same machinery, because `interrupt` IS one case of `reentrant`.
+    void checkReentrantFrom(const std::string& rootKey, bool asInterrupt);
     MethodFacts* facts();               // the current method's row, or null outside a method body
     void noteUnsafeForInterrupt(const std::string& what, SourceLocation loc);
     void noteFieldForInterrupt(const std::string& owner, const std::string& field,
@@ -845,6 +980,12 @@ private:
     // Value types (struct/record) by name, so `ast::keyFieldKind` can tell a nested value field from a
     // class reference. Collected before the class pass, because a field may name a type declared later.
     std::set<std::string> valueTypeNames_;
+    // The enums, for the same question: an ordinal enum field is part of a type's identity (a sum is
+    // not, and never gets this far -- it desugars into classes at the parse site).
+    std::set<std::string> ordinalEnumNames_;
+    // Set while the body being analysed is one the COMPILER wrote (a record's equality, an enum's
+    // `toString`). Advice is silenced there -- see the note in `warn`.
+    bool inSynthesizedMember_ = false;
     // The enclosing lambda's parameter types, while its body is being analyzed. `itself(...)` is checked
     // against these: a lambda has no name, so there is nothing to look its own signature up by.
     std::vector<std::string> currentLambdaParams_;
@@ -883,6 +1024,9 @@ private:
     // everything else (see `region_class_copy.pol`), so they stay in the set above; this records
     // where they came from, and the escape-by-return check is the one place that has to know.
     std::unordered_set<std::string> classArenaOwned_;
+    // `eternal` locals of the entry point: in the one frame that outlives everything, and never torn
+    // down, so the region binder places them at the root rather than in the activation.
+    std::unordered_set<std::string> programLongLocals_;
 
     // ---- THE REGION A VALUE LIVES IN (safety model §1.2) --------------------------------------
     //
@@ -938,11 +1082,24 @@ private:
     std::unordered_map<std::string, std::unordered_set<std::string>> ownedContents_;
     // Methods that free a field's contents: calling one invalidates every borrow into that object.
     std::unordered_set<std::string> invalidators_;
+    // Methods that write a field of their own receiver. Weaker than `invalidators_` -- which is
+    // about freeing what a field HOLDS -- and it is the fact a walk over a collection needs: adding
+    // to a list frees nothing and moves everything.
+    std::unordered_set<std::string> mutatesReceiver_;
+    // TRUE WHILE THE BODY OF A `surveyed` METHOD IS BEING ANALYSED. It suspends exactly one
+    // refusal -- Polaron-1723, the one about a value the analysis cannot PLACE -- and nothing else.
+    // The other three stay on: if the analysis can still prove that a line is wrong, proving it is
+    // right whether or not the method is marked, and that is what keeps this from being `unsafe`.
+    bool inSurveyedBody_ = false;
     // Per method: a local -> the object it holds borrows from, and which objects have been emptied.
     std::unordered_map<std::string, std::string> borrowsFrom_;
     std::unordered_set<std::string> invalidatedAt_;
+    // The borrows an emptying stranded (see `FlowFacts::stale`), and the step that strands them.
+    std::unordered_map<std::string, std::string> staleBorrows_;
+    void invalidateSource(const std::string& who);
     void noteBorrowFlow(const ast::Stmt& stmt);
     void computeOwnership(const ast::Program& program);
+    void computeReceiverMutation(const ast::Program& program);
     void computeOwnershipRound(const ast::Program& program);
     bool freshGrew_ = false;   // fixpoint flag: a method joined `returnsFresh_` this round
     // `calls` collects every `this.<m>(...)` in the body, on the SAME walk that finds the deletes.
@@ -957,8 +1114,12 @@ private:
                             const ast::CallExpr& call, const ast::Expr* receiver,
                             const std::vector<std::string>& paramTypes, bool calleeIsExtern);
     bool ownsField(const std::string& className, const std::string& field) const;
+    bool freesAnything(const std::string& className) const;
     bool anyFieldOwns(const std::string& className, const std::string& fieldList) const;
     bool allFieldsWeak(const std::string& className, const std::string& fieldList) const;
+    // The singular of the above, asked by the field-store check: a `weak` slot needs no ordering,
+    // because the referent's teardown nulls it and reading it afterwards yields null.
+    bool fieldIsWeakIn(const std::string& className, const std::string& field) const;
     // WHICH PARAMETERS A METHOD FREES, keyed "Class.method". A recursive structure frees itself
     // through a helper -- `~TreeMap` calls `freeSubtree(this.root)` and never writes a `delete` --
     // so without this a tree owned nothing and every rotation in it was an unplaceable reference.
@@ -992,6 +1153,44 @@ private:
         explicit Quiet(SemanticAnalyzer& an) : a(an) { ++a.quiet_; }
         ~Quiet() { --a.quiet_; }
     };
+    // WHERE ERRORS GO WHEN A PASS IS BEING RUN TO ASK A QUESTION, rather than to report. `Quiet`
+    // throws them away, which is right for a lifetime query and wrong for a pass whose whole purpose
+    // is to find out WHETHER a body complains -- the loop's second iteration (see
+    // `checkLoopCarriedObligations`). Non-null redirects both `error` overloads here.
+    std::vector<SemaError>* errorSink_ = nullptr;
+    struct Collect {   // RAII for the same reason Quiet is
+        SemanticAnalyzer& a;
+        std::vector<SemaError>* was;
+        Collect(SemanticAnalyzer& an, std::vector<SemaError>& into)
+            : a(an), was(an.errorSink_) { a.errorSink_ = &into; }
+        ~Collect() { a.errorSink_ = was; }
+    };
+    void checkLoopCarriedObligations(const ast::Block& body, const FlowFacts& entry,
+                                     const FlowFacts& bodyEnd);
+    void checkLambdaBodyAgainstFlowHere(const std::string& name, SourceLocation at);
+    /* THE SAME QUESTION ASKED OF A COMMAND, AND THE GRAMMAR ANSWERS IT.
+
+       A lambda needed its body replayed at the call, because what it held was discoverable only by
+       reading the body. A command's baggage is a LIST -- `carries (Box* box) into pack` -- filled by
+       the arguments at the construction, so the names that went in are known without analysing
+       anything. `commandBaggage_` records them per local; this checks them against the flow state at
+       a call through that local. No replay, no re-analysis, and it cannot miss what the body does
+       with a pointer, because holding it is what the declaration already said. */
+    void checkCommandBaggageAgainstFlowHere(const std::string& name, SourceLocation at);
+    std::unordered_map<std::string, std::vector<std::string>> commandBaggage_;
+    // ...and WHICH command a local holds. Its declared type is usually the ROLE (`Action*`), which
+    // by design says nothing about the baggage -- so the rules that ask what a command carries need
+    // the class the value was actually built from, which is the type of the construction.
+    std::unordered_map<std::string, std::string> commandBuiltAs_;
+    // ...and which pieces of that baggage arrived by `move` -- handed over rather than shared, so
+    // the thread that receives them is their only holder. Field names, per local.
+    std::unordered_map<std::string, std::set<std::string>> commandHandedOver_;
+    bool inLoopReplay_ = false;   // so a nested loop's replay does not start one of its own
+    // Of the names in `borrowsFrom_`, the ones a CALL handed us -- storage another object owns and
+    // this frame never did. `borrowsFrom_` is wider on purpose (an alias and a field path are in it
+    // too, because reading either after its source is freed is the same dangling read); this is the
+    // subset for which `delete` is wrong. See the note at the delete rule for what the other two are.
+    std::unordered_set<std::string> lentByACall_;
     std::unordered_map<std::string, const ast::LambdaExpr*> lambdaLocals_;  // local -> the lambda it holds
                                                        // (so `new Thread(work)` can inspect its captures, §14)
     // region-binder escape SUMMARY (interprocedural, §8): "Class.method" -> per value-parameter flag, true
@@ -1044,9 +1243,37 @@ private:
     // caller, where the source can be emptied while the result is still being read. Without this the
     // fact stopped at the `return` and a view outliving its table was invisible.
     std::unordered_map<std::string, int> returnsBorrowOfParam_;
+    // A METHOD THAT HANDS BACK SOMETHING LIVING IN ITS OWN RECEIVER, keyed "Class.method". This is
+    // the other half of the sentence above, and it is the half that was missing:
+    // `returnsBorrowOfParam_` connects `view.of(table)` to a later `delete table`, and nothing at
+    // all connected
+    //
+    //     byte[] kept = owner.borrow();   // hands back the array `owner`'s destructor frees
+    //     delete owner;
+    //     kept.length();                  // reads freed storage
+    //
+    // which is the commonest shape a class has -- an accessor -- and is how a compound-file reader
+    // kept a directory record past the file that owned it. Neither the accessor nor the caller's
+    // first line is wrong on its own; the question is only answerable where both the source and the
+    // result are named, and that is the caller. This is the fact that gets it there.
+    std::unordered_set<std::string> returnsBorrowOfReceiver_;
     std::unordered_map<std::string, int> borrowLocals_;        // accumulator, per method
+    // Locals bound to something reachable from `this`, so that `return that` is a receiver borrow
+    // as much as `return this.field` is. Per method, like `borrowLocals_`.
+    std::unordered_set<std::string> receiverLocals_;
     std::unordered_map<std::string, std::string> freshLocalClass_;   // locals built by `new ... on heap`
     std::string escapeScanKey_;                                // "Class.method" being scanned
+    // WHETHER THE METHOD BEING SCANNED HANDS BACK A REFERENCE AT ALL. A `String query()` that reads
+    // its own field still gives the caller a COPY -- assignment copies in this language, and
+    // `T*`/`T&`/`T[]` is how you ask to share instead. Without this the standard library's
+    //
+    //     String v = q.getOrDefault(name, "");
+    //     delete q;
+    //     return v;
+    //
+    // was refused: correct code, reading a value out of a map and freeing the map, called a
+    // dangling read because the accessor happened to name a field on its way to a copy.
+    bool escapeScanReturnsBorrowShape_ = false;
     bool escapeSummaryChanged_ = false;  // fixpoint flag: a summary grew during the last pass
     void computeEscapeSummaries(const ast::Program& program);
     void scanEscapes(const ast::Block& body, std::unordered_map<std::string, int>& alias,
@@ -1067,6 +1294,10 @@ private:
     // check against them passed by default: a region that was typed on paper and untyped in practice.
     std::unordered_map<std::string, RegionConstraints> fieldRegionConstraints_;
     std::unordered_map<std::string, std::string> regionFlavor_;  // region var -> flavor (spec 17 expansion)
+    // Which regions were declared `growable`. Part of what a diagnostic should say about a region:
+    // a fixed one refuses the allocation that overflows it, a growable one chains another block, and
+    // those are different problems for the reader to be told about.
+    std::unordered_set<std::string> regionGrowable_;
     // Persistent fields (spec 18.15): each must be released somewhere unless eternal.
     struct PersistentFieldInfo {
         std::string cls;

@@ -1,0 +1,17 @@
+program CommandTypeCarriesBad;
+
+// A command TYPE is a role, and a role never says what a command HOLDS. The baggage differs between
+// commands playing the same role -- that is most of why the role is worth writing -- so naming it
+// here would demand that every one of them carry the same things.
+//
+// Refused with Polaron-0108.
+
+public bundle Main {
+    public namespace App {
+        public command IntTest(int x) carries (int floor) into pack returns boolean;
+
+        public class Main {
+            public static method main(string[] args) returns void { return; }
+        }
+    }
+}

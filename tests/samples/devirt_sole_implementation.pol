@@ -1,0 +1,106 @@
+import System.IO.Console;
+program DevirtSoleImplementation;
+
+// §11.8: A DISPATCH WITH ONE POSSIBLE ANSWER IS NOT A DISPATCH.
+//
+// Three shapes here, and each is a shape the LOWERING cannot collapse on its own. `needsDispatch`
+// asks "does anything under this class override this method", and emits a direct call when nothing
+// does -- so a concrete class with no overriders never reaches the pass at all. What reaches it is
+// the case that question cannot see: the receiver's static class does not IMPLEMENT the method, so
+// there is nothing to call directly and the lowering has to say "only the object knows".
+//
+// That is every abstract base and every interface -- and an abstract base with ONE concrete class
+// under it has one answer, not none. It is the objection the ledger reaches from four directions:
+// a program written to an interface pays a table lookup per call for a choice with one outcome,
+// and the C it is measured against pays nothing because it never had an interface to write to.
+//
+// The fourth shape is here to be REFUSED. `Shape` has two implementations of `sides`, so that one
+// must stay a dispatch -- a pass that collapses it is not an optimisation, it is a wrong program.
+
+public bundle main {
+    public namespace app {
+        // ---- one interface, one implementer ----
+        public interface Meter {
+            method reading() returns int;
+        }
+        public class Thermometer implements Meter {
+            public override method reading() returns int {
+                return 21;
+            }
+        }
+
+        // ---- one abstract base, one concrete class ----
+        //
+        // `Engine.power` has no body, so `Engine.vtable` has nothing at that slot, and an abstract
+        // class is never the dynamic type of anything. One empty entry and one real one is ONE
+        // candidate: reading the empty slot as a second answer is what would leave this case
+        // dispatching forever.
+        public abstract class Engine {
+            public abstract method power() returns int;
+            // ...AND A CONCRETE METHOD ON THE ABSTRACT BASE, calling the abstract one on `this`.
+            // The call inside `rated` is written against `Engine`, which is the static class that
+            // implements nothing -- so this is the same collapse seen from inside the hierarchy
+            // rather than from the caller's side.
+            public method rated() returns int {
+                return this.power() * 10;
+            }
+        }
+        public class Diesel extends Engine {
+            public override method power() returns int {
+                return 4;
+            }
+        }
+
+        // ---- one sealed base, one permitted subclass ----
+        //
+        // `sealed` states the closure instead of leaving it to be discovered. Inside one program
+        // that is a second way of saying what the walk already found; where it earns its place is
+        // ACROSS A BUNDLE BOUNDARY, where a public class may be extended by a consumer compiled
+        // later and only `final` and `sealed` say otherwise. That case needs two compilations and
+        // has its own test -- `devirt_sealed_across_bundle`. What is here is the reading of the
+        // `permits` list: every name in it is a candidate to account for, and one this compilation
+        // did not lay out is a refusal, not permission to stop looking.
+        public sealed abstract class Codec permits Passthrough {
+            public abstract method decode() returns int;
+        }
+        public class Passthrough extends Codec {
+            public override method decode() returns int {
+                return 7;
+            }
+        }
+
+        // ---- and one that must NOT collapse ----
+        public abstract class Shape {
+            public abstract method sides() returns int;
+        }
+        public class Triangle extends Shape {
+            public override method sides() returns int { return 3; }
+        }
+        public class Square extends Shape {
+            public override method sides() returns int { return 4; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Meter* m = new Thermometer() on heap;
+                Engine* e = new Diesel() on heap;
+                Codec* c = new Passthrough() on heap;
+                // The receiver is chosen at run time so nothing upstream can fold the pointer to a
+                // known object: what makes these calls collapse must be the class hierarchy, not
+                // constant propagation finding the `new` two lines above.
+                Shape* s = args.length() > 99 ? cast<Shape*>(new Square() on heap)
+                                              : cast<Shape*>(new Triangle() on heap);
+
+                System.IO.Console.printf("meter=%d\n", m.reading());   // 21
+                System.IO.Console.printf("rated=%d\n", e.rated());     // 40
+                System.IO.Console.printf("codec=%d\n", c.decode());    // 7
+                System.IO.Console.printf("sides=%d\n", s.sides());     // 3
+                delete m;
+                delete e;
+                delete c;
+                delete s;
+                return;
+            }
+        }
+    }
+}

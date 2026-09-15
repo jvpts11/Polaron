@@ -1,0 +1,35 @@
+// A conservadoria exportada: um local do frame entregue a um método marcado.
+import System.IO.Console;
+program SurveyedExportsItsSuspicionBad;
+
+// THE PRICE, PAID BY THE CALLER. `take` is surveyed, so the compiler cannot know what it keeps and
+// reads the worst case: every reference handed to it is kept. A frame-local handed across is
+// therefore refused HERE, in the caller, where both lifetimes are named.
+//
+// This inversion is the design. An `unsafe` block frees its own body and tells its callers nothing;
+// `surveyed` frees its own body and makes every caller stricter -- so marking a method has a price,
+// and nobody reaches for the word to make a diagnostic go away.
+//
+// Refused with Polaron-1721.
+public bundle Main { public namespace App {
+    public class Leaf { public mutable int n; public constructor Leaf(int n) { this.n = n; } }
+    public class Store {
+        public mutable int seen;
+        public constructor Store() { this.seen = 0; }
+        public surveyed method take(Leaf* l) returns void { this.seen = l.n; return; }
+    }
+    public class Main {
+        static method fill(Store* s) returns void {
+            Leaf* brief = new Leaf(1);       // este frame; `s` vive mais
+            s.take(brief);                   // deve ser recusado: 'take' é surveyed
+            return;
+        }
+        public static method main(string[] args) returns void {
+            Store* s = new Store() on heap;
+            Main.fill(s);
+            System.IO.Console.println($"{s.seen}");
+            delete s;
+            return;
+        }
+    }
+} }

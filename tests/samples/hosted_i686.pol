@@ -1,0 +1,54 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+import System.Memory.Raw;
+program HostedI686;
+
+// A HOSTED PROGRAM FOR A 32-BIT MACHINE, which the compiler could describe and not build.
+//
+// `dataLayoutFor` has carried the i686 layout all along, so `--target=i686-pc-windows-msvc` always
+// produced correct 32-bit IR -- and then there was nothing to link it against, because
+// `polaron_rt.lib` is x86-64 and no linker mixes the two. Correct IR and an unlinkable program is
+// the same as no support at all, and it is worse than none, because it looks like support.
+//
+// TWO CLAIMS, AND THE RUNNER CHECKS BOTH. That the binary is an i386 one is read out of its PE
+// header -- a program printing the right numbers while being an x86-64 binary would mean the target
+// was ignored, and running it could not tell. That the RUNTIME works is this program: a generic
+// collection, a record with a generated `toString`, string building, and 64-bit arithmetic on a
+// machine whose registers are half that wide, which is the part of a 32-bit port most likely to be
+// quietly wrong.
+//
+// `address` IS SIXTY-FOUR BITS HERE TOO, and deliberately: it is the same width on every target so
+// that code moving between them cannot drift. A 32-bit machine's own pointer width is written
+// `half address` when it is wanted, which says so at the declaration instead of depending on where
+// the program happens to be compiled.
+//
+// Prints: Point(1, 1) Point(2, 4) Point(3, 9) big=123456789000 addr=8 half=4
+public bundle main {
+    public namespace app {
+
+        public record Point(int x, int y) { }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable ArrayList<Point> pts = new ArrayList<Point>() on heap;
+                for (mutable int i = 1; i <= 3; i++) {
+                    pts.add(new Point(i, i * i) on heap);
+                }
+                mutable String shown = "";
+                for (mutable int i = 0; i < pts.size(); i++) {
+                    shown = shown + pts.get(i).toString() + " ";
+                }
+                long big = cast<long>(123456789) * cast<long>(1000);
+                // ASKED OF VALUES, not of the type names: `Raw.sizeof(half address)` does not parse,
+                // because a two-word type name inside a call argument is not a thing the grammar
+                // reads. A declaration takes it, so the values carry the question instead.
+                address wide = cast<address>(0);
+                half address narrow = cast<half address>(0);
+                System.IO.Console.println($"{shown}big={big} addr={Raw.sizeof(wide)} "
+                    + $"half={Raw.sizeof(narrow)}");
+                delete pts;
+                return;
+            }
+        }
+    }
+}

@@ -166,9 +166,26 @@ Reach for `Decimal` whenever a rounding error would be a bug — currency, tax, 
 This is where Polaron opens the floor and lets you touch memory directly. Three builtins work
 together.
 
-**`address`** is a primitive integer the width of a pointer. It is a raw machine address with no
-type attached — the Polaron equivalent of `uintptr_t`. You can do arithmetic on it and cast it to and
-from typed pointers.
+**`address`** is a primitive integer holding a raw machine address with no type attached — the
+Polaron equivalent of `uintptr_t`. You can do arithmetic on it and cast it to and from typed
+pointers.
+
+**It is sixty-four bits on every target, including the 32-bit ones**, and that is a decision rather
+than an accident. The obvious alternative — let `address` be as wide as the machine — makes the same
+source describe two different types depending on where it is compiled, and a program that moves
+between targets then drifts in ways nothing diagnoses. So the width is fixed and the narrow forms are
+what a program reaches for when it means a specific one:
+
+| type | bits |
+|---|---|
+| `address` | 64, everywhere |
+| `half address` | 32 — a machine pointer on i686 and the other 32-bit targets |
+| `short address` | 16 — an I/O port, a real-mode segment |
+| `byte address` | 8 |
+
+On a 32-bit target, an FFI declaration that means "a pointer the callee will read" is written
+`half address`. Writing `address` there is not refused — it is a 64-bit value, which the C ABI on
+those machines passes in two words.
 
 **Int↔pointer casts** convert freely between an `address` (or any pointer-sized integer) and a
 typed pointer `T*`, using `cast<T*>(addr)` one way and `cast<address>(ptr)` the other. This is the
@@ -806,6 +823,74 @@ The **mode** decides the lowering, not the target triple — the triple answers 
 frame the CPU pushed, so it is a class; a hosted world hands over a *code* (a signal number), so it
 is an integer. **The parameterless form is the intersection** — a handler that does not care where
 it came from compiles for both worlds unchanged.
+
+---
+
+## 11.9c `reentrant`: the property `interrupt` was one case of
+
+An interrupt handler carries a list of prohibitions — it must not allocate, must not free, must not
+take a lock, must not reach shared mutable state — and the compiler checks every one over the call
+graph. Look at what that list *is*, and it is not four rules. It is four consequences of one
+sentence:
+
+> **`reentrant` — this may be entered again while an earlier entry is still running.**
+
+Two things follow, and they are exactly the two the handler rule already checked:
+
+| | why |
+|---|---|
+| it reaches **no storage another activation could be inside** | the allocator has global mutable state, and you may have interrupted it mid-update |
+| it touches **no shared mutable state** | the earlier activation may be half-way through writing the same thing |
+
+So `reentrant` is a **member modifier** anything can carry, and `interrupt` is implicitly one:
+
+```polaron
+public class Ring {
+    private volatile mutable int head;
+    private int[] slots;                       // fixed at construction; only the CONTENTS move
+
+    public reentrant method push(int v) returns void {
+        this.slots[this.head & 7] = v;
+        this.head = this.head + 1;
+        return;
+    }
+}
+```
+
+**Naming the reason rather than a mechanism buys three things** a "does not allocate" marker would
+not:
+
+1. **`interrupt` stops having rules of its own.** One property, one checker, and the bespoke list
+   collapses into an implication of it.
+2. **It catches the lock.** A `reentrant` method that takes a `Mutex` **deadlocks against itself** —
+   a real kernel bug class no allocation rule can see. `atomic<T>` stays legal, because a single
+   atomic instruction has no half-done state to interrupt. `Mutex<T>` does not.
+3. **A method that is not a handler gains a way to say so.** A scheduler entry, a page-fault path, a
+   destructor running during teardown — each must be equally careful, and none could declare it.
+
+### It is viral, and the diagnostic names the path
+
+The obligation travels along the call graph, including into the destructor that runs at the end of a
+scope — that is a call, and calls are checked. The message says not merely that a method allocates,
+but *which* reentrant method reaches it and *how*:
+
+```
+error: a `reentrant` method must not free memory (reached via refill)
+```
+
+That distinction is the whole value. *"Ring.refill frees memory"* is a fact about Ring, and a fact
+about Ring is not a bug. *"pump is reentrant and reaches it, via refill"* is the bug — and it is the
+sentence that says which of the two to change.
+
+### What makes the rule livable
+
+Everything in Polaron is immutable by default, so a reentrant method reading a base address, a port
+number or a buffer fixed at construction is untouched by the shared-state half. What it catches is
+exactly the state a handler and a main loop both *write*: a ring buffer's head, a tick counter, a
+ready flag. For those it asks for a word the language already has — `volatile` when hardware is on
+the other end, `atomic<T>` for a counter or a flag — and invents no marker of its own.
+
+`reentrant` is a member modifier and not a universal prefix: `reentrant field` means nothing.
 
 ---
 

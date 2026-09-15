@@ -1,0 +1,63 @@
+import System.IO.Console;
+program ComptimeIfPrunes;
+
+// `comptime if` — THE UNTAKEN BRANCH IS PARSED AND NOTHING ELSE (layout.md §10.1a).
+//
+// The rule that unifies every `comptime` statement:
+//
+//   > A `comptime` statement is EVALUATED at build time. Whatever RUNTIME code its body contains is
+//   > emitted, once per evaluation.
+//
+// For an `if` that means one branch is the program and the other never existed. It must **parse**,
+// so it is syntax and not text — a `#if` over a token soup is what this design refuses — but it is
+// **not analysed and not emitted**, so target-conditional code may name things that do not exist in
+// the other mode: `Console` inside a freestanding program, an aarch64 register inside an x86 block.
+//
+// That is the feature rather than a loophole. It is what makes ONE `Machine` library partitioned by
+// target possible (`freestanding-prelude.md` §6) — the alternative is two libraries that drift.
+//
+// It used to lower BOTH arms and leave a branch on a constant for LLVM to fold, which folds the
+// CODE and not the NAMES: an arm mentioning something the target does not have still had to lower,
+// so `comptime if` could select behaviour and never select availability. The dead branch below is
+// the proof — `Missing.gone()` is declared nowhere in this program.
+//
+// Prints: picked=64 nested=2
+
+public bundle Main {
+    public namespace App {
+        public class Widths {
+            public static fixed int Bits = 64;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int picked = 0;
+
+                comptime if (Widths.Bits == 64) {
+                    picked = 64;
+                } else {
+                    // NOT ANALYSED AND NOT EMITTED. `Missing` does not exist anywhere in this
+                    // program; before the branch was pruned this line was a compile error, and a
+                    // language that cannot write it cannot have one library serving two targets.
+                    picked = Missing.gone();
+                }
+
+                // ...AND IT NESTS, because a comptime statement may appear anywhere a statement may
+                // (§10.1c). The inner one is only reached because the outer one selected this arm.
+                mutable int nested = 0;
+                comptime if (Widths.Bits > 32) {
+                    comptime if (Widths.Bits == 64) {
+                        nested = 2;
+                    } else {
+                        nested = NotThere.either();
+                    }
+                } else {
+                    nested = AlsoNotThere.at().all();
+                }
+
+                System.IO.Console.printf("picked=%d nested=%d\n", picked, nested);
+                return;
+            }
+        }
+    }
+}

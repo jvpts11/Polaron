@@ -33,12 +33,14 @@
 // spare word. A hook that saw only a size could not do it, and dropping a diagnostic to tidy an
 // interface is how tools quietly stop existing.
 //
-// The same shape `polaron_region_core.hpp` already uses, and for the same reason: one definition, so a
-// hosted program and a kernel cannot end up disagreeing about what a heap block looks like.
+// One definition, so a hosted program and a kernel cannot end up disagreeing about what a heap block
+// looks like -- the same argument the region core makes about itself.
 //
-// Requires polaron_region_core.hpp first, for PolaronHdr / the magics / the size-class constants: the
-// heap and the regions share that header deliberately, so a block freed through the wrong door is
-// DIAGNOSED rather than silently corrupting the other allocator.
+// It requires nothing before it now. `PolaronHdr`, the magics and the size classes used to come from
+// `polaron_region_core.hpp`, which had to be included first; that header is gone (the region core is
+// Polaron), and those declarations are below. The heap and the regions still share the header layout
+// deliberately, so a block freed through the wrong door is DIAGNOSED rather than silently corrupting
+// the other allocator -- what changed is which file says what it is.
 
 // What a heap block IS. Its own guard, because a shim that only needs to RECOGNISE one -- to forward
 // it, or to refuse it -- must be able to without pulling in the allocator.
@@ -47,10 +49,67 @@
 // and rewrites any later use of the name whether that use meant it or not.
 #ifndef POLARON_ALLOC_CORE_CONSTANTS
 #define POLARON_ALLOC_CORE_CONSTANTS
+
+/* HOW `__polaron_panic` REACHES THE LINKER, which this file needs and used to be handed.
+ *
+ * The allocator traps by calling it -- a double free, a foreign pointer with nowhere to go -- and the
+ * declaration came from `polaron_region_core.hpp`, which everyone included first. That header is gone
+ * (the region core is Polaron now), so the declaration lives with the code that calls it.
+ *
+ * An asm label says the name and nothing else: unlike a linkage specification it does not also drag
+ * in C's rules for the declaration it sits on. The bare-metal shim defines POLARON_ABI to the label;
+ * the hosted runtime has already defined `__polaron_panic` with its export attribute by the time it
+ * gets here, and re-declaring it plainly would contradict that -- so it defines
+ * POLARON_PANIC_DECLARED instead. */
+#ifndef POLARON_ABI
+#define POLARON_ABI(name)
+#endif
+#ifndef POLARON_PANIC_DECLARED
+void __polaron_panic(const char* msg) POLARON_ABI(__polaron_panic);
+#endif
+
 inline constexpr unsigned long long POLARON_MAGIC = 0x4C44503341313142ULL;  // collision with foreign data ~2^-64
 inline constexpr unsigned long long POLARON_FREED = 0x4C44503346524545ULL;  // stamped while the block sits freed
 inline constexpr unsigned long long POLARON_SLAB = 1ull << 20;              // 1 MiB, bumped then recycled
 inline constexpr unsigned POLARON_LARGE = 0xFFFFFFFFu;                      // the class of a block with its own allocation
+
+/* AND WHAT A REGION SLOT IS, which this file needs in order to REFUSE one.
+
+   These two used to come from `polaron_region_core.hpp`, included ahead of this file by everyone who
+   included this file. That header is gone: the region core is `runtime/polaron_region_core.pol` now,
+   and Polaron cannot be included into C++. So the numbers are written down in two languages -- here,
+   and as `RegionCore.Live` / `RegionCore.Freed` -- and THEY MUST AGREE. If they drift, a plain
+   `delete` of a region object stops being diagnosed and splices a region-interior pointer onto the
+   heap's free-list, which is the one thing the stamps exist to prevent.
+
+   Not a duplication the port invented so much as one it made visible: `POLARON_REGION_HDR` has always
+   been written twice, in the runtime and as `kFlavouredRegionHeader` in the lowering, for the same
+   reason -- the compiler is not the runtime. What keeps these honest is a test that deletes a region
+   object the wrong way and requires the trap. */
+inline constexpr unsigned long long POLARON_RMAGIC = 0x4C4450335247314EULL;  // == RegionCore.Live
+inline constexpr unsigned long long POLARON_RFREED = 0x4C4450335246524EULL;  // == RegionCore.Freed
+
+/* THE SIZE CLASSES AND THE TWO SHAPES, which moved here from the same place and belong here.
+
+   They were declared by the region core because it was included first, and they read as the region's
+   -- but the heap's own free-lists are indexed by these classes and its own blocks carry this header.
+   `POLARON_POOL_MAX` is the largest request a class covers, and above it a block gets its own
+   allocation; `POLARON_NCLASSES` is how many classes that is, 16 bytes apart. The Polaron region core
+   states the same three numbers for its own slots, and for the same reason as the stamps above: the
+   two allocators share a header layout so that a block freed through the wrong door is DIAGNOSED. */
+inline constexpr unsigned long long POLARON_POOL_MAX = 512;   // above this, a block of its own
+inline constexpr unsigned POLARON_NCLASSES = 32;              // 16, 32, ... 512
+
+// The sixteen bytes before every block's payload, heap and region alike.
+struct PolaronHdr {
+    unsigned long long magic;
+    unsigned int cls;
+    unsigned int pad;
+};
+// A dead block's payload, reused as the link of the free-list it sits on.
+struct PolaronFreeNode {
+    PolaronFreeNode* next;
+};
 #endif
 
 #ifdef POLARON_ALLOC_CORE_IMPL

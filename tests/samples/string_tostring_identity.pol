@@ -1,0 +1,46 @@
+import System.IO.Console;
+
+// `toString` ON A STRING, WHICH HAD NO BUILTIN AND SO LOWERED TO NOTHING.
+//
+// Every other type's `toString` is a real conversion, so the name gets written generically -- a line
+// built out of `"name=" + value.toString()` does not know or care what `value` is -- and a String
+// arriving there is the ordinary case rather than an odd one. The prelude does it to itself:
+// `Datagram.toString` builds its line that way.
+//
+// A STRING METHOD IS A BUILTIN in this compiler, not a method anyone declared, and one that is not
+// covered records a GAP rather than falling through -- deliberately, because the fall-through binds to
+// whatever unrelated class happens to declare that name. But a gap emits NO VALUE, so the expression
+// that wanted the string got one that was never computed. Horizon's kernel printed
+// `String.toString(no builtin)` on every build for long enough that the line had become furniture.
+//
+// The three shapes below are the three ways it is actually written, and the first is the one that
+// hides the bug best: `direct` alone might survive a compiler that returned the receiver by accident.
+// Concatenating is what proves a real value came back.
+//
+// Prints:
+//   direct horizon
+//   joined name=horizon
+//   twice horizonhorizon
+//   len 7
+program StringToStringIdentity;
+
+public bundle Main {
+    public namespace App {
+        public class Main {
+            // Through a parameter, so the call cannot be folded at the site by knowing the literal.
+            public static method label(String what) returns String {
+                return "name=" + what.toString();
+            }
+
+            public static method main(string[] args) returns void {
+                String s = "horizon";
+                System.IO.Console.println("direct " + s.toString());
+                System.IO.Console.println("joined " + Main.label(s));
+                System.IO.Console.println("twice " + s.toString() + s.toString());
+                // ...AND THE RESULT IS A STRING, not something that merely prints like one: asking it
+                // its length is asking the object that came back whether it is the object that went in.
+                System.IO.Console.println("len " + s.toString().length().toString());
+            }
+        }
+    }
+}

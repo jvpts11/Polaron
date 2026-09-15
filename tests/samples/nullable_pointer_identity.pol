@@ -1,0 +1,37 @@
+import System.IO.Console;
+program NullablePointerIdentity;
+
+// IDENTITY BETWEEN A `nullable T*` AND A `T*`. The equality check asked for textually equal types, so
+// `walk == target` in a list walk was "operator '==' requires operands of the same type" and every
+// walk variable had to be narrowed first. The same referent now compares; a different one does not
+// (see nullable_pointer_identity_bad.pol).
+//
+// Must print `found second, head is not second, nothing is null`.
+public bundle Main {
+    public namespace App {
+        public class Node {
+            public mutable int value;
+            public mutable nullable Node* next;
+            public constructor Node(int value) { this.value = value; this.next = null; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* first = new Node(1) on heap;
+                Node* second = new Node(2) on heap;
+                first.next = second;
+                mutable nullable Node* walk = first;
+                mutable boolean found = false;
+                while (walk != null) {
+                    if (walk.next == second) { found = true; }
+                    walk = walk.next;
+                }
+                nullable Node* head = first;
+                nullable Node* nothing = null;
+                System.IO.Console.println($"{found ? "found second" : "missed"}, {head != second ? "head is not second" : "wrong"}, {nothing == null ? "nothing is null" : "wrong"}");
+                delete second;
+                delete first;
+                return;
+            }
+        }
+    }
+}

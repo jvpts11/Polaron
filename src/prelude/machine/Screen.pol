@@ -1,0 +1,120 @@
+    // ---- Machine.Screen: the VGA text buffer and a linear framebuffer ----
+    //
+    // `0xB8000` cast to an `short*` by hand is the thirty-nine lines every first kernel begins with,
+    // and `freestanding-prelude.md` ?S1 names it as the shape of the whole problem: *"it boots under
+    // QEMU, which is the point -- but every kernel after it starts by writing those lines again."*
+    //
+    // Here it is once, with a type on it.
+    public namespace Screen {
+
+        // The 80x25 text buffer, which exists on every PC that has ever booted and needs no setup at
+        // all -- no mode set, no PCI walk, no framebuffer to find. It is what a kernel writes to when
+        // it has nothing else, and the reason it is in the first cut rather than the second.
+        [Allow(code: "Polaron-0B24", why: "a text cell IS four numbers -- row, column, code point, attribute -- and the VGA buffer takes them in that order. Wrapping them in types here would put an abstraction between a kernel and the two bytes it is writing, which is what this tier exists not to do")]
+        public class Text {
+            public fixed address Buffer = 0xB8000;
+            public fixed int Columns = 80;
+            public fixed int Rows = 25;
+            // Attribute: high nibble background, low nibble foreground. 0x0F is white on black.
+            public fixed int Plain = 0x0F;
+
+            static method cell() returns short* { return cast<short*>(Text.Buffer); }
+
+            // ONE CHARACTER AT A POSITION. A cell is two bytes -- the code point and the attribute --
+            // packed into one 16-bit write, because two byte writes would be a visible tear on real
+            // hardware and are two bus cycles on any.
+            public static reentrant method put(int row, int column, int ch, int attribute) returns void {
+                if (row < 0 || row >= Text.Rows || column < 0 || column >= Text.Columns) {
+                    return;   // off-screen is a no-op, not a write past the buffer
+                }
+                short* at = Text.cell();
+                at[row * Text.Columns + column] =
+                    cast<short>(((attribute & 255) << 8) | (ch & 255));
+                return;
+            }
+
+            public static reentrant method write(int row, int column, byte* s, int attribute) returns void {
+                mutable int i = 0;
+                mutable int ch = cast<int>(s[0]) & 255;
+                while (ch != 0 && column + i < Text.Columns) {
+                    Text.put(row, column + i, ch, attribute);
+                    i = i + 1;
+                    ch = cast<int>(s[i]) & 255;
+                }
+                return;
+            }
+
+            public static reentrant method clear(int attribute) returns void {
+                short* at = Text.cell();
+                mutable int i = 0;
+                while (i < Text.Rows * Text.Columns) {
+                    at[i] = cast<short>(((attribute & 255) << 8) | 32);   // space
+                    i = i + 1;
+                }
+                return;
+            }
+
+            // The hardware cursor, which is where a person's eye goes and the one piece of state the
+            // text buffer keeps outside its own memory.
+            public fixed short address IndexPort = 0x3D4;
+            public fixed short address DataPort  = 0x3D5;
+
+            public static reentrant method cursor(int row, int column) returns void {
+                int at = row * Text.Columns + column;
+                Io.out8(Text.IndexPort, 0x0F);
+                Io.out8(Text.DataPort, at & 255);
+                Io.out8(Text.IndexPort, 0x0E);
+                Io.out8(Text.DataPort, (at >> 8) & 255);
+                return;
+            }
+        }
+
+        // A linear framebuffer, whose base and geometry the firmware or the bootloader supplies.
+        // Unlike the text buffer there is no fixed address to hardcode: the whole point of a linear
+        // framebuffer is that somebody told you where it is.
+        //
+        // A CLASS WITH FIELDS AND NOT A STATIC, because a machine may have more than one, and because
+        // the geometry arrives at run time and is then fixed -- which is exactly what a constructor
+        // and immutable fields say.
+        [Allow(code: "Polaron-0B3C", why: "a framebuffer's base IS a raw address: the firmware or the bootloader hands over a number, and there is no object on the other end of it. That is what makes this a bare-metal type rather than a hosted one")]
+        [Allow(code: "Polaron-0B24", why: "`plot(x, y, colour)` -- and x before y is the order every graphics API on earth uses. A `Point` here would be an object between a driver and one 32-bit store")]
+        public class Framebuffer {
+            public address base;
+            public int width;
+            public int height;
+            public int pitch;          // bytes per row, which is not width*4 on every device
+            public int bytesPerPixel;
+
+            public constructor Framebuffer(address base, int width, int height, int pitch,
+                                           int bytesPerPixel) {
+                this.base = base;
+                this.width = width;
+                this.height = height;
+                this.pitch = pitch;
+                this.bytesPerPixel = bytesPerPixel;
+            }
+
+            public reentrant method plot(int x, int y, int colour) returns void {
+                if (x < 0 || x >= this.width || y < 0 || y >= this.height) {
+                    return;
+                }
+                address at = this.base + cast<address>(y * this.pitch + x * this.bytesPerPixel);
+                int* px = cast<int*>(at);
+                px[0] = colour;
+                return;
+            }
+
+            public reentrant method fill(int colour) returns void {
+                mutable int y = 0;
+                while (y < this.height) {
+                    mutable int x = 0;
+                    while (x < this.width) {
+                        this.plot(x, y, colour);
+                        x = x + 1;
+                    }
+                    y = y + 1;
+                }
+                return;
+            }
+        }
+    }

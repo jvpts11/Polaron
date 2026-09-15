@@ -1,0 +1,49 @@
+import System.IO.Console;
+program RegionFilledByALoop;
+
+// `0B2B` COUNTED SITES AND NOT ALLOCATIONS, so it reported the case a region exists FOR.
+//
+// The rule is "this region is set up and torn down for one object", and its reasoning is right: a
+// region earns its keep by amortising -- reserve once, hand out many, release all at once -- so one
+// object in it pays the whole setup to do what one `new` would have done.
+//
+// It counted `new ... in region r` SITES in the source. A loop is one site and N allocations, which
+// is exactly the shape the reasoning describes as earning its keep -- and the rule told the author
+// to allocate directly, which replaces one reservation with N calls to the allocator.
+//
+// BOTH REGIONS ARE HERE because the rule has to make the distinction. `many` is filled by a loop and
+// must be silent; `lone` really does hold one object and must still be reported. A test with only
+// the silent half would pass on a rule that had been switched off.
+//
+// Prints:
+//   loop 28 lone 99
+public bundle Main {
+    public namespace Advice {
+        public class Node {
+            public mutable int v;
+            public constructor Node(int v) { this.v = v; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // ONE SITE, EIGHT OBJECTS. 0 + 1 + ... + 7 = 28.
+                region many = itself.allocate(4096);
+                mutable int i = 0;
+                mutable int total = 0;
+                while (i < 8) {
+                    Node* n = new Node(i) in region many;
+                    total = total + n.v;
+                    i = i + 1;
+                }
+
+                // ...and a region that really is set up and torn down for a single object, which is
+                // what the rule is about and which must still be reported.
+                region lone = itself.allocate(256);
+                Node* only = new Node(99) in region lone;
+
+                System.IO.Console.println("loop " + total.toString() + " lone "
+                                          + only.v.toString());
+            }
+        }
+    }
+}

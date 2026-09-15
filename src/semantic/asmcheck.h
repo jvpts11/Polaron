@@ -68,4 +68,22 @@ struct AsmDeclared {
 // has not learned yet would be the worse failure.
 AsmReport checkAsm(const std::string& body, const AsmDeclared& declared);
 
+// ---- operand constraints (docs/design/asm-constraints.md §6) ----
+
+// Is `place` something an operand of a block declared for `arch` may be constrained to? Accepts a
+// register name, a colon-joined PAIR of them (`"edx:eax"`, high part first), and the two class words
+// `"memory"` and `"immediate"`. An empty `place` means nothing was said, which is always fine.
+//
+// `why` receives a diagnosis when the answer is false -- not a restatement of the rule, but which of
+// the several ways it can be wrong this one is. The failure it is really for is not a typo, it is a
+// PORT: a block copied from the x86 side with the arch word changed gets every mnemonic checked
+// against the new architecture and, without this, its constraints checked against nothing at all.
+bool asmPlaceIsValid(const std::string& arch, const std::string& place, std::string* why);
+
+// The register families a constrained operand destroys -- one per part of a pair, empty for a class
+// word or an unconstrained operand. Writing `eax` destroys `rax`, which is why this speaks in
+// families rather than names; a pair destroys two of them, through the one syntax that names two
+// registers at once.
+std::vector<std::string> asmPlaceFamilies(const std::string& arch, const std::string& place);
+
 }  // namespace polaron::semantic

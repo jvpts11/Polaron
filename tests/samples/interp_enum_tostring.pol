@@ -1,0 +1,55 @@
+import System.IO.Console;
+program InterpEnumToString;
+
+// `$"{k}"` PRINTED THE ORDINAL WHILE `k.toString()` PRINTED THE NAME.
+//
+// The enum's own `toString()` was reached by a call, by `"" + k`, and by the `toString` the compiler
+// generates for a record holding one -- three spellings, all correct. Interpolation was the fourth
+// and went through none of them: it read the value's machine type, found an integer, and printed
+// the number. The same value said two different things depending on which spelling asked, and the
+// shortest and most obvious one gave the answer nobody wants.
+//
+// Found in a program listing the streams of a compound file, where every line began with a `2`
+// instead of the word `stream`.
+//
+// `Plain` is the OTHER HALF of the claim and is why it is in this sample: an enum that writes no
+// `toString` has nothing to be asked, and its ordinal is the right answer. A fix that printed a name
+// for it would be inventing one.
+//
+// Prints: interp=TWO explicit=TWO record=Holder(ONE, 3) plain=1
+public bundle main {
+    public namespace app {
+
+        public sealed enum Kind {
+            one,
+            two
+            ;
+            public method toString() returns String {
+                match (this) {
+                    case one { return "ONE"; }
+                    case two { return "TWO"; }
+                }
+                return "?";
+            }
+        }
+
+        public sealed enum Plain {
+            first,
+            second
+        }
+
+        public record Holder(Kind k, int n) { }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Kind k = Kind.two;
+                Plain p = Plain.second;
+                Holder* h = new Holder(Kind.one, 3) on heap;
+                System.IO.Console.println($"interp={k} explicit={k.toString()} "
+                    + $"record={h.toString()} plain={p}");
+                delete h;
+                return;
+            }
+        }
+    }
+}

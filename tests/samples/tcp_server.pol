@@ -4,6 +4,7 @@ import System.Net.Net;
 import System.Net.Socket;
 import System.Net.ServerSocket;
 import System.Time.Time;
+import System.Commands.Action;
 program TcpServer;
 
 // TCP server (spec 34): ServerSocket binds+listens; accept() returns a Socket for each connection. A
@@ -15,11 +16,17 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 ServerSocket server = new ServerSocket(54545) on heap;
-                function<void> serverFn = lambda[captures: byvalue server]() returns void {
-                    Socket conn = server.accept();
+                // HANDED OVER, not shared: the serving thread is the socket's only holder, so it is
+                // also the one that closes it. Written the other way -- carrying the socket while
+                // `main` still closes it -- both threads would hold it, and the region binder
+                // refuses that with `Polaron-1721`.
+                Action* serverFn = command () carries (ServerSocket* listening = move server)
+                    into pack returns void {
+                    Socket conn = pack.listening.accept();
                     String msg = conn.receive(64);
                     conn.send("pong");
                     conn.close();
+                    pack.listening.close();
                 };
                 Thread t = new Thread(serverFn) on heap;
                 t.start();
@@ -29,7 +36,6 @@ public bundle main {
                 String reply = client.receive(64);
                 client.close();
                 t.join();
-                server.close();
                 System.IO.Console.printf("reply=%s\n", reply);
                 return;
             }

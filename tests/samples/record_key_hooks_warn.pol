@@ -4,8 +4,14 @@ program RecordKeyHooksWarn;
 // A WARNING MUST STOP WHEN YOU DO WHAT IT SAYS.
 //
 // A record's key is generated from the fields that have a structural value, and a field that has
-// none -- a pointer, an array, a class or enum reference -- is left out. Saying so is right: two
+// none -- a pointer, an array, a class reference -- is left out. Saying so is right: two
 // records that differ only in that field compare equal, and nothing in the declaration shows it.
+//
+// AN ENUM USED TO BE ON THAT LIST AND IS NOT ANY MORE, which is why this sample carries both kinds
+// of field. An ordinal enum is a small integer with names on it: it has exactly the structural value
+// the exclusion was about, and leaving it out meant a record whose own comment said the kind was
+// part of its identity compared two different kinds as equal. `tint` is IN the key here; `swatch`,
+// an array, is not, and it is the one the warning names.
 //
 // What was wrong was WHEN. The warning fired whenever any of `equalsKey`, `hash` or `compareTo` was
 // missing, and then claimed the field was "left out of equalsKey, hash and compareTo alike" -- so a
@@ -15,7 +21,7 @@ program RecordKeyHooksWarn;
 // Two records here, and the pair is the test:
 //   * `Painted` writes all three, so nothing about its key is generated and there is nothing to
 //     warn about. Its name must not appear in the output at all.
-//   * `HalfPainted` writes two, so `compareTo` IS still generated and still ignores `tint` -- and
+//   * `HalfPainted` writes two, so `compareTo` IS still generated and still ignores `swatch` -- and
 //     the warning has to say that, naming compareTo alone rather than all three.
 
 public bundle Main {
@@ -47,7 +53,9 @@ public bundle Main {
             }
         }
 
-        public record HalfPainted(Colour tint, int n) {
+        // `swatch` is the field with no structural value: an array compares as an address, so the
+        // generated `compareTo` leaves it out and says so.
+        public record HalfPainted(Colour tint, int[] swatch, int n) {
             public method equalsKey(HalfPainted other) returns boolean {
                 return cast<int>(this.tint) == cast<int>(other.tint) && this.n == other.n;
             }
@@ -60,7 +68,7 @@ public bundle Main {
             public static method main(string[] args) returns void {
                 Painted a = new Painted(Colour.red, 1);
                 Painted b = new Painted(Colour.green, 1);
-                HalfPainted c = new HalfPainted(Colour.red, 1);
+                HalfPainted c = new HalfPainted(Colour.red, new int[2](), 1);
                 System.IO.Console.printf("same=%d half=%d\n",
                     a.equalsKey(b), c.equalsKey(c));
                 return;

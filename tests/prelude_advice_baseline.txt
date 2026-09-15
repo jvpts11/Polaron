@@ -49,7 +49,18 @@
 # written down -- `Arrays.Ints.sortRange` (the range is inside the array), `Knapsack.maxValue` and
 # `IntervalMerge.merge` and `SlidingWindowMax.maxOfEach` (an `n` that says how many without saying
 # of what). Each was also a real defect: a caller passing an `n` past the end got a panic from the
-# middle of the algorithm instead of a refusal at the door. The remaining 172 are not that shape.
+# middle of the algorithm instead of a refusal at the door.
+#
+# 172 -> 159 on 2026-08-26, and these thirteen were never real. The rule asked whether the bound is
+# the array's own length and answered "no" for a CONSTANT bound over an array of CONSTANT length --
+# `byte[] out = new byte[12](); while (digits < 11)`, which is the commonest shape a small scratch
+# buffer has. Both numbers are literals, the relation between them is arithmetic the optimiser does
+# before anything else, and there is no check left to prove away. So the rule was at its loudest
+# exactly where it was wrong -- and its fix, "write `out.length()`", is strictly weaker than the
+# constant AND runs the loop one element further than the author meant.
+#
+# The remaining 159 are the shape the paragraph above describes: a bound that is genuinely a third
+# quantity, in code where the fix is slices or invariants and is a piece of work rather than a pass.
 #
 # 0B24 is 31 signatures taking three or more of one primitive, where any order compiles. That is a
 # real hazard and the fix is a `newtype` or a slice per concept -- an API change across `Time`,
@@ -94,6 +105,6 @@ Polaron-0B26   7
 Polaron-0B27   5
 Polaron-0B29   1
 Polaron-0B3A   0
-Polaron-0B40 172
+Polaron-0B40 159
 Polaron-0B49   5
 Polaron-0B4A   3

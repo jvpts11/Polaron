@@ -1,6 +1,7 @@
 import System.IO.Console;
 import System.Concurrency.Thread;
 import System.Concurrency.Mutex;
+import System.Commands.Action;
 program MutexSynchronized;
 
 // Mutex<T> + synchronized (spec 20.5): two OS threads each increment a shared counter 100000
@@ -13,9 +14,12 @@ public bundle main {
         public class Main {
             public static method main(string[] args) returns void {
                 Mutex<int> counter = new Mutex<int>(0) on heap;
-                function<void> work = lambda[captures: byvalue counter]() returns void {
+                // A POINTER, so both threads lock the one mutex. Carried by value the baggage would
+                // be a copy, and a copy of a lock is a second lock protecting nothing.
+                Action* work = command () carries (Mutex<int>* cell = counter) into pack
+                    returns void {
                     for (mutable int i = 0; i < 100000; i++) {
-                        synchronized (counter) using int& c {
+                        synchronized (pack.cell) using int& c {
                             c = c + 1;
                         }
                     }

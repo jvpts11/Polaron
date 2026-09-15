@@ -1,0 +1,92 @@
+import System.IO.Console;
+program SuperMethod;
+
+// `super.m()` -- THE BODY THIS ONE OVERRIDES, CALLED BY NAME.
+//
+// An override that wants to EXTEND rather than REPLACE had no way to say so. AP-29 -- *deep
+// hierarchies are slow and fragile* -- was written with each level calling `super.render()` and
+// adding a term, which is what a decorator chain is, and it did not compile:
+//
+//     error: 'super' can only be used as 'super(...)' in a constructor
+//
+// The finding had to be rewritten around the gap, so the objection it existed to test was never
+// reached. And the lowering had done the work all along: it matches a member access whose object is
+// `super` and emits a call to `Base.m` by NAME, never through the table -- which is the whole
+// reason the word exists, since dispatching it would find this class's override and recurse.
+//
+// FOUR LEVELS, so the chain is a chain and not one call. Each adds its own term to the one below:
+//
+//     Base       1
+//     Border     1 + 16   = 17
+//     Shadow     17 + 32  = 49
+//     Rounded    49 + 64  = 113
+//
+// Prints: chain=113 skipOne=49 dispatched=113 past=100
+
+public bundle Main {
+    public namespace App {
+
+        public class Base {
+            public method render() returns int { return 1; }
+            public method name() returns int { return 100; }
+        }
+
+        public class Border extends Base {
+            public override method render() returns int {
+                return super.render() + 16;
+            }
+        }
+
+        public class Shadow extends Border {
+            public override method render() returns int {
+                return super.render() + 32;
+            }
+            // ...AND ONE THAT REACHES PAST ITS OWN PARENT'S SILENCE. `Border` does not override
+            // `name`, so `super.name()` here means `Base.name` -- found by walking the base's own
+            // chain, which is what makes this different from `this.name()`.
+            public method inherited() returns int {
+                return super.name();
+            }
+        }
+
+        public class Rounded extends Shadow {
+            public override method render() returns int {
+                return super.render() + 64;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Rounded* r = new Rounded() on heap;
+
+                // THE CHAIN, entered at the top: every level runs.
+                int chain = r.render();
+
+                // ...AND THE CHAIN ENTERED ONE LEVEL DOWN, on an object that IS a `Shadow`: 49, the
+                // three levels below `Rounded`. It is a separate instance and not a cast of `r`,
+                // and that distinction is the point -- `cast<Shadow*>(r)` then `render()` still
+                // dispatches to `Rounded.render` and gives 113, because a cast changes the static
+                // type and not the object. `super` is the only thing in the language that names a
+                // body below the object's own, and it does it from INSIDE, never from a call site.
+                Shadow* s = new Shadow() on heap;
+                int skipOne = s.render();
+
+                // AND THE ORDINARY DISPATCH IS UNCHANGED. Through a `Base*`, `render()` still finds
+                // the object's own -- `super` names a body without making any other call name one.
+                Base* b = cast<Base*>(r);
+                int dispatched = b.render();
+
+                // ...AND THE ONE THAT WALKS PAST A SILENT LEVEL: `Border` does not override `name`,
+                // so `Shadow.inherited` reaching `super.name()` finds `Base.name` -- the base's own
+                // chain, not just the base.
+                int past = s.inherited();
+
+                System.IO.Console.printf("chain=%d skipOne=%d dispatched=%d past=%d\n",
+                                         chain, skipOne, dispatched, past);
+                delete s;
+                delete r;
+                return;
+            }
+        }
+    }
+}

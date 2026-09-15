@@ -5,6 +5,7 @@
 #include "semantic/asmcheck.h"
 #include "semantic/comptime.h"
 #include "parser/boundscheck.h"  // so the index-bound advice can ask what the hoister will do
+#include "parser/monomorphize.h"  // kCommandMethod -- the one name a command answers to
 
 #include <algorithm>
 #include <functional>
@@ -219,16 +220,30 @@ void SemanticAnalyzer::warnMutableNeverMutated(const ast::MethodDecl& m) {
     struct Decl {
         std::string name;
         SourceLocation loc;
+        // THE DECLARATION'S OWN `[Allow]`, carried rather than looked up. A local's exemption has to
+        // be about THAT local: pushing it as a frame would cover the rest of the method and switch
+        // the rule off for every other local in it, which is the thing the author was avoiding by
+        // not writing the `[Allow]` on the method.
+        const std::vector<ast::AnnotationUse>* allows = nullptr;
     };
     std::vector<Decl> declared;
+    // EVERY ANNOTATED LOCAL, whether or not this rule is about it -- see the staleness pass at the
+    // bottom. An `[Allow]` that suppresses nothing has to be reported (0B0C) or it becomes a note
+    // asserting something about the code that quietly stopped being true, and the local case was
+    // the one place with no way to check: the frame is pushed around a single report, so a local
+    // that never reports never has its annotation looked at at all.
+    std::vector<const ast::VarDeclStmt*> annotated;
     std::unordered_set<std::string> touched;
 
     eachStmt(m.body, [&](const ast::Stmt& st) {
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            if (!vd->annotations.empty()) {
+                annotated.push_back(vd);
+            }
             // `persistent`, `lazy` and `volatile` locals are written by machinery rather than by a
             // statement here, so their `mutable` is not this lint's business.
             if (vd->isMutable && !vd->isPersistent && !vd->isLazy && !vd->isVolatile) {
-                declared.push_back(Decl{vd->name, vd->loc});
+                declared.push_back(Decl{vd->name, vd->loc, &vd->annotations});
             }
             return;
         }
@@ -242,13 +257,80 @@ void SemanticAnalyzer::warnMutableNeverMutated(const ast::MethodDecl& m) {
             if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(inc->target.get())) {
                 touched.insert(id->name);
             }
+            return;
+        }
+        // AN `asm` OUTPUT IS AN ASSIGNMENT, and it is the one kind this walk could not see.
+        //
+        //     mutable int v = 0;
+        //     asm("x86_64") { in al, dx } out ("al": v) in ("dx": port);
+        //     return v;
+        //
+        // drew *"'v' is declared mutable and nothing ever assigns to it"* against a line whose
+        // whole purpose is to assign to it. That is the failure mode this walk's own header warns
+        // about -- *a lint that is wrong is worse than a lint that is missing*, because the author
+        // removes a `mutable` the program needs and the compiler that told them to then refuses to
+        // build. Every port read in `Machine.Port` is exactly this shape.
+        if (const auto* asmS = dynamic_cast<const ast::AsmStmt*>(&st)) {
+            for (const ast::ExprPtr& o : asmS->outputs) {
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(o.get())) {
+                    touched.insert(id->name);
+                }
+            }
         }
     });
 
     for (const Decl& d : declared) {
-        if (touched.count(d.name) == 0) {
-            warn(diag::Code::MutableNeverMutated,
-                 "'" + d.name + "' is declared mutable and nothing ever assigns to it", d.loc);
+        if (touched.count(d.name) != 0) {
+            continue;
+        }
+        // The declaration's own `[Allow]`, pushed for exactly this one report and popped straight
+        // after -- so it covers this local and no other.
+        //
+        // A named empty vector rather than a ternary: an `AnnotationUse` holds a `unique_ptr` and is
+        // not copyable, and `cond ? *ptr : vector{}` copies the lvalue operand to make the two
+        // branches one prvalue.
+        static const std::vector<ast::AnnotationUse> none;
+        pushAllows(none, d.allows != nullptr ? *d.allows : none);
+        warn(diag::Code::MutableNeverMutated,
+             "'" + d.name + "' is declared mutable and nothing ever assigns to it", d.loc);
+        popAllows();
+    }
+
+    // A LOCAL'S `[Allow]` THAT SUPPRESSED NOTHING, which is the same rule 0B0C applies everywhere
+    // else and which had nowhere to run here.
+    //
+    // The check is exact rather than approximate, and it is exact because the set of rules about a
+    // local is small enough to name: `0B0D` is the one, and it fires when a `mutable` local is never
+    // assigned. So an `[Allow]` on a local is live exactly when it names 0B0D AND that local would
+    // have reported it. Anything else is a note about a rule that is not about this declaration.
+    //
+    // WHEN A SECOND LOCAL RULE ARRIVES this list grows by one line, and the alternative -- deciding
+    // staleness from whether a frame was consulted -- cannot work here: the frame is pushed around
+    // a single report, so a local that never reports never has its annotation looked at.
+    for (const ast::VarDeclStmt* vd : annotated) {
+        bool couldFire = vd->isMutable && !vd->isPersistent && !vd->isLazy && !vd->isVolatile
+                      && touched.count(vd->name) == 0;
+        for (const ast::AnnotationUse& use : vd->annotations) {
+            if (use.name != "Allow") {
+                continue;
+            }
+            for (const ast::AnnotationArg& arg : use.args) {
+                if (arg.name != "code") {
+                    continue;
+                }
+                const auto* lit = dynamic_cast<const ast::StringLiteralExpr*>(arg.value.get());
+                if (lit == nullptr) {
+                    continue;
+                }
+                const bool isLocalRule = lit->value == diag::codeString(diag::Code::MutableNeverMutated);
+                if (isLocalRule && couldFire) {
+                    continue;   // live: it is suppressing the report above
+                }
+                warn(diag::Code::AllowNeverUsed,
+                     "this [Allow] never suppressed anything: nothing reports " + lit->value +
+                         " about the local '" + vd->name + "'",
+                     use.loc);
+            }
         }
     }
 }
@@ -558,13 +640,63 @@ void SemanticAnalyzer::warnResultNeverExamined(const ast::ExprStmt& es,
     //
     // Takes the type already resolved by the caller, for the reason in warnDefaultOverAClosedSet:
     // this must be asked while the names are still in scope.
-    if (dynamic_cast<const ast::CallExpr*>(es.expr.get()) == nullptr) {
+    const auto* call = dynamic_cast<const ast::CallExpr*>(es.expr.get());
+    if (call == nullptr) {
+        return;
+    }
+    // `discard e;` -- SAID ON PURPOSE (B.2). A rule with no way to answer it is a rule people learn
+    // to switch off, and the answer is a word at the line rather than a suppression comment: a
+    // reader sees the decision instead of a missing diagnostic.
+    if (es.isDiscard) {
         return;
     }
     const std::string t = baseType(valueType);
-    if (t.rfind("Result", 0) == 0 || t.rfind("Option", 0) == 0) {
+    /* `mustuse` GENERALISES THIS RULE, which was two type names written into the compiler.
+     *
+     * `Result` and `Option` are must-use by nature and stay so -- the standard library now says it
+     * on the types themselves -- but the property was never theirs alone: a handle a caller must
+     * close, a builder that answers with a new value rather than changing itself, a token. The word
+     * lets a library say it, on the TYPE (once, covering every method that will ever return one) or
+     * on a single METHOD whose answer is the point where its type's usually is not.
+     */
+    bool must = t.rfind("Result", 0) == 0 || t.rfind("Option", 0) == 0;
+    if (!must) {
+        if (const ClassInfo* ci = lookupClass(t); ci != nullptr && ci->isMustUse) {
+            must = true;
+        }
+    }
+    /* ...and the method-level word, resolved WITHOUT asking `typeOf` about the receiver.
+     *
+     * `typeOf` on a bare class name is not a question with an answer -- `Io.out8(...)` reads as a
+     * variable called `Io` and reports it undeclared -- and this rule runs over every expression
+     * statement in the program, including every static call in the bare-metal prelude. So the
+     * receiver's class is read from what it plainly is: a local's declared type, or a class name. */
+    if (!must) {
+        if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(call->callee.get())) {
+            std::string owner;
+            if (const auto* oid = dynamic_cast<const ast::IdentifierExpr*>(mem->object.get())) {
+                if (const LocalVar* lv = lookupLocal(oid->name); lv != nullptr) {
+                    owner = baseType(lv->type);
+                } else if (lookupClass(oid->name) != nullptr) {
+                    owner = oid->name;
+                } else if (oid->name == "this") {
+                    owner = currentClass_;
+                }
+            }
+            if (!owner.empty()) {
+                if (const MethodInfo* m = findMethod(owner, mem->member);
+                    m != nullptr && m->isMustUse) {
+                    must = true;
+                }
+            }
+        }
+    }
+    if (must) {
         warn(diag::Code::ResultNeverExamined,
-             "this call returns a '" + t + "' and the statement drops it", es.loc);
+             "this call returns a '" + t +
+                 "' and the statement drops it -- write `discard` in front of it if that is "
+                 "deliberate",
+             es.loc);
     }
 }
 
@@ -600,6 +732,313 @@ void SemanticAnalyzer::warnHeapWithLexicalLifetime(const ast::Block& body) {
         }
     }
 }
+
+// A METHOD THAT ALLOCATES AND FREES SEVERAL THINGS IS DESCRIBING A REGION IT DID NOT DECLARE.
+//
+// `Polaron-0B1A` says this one variable could be `on stack`; that is the answer when there is one of
+// them. When there are four -- four calls out to the allocator, four `delete`s to keep in step with
+// them, and four more paths on which an early return leaks -- the shape has a name, and the name is
+// a region: one allocation at the top, one release at the bottom, and nothing in between that can
+// be forgotten.
+//
+// WHY THIS IS ADVICE AND NOT A REFUSAL. The code is correct; what it costs is a bookkeeping burden
+// that grows with every exit anybody adds later. A region does not make it safer, it makes the
+// safety unconditional -- which is the difference the reader is being offered, and it is theirs to
+// take or not.
+//
+// THE FLAVOUR IS PART OF THE ADVICE. Telling somebody "use a region" without saying which kind
+// leaves them the decision the compiler is better placed to make: allocations that are freed inside
+// a loop want storage that comes BACK each turn, which is a `pool`; allocations freed once at the
+// end want the whole block released at once, which is a `bump`.
+void SemanticAnalyzer::warnAllocationsWantARegion(const ast::Block& body) {
+    struct Site {
+        std::string name;
+        SourceLocation loc;
+        bool inLoop = false;
+    };
+    std::vector<Site> allocated;
+    std::unordered_set<std::string> released;
+    std::unordered_set<std::string> releasedInLoop;
+    bool declaresARegion = false;
+    std::function<void(const ast::Block&, bool)> walk = [&](const ast::Block& blk, bool inLoop) {
+        for (const ast::StmtPtr& st : blk.statements) {
+            if (!st) {
+                continue;
+            }
+            if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(st.get())) {
+                if (vd->type.name == "region") {
+                    declaresARegion = true;     // the author already reached for one
+                }
+                const auto* ne = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+                const auto* na = dynamic_cast<const ast::NewArrayExpr*>(vd->init.get());
+                // ALREADY IN A REGION IS NOT A CANDIDATE, and neither is a stack object: the first
+                // is the advice already taken, the second costs nothing to begin with.
+                const bool heapObject = ne != nullptr && ne->location == "heap" && ne->region.empty();
+                const bool heapArray = na != nullptr && na->region.empty();
+                if (heapObject || heapArray) {
+                    allocated.push_back(Site{vd->name, vd->loc, inLoop});
+                }
+            } else if (const auto* del = dynamic_cast<const ast::DeleteStmt*>(st.get())) {
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(del->target.get())) {
+                    released.insert(id->name);
+                    if (inLoop) {
+                        releasedInLoop.insert(id->name);
+                    }
+                }
+            } else if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st.get())) {
+                walk(iff->thenBlock, inLoop);
+                if (iff->elseBlock != nullptr) {
+                    walk(*iff->elseBlock, inLoop);
+                }
+            } else if (const auto* wh = dynamic_cast<const ast::WhileStmt*>(st.get())) {
+                walk(wh->body, true);
+            } else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(st.get())) {
+                walk(dw->body, true);
+            } else if (const auto* fr = dynamic_cast<const ast::ForStmt*>(st.get())) {
+                walk(fr->body, true);
+            } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st.get())) {
+                walk(fe->body, true);
+            }
+        }
+    };
+    walk(body, false);
+    if (declaresARegion) {
+        return;
+    }
+    int paired = 0;
+    bool anyInLoop = false;
+    SourceLocation first{};
+    for (const Site& site : allocated) {
+        if (released.count(site.name) == 0) {
+            continue;               // it leaves the method; a region would be the wrong answer
+        }
+        if (paired == 0) {
+            first = site.loc;
+        }
+        ++paired;
+        if (site.inLoop || releasedInLoop.count(site.name) > 0) {
+            anyInLoop = true;
+        }
+    }
+    // THREE, because two is a pair and a pair is not a pattern. At three the bookkeeping is already
+    // the larger half of the method's shape, and every reader of it has to check all three pairings.
+    if (paired < 3) {
+        return;
+    }
+    const std::string flavour = anyInLoop ? "pool" : "bump";
+    warn(diag::Code::AllocationsWantARegion,
+         "this method allocates and frees " + std::to_string(paired) +
+             " things by hand, which is a " + flavour + " region written out longhand",
+         first);
+}
+
+// THE SECOND TIME ROUND THE LOOP, which the first time round cannot see.
+//
+// A loop body is analysed once, with the state that holds at the TOP. So a body that frees something
+// at the bottom and reads it at the top is checked in the only order where it is innocent:
+//
+//     for (Node* n = ...; ...; ...) {
+//         this.total = this.total + n.weight;   // read -- checked with `this` still alive
+//         delete this;                          // ...freed, at the end of the iteration
+//     }
+//
+// Everything after the `delete` is caught, and everything after the LOOP is caught (the obligations
+// survive it -- see `keepObligationsAfterLoop`). The line above the `delete` was the hole, and it is
+// the line the bug is actually written on.
+//
+// ANSWERED BY RUNNING THE BODY AGAIN with the state the previous iteration left. That is what a
+// second iteration IS, so no new rule is needed and no shape has to be recognised: every obligation
+// the analyser already knows about -- freed, moved, invalidated by a call -- is carried across the
+// back edge for free, and a rule added next year is carried with them.
+//
+// Three things keep it honest:
+//   * It runs ONLY when the body actually gained an obligation. A loop with no `delete` and no `move`
+//     costs nothing, which is nearly all of them.
+//   * The second pass reports into a SINK rather than into the program's errors, and only findings
+//     the first pass did not already make are kept -- otherwise every line below the `delete` would
+//     be reported twice, once as itself and once as the next iteration.
+//   * A body that EXITS on the path that frees (`if (done) { delete this; return; }`) never reaches
+//     the end of the iteration with the obligation, so the state carried back does not have it and
+//     nothing is reported. That idiom is correct and stays silent -- which is why this is a replay of
+//     the flow rather than a search for a shape.
+void SemanticAnalyzer::checkLoopCarriedObligations(const ast::Block& body, const FlowFacts& entry,
+                                                   const FlowFacts& bodyEnd) {
+    if (inLoopReplay_) {
+        return;   // a nested loop's replay is already running inside one; twice is enough
+    }
+    auto gained = [](const std::unordered_set<std::string>& after,
+                     const std::unordered_set<std::string>& before) {
+        std::unordered_set<std::string> out;
+        for (const std::string& n : after) {
+            if (before.count(n) == 0) {
+                out.insert(n);
+            }
+        }
+        return out;
+    };
+    const std::unordered_set<std::string> freedInBody = gained(bodyEnd.freed, entry.freed);
+    const std::unordered_set<std::string> movedInBody = gained(bodyEnd.moved, entry.moved);
+    if (freedInBody.empty() && movedInBody.empty()) {
+        return;
+    }
+    const FlowFacts here = snapshotFlow();
+    std::vector<SemaError> found;
+    {
+        const bool wasReplay = inLoopReplay_;
+        inLoopReplay_ = true;
+        restoreFlow(entry);
+        freed_.insert(freedInBody.begin(), freedInBody.end());
+        moved_.insert(movedInBody.begin(), movedInBody.end());
+        deleted_.insert(bodyEnd.deleted.begin(), bodyEnd.deleted.end());
+        // What the body emptied strands what was borrowed from it BEFORE the loop -- those borrows
+        // are still the same ones on the second pass. A borrow the body takes is taken again, from
+        // what the source holds then, so the body's own stranded set is not carried over.
+        for (const std::string& who : bodyEnd.invalidated) {
+            invalidateSource(who);
+        }
+        Collect into(*this, found);
+        analyzeBlock(body);
+        inLoopReplay_ = wasReplay;
+    }
+    restoreFlow(here);
+    // Already said once is enough: what the first pass reported is the same defect, on the same line.
+    auto alreadySaid = [this](const SemaError& e) {
+        for (const SemaError& had : errors_) {
+            if (had.code == e.code && had.loc.line == e.loc.line && had.loc.col == e.loc.col &&
+                std::string(had.loc.file) == std::string(e.loc.file)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (const SemaError& e : found) {
+        // The obligation family only. The replay re-runs every rule there is, and a body analysed a
+        // second time will restate anything that depends on state this replay deliberately faked --
+        // those are not findings about the loop.
+        if (e.code != diag::Code::UseAfterMove && e.code != diag::Code::RegionUseAfterInvalidate) {
+            continue;
+        }
+        if (alreadySaid(e)) {
+            continue;
+        }
+        error(e.code, "on the next iteration of this loop, " + e.message, e.loc);
+        return;   // one per loop: the rest of the body is the same fact
+    }
+}
+
+// A LAMBDA IS A BODY THAT RUNS SOMEWHERE ELSE, and everything it captured is read THERE.
+//
+//     Box* b = new Box() on heap;
+//     function<int> read = lambda() returns int { return b.n; };
+//     delete b;
+//     read();                       // <- reads freed storage
+//
+// The capture is by reference, so the lambda holds the same pointer the local does; deleting through
+// one of them empties the other. Nothing saw it: the lambda's body is analysed where it is WRITTEN,
+// with the state that holds there -- and at that point `b` is perfectly alive. The call site knows
+// the object is gone and had never looked inside the thing it was calling.
+//
+// ANSWERED BY ANALYSING THE BODY AT THE CALL, with the state that holds AT THE CALL -- which is when
+// it runs. Same shape as the loop's second iteration: a replay into a sink, keeping only the
+// obligation findings, so every rule that exists applies inside a lambda without being taught to.
+//
+// It costs nothing in the ordinary case, because a program with nothing freed has nothing to find
+// and the replay does not happen.
+void SemanticAnalyzer::checkLambdaBodyAgainstFlowHere(const std::string& name, SourceLocation at) {
+    if (inLoopReplay_ ||
+        (freed_.empty() && moved_.empty() && invalidatedAt_.empty() && staleBorrows_.empty())) {
+        return;
+    }
+    auto held = lambdaLocals_.find(name);
+    if (held == lambdaLocals_.end() || held->second == nullptr) {
+        return;
+    }
+    const ast::LambdaExpr* lam = held->second;
+    std::vector<SemaError> found;
+    {
+        const bool wasReplay = inLoopReplay_;
+        inLoopReplay_ = true;   // one replay at a time, and a lambda called inside one is not a new one
+        Collect into(*this, found);
+        pushScope();
+        for (const ast::Param& p : lam->params) {
+            declareLocal(p.name, LocalVar{typeRefStr(p.type), false});
+        }
+        analyzeBlock(lam->body);
+        popScope();
+        inLoopReplay_ = wasReplay;
+    }
+    for (const SemaError& e : found) {
+        if (e.code != diag::Code::UseAfterMove && e.code != diag::Code::RegionUseAfterInvalidate) {
+            continue;
+        }
+        // Reported at the CALL, not inside the lambda: the body is right and the moment is wrong,
+        // and the line the author has to move is this one. The body's own line is named in the text.
+        error(e.code, "this call runs a body that was written above, and by now: " + e.message +
+                          " (line " + std::to_string(e.loc.line) + ")",
+              at);
+        return;   // one per call; the rest of the body is the same fact
+    }
+}
+
+/* AND THE SAME QUESTION ASKED OF A COMMAND, WHERE THE GRAMMAR HAS ALREADY ANSWERED IT.
+ *
+ *     Box* b = new Box() on heap;
+ *     IntSource* read = Peek.at(b);      // `carries (Box* box) into pack`
+ *     delete b;
+ *     read();                            // <- reads freed storage
+ *
+ * A lambda needed its BODY replayed here, because what it held could only be learned by reading it.
+ * A command's baggage is a declared list filled by the arguments at the construction, so the names
+ * that went in are known from the two lines above -- which is the concrete form of what `carries`
+ * buys: a summary complete by grammar, with nothing left to discover.
+ *
+ * That makes this both cheaper and stricter than the replay. Cheaper because nothing is analysed
+ * twice; stricter because a body that hides the read behind three calls is covered anyway -- holding
+ * the pointer is what the declaration says, and holding it is enough.
+ */
+void SemanticAnalyzer::checkCommandBaggageAgainstFlowHere(const std::string& name,
+                                                          SourceLocation at) {
+    if (inLoopReplay_ || (freed_.empty() && moved_.empty() && invalidatedAt_.empty())) {
+        return;
+    }
+    auto held = commandBaggage_.find(name);
+    if (held == commandBaggage_.end()) {
+        return;
+    }
+    for (const std::string& carried : held->second) {
+        const bool gone = freed_.count(carried) != 0 || invalidatedAt_.count(carried) != 0;
+        if (!gone && moved_.count(carried) == 0) {
+            continue;
+        }
+        error(gone ? diag::Code::RegionUseAfterInvalidate : diag::Code::UseAfterMove,
+              "'" + name + "' carries '" + carried + "', and '" + carried + "' is " +
+                  (gone ? "gone by here" : "moved away by here") +
+                  " -- the command holds the pointer it was built with, so running it now reads "
+                  "storage nobody owns. Build the command after the value it carries is settled, or "
+                  "give it something that outlives the call",
+              at);
+        return;   // one per call; the rest of the baggage is the same fact
+    }
+}
+
+// READING AN OBJECT AFTER IT HAS FREED ITSELF was answered here TWICE, and the second answer was a
+// STRING SEARCH -- the last structural proof in the region binder.
+//
+// `checkUseAfterDeleteThis` dumped every statement after a `delete this` and looked for the text
+// `Identifier 'this'` in it. The comment defending that said an expression walker with a case per
+// node type would go stale the day a node is added, and it was right about the walker; it was wrong
+// that those were the only two options.
+//
+// THE FACT IS FLOW, AND THE FLOW MACHINE ALREADY HAD IT: `delete this` puts `"this"` into `freed_`,
+// and `typeOf` refuses to read a name that is in there. Measured shape by shape, that rule already
+// covered everything the string search covered AND four shapes it could not reach -- a `delete this`
+// inside an `if`, inside a `try`, inside a `while` (the search never recursed past the method's own
+// statement list), and a read that reaches the object through a local bound to it. What the search
+// added on top was a second copy of the same error on a different column of the same line.
+//
+// So it is gone, and the one rule left is the semantic one. What the deletion cost -- nothing --
+// is the argument for it: the sample it was written for, `delete_this_then_read_bad.pol`, is still
+// refused with the same code by the rule that was underneath it the whole time.
 
 void SemanticAnalyzer::warnRepeatedCleanup(const ast::MethodDecl& m) {
     // THE SAME CLEANUP BEFORE EVERY `return` is a `defer` that has not been written. It is correct
@@ -1057,21 +1496,46 @@ void SemanticAnalyzer::warnRegionWithOneAllocation(const ast::Block& body) {
     if (declared.empty()) {
         return;
     }
-    eachStmt(body, [&](const ast::Stmt& st) {
-        auto count = [&](const ast::Expr* e) {
-            if (const auto* ne = dynamic_cast<const ast::NewExpr*>(e);
-                ne != nullptr && !ne->region.empty()) {
-                ++used[ne->region];
-            }
-        };
+    auto count = [&](const ast::Expr* e, int weight) {
+        if (const auto* ne = dynamic_cast<const ast::NewExpr*>(e);
+            ne != nullptr && !ne->region.empty()) {
+            used[ne->region] += weight;
+        }
+    };
+    auto countIn = [&](const ast::Stmt& st, int weight) {
         if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
-            count(vd->init.get());
+            count(vd->init.get(), weight);
         } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&st)) {
-            count(as->value.get());
+            count(as->value.get(), weight);
         } else if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&st)) {
-            count(es->expr.get());
+            count(es->expr.get(), weight);
+        }
+    };
+    eachStmt(body, [&](const ast::Stmt& st) { countIn(st, 1); });
+
+    // A SITE INSIDE A LOOP IS NOT ONE ALLOCATION, and counting sites rather than allocations made
+    // this rule report the case a region exists FOR.
+    //
+    // `region r = itself.allocate(...); while (...) { new Node() in region r; }` has exactly one
+    // `new` in the source and puts N objects in the arena -- which is the shape the advice above
+    // describes as earning its keep: reserve once, hand out many, release all at once. The rule
+    // read the source, saw one site, and told the author to allocate it directly. Taking that
+    // advice replaces one reservation with N calls to the allocator, which is the opposite of what
+    // the rule is for.
+    //
+    // Counted as TWO rather than as N because the number is not knowable here and does not need to
+    // be: the rule's whole question is "is this exactly one", and a loop answers no.
+    eachStmt(body, [&](const ast::Stmt& st) {
+        const ast::Block* inside = nullptr;
+        if (const auto* ws = dynamic_cast<const ast::WhileStmt*>(&st)) { inside = &ws->body; }
+        else if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&st)) { inside = &dw->body; }
+        else if (const auto* fs = dynamic_cast<const ast::ForStmt*>(&st)) { inside = &fs->body; }
+        else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(&st)) { inside = &fe->body; }
+        if (inside != nullptr) {
+            eachStmt(*inside, [&](const ast::Stmt& in) { countIn(in, 1); });
         }
     });
+
     for (const auto& [name, loc] : declared) {
         if (used[name] == 1) {
             warn(diag::Code::RegionWithOneAllocation,
@@ -1497,8 +1961,16 @@ void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
         if (t.find('*') == std::string::npos || isNullableType(t) || isArrayType(t)) {
             continue;
         }
-        if (lookupClass(baseType(t)) == nullptr) {
+        const ClassInfo* pt = lookupClass(baseType(t));
+        if (pt == nullptr) {
             continue;   // `int*` and friends are machine-level, and are somebody else's rule
+        }
+        // NOT ON A COMMAND, where the star is not a choice the author made. A command VALUE is a
+        // heap object -- that is what `Gate.aboveFloor(10)` builds -- so `DogTest* test` is the only
+        // way to write the parameter, and `DogTest&` would refuse the very thing every caller
+        // passes. The advice was arriving on every API in the language that takes a command.
+        if (pt->isCommandType) {
+            continue;
         }
         bool escapes = false;
         // AND SOMETHING HAS TO READ THROUGH IT, or "only ever reads through it" is not a description
@@ -1786,6 +2258,41 @@ void SemanticAnalyzer::warnIndexBoundNotTheArray(const ast::Stmt& loop, const as
             if (arrayIsContracted(arr->name)) {
                 return;
             }
+            // A RAW POINTER HAS NO LENGTH AND THEREFORE NO CHECK TO PROVE AWAY.
+            //
+            // The whole of this advice is *the bounds check stays because nothing relates the index
+            // to the array's own length* -- and `byte* p` has no length, is not bounds-checked, and
+            // never was. Telling its author to count to `p.length()` is telling them to call a
+            // method that does not exist, about a check that is not emitted.
+            //
+            // It fired across every byte primitive in `Machine.Raw` the moment they existed:
+            // `copy`, `move`, `fill` and `compare` walk a `volatile byte*` bounded by a `count`,
+            // which is the only shape those can have. A lint that is confidently wrong is worse
+            // than one that is missing -- the header of the mutable-never-assigned walk in this
+            // same file says so, having been wrong the same way.
+            if (const LocalVar* lv = lookupLocal(arr->name);
+                lv != nullptr && !isArrayType(lv->type) && isRefType(lv->type)) {
+                return;
+            }
+            // A CONSTANT BOUND OVER AN ARRAY OF CONSTANT LENGTH IS THE PROVABLE CASE, and the rule
+            // reported it because the bound was not spelled `a.length()`.
+            //
+            // `byte[] out = new byte[12](); while (digits < 11) { out[digits] = ... }` -- both
+            // numbers are literals, the relation between them is arithmetic the optimiser does
+            // before it does anything else, and there is no check left to prove away. The advice
+            // asks the author to write `out.length()` instead: strictly weaker, because 12 is a
+            // fact and `length()` is a load, and the loop would then run one element further than
+            // the author meant.
+            //
+            // This is the commonest shape a small scratch buffer has, so the rule was at its
+            // loudest exactly where it was wrong.
+            if (const LocalVar* lv = lookupLocal(arr->name); lv != nullptr && lv->constExtent > 0) {
+                if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(bound)) {
+                    if (std::strtoll(n->text.c_str(), nullptr, 0) <= lv->constExtent) {
+                        return;
+                    }
+                }
+            }
             reported.insert(arr->name);
             warn(diag::Code::IndexBoundNotTheArray,
                  "this loop indexes '" + arr->name +
@@ -1904,6 +2411,27 @@ void SemanticAnalyzer::warnVirtualCallInLoop(const ast::Block& loopBody) {
     // A CALL THROUGH AN INTERFACE OR AN ABSTRACT BASE, PER ITERATION. The vtable is loaded and the
     // target read on every element, and the optimiser cannot see through any of them -- so nothing
     // in the body inlines, and the loop is a sequence of opaque calls rather than a loop.
+    //
+    // QUIET, BECAUSE AN ADVISORY PASS MUST NOT INVENT AN ERROR.
+    //
+    // It runs AFTER the body has been analysed, when every scope the body opened has been popped --
+    // and `eachStmt` walks into nested loops and `if` blocks, so the expressions it types name
+    // variables that are no longer declared. `typeOf` reports as it goes, so a `for` inside a
+    // `while` produced `use of undeclared variable 'i'` about the loop's own counter, pointing at
+    // code that is perfectly correct. It cost an evening in HorizonOS, on
+    // `while (...) { for (mutable int i...) { if (...) { at = this.mapping[i].end(); } } }` -- an
+    // assignment whose right-hand side calls a method on an indexed element, which is precisely the
+    // shape this rule looks for.
+    //
+    // The note on `warnCopyHoistableOutOfLoop` says three rules were fixed by not asking `typeOf` at
+    // all. That answer does not fit here: this rule NEEDS the element's type, because whether a call
+    // is virtual is a fact about the class and not about the syntax. `Quiet` is the other answer the
+    // analyser already has, and it is the one for a QUESTION -- `error` returns instead of recording
+    // while it is held, so the query still answers and nothing is reported on its behalf.
+    //
+    // A type that cannot be worked out comes back empty, `lookupClass` answers null, and the rule
+    // does not fire -- which is the right outcome for a warning about code it cannot see.
+    Quiet hush(*this);
     eachStmt(loopBody, [&](const ast::Stmt& st) {
         auto look = [&](const ast::Expr* e) {
             const auto* call = dynamic_cast<const ast::CallExpr*>(e);
@@ -2133,6 +2661,11 @@ void SemanticAnalyzer::warnStringBuildingInLoop(const ast::Block& body) {
     // and the shape must be the target appearing on the right of its own `+` or `.concat`. Nested
     // loops are not walked: each loop checks its own body, so the report lands on the innermost loop
     // that actually repeats the copy, which is where the fix goes.
+    // QUIET, for the same reason as `warnVirtualCallInLoop`: this runs after the body's scopes have
+    // been popped and it asks `typeOf`, which reports. `scan` walks into `if` blocks, so a target
+    // declared inside one is out of scope by the time its type is asked for -- and the reader would
+    // get an undeclared-variable ERROR raised on behalf of a WARNING that decided not to fire.
+    Quiet hush(*this);
     std::unordered_set<std::string> declaredInside;
     collectDeclaredNames(body, declaredInside);
 
@@ -2201,6 +2734,28 @@ void SemanticAnalyzer::noteBorrowFlow(const ast::Stmt& stmt) {
             Quiet hush(*this);
             cls = baseType(typeOf(*mem->object));
         }
+        // `raw = owner.borrow()` -- the result borrows from the RECEIVER, which is the half of this
+        // that was never written. An accessor is the commonest method a class has, and until now
+        // handing one's answer to a local and then freeing the object it came out of was three
+        // lines with nothing connecting them.
+        //
+        // TAKEN FIRST, because a method can be both: `table.rowFrom(other)` may hand back either
+        // one, and the receiver is the shorter-lived answer to attribute it to when a summary says
+        // both. Being wrong in that direction refuses a program; the other direction accepts a
+        // dangling read.
+        //
+        // A LENDER THAT FREES NOTHING LENDS NOTHING IT OWNS. What it hands back is storage somebody
+        // else answers for: a result that carries an object out of a call (the caller who deletes
+        // it is its owner), or a list node's `weak` link to the next node, which outlives the node
+        // it was read from. Neither emptying such a lender nor deleting what it answered frees
+        // anything twice, so there is no borrow of the receiver to record.
+        if (returnsBorrowOfReceiver_.count(cls + "." + mem->member) > 0 && freesAnything(cls)) {
+            if (const std::string owner = describePath(*mem->object); !owner.empty()) {
+                borrowsFrom_[name] = owner;
+                lentByACall_.insert(name);
+                return;
+            }
+        }
         auto rit = returnsBorrowOfParam_.find(cls + "." + mem->member);
         if (rit == returnsBorrowOfParam_.end() ||
             rit->second >= static_cast<int>(call->args.size())) {
@@ -2208,12 +2763,82 @@ void SemanticAnalyzer::noteBorrowFlow(const ast::Stmt& stmt) {
         }
         const std::string source = describePath(*call->args[rit->second]);
         if (!source.empty()) {
+            // NOT `lentByACall_`, and the difference is what the two summaries mean. "Returns a
+            // borrow of the RECEIVER" says the value IS the receiver's storage -- `return
+            // this.inner` -- and freeing it is freeing something with an owner. "Returns a borrow of
+            // a PARAMETER" says the value HOLDS references into that argument: `scan(table)` builds
+            // a fresh view whose rows belong to the table. The view is ours, we allocated it, and
+            // deleting it is not only allowed but required -- freeing a view is not reading it.
             borrowsFrom_[name] = source;
         }
+    };
+    // A SECOND NAME FOR THE SAME OBJECT IS A BORROW OF IT, and reading it after the first name is
+    // deleted is the same read through a different spelling:
+    //
+    //     Box* alias = b;
+    //     delete b;
+    //     alias.n            // freed
+    //
+    // `delete` already marked `b` unusable, and that check follows the NAME -- so introducing one
+    // more name for the same storage walked straight past it. Recording the alias as a borrow puts
+    // it under the rule that already exists rather than adding a second one.
+    //
+    // ONLY WHEN THE DECLARATION SHARES. `Point p = q;` copies -- assignment copies in this language
+    // -- so `p` survives `delete q` and always did. It is `T*`, `T&` and an array that alias.
+    auto sharesStorage = [](const std::string& t) {
+        return isRefType(t) || t.find("[]") != std::string::npos;
+    };
+    auto aliasOf = [&](bool shares, const ast::Expr* init) -> std::string {
+        if (!shares) {
+            return {};
+        }
+        const ast::Expr* e = init;
+        while (const auto* c = dynamic_cast<const ast::CastExpr*>(e)) {
+            e = c->operand.get();
+        }
+        if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(e)) {
+            if (lookupLocal(id->name) == nullptr) {
+                return {};
+            }
+            // AN ALIAS OF A BORROW BORROWS FROM THE SAME SOURCE, not from the borrow. `q = p` where
+            // `p` names something an object owns puts `q` under that object's lifetime too --
+            // recording `q borrows p` instead pointed the check at a local nobody ever deletes, so
+            // one extra assignment was again enough to walk out of the rule.
+            auto through = borrowsFrom_.find(id->name);
+            return through != borrowsFrom_.end() ? through->second : id->name;
+        }
+        // A FIELD PATH IS A BORROW OF WHATEVER IT HANGS OFF. `Leaf* deep = t.branch.leaf;` reads
+        // storage two objects in, and freeing `t` frees all of it -- the depth changes nothing about
+        // whose lifetime the value has. Only calls were being followed here, so the plainest way to
+        // hold a reference into another object was the one nothing looked at.
+        const ast::Expr* walk = e;
+        while (const auto* mem = dynamic_cast<const ast::MemberExpr*>(walk)) {
+            walk = mem->object.get();
+        }
+        if (walk == e) {
+            return {};      // not a member path at all
+        }
+        while (const auto* c = dynamic_cast<const ast::CastExpr*>(walk)) {
+            walk = c->operand.get();
+        }
+        if (const auto* root = dynamic_cast<const ast::IdentifierExpr*>(walk)) {
+            if (root->name == "this" || lookupLocal(root->name) != nullptr) {
+                auto through = borrowsFrom_.find(root->name);
+                return through != borrowsFrom_.end() ? through->second : root->name;
+            }
+        }
+        return {};
     };
     if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
         if (vd->init != nullptr) {
             borrowsFrom_.erase(vd->name);
+            lentByACall_.erase(vd->name);   // kept in step with the map it refines
+            staleBorrows_.erase(vd->name);
+            const bool shares = vd->type.isPointer || vd->type.isRef || vd->type.isArray ||
+                                sharesStorage(vd->type.name);
+            if (const std::string same = aliasOf(shares, vd->init.get()); !same.empty()) {
+                borrowsFrom_[vd->name] = same;
+            }
             bindResult(vd->name, vd->init.get());
         }
         return;
@@ -2221,8 +2846,53 @@ void SemanticAnalyzer::noteBorrowFlow(const ast::Stmt& stmt) {
     if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&stmt)) {
         if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(as->target.get())) {
             borrowsFrom_.erase(tid->name);      // a new value, a new answer
+            lentByACall_.erase(tid->name);
             invalidatedAt_.erase(tid->name);
+            staleBorrows_.erase(tid->name);
+            if (const LocalVar* held = lookupLocal(tid->name); held != nullptr) {
+                if (const std::string same = aliasOf(sharesStorage(held->type), as->value.get());
+                    !same.empty()) {
+                    borrowsFrom_[tid->name] = same;
+                }
+            }
             bindResult(tid->name, as->value.get());
+        }
+        // TWO OWNERS FOR ONE OBJECT, written as one assignment.
+        //
+        //     public method takeFrom(Holder* other) returns void { this.buf = other.buf; }
+        //
+        // Both destructors free `buf`. After this line two Holders hold the same pointer, and
+        // whichever is destroyed second frees storage the first already freed -- a double free with
+        // no `delete` anywhere near it, and nothing in either class saying it can happen.
+        //
+        // THE DESTRUCTOR IS WHAT MAKES IT DECIDABLE, exactly as everywhere else in this analysis: a
+        // field a class frees is a field it owns, and copying a pointer between two fields that are
+        // both owned copies an ownership that only one of them can have.
+        //
+        // ADVICE RATHER THAN A REFUSAL, and the language is the reason. The cure would be a move,
+        // and `this.buf = move other.buf` is refused today ("cannot move field 'buf' of
+        // non-partitionable type") -- so an error here would leave the author with the shape and no
+        // legal way to write it. It says what is true and names both cures that do exist.
+        if (const auto* tmem = dynamic_cast<const ast::MemberExpr*>(as->target.get())) {
+            const auto* vmem = dynamic_cast<const ast::MemberExpr*>(as->value.get());
+            if (vmem != nullptr && tmem->member == vmem->member) {
+                Quiet hush(*this);
+                const std::string into = baseType(typeOf(*tmem->object));
+                const std::string from = baseType(typeOf(*vmem->object));
+                const std::string here = describePath(*tmem->object);
+                const std::string there = describePath(*vmem->object);
+                if (!into.empty() && here != there && ownsField(into, tmem->member) &&
+                    ownsField(from, vmem->member)) {
+                    warn(diag::Code::TwoOwnersForOneObject,
+                         "region-binder: '" + into + "." + tmem->member +
+                             "' is freed by its destructor, so this makes a second owner of one "
+                             "object -- whichever of '" + here + "' and '" + there +
+                             "' is destroyed second frees what the first already freed. Copy what "
+                             "you need out of it, or give the source a nullable field it can be "
+                             "emptied through",
+                         as->loc);
+                }
+            }
         }
         return;
     }
@@ -2237,14 +2907,50 @@ void SemanticAnalyzer::noteBorrowFlow(const ast::Stmt& stmt) {
             target = c->operand.get();
         }
         if (const auto* tid = dynamic_cast<const ast::IdentifierExpr*>(target)) {
+            // FREEING SOMETHING YOU BORROWED, asked HERE because the next line is what forgets it.
+            // The record is erased on `delete` -- the name may be redeclared, and after this it is
+            // not a borrow of anything -- so a rule written anywhere downstream of this statement
+            // finds an empty map and says nothing. (It was written downstream first, in the `delete`
+            // arm of `analyzeStatement`, and stayed silent on the program it was written for.)
+            //
+            // The fact itself is the one that already refuses a READ of `b` after its owner is
+            // emptied: `b` is `o`'s, `o`'s destructor frees it, so freeing it here frees it twice.
+            // It is the mirror of that rule and the harder half to see in the source -- the
+            // read-after-free has a `delete o` above it for the author to notice, while this looks
+            // like ordinary cleanup and the second free happens in a destructor, possibly in another
+            // file, possibly next year.
+            //
+            // ONLY WHAT A CALL LENT US, and the standard library is what drew that line. `borrowsFrom_`
+            // is deliberately wide -- it also records an ALIAS (`RsaPublicKey* rsa = cast<...>(key)`)
+            // and a FIELD PATH (`K[] oldK = this.keys`), because reading either after its source is
+            // freed is the same dangling read. Neither is a borrow of storage somebody else owns:
+            //   * an alias is a second name for what THIS frame owns, and deleting through either
+            //     name is right (deleting through both is caught by the plain use-after-free rule);
+            //   * a field path read is half of grow-and-replace -- `oldK = this.keys`, `this.keys =
+            //     new K[...]`, `delete oldK` -- where the object handed ownership over in between,
+            //     and refusing it would refuse every hash map that has ever grown.
+            // Fourteen sites in the prelude said so on the first run of this rule, all of them
+            // correct. What is left is the case with no such idiom: a value another object HANDED
+            // us, that we never owned and cannot have been given, and whose owner will free it.
+            if (auto from = borrowsFrom_.find(tid->name);
+                from != borrowsFrom_.end() && lentByACall_.count(tid->name) > 0) {
+                error(diag::Code::RegionUseAfterInvalidate,
+                      "region-binder: '" + tid->name + "' is a borrow of '" + from->second +
+                          "' and does not own what it points at -- deleting it frees storage that '" +
+                          from->second + "' still owns and will free again. Delete the owner, or "
+                          "take a copy if this value has to outlive it",
+                      del->loc);
+            }
             borrowsFrom_.erase(tid->name);
+            lentByACall_.erase(tid->name);
+            staleBorrows_.erase(tid->name);
         }
         // ...AND IT EMPTIES WHOEVER BORROWED FROM IT. `delete subject` is as final as
         // `subject.clear()` for anything holding references into it, and reading only method calls
         // left the plainest way to invalidate a borrow uncounted. (The name is also in `freed_`,
         // which catches reading the name itself; this catches reading what borrowed FROM it.)
         if (const std::string who = describePath(*del->target); !who.empty()) {
-            invalidatedAt_.insert(who);
+            invalidateSource(who);
         }
         return;
     }
@@ -2263,14 +2969,15 @@ void SemanticAnalyzer::noteBorrowFlow(const ast::Stmt& stmt) {
         if (invalidators_.count(cls + "." + mem->member) > 0) {
             const std::string who = describePath(*mem->object);
             if (!who.empty()) {
-                invalidatedAt_.insert(who);
+                invalidateSource(who);
             }
         }
     }
 }
 
 void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
-    noteBorrowFlow(stmt);
+    // A call consumes its arguments before its effects invalidate borrowed storage.
+    if (dynamic_cast<const ast::ExprStmt*>(&stmt) == nullptr) { noteBorrowFlow(stmt); }
     if (const auto* sa = dynamic_cast<const ast::DemandStmt*>(&stmt)) {
         // A DEMAND IS NOT CODE THAT RUNS -- it is a check the BUILD performs, and it has to fire
         // whether or not anything calls the method holding it. `sizeof_budget_bad.pol` is exactly
@@ -2319,7 +3026,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             }
             declareLocal(fe->varName, LocalVar{et, false});
             killProofsAssignedIn(fe->body);
+            const FlowFacts entry = snapshotFlow();
             analyzeBlock(fe->body);
+            checkLoopCarriedObligations(fe->body, entry, snapshotFlow());
             warnStringBuildingInLoop(fe->body);
             warnCopyHoistableOutOfLoop(fe->body);
             warnVirtualCallInLoop(fe->body);
@@ -2327,6 +3036,51 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             return;
         }
         const std::string it = typeOf(*fe->iterable);
+        // CHANGING WHAT YOU ARE WALKING. `foreach (v in xs) { xs.add(...) }` moves the storage the
+        // walk is holding: `add` frees nothing, so no use-after-free rule saw it -- it REALLOCATES,
+        // and the elements the loop has not reached yet are in the block that was there before.
+        //
+        // This is the guarantee a borrow checker gets from exclusivity, which this analysis does not
+        // claim. It does not need the general rule to answer the case that matters: the collection
+        // is named in the header, the call is on that same name, and a method that writes a field of
+        // its own receiver is one the walk cannot survive.
+        //
+        // ONLY CALLS ON THE THING BEING WALKED. Mutating a different collection inside the loop is
+        // ordinary work, and the commonest shape in the language -- reading one list to build
+        // another -- must stay quiet.
+        if (const std::string walked = describePath(*fe->iterable); !walked.empty()) {
+            const std::string collClass = baseType(it);
+            eachStmt(fe->body, [&](const ast::Stmt& inner) {
+                // WHEREVER THE CALL IS WRITTEN, not only as a bare statement. `xs.add(v);` was
+                // caught and `boolean gone = xs.remove(v);` was not -- the same mutation, bound to
+                // a name, which is how half of them are written. Reading only `ExprStmt` made the
+                // rule a matter of whether the author happened to want the answer.
+                const ast::Expr* made = nullptr;
+                if (const auto* es = dynamic_cast<const ast::ExprStmt*>(&inner)) {
+                    made = es->expr.get();
+                } else if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&inner)) {
+                    made = vd->init.get();
+                } else if (const auto* as = dynamic_cast<const ast::AssignStmt*>(&inner)) {
+                    made = as->value.get();
+                }
+                const auto* call = dynamic_cast<const ast::CallExpr*>(made);
+                const auto* callee =
+                    call != nullptr ? dynamic_cast<const ast::MemberExpr*>(call->callee.get())
+                                    : nullptr;
+                if (callee == nullptr || describePath(*callee->object) != walked) {
+                    return;
+                }
+                if (mutatesReceiver_.count(collClass + "." + callee->member) == 0) {
+                    return;
+                }
+                error("region-binder: '" + callee->member + "' changes '" + walked +
+                          "' while this loop is walking it. Adding or removing moves the storage "
+                          "the walk is holding, and the elements it has not reached yet are in the "
+                          "block that was there before. Collect what to change into a second list "
+                          "and apply it after the loop, or walk by index and re-read the length",
+                      inner.loc);
+            });
+        }
         // A collection is iterable too (spec 34): a generic/monomorphized class snapshot via toArray().
         const bool isColl =
             !it.empty() && !isArrayType(it) &&
@@ -2370,7 +3124,9 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         declareLocal(fe->varName, LocalVar{et, false});
         killProofsAssignedIn(fe->body);
+        const FlowFacts entry = snapshotFlow();
         analyzeBlock(fe->body);
+        checkLoopCarriedObligations(fe->body, entry, snapshotFlow());
         warnStringBuildingInLoop(fe->body);
         warnCopyHoistableOutOfLoop(fe->body);
         warnVirtualCallInLoop(fe->body);
@@ -2491,6 +3247,20 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                       vd->loc);
             }
         }
+        // EVERY REGION IS RECORDED, FLAVOURED OR NOT. A bare `region r = ...` is a bump region --
+        // the word is simply left out because it is the default -- and only the explicitly
+        // flavoured ones were being remembered. So the analysis could say "region r" and never say
+        // WHICH KIND of region r is, which is the part that decides what the reader should do
+        // about it: a bump region gives nothing back until it is released, a pool reuses a slot,
+        // a ring overwrites its oldest. A diagnostic that names the region without naming its
+        // flavour hands the reader a name and keeps the fact.
+        if (declType == "region" && regionFlavor_.count(vd->name) == 0) {
+            regionFlavor_[vd->name] = vd->regionFlavor.empty() ? std::string("bump")
+                                                               : vd->regionFlavor;
+        }
+        if (declType == "region" && vd->regionGrowable) {
+            regionGrowable_.insert(vd->name);
+        }
         // Region flavor / growth modifiers (spec 17, flavors expansion): a flavor word only qualifies a
         // region (Polaron-1719), and a region has exactly one flavor (Polaron-1710). The parser space-joins two
         // flavor words into regionFlavor so both names surface here.
@@ -2589,8 +3359,21 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get())) {
                 heapObj = nw->location == "heap";
             }
-            declareLocal(vd->name, LocalVar{declType.empty() ? std::string("int") : declType,
-                                            vd->isMutable, stackObj, heapObj, deferred});
+            // HOW LONG, when the declaration says so with a literal: `new byte[12]()`. Read by the
+            // loop-bound advice, which asks whether a bounds check can be proved away -- and a loop
+            // counted to a constant over an array of a constant length is the case where it most
+            // certainly can. Anything computed leaves this at zero, which means "not known here"
+            // rather than "empty".
+            long long extent = 0;
+            if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(vd->init.get())) {
+                if (const auto* n = dynamic_cast<const ast::IntLiteralExpr*>(na->size.get())) {
+                    extent = std::strtoll(n->text.c_str(), nullptr, 0);
+                }
+            }
+            LocalVar lv{declType.empty() ? std::string("int") : declType,
+                        vd->isMutable, stackObj, heapObj, deferred};
+            lv.constExtent = extent;
+            declareLocal(vd->name, lv);
             // WHEN A REGION WAS BORN, which is all §10 needs to order two of them.
             //
             // Regions are released last-in-first-out -- at scope exit, in reverse declaration order,
@@ -2666,6 +3449,14 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             nw != nullptr && !nw->region.empty()) {
             regionOf_[vd->name] = nw->region;
         }
+        // AN ARRAY IN A REGION IS IN THAT REGION TOO, and only objects were being recorded. So
+        // `byte[] b = new byte[64]() in region r;` was placed nowhere: returning it out of the
+        // method that owns `r` -- the escape this whole analysis is named for -- read as an
+        // unplaceable value and passed. Same word in the source, same node shape, different class.
+        if (const auto* na = dynamic_cast<const ast::NewArrayExpr*>(vd->init.get());
+            na != nullptr && !na->region.empty()) {
+            regionOf_[vd->name] = na->region;
+        }
         // region-binder: a `new X` that lands in this ACTIVATION's frame names an object that dies at method
         // return. Track the local so storing a reference to it into a longer-lived location can be rejected
         // (§3). Two exclusions, and both are about where the object actually lives, not where the pointer to
@@ -2687,7 +3478,59 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         } else {
             lambdaLocals_.erase(vd->name);
         }
+        // A LOCAL THAT HOLDS A COMMAND REMEMBERS WHAT WENT INTO IT. `IntSource* read = Peek.at(b);`
+        // -- the arguments of a command's construction ARE its baggage, so the names are here to be
+        // written down and nothing has to go looking for them later. See
+        // `checkCommandBaggageAgainstFlowHere`.
+        commandBaggage_.erase(vd->name);
+        commandBuiltAs_.erase(vd->name);
+        commandHandedOver_.erase(vd->name);
+        if (const auto* built = dynamic_cast<const ast::CallExpr*>(vd->init.get());
+            built != nullptr && !vd->type.name.empty() &&
+            findMethod(baseType(typeRefStr(vd->type)), kCommandMethod, /*objectFallback=*/false) !=
+                nullptr) {
+            std::vector<std::string> carried;
+            for (const ast::ExprPtr& a : built->args) {
+                if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(a.get())) {
+                    carried.push_back(id->name);
+                }
+            }
+            if (!carried.empty()) {
+                commandBaggage_[vd->name] = std::move(carried);
+            }
+            /* ...and WHICH command it is, which the declared type does not say: `Action* work = ...`
+               names the role on purpose. The construction's own type is the concrete class, and its
+               fields are the baggage every later rule wants to read.
+
+               Read off the FACTORY'S DECLARATION rather than by typing the expression again. A
+               second `typeOf` over the same construction re-visits its arguments, and an argument
+               may be a `move`: the first visit empties the source, and the second then reports
+               reading a variable after it was moved -- on the very line that moved it. */
+            if (const auto* through = dynamic_cast<const ast::MemberExpr*>(built->callee.get())) {
+                if (const auto* owner =
+                        dynamic_cast<const ast::IdentifierExpr*>(through->object.get())) {
+                    if (const MethodInfo* factory =
+                            findMethod(owner->name, through->member, /*objectFallback=*/false);
+                        factory != nullptr &&
+                        findMethod(baseType(factory->returnType), kCommandMethod,
+                                   /*objectFallback=*/false) != nullptr) {
+                        commandBuiltAs_[vd->name] = baseType(factory->returnType);
+                        // WHICH PIECES OF THE BAGGAGE WERE HANDED OVER RATHER THAN SHARED. The
+                        // factory's parameters are the command's fields, in order, so a `move` at
+                        // argument i names field i -- which is what the thread-boundary rule needs
+                        // to tell "the thread is its only holder" from "both of them have it".
+                        for (std::size_t i = 0;
+                             i < built->args.size() && i < factory->paramNames.size(); ++i) {
+                            if (dynamic_cast<const ast::MoveExpr*>(built->args[i].get()) != nullptr) {
+                                commandHandedOver_[vd->name].insert(factory->paramNames[i]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         activationOwned_.erase(vd->name);
+        programLongLocals_.erase(vd->name);
         acquired_.erase(vd->name);
         borrowedRegion_.erase(vd->name);
         // A NAME BOUND TO SOMETHING ANOTHER OBJECT OWNS KEEPS THAT OBJECT'S REGION.
@@ -2734,7 +3577,16 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             rc != nullptr && rc->isRegionClass) {
             classArenaOwned_.insert(vd->name);
         }
+        // AN `eternal` OBJECT IN THE ENTRY POINT'S FRAME outlives every other object: the frame lasts
+        // the whole run and `eternal` stops the teardown at its closing brace. So a pointer to one may
+        // be kept by anything -- which is how a kernel's `main` wires its eternal objects to each
+        // other, `files.types().register(&fatFormat)`, and what the binder refused as frame storage
+        // "about to disappear". Anywhere else the frame ends, and the object with it, eternal or not.
         if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
+            nw != nullptr && nw->region.empty() && nw->location != "heap" && vd->isEternal &&
+            inEntryPoint_) {
+            programLongLocals_.insert(vd->name);
+        } else if (const auto* nw = dynamic_cast<const ast::NewExpr*>(vd->init.get());
             nw != nullptr && nw->region.empty() && nw->location != "heap") {
             activationOwned_.insert(vd->name);
         } else if (const auto* aid = dynamic_cast<const ast::IdentifierExpr*>(vd->init.get());
@@ -2851,6 +3703,43 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // `h.kept = new Node(2)`, `h.kept = table.at(i)` and everything allocated in a region -- the
         // last being the thing the analysis is named after.
         if (regionBinder_) {
+            // WRITING THROUGH A POINTER PARAMETER IS WRITING INTO THE CALLER. `out[0] = local` and
+            // `*out = local` put this frame's storage somewhere the caller will read after the
+            // frame is gone -- the same escape as a `return`, spelled backwards, and the analysis
+            // had no branch for it at all: it watched fields and returns, and an out-parameter is
+            // neither.
+            //
+            // KNOWABLE HERE, with no summary. A `T**` parameter cannot point into this frame --
+            // the caller made it before the call existed -- so the ordering is decided by the
+            // declaration, not by who calls it.
+            {
+                const ast::Expr* through = nullptr;
+                if (const auto* ix = dynamic_cast<const ast::IndexExpr*>(assign->target.get())) {
+                    through = ix->array.get();
+                } else if (const auto* un =
+                               dynamic_cast<const ast::UnaryExpr*>(assign->target.get());
+                           un != nullptr && un->op == "*") {
+                    through = un->operand.get();
+                }
+                if (const auto* pid = dynamic_cast<const ast::IdentifierExpr*>(through);
+                    pid != nullptr && currentParamNames_.count(pid->name) > 0) {
+                    const LocalVar* held = lookupLocal(pid->name);
+                    // Two levels of indirection, so the write lands in the caller's own storage:
+                    // `T[] rows` is the caller's array of values and filling it is ordinary work.
+                    if (held != nullptr && pointerDepth(held->type) >= 2) {
+                        if (const Lifetime src = lifetimeOf(*assign->value);
+                            src.kind == RegionKind::Activation || src.kind == RegionKind::Region) {
+                            error("region-binder: this writes " + describeRegion(src) +
+                                      " through '" + pid->name +
+                                      "', which the caller gave and will read after this call "
+                                      "returns -- so what lands there is gone before it is read. "
+                                      "Allocate it with 'on heap', or have the caller pass storage "
+                                      "for a copy",
+                                  assign->loc);
+                        }
+                    }
+                }
+            }
             if (const auto* mem = dynamic_cast<const ast::MemberExpr*>(assign->target.get())) {
                 // Only a POINTER/REFERENCE field aliases; a value field deep-copies and cannot
                 // dangle. That gate is what keeps this quiet about the 85% of fields that are
@@ -2912,8 +3801,23 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                             return;
                         }
                     }
+                    // A `weak` REFERENCE HAS NOTHING TO PROVE, and everything below this line is an
+                    // attempt to prove that the referent outlives the field -- because a field that
+                    // outlives what it points at is a field that dangles. The referent's teardown
+                    // unlinks every weak pointer aimed at it (`weakUnlink`/`weakNullify`, emitted
+                    // into the destructor and into the region destructor alike), so reading one
+                    // after the referent dies yields null rather than freed memory. That is the
+                    // same guarantee the ordering was there to establish, obtained without one.
+                    //
+                    // Found by putting a kernel's processes in a `pool region`: two processes in one
+                    // pool, a child holding `weak Process* parent`, and neither outliving the other
+                    // by construction -- which is exactly the situation `weak` exists for and the
+                    // only one this rule had no answer to. The advice it printed was "store a copy,
+                    // or have one of them own the value outright"; the code had already done the
+                    // better third thing.
+                    const bool weakTarget = fieldIsWeakIn(targetClass, mem->member);
                     const bool refused =
-                        (ownChainTail || callersQuestion) ? false
+                        (ownChainTail || callersQuestion || weakTarget) ? false
                         : owns ? (source.kind == RegionKind::Activation ||
                                   source.kind == RegionKind::Region)
                                : !outlivesOrEqual(source, target);
@@ -3021,6 +3925,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         if (const auto* id = dynamic_cast<const ast::IdentifierExpr*>(assign->target.get())) {
             moved_.erase(id->name);  // reassignment reactivates the variable
             activationOwned_.erase(id->name);  // reassigned: no longer the tracked activation-owned object
+            programLongLocals_.erase(id->name);  // ...nor the eternal one it was declared with
             extracted_.erase(id->name);  // ... including after an `x = extract x from region R;`
             // ...AND AFTER A `delete`, WHICH IS THE SAME SITUATION. `delete buf; buf = new int[n]();`
             // is how a buffer is resized in every program that has one, and the name is alive again
@@ -3085,9 +3990,33 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         }
         warnNullCheckOnNonNullable(*ifs->cond);   // while the names are still in scope
         if (ifs->isComptime) {
-            long long v;
-            if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_, &enums_)) {
+            long long v = 0;
+            if (!evalConstInt(*ifs->cond, v, &constInts_, &comptimeMethods_, &constDoubles_, &enums_,
+                              targetArch_)) {
                 error("'comptime if' requires a compile-time constant condition", ifs->loc);
+            } else {
+                // THE UNTAKEN BRANCH IS PARSED AND NOT ANALYSED (layout.md §10.1a).
+                //
+                // It must PARSE, so it is syntax and not text -- a `#if` over a token soup is what
+                // this design is refusing. It is not analysed and not emitted, so target-conditional
+                // code may name things that DO NOT EXIST in the other mode: `Console` inside a
+                // freestanding program, an aarch64 register inside an x86 block. That is not a
+                // loophole, it is the feature -- it is what makes one `Machine` library partitioned
+                // by target possible at all (`freestanding-prelude.md` §6).
+                //
+                // The price is that a typo in the dead branch goes unnoticed on this target. That is
+                // exactly the price of `#if`, and it is what makes `#if` useful; the difference here
+                // is that the dead branch still has to be a well-formed statement.
+                //
+                // Returning early rather than analysing the taken arm through the flow machine below
+                // would be wrong: the taken arm IS the program and owes every check any other
+                // statement owes. So only the other one is skipped.
+                if (v != 0) {
+                    analyzeBlock(ifs->thenBlock);
+                } else if (ifs->elseBlock) {
+                    analyzeBlock(*ifs->elseBlock);
+                }
+                return;
             }
         }
         // The branch is where the flow machine earns itself. Each arm is analyzed from the SAME entry
@@ -3098,12 +4027,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // A condition that PROVES something holds for the arm that ran because of it. `p != null` proves
         // it in the `then`; `p == null` proves it in the `else`, which is what makes the guard-clause
         // shape (`if (p == null) { return; }`) work: the proof lands on the continuation.
-        std::string provenThen, provenElse;
+        std::vector<std::string> provenThen, provenElse;
         proofFromCondition(*ifs->cond, provenThen, provenElse);
 
-        if (!provenThen.empty()) {
-            nonNull_.insert(provenThen);
-        }
+        nonNull_.insert(provenThen.begin(), provenThen.end());
         const std::string savedLazy = lazyInitField_;
         lazyInitField_ = lazyInitGuardField(*ifs->cond);
         analyzeBlock(ifs->thenBlock);
@@ -3112,9 +4039,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         const bool thenExits = blockAlwaysExits(ifs->thenBlock);
 
         restoreFlow(entry);
-        if (!provenElse.empty()) {
-            nonNull_.insert(provenElse);
-        }
+        nonNull_.insert(provenElse.begin(), provenElse.end());
         if (ifs->elseBlock) {
             analyzeBlock(*ifs->elseBlock);
         }
@@ -3141,6 +4066,17 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         warnDefaultOverAClosedSet(*ms, subjType);   // while the subject's name is still in scope
         const std::string subjBaseM = baseType(subjType);
         const auto subjDollarM = subjBaseM.find('$');
+        // EACH ARM FROM THE SAME ENTRY STATE, and afterwards the join of the arms that fall through --
+        // the `if`'s rule, arm by arm. Analyzed one after another on shared state, a guard in one arm
+        // narrowed the same name in every arm below it: `case desk { if (d == null) { return null; } }`
+        // made `d` non-null in `case wm`, which then compiled a use of a value that may be null there.
+        const FlowFacts matchEntry = snapshotFlow();
+        std::vector<FlowFacts> fallThrough;
+        auto armDone = [&](const ast::Block& body) {
+            if (!blockAlwaysExits(body)) {
+                fallThrough.push_back(snapshotFlow());
+            }
+        };
         // AN ENUM SUBJECT: the cases name CONSTANTS, not types.
         //
         // `match` began as dispatch over a sealed hierarchy, so every arm was looked up as a class
@@ -3160,15 +4096,20 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                           "value, not a shape with fields to take apart",
                           c.loc);
                 }
+                restoreFlow(matchEntry);
                 pushScope();
                 for (const auto& st : c.body.statements) {
                     analyzeStatement(*st);
                 }
                 popScope();
+                armDone(c.body);
             }
             if (ms->defaultBody) {
+                restoreFlow(matchEntry);
                 analyzeBlock(*ms->defaultBody);
+                armDone(*ms->defaultBody);
             }
+            joinArms(matchEntry, fallThrough);
             if (sealedEnums_.count(subjBaseM) > 0) {
                 // Every constant, or say which is missing. This is the whole of what `sealed` buys
                 // on an enum: the constant added next year is reported at each match that forgot
@@ -3217,6 +4158,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 error("'" + c.typeName + "' is not a subtype of '" + subjType + "'", c.loc);
             }
             // Bindings introduce locals (the case type's fields) in the case body.
+            restoreFlow(matchEntry);
             pushScope();
             for (const ast::Param& b : c.bindings) {
                 declareLocal(b.name, LocalVar{typeRefStr(b.type), false});
@@ -3225,10 +4167,14 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 analyzeStatement(*st);
             }
             popScope();
+            armDone(c.body);
         }
         if (ms->defaultBody) {
+            restoreFlow(matchEntry);
             analyzeBlock(*ms->defaultBody);
+            armDone(*ms->defaultBody);
         }
+        joinArms(matchEntry, fallThrough);
         // Exhaustiveness (spec 16.1): a sealed subject must cover every permit and
         // needs no default; a non-sealed subject requires a default.
         const ClassInfo* sc = lookupClass(baseType(subjType));
@@ -3261,20 +4207,44 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // zero-pass loop means we cannot claim it was assigned either, so the entry state stands.
         const FlowFacts entry = snapshotFlow();
         killProofsAssignedIn(ws->body);   // one reading of the body stands for every iteration
-        std::string provenBody, unused;
+        std::vector<std::string> provenBody, unused;
         proofFromCondition(*ws->cond, provenBody, unused);
-        if (!provenBody.empty()) {
-            nonNull_.insert(provenBody);
-        }
+        nonNull_.insert(provenBody.begin(), provenBody.end());
         analyzeBlock(ws->body);
-        warnStringBuildingInLoop(ws->body);
-        warnCopyHoistableOutOfLoop(ws->body);
-        warnVirtualCallInLoop(ws->body);
+        // ---- THE ADVISORY PASSES, AND NONE OF THEM MAY RECORD AN ERROR ----
+        //
+        // They run AFTER the body, when every scope the body opened has been popped, and they walk
+        // into nested loops and `if` blocks. Anything they ask `typeOf` about therefore names
+        // variables that are no longer declared -- and `typeOf` REPORTS as it goes. A `for` inside a
+        // `while` produced `use of undeclared variable 'i'` about the loop's own counter, on code
+        // that is perfectly correct, and the reader has no way to tell that from a real mistake.
+        //
+        // This is the principle `error` already states at its own definition -- asking a question
+        // must not produce a complaint -- applied where the questions are asked. `Quiet` mutes
+        // errors and NOT warnings, so every rule below still fires; what it cannot do any more is
+        // invent a failure on behalf of a rule that decided to say nothing.
+        //
+        // At the group rather than inside each rule: the property belongs to the PHASE. A rule added
+        // here next year inherits it without its author having to know this history.
+        {
+            Quiet advisory(*this);
+            warnStringBuildingInLoop(ws->body);
+            warnCopyHoistableOutOfLoop(ws->body);
+            warnVirtualCallInLoop(ws->body);
+        }
         // The bound of a `while (i < N)` is its right-hand side: that is what the range analysis
         // would have to relate to the array's length, and usually cannot.
-        warnIndexBoundNotTheArray(*ws, ws->body, boundExprOf(ws->cond.get()));
+        {
+            Quiet advisory(*this);
+            warnIndexBoundNotTheArray(*ws, ws->body, boundExprOf(ws->cond.get()));
+        }
         invalidateAcrossBackEdge(entry);
-        restoreFlow(entry);
+        {
+            const FlowFacts bodyEnd = snapshotFlow();
+            checkLoopCarriedObligations(ws->body, entry, bodyEnd);
+            restoreFlow(entry);
+            keepObligationsAfterLoop(bodyEnd);
+        }
         return;
     }
     if (const auto* dw = dynamic_cast<const ast::DoWhileStmt*>(&stmt)) {
@@ -3285,6 +4255,10 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         warnStringBuildingInLoop(dw->body);
         warnCopyHoistableOutOfLoop(dw->body);
         invalidateAcrossBackEdge(entry);
+        // A do-while's body runs at least once, so what it owes at the end really is owed afterwards
+        // and there is no `restoreFlow` here -- but the back edge is the same back edge, and the
+        // second time round reads what the first freed exactly as in a `while`.
+        checkLoopCarriedObligations(dw->body, entry, snapshotFlow());
         const std::string ct = typeOf(*dw->cond);
         if (!ct.empty() && ct != "boolean") {
             error("'do-while' condition must be boolean, got '" + ct + "'", dw->loc);
@@ -3312,7 +4286,12 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         warnVirtualCallInLoop(fs->body);
         warnIndexBoundNotTheArray(*fs, fs->body, boundExprOf(fs->cond.get()));
         invalidateAcrossBackEdge(entry);
-        restoreFlow(entry);
+        {
+            const FlowFacts bodyEnd = snapshotFlow();
+            checkLoopCarriedObligations(fs->body, entry, bodyEnd);
+            restoreFlow(entry);
+            keepObligationsAfterLoop(bodyEnd);
+        }
         popScope();
         return;
     }
@@ -3325,6 +4304,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                   es->expr->loc);
         }
         warnResultNeverExamined(*es, typeOf(*es->expr));   // while the names are still in scope
+        noteBorrowFlow(stmt);   // subsequent statements observe the invalidation
         return;
     }
     if (const auto* rs = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
@@ -3418,7 +4398,15 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                           "', so it gives up ownership: write 'return move ...'",
                       rs->loc);
             }
-            if (regionBinder_ && isRefType(currentReturnType_)) {
+            // AN ARRAY IS A REFERENCE TOO, whatever `isRefType` says about the spelling. `T[]` is a
+            // handle to a heap block, so handing one back out of the method that allocated it in a
+            // local region is the same escape as handing back a `T*` -- and the gate read only the
+            // trailing `*`, so a `byte[]` built `in region r` walked out of every one of these
+            // checks without being looked at.
+            const bool handsBackAReference =
+                isRefType(currentReturnType_) ||
+                currentReturnType_.find("[]") != std::string::npos;
+            if (regionBinder_ && handsBackAReference) {
                 if (const auto* rid = dynamic_cast<const ast::IdentifierExpr*>(rs->value.get());
                     rid != nullptr && activationOwned_.count(rid->name) > 0 &&
                     classArenaOwned_.count(rid->name) == 0) {
@@ -3484,6 +4472,40 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         decl.inputCount = static_cast<int>(asmS->inputs.size());
         decl.clobbers = asmS->clobbers;
         decl.inNakedFunction = inNakedFn_;
+        // WHERE THE OPERANDS WERE TOLD TO BE (docs/design/asm-constraints.md §6).
+        //
+        // Two things happen here, and the second is the one that matters.
+        //
+        // The first is validation: a name that is not a register of the block's declared
+        // architecture is an error naming that architecture -- because what this catches is not a
+        // typo, it is a PORT. A block copied from the x86 side with the arch word changed gets every
+        // mnemonic checked against the new target and, without this, its constraints checked against
+        // nothing at all, so the one line still saying x86 is the one line nothing looks at.
+        //
+        // The second: A DECLARED PLACE IS A WRITE TO THAT REGISTER, so it joins the clobber list the
+        // body checker reasons about. `out ("ax": v)` means the block puts something in `ax`, and
+        // `asmcheck`'s central rule is that a register written and declared to nobody is a lie the
+        // register allocator believes -- with the damage landing in unrelated code that happened to
+        // be holding a live value there. A constraint naming a register without telling that checker
+        // would be a new way to tell exactly that lie, arriving through the feature added to make
+        // the declarations better.
+        //
+        // Families and not names: writing `eax` destroys `rax`, which is why `registerFamily`
+        // exists, and a PAIR destroys two of them through the one syntax that names two at once.
+        auto notePlaces = [&](const std::vector<std::string>& where) {
+            for (const std::string& place : where) {
+                std::string why;
+                if (!semantic::asmPlaceIsValid(asmS->arch, place, &why)) {
+                    error(why, asmS->loc);
+                    continue;
+                }
+                for (const std::string& fam : semantic::asmPlaceFamilies(asmS->arch, place)) {
+                    decl.clobbers.push_back(fam);
+                }
+            }
+        };
+        notePlaces(asmS->outputWhere);
+        notePlaces(asmS->inputWhere);
         const semantic::AsmReport report = semantic::checkAsm(asmS->body, decl);
         for (const semantic::AsmFinding& f : report.findings) {
             const std::string where = " (asm line " + std::to_string(f.line) + ")";
@@ -3521,6 +4543,15 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
                 const LocalVar* lv = lookupLocal(id->name);
                 if (isRefType(t) || isArrayType(t) || (lv != nullptr && lv->isHeapObject)) {
                     freed_.insert(id->name);
+                }
+                // `delete this` IS A DELETE, and the name it frees is the one every other line in
+                // the method reads. It was reaching neither test above -- `this` is not a local and
+                // its type is the class rather than a pointer to it -- so an object could free
+                // itself and go on reading its own fields with nothing said. A self-destructing
+                // object is a legitimate thing to write; reading it afterwards is not, and that is
+                // the same rule every other name here is under.
+                if (id->name == "this") {
+                    freed_.insert("this");
                 }
             }
         };
@@ -3723,9 +4754,13 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         return;
     }
     if (const auto* rv = dynamic_cast<const ast::ReimportValidateStmt*>(&stmt)) {
-        if (freestanding_) {
-            error("unimport/reimport is not available in freestanding mode (spec 36.3)", rv->loc);
-        }
+        // NOT BARRED IN FREESTANDING, and this is the form with the strongest claim to belong
+        // there. The contract `unimport` needs is two symbols the PROGRAM provides, and a kernel
+        // provides them the same way it provides `__polaron_panic`. `reimport X expecting { ... }`
+        // validates that what came back is what went away -- and a kernel putting a driver's pages
+        // back is exactly where somebody wants that checked, far more than a hosted program
+        // re-reading its own file, where the bytes could not have changed. Horizon's module system
+        // IS this construct.
         if (lookupClass(baseType(rv->target)) == nullptr) {
             error("cannot reimport '" + rv->target + "': not a known class", rv->loc);
         }
@@ -3770,9 +4805,12 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         // `cascade unimport X` (spec 37.1): same rules as plain unimport, applied to X and its
         // subtypes/monomorphizations (the expansion happens in codegen).
         if (cs->op == ast::CascadeOpKind::Unimport) {
-            if (freestanding_) {
-                error("unimport is not available in freestanding mode (spec 36.3)", cs->loc);
-            }
+            // The third of the three gates, and barring it was the least defensible: `cascade
+            // unimport X` is `unimport X` applied to X and everything beneath it, expanded by
+            // codegen into the plain form -- so a program could write the expansion by hand and be
+            // allowed, and write what it means and be refused. See the note above `UnimportStmt`
+            // for why neither is barred: the contract is symbols the program provides, not a
+            // mechanism that needs a filesystem.
             if (lookupClass(baseType(cs->typeName)) == nullptr) {
                 error("cannot unimport '" + cs->typeName + "': not a known class", cs->loc);
             } else if (finalImports_.count(baseType(cs->typeName)) > 0) {

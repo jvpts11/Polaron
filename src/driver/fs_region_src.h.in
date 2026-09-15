@@ -1,0 +1,7 @@
+#pragma once
+// Generated from runtime/polaron_fs_region.pol by CMake.
+namespace polaron {
+inline constexpr const char* kFreestandingRegionSource = R"POLARONREGION(
+@POLARON_FS_REGION_SOURCE@
+)POLARONREGION";
+}

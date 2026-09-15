@@ -4,8 +4,9 @@ import System.Events.IntEvent;
 import System.Events.StringEvent;
 program Events;
 
-// Observer/event dispatch (spec 34): publishers hold handler functions and call them all on emit. Signal
-// carries no payload, IntEvent an int, StringEvent a String. Handlers may capture state (the Box counter).
+// Observer/event dispatch (spec 34): publishers hold handler commands and call them all on emit. Signal
+// carries no payload, IntEvent an int, StringEvent a String. A handler may carry state (the Box counter),
+// and the `carries` list is where that is said.
 // Prints (order): tick 5 / tick 10 / msg=hi / total=17 nsig=1 ntick=2 nmsg=1.
 public bundle main {
     public namespace app {
@@ -19,16 +20,24 @@ public bundle main {
             public static method main(string[] args) returns void {
                 mutable Box bx = new Box() on heap;
                 mutable Signal onSave = new Signal() on heap;
-                onSave.subscribe(lambda[captures: byvalue bx]() returns void { bx.add(1); });
+                onSave.subscribe(command () carries (Box* tally = bx) into pack returns void {
+                    pack.tally.add(1);
+                });
                 onSave.emit();
                 onSave.emit();
                 mutable IntEvent onTick = new IntEvent() on heap;
-                onTick.subscribe(lambda[captures: byvalue bx](int x) returns void { bx.add(x); });
-                onTick.subscribe(lambda(int x) returns void { System.IO.Console.printf("tick %d\n", x); });
+                onTick.subscribe(command (int x) carries (Box* tally = bx) into pack returns void {
+                    pack.tally.add(x);
+                });
+                onTick.subscribe(command (int x) returns void {
+                    System.IO.Console.printf("tick %d\n", x);
+                });
                 onTick.emit(5);
                 onTick.emit(10);
                 mutable StringEvent onMsg = new StringEvent() on heap;
-                onMsg.subscribe(lambda(String m) returns void { System.IO.Console.printf("msg=%s\n", m); });
+                onMsg.subscribe(command (String m) returns void {
+                    System.IO.Console.printf("msg=%s\n", m);
+                });
                 onMsg.emit("hi");
                 System.IO.Console.printf("total=%d nsig=%d ntick=%d nmsg=%d\n",
                     bx.get(), onSave.count(), onTick.count(), onMsg.count());

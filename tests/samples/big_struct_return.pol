@@ -1,0 +1,76 @@
+import System.IO.Console;
+program BigStructReturn;
+
+// A STRUCT TOO BIG FOR THE RETURN REGISTERS COMES BACK THROUGH A SLOT THE CALLER OWNS.
+//
+// It came back as a first-class aggregate, and a method with several `return`s had them merged into
+// one exit joined by a `phi` of the struct -- two hundred separate bytes live across the join, every
+// one spilled to the frame. Horizon's path walk had a 10,952-byte frame that way, on a 16 KiB kernel
+// stack, and ran off the end of it on the first `openat` from ring 3. Now the result is a hidden
+// `sret` argument and the callee copies into it: `ir_big_struct_returns_through_a_slot` pins the
+// shape, and this pins that the values still arrive -- from a method with four exits, through an
+// interface (an indirect call), and from a static factory. Prints `3 198 -2 -1 -3 7 198`.
+public bundle Main {
+    public namespace App {
+        public struct Answer {
+            private mutable int code;
+            private mutable byte[200] note;
+            private mutable int length;
+
+            public constructor Answer(int code, int length) {
+                byte[200] blank;
+                this.note = blank;
+                this.code = code;
+                this.length = length;
+                for (mutable int i = 0; i < length; i = i + 1) { this.note[i] = cast<byte>(65 + i); }
+            }
+
+            public static method refused(int why) returns Answer { return new Answer(0 - why, 0); }
+            public method code() returns int { return this.code; }
+            public method weight() returns int {
+                mutable int w = 0;
+                for (mutable int i = 0; i < this.length; i = i + 1) { w = w + cast<int>(this.note[i]); }
+                return w;
+            }
+        }
+
+        public interface Source {
+            method answer(int k) returns Answer;
+        }
+
+        public class Counting implements Source {
+            public constructor Counting() { }
+            public override method answer(int k) returns Answer {
+                if (k < 0) { return Answer.refused(1); }
+                if (k == 0) { return Answer.refused(2); }
+                if (k > 100) { return Answer.refused(3); }
+                Answer made = new Answer(k, k);
+                return made;
+            }
+        }
+
+        public class Fixed implements Source {
+            public constructor Fixed() { }
+            public override method answer(int k) returns Answer { return new Answer(7, 3); }
+        }
+
+        public class Main {
+            public static method ask(Source* from, int k) returns Answer { return from.answer(k); }
+
+            public static method main(string[] args) returns void {
+                Counting* counting = new Counting() on heap;
+                Fixed* steady = new Fixed() on heap;
+                Answer three = counting.answer(3);
+                Answer none = counting.answer(0);
+                Answer below = Main.ask(counting, 0 - 5);
+                Answer above = Main.ask(counting, 200);
+                Answer other = Main.ask(steady, 1);
+                System.IO.Console.println($"{three.code()} {three.weight()} {none.code()} {below.code()} " +
+                                          $"{above.code()} {other.code()} {other.weight()}");
+                delete counting;
+                delete steady;
+                return;
+            }
+        }
+    }
+}

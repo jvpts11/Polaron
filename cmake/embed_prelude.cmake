@@ -33,7 +33,7 @@
 # -- `Math` is declared in two places). It is sorted so the foundations come first anyway, because
 # the assembled file is what a diagnostic points into.
 set(PRELUDE_ORDER
-    Runtime Memory Memory.Units Errors Collections Arrays Algorithms Text Codecs Math Time
+    Runtime Commands Memory Memory.Units Errors Collections Arrays Algorithms Text Codecs Math Time
     IO OS Net Concurrency Ipc Json Formats Compress Science Spatial Units Serialize Validate
     Inject Arena Compare Persist Terminal Security Tls Events Ecs App Test)
 
@@ -76,6 +76,50 @@ foreach(_subject IN LISTS PRELUDE_ORDER)
     math(EXPR _line "${_line} + ${_n_lines}")
 endforeach()
 string(APPEND _prelude "}\n")
+
+# ---- AND THE SECOND BUNDLE: `Machine`, the bare-metal tier ----
+#
+# `import Machine.Serial;` rather than `System.*`, and a BUNDLE of its own rather than a namespace
+# under `System`, because the distinction is the point and a namespace would blur it
+# (docs/design/freestanding-prelude.md §4).
+#
+# The tier is visible IN THE FILE SYSTEM too -- `src/prelude/machine/` beside `lib/` -- and that is
+# not organisation (§10.1). The freestanding gate decides what a program may have by asking which
+# file a declaration came from, so a `Machine` bundle scattered through `lib/` would be a tier the
+# language knows about and the compiler's own checks cannot see: today's failure, inverted.
+#
+# Appended to the same source text and the same line index, so a diagnostic inside it still names a
+# file and a line. `<prelude>` is one document however many bundles it declares.
+set(MACHINE_ORDER Target Port Serial Screen Raw Format)
+string(APPEND _prelude "public bundle Machine {\n")
+math(EXPR _line "${_line} + 1")
+foreach(_subject IN LISTS MACHINE_ORDER)
+    set(_f "${PRELUDE_DIR}/machine/${_subject}.pol")
+    if(NOT EXISTS "${_f}")
+        message(FATAL_ERROR
+            "prelude: MACHINE_ORDER names '${_subject}' but ${_f} does not exist.\n"
+            "  Either the file was renamed and the list was not, or the list gained a typo.")
+    endif()
+    file(READ "${_f}" _part)
+    string(APPEND _index "    {${_line}, \"machine/${_subject}.pol\"},\n")
+    string(APPEND _prelude "${_part}")
+    string(REGEX MATCHALL "\n" _newlines "${_part}")
+    list(LENGTH _newlines _n_lines)
+    math(EXPR _line "${_line} + ${_n_lines}")
+endforeach()
+string(APPEND _prelude "}\n")
+
+# Same rule as `lib/`: a file that exists and is not named here would vanish with no other sign.
+file(GLOB _foundMachine "${PRELUDE_DIR}/machine/*.pol")
+foreach(_f IN LISTS _foundMachine)
+    get_filename_component(_full "${_f}" NAME)
+    string(REGEX REPLACE "\\.pol$" "" _n "${_full}")
+    if(NOT "${_n}" IN_LIST MACHINE_ORDER)
+        message(FATAL_ERROR
+            "prelude: src/prelude/machine/${_full} exists but '${_n}' is not in MACHINE_ORDER.\n"
+            "  Add it to MACHINE_ORDER in cmake/embed_prelude.cmake.")
+    endif()
+endforeach()
 
 # Every .pol under lib/ must be named in PRELUDE_ORDER: a subject added to the directory and
 # forgotten here would vanish from the library silently, which is the one failure this cannot afford.

@@ -1,0 +1,83 @@
+import System.IO.Console;
+program Commands;
+
+// COMMANDS, END TO END -- the chapter's integration test, and what `lambdas.pol` became.
+//
+// A command as a value, a command as a parameter, a command handed back by a method, a command
+// carrying baggage, and a bound method reference. The one thing here that is NOT a rewrite of the
+// old test is the second call to `addBase`: the baggage is copied at construction, so changing the
+// local afterwards does not change the command. A `byref` capture used to, and has no successor --
+// a command that shared a caller's local could not outlive the frame it was written in, which is
+// the one thing a command is for.
+//
+// `methodref cat.speak` keeps its virtual dispatch: the receiver is statically an `Animal` and
+// dynamically a `Cat`, and the override runs. The binding is a command carrying the receiver, so
+// the call inside it is an ordinary call on an ordinary pointer -- which is why nothing here had to
+// be taught about overriding.
+//
+// Prints: a=10 b=107 c=12 d=15 e=400 f=107
+
+public bundle Main {
+    public namespace App {
+        public command IntMap(int x) returns int;
+
+        public class Animal {
+            public constructor Animal() {}
+            public method speak(int n) returns int { return n; }
+        }
+
+        public class Cat extends Animal {
+            public constructor Cat() {}
+            public override method speak(int n) returns int { return n * 100; }
+        }
+
+        public class Steps {
+            public command times(int x) carries (int factor) into pack returns int {
+                return x * pack.factor;
+            }
+            public command addBase(int x) carries (int base) into pack returns int {
+                return x + pack.base;
+            }
+        }
+
+        public class Main {
+            // A command used as a parameter, applied twice.
+            public static method twice(IntMap* f, int v) returns int {
+                return f(f(v));
+            }
+
+            // ...and a command handed back by a method.
+            public static method adder(int n) returns IntMap* {
+                return Steps.addBase(n);
+            }
+
+            public static method main(string[] args) returns void {
+                IntMap* dbl = Steps.times(2);
+                int a = dbl(5);                    // 10
+
+                mutable int base = 100;
+                IntMap* addBase = Steps.addBase(base);
+                int b = addBase(7);                // 107
+
+                int c = Main.twice(dbl, 3);        // dbl(dbl(3)) = 12
+
+                IntMap* add10 = Main.adder(10);
+                int d = add10(5);                  // 15
+
+                // Bound method reference with virtual dispatch: the receiver is statically an
+                // Animal but dynamically a Cat, so the override runs.
+                Animal cat = new Cat() on heap;
+                IntMap* sp = methodref cat.speak;
+                int e = sp(4);                     // Cat.speak(4) = 400
+
+                // The baggage was COPIED when the command was built.
+                base = 900;
+                int f = addBase(7);                // still 107
+
+                System.IO.Console.printf("a=%d b=%d c=%d d=%d e=%d f=%d\n", a, b, c, d, e, f);
+                delete cat;
+                return;
+            }
+        }
+    }
+}

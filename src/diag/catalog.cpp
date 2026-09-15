@@ -223,6 +223,94 @@ constexpr Row kCatalog[] = {
         "Keep ownership at the granularity you move at: own a value in one variable and move that. "
         "`unique`/`movable` on a type document exactly how its instances may travel." }},
 
+    {Code::UniqueFieldForbidsCopy, {
+        "Polaron-0407", "this type cannot be copied: it owns a `unique` value",
+        "A `unique` value has ONE LIVE HOLDER, and a copy of the type that contains it would produce a "
+        "second -- so a type with a `unique` field is uncopyable. That is not a choice the author makes, "
+        "it is arithmetic, which is why it is implied rather than written the way `dynamic` is.\n"
+        "\n"
+        "THE MESSAGE NAMES THE FIELD, and by its path -- `head`, or `outer.inner.slot` -- because the "
+        "field that forbids the copy is frequently not in the type being copied but two types below it. "
+        "Without the name the refusal points at a declaration that does not contain the cause.",
+        "Share it instead of copying: take a pointer (`T*`) or a reference (`T&`), which is what most "
+        "call sites actually wanted. If the value really is changing hands, `move` it -- that is what "
+        "`unique` is for and it costs nothing. If the field does not need to be unique, take the word "
+        "off it.",
+        "Put `unique` on the thing that genuinely has one owner -- a handle, a lock, a buffer somebody "
+        "must eventually release -- and let everything containing it inherit the discipline. A type "
+        "that cannot be copied because of what it owns is a type whose copies were always a bug." }},
+
+    {Code::ShareableRacyField, {
+        "Polaron-0408", "`shareable` over a field nothing synchronises",
+        "`shareable` says a type is safe to reach from several threads at once, and it is CHECKED rather "
+        "than trusted. The rule is decidable from the declaration alone: legal when every mutable field is "
+        "`atomic<T>`, or is itself `shareable` -- or when the type is entirely immutable.\n"
+        "\n"
+        "WHY IT IS NOT A PERMISSION. A bare one would be a one-word hole in the no-UB principle: write it "
+        "over a type with a plain mutable `int` and you have exactly the race the compiler otherwise "
+        "refuses. That refusal is what makes the aliasing-and-concurrency objection invert, and trading it "
+        "for a password would be handing the objection back after winning it. This is the house pattern -- "
+        "you declare the intent and the compiler confirms it -- beside `override` declaring and the "
+        "hierarchy checking, and `layout` stating and the arrangement refusing.",
+        "Make the field `atomic<T>` if it is a counter or a flag; make its type `shareable` if it is "
+        "another type of yours that can carry the same promise; or drop `mutable` if nothing writes it "
+        "after construction, which is the cheapest answer and often the true one. If the type genuinely "
+        "needs a lock, hold it in a `Mutex<T>` and share THAT -- the lock is what makes it safe, and the "
+        "type should say so.",
+        "Reach for `shareable` last rather than first. Handing a chunk to a thread by `move` needs no "
+        "sharing at all and costs nothing; `atomic<T>`, `Mutex<T>` and `Channel<T>` cover most of the "
+        "rest. A type that must be shared AND mutated is the rarest of the four, and the one worth "
+        "writing down." }},
+
+    {Code::ReentrantViolation, {
+        "Polaron-0409", "a `reentrant` method reaches something it may have interrupted",
+        "`reentrant` means THIS MAY BE ENTERED AGAIN WHILE AN EARLIER ENTRY IS STILL RUNNING, and two "
+        "things follow: it may reach no storage another activation could be inside, and it may touch no "
+        "shared mutable state. The allocator has global mutable state you may have interrupted "
+        "mid-update; a lock deadlocks against itself; and a mutable field the earlier entry was half-way "
+        "through writing is read torn.\n"
+        "\n"
+        "THE OBLIGATION IS VIRAL and the message names the PATH -- \"(reached via refill)\". That is the "
+        "point of it: `Ring.refill frees memory` is a fact about Ring, and a fact about Ring is not a "
+        "bug. `pump is reentrant and reaches it, via refill` is the bug, and it is the sentence that says "
+        "which of the two to change.\n"
+        "\n"
+        "`interrupt` is implicitly `reentrant` -- the handler's old list of prohibitions is one "
+        "implication of this property rather than a set of rules of its own.",
+        "Change whichever end is wrong. If the reentrant method should not be doing this work, move the "
+        "allocation or the lock out of the path -- pre-allocate at construction, or hand the work to "
+        "something that is not reentrant. If the method it reaches is fine and the caller should not be "
+        "reentrant, take the word off. For shared mutable state, say what it is: `volatile` when hardware "
+        "is on the other end, `atomic<T>` for a counter or a flag -- both are one instruction on x86-64 "
+        "and neither needs a runtime.",
+        "Decide reentrancy at the top of a call chain rather than in the middle of one. A handler, a "
+        "scheduler entry and a page-fault path are reentrant by nature; everything they reach inherits "
+        "it, so keeping those chains short and allocation-free is the design, not the workaround." }},
+
+    {Code::EntityColumnHasNoWidth, {
+        "Polaron-0410", "an entity's field has no width decided here",
+        "An `entity` is a value type whose ARRAYS are transposed: `Particle[]` is ONE block whose "
+        "columns run end to end, not a run of rows. That is what the word buys -- a loop over one field "
+        "touches a run of consecutive values rather than one cache line per element -- and it works "
+        "because the second column starts at the width of the first times N. A field whose width is not "
+        "decided at its declaration has no offset to give.\n"
+        "\n"
+        "TWO KINDS OF FIELD FAIL THAT, for different reasons. A dynamic array's length is a property of "
+        "the VALUE, so `int[] trail` is a different number of bytes in every row; laid out anyway it "
+        "would be a column of slice HEADERS, which is a side table wearing a field -- and a side table "
+        "is the type dissolving again, which is the exact failure this construct exists to prevent. A "
+        "class held BY VALUE has a width, but it has to flatten to its leaves, so that `Vec3 pos` "
+        "becomes three float columns rather than one struct column with alignment holes inside it, "
+        "where nobody would think to look for them. The flattening is designed and not built yet.\n"
+        "\n"
+        "A POINTER FIELD IS FINE and always was: it IS one word, and there is nothing to flatten.",
+        "For an array: hold an index into a second entity instead. That is the arrangement the columns "
+        "make cheap, and it keeps both types real. For a nested aggregate: write its leaves out as "
+        "fields of the entity (`float px, py, pz` rather than `Vec3 pos`), or hold a pointer to it.",
+        "Design an entity's fields as the scalars a pass actually reads. The construct exists to make a "
+        "loop over ONE field cheap, and a field that is itself a structure is a loop over several -- so "
+        "the restriction and the reason to reach for the word are the same fact seen from two sides." }},
+
     {Code::InvalidAssignTarget, {
         "Polaron-0404", "cannot assign to this",
         "The left of `=` (or the target of `++`/`--`) must be an assignable place: a variable, a field, or "
@@ -744,6 +832,19 @@ constexpr Row kCatalog[] = {
         "`weak` belongs on the back-references in a graph -- a child pointing at its parent, an "
         "observer pointing at its subject -- which are pointers by their nature." }},
 
+    {Code::WeakFieldInStruct, {
+        "Polaron-0411", "a struct cannot hold a `weak` field",
+        "A weak field is a node on its target's list of observers, so that deleting the target can "
+        "clear it. The node has to be taken off that list when the field's holder dies. A class "
+        "instance dies at one place, its destructor, and the compiler unlinks there. A value struct "
+        "is copied on every assignment and argument and dies at the end of each scope, and none of "
+        "those copies is ever unlinked -- the target's list keeps pointing into dead stack, and the "
+        "delete that walks it writes there.",
+        "Make the field a plain pointer and keep the target alive by some other means (a reference "
+        "count, an owner that outlives the struct), or make the type a class so it has one life.",
+        "A struct is a value: give it values and plain pointers. A relationship that must notice its "
+        "target going away belongs to an object with an identity." }},
+
     {Code::AtomicTooWide, {
         "Polaron-0809", "this is wider than the machine can do atomically",
         "An atomic operation is one the hardware performs indivisibly, and hardware does that only up "
@@ -1082,17 +1183,21 @@ constexpr Row kCatalog[] = {
         "the failure is a value, not an event." }},
 
     {Code::ResultNeverExamined, {
-        "Polaron-0B19", "this call returns a Result or Option and the statement drops it",
-        "The signature went to the trouble of making the failure visible, and the call site undoes "
-        "it. What is left reads like a call that cannot fail -- there is nothing at the site to "
-        "suggest otherwise -- and the failure that did happen goes nowhere at all. That is worse "
-        "than an unchecked error code, because the type promised somebody was looking.",
+        "Polaron-0B19", "this call's answer is the point, and the statement drops it",
+        "The signature went to the trouble of making the answer visible, and the call site undoes "
+        "it. For a `Result` that is the worst version: what is left reads like a call that cannot "
+        "fail -- there is nothing at the site to suggest otherwise -- and the failure that did "
+        "happen goes nowhere at all, which is worse than an unchecked error code because the type "
+        "promised somebody was looking.\n\n"
+        "The property is not `Result`'s alone, and it is no longer two names written into the "
+        "compiler: a type declared `mustuse` says it once for every method that will ever return "
+        "one, and a single method may say it where its type does not.",
         "Look at it: `match` on it, take the value with `valueOr`, or propagate with `try?`. Where "
-        "the failure genuinely does not matter here, say so once -- discard it into a named local, "
-        "or write the `[Allow]` -- so the next reader knows it was a decision.",
-        "Treat a `Result` like a value that has to go somewhere, because that is what it is. The "
-        "compiler will start insisting on this the day `mustuse` lands; until then the rule is the "
-        "same and this is what says so." }},
+        "dropping it is genuinely what you mean, say so at the line -- `discard theCall();` -- so "
+        "the next reader sees a decision rather than a missing diagnostic.",
+        "Treat a `Result` like a value that has to go somewhere, because that is what it is. Put "
+        "`mustuse` on the types of your own whose answer is the reason the call exists; the word "
+        "costs nothing and the rule then arrives with the type instead of being remembered." }},
 
     {Code::HeapWithLexicalLifetime, {
         "Polaron-0B1A", "this is allocated on the heap and deleted in the same block",
@@ -1619,9 +1724,14 @@ constexpr Row kCatalog[] = {
         "in every instance, copied by every copy, and fetched by every cache line that touches the "
         "object. On a pool of thousands it is the difference between two cache lines per object and "
         "one.",
-        "Implement a `layout`. That authorises the compiler to order the fields widest-first, which "
-        "removes the holes without anybody maintaining the order by hand -- and a `layout` with "
-        "`fitWithin` states the budget, so the day a field pushes it over, the build says so.",
+        "Declare a `layout ... permits reorder` and write `arranges` on the type. The concession is "
+        "what authorises the compiler to order the fields widest-first, which removes the holes "
+        "without anybody maintaining the order by hand -- and `fitWithin` in the same layout states "
+        "the budget, so the day a field pushes it over, the build says so. `permits reorder` is a "
+        "separate word from the layout on purpose: it is the answer to *does anything outside this "
+        "program index these bytes*, and only the author knows that. Where something does -- a wire "
+        "format, a hardware register block -- leave it off and the holes are the price of the "
+        "format, which is a decision rather than an oversight.",
         "Let a layout own the order. Keeping fields widest-first by hand works until the tenth field "
         "is added in a hurry, and nothing anywhere says it was ever a rule." }},
 
@@ -1643,9 +1753,15 @@ constexpr Row kCatalog[] = {
         "debug build computes it every time -- and either way the value stays anonymous, which is "
         "the half no optimiser was ever going to fix. A number worth computing is a number worth "
         "naming.",
-        "Declare it `fixed`: `fixed int SLOTS = 8 * 8;`. It is then a compile-time constant by "
-        "guarantee rather than by hope, it has a name that says what it is for, and it costs nothing "
-        "at any optimisation level.",
+        "Name it on the CLASS: `public static fixed int Slots = 8 * 8;`, and read it as `Slots` "
+        "wherever the local was. It is then a compile-time constant by guarantee rather than by "
+        "hope, it has a name that says what it is for, it costs nothing at any optimisation level, "
+        "and every method that wanted the number gets the same one.\n"
+        "\n"
+        "`fixed` IS A MEMBER MODIFIER AND NOT A LOCAL ONE, which is worth saying here because this "
+        "text used to advise `fixed int SLOTS = 8 * 8;` in the place the local was -- a line that "
+        "does not parse. Advice a reader cannot follow is worse than no advice: they try it, the "
+        "compiler refuses, and the next thing they doubt is the rule.",
         "Name a computed constant where it is computed. The arithmetic is usually the explanation, "
         "and `fixed` is how the explanation survives." }},
 
@@ -1706,6 +1822,192 @@ constexpr Row kCatalog[] = {
         "This shape usually arrives from a generated skeleton, or from a refactor that pulled the "
         "shared work up into the base and left the copies where they were." }},
 
+    {Code::AllocationsWantARegion, {
+        "Polaron-0B52", "this hand-allocates and hand-frees several things: a region written longhand",
+        "One `new ... on heap` with its `delete` in the same block is a stack object that took the "
+        "long way, and Polaron-0B1A says so. Three or more of them is a different fact: the method "
+        "is keeping a manual ledger, every entry has to stay in step with its partner, and every "
+        "exit anybody adds later has to remember all of them. That is the bookkeeping a region "
+        "exists to remove -- not because the code is wrong, but because its correctness is currently "
+        "conditional on nobody making a mistake in it.",
+        "Declare a region at the top and allocate `in region r`. One allocation, one release, and "
+        "the release covers everything in it -- including on the exits that do not exist yet. The "
+        "flavour named in the message is the one that fits what the method does: `bump` frees the "
+        "whole block at once, `pool` hands storage back a slot at a time, which is what allocating "
+        "and freeing inside a loop is asking for.",
+        "Reach for a region when the count reaches three. Below that the pairs are still readable "
+        "one at a time; above it, nobody reads them -- they are checked, once, by whoever wrote "
+        "them." }},
+
+    {Code::TwoOwnersForOneObject, {
+        "Polaron-0B53", "two objects now own one object, and both destructors free it",
+        "A field a class frees in its destructor is a field it OWNS -- that is where this analysis "
+        "reads ownership from, and it is the sentence the author already wrote. Copying such a "
+        "pointer into another object that owns the same field does not share the object; it makes "
+        "two owners of it. Whichever is destroyed second frees storage the first already freed, and "
+        "there is no `delete` anywhere near the line that did it -- the crash arrives later, in a "
+        "destructor, possibly in another file.",
+        "Copy what you need out of the source instead of taking its pointer, or make the source's "
+        "field nullable and empty it in the same breath, so exactly one of the two still owns the "
+        "object. If the class really is meant to hand its storage over, say so in its own method "
+        "and leave the source holding nothing.",
+        "Decide which object owns a piece of storage when you write the destructor, and let every "
+        "assignment after that keep the answer true. Two destructors freeing one pointer is not a "
+        "sharing strategy; it is the same bug written twice, a long way apart." }},
+
+    {Code::UnqualifiedStaticCall, {
+        "Polaron-0107", "a static method is called through its class",
+        "`static` means the member belongs to the CLASS and not to an instance -- the reference has "
+        "always said so, and said it exactly this way: \"Belongs to the class, not an instance. "
+        "Called via `ClassName.member`\". So the class is the method's subject, and a bare "
+        "`sum(3, 4)` is an action with nothing it is about. An instance method written bare is a "
+        "different case and stays legal: `this` is its subject, and the language supplies it.",
+        "Name the class at the call: `Numbers.sum(3, 4)`, including from inside `Numbers` itself. "
+        "Where two classes share a short name, the namespace separates them -- "
+        "`Text.Reader.parse(1)`.",
+        "Polaron has no free methods, and a call that reads like one is the habit of a language that "
+        "does. Written bare, which class answered depended on where the call happened to be typed: "
+        "two classes may each declare `parse`, and the reader could not tell from the line which one "
+        "ran. The path says it at the call, where the reader is." }},
+
+    {Code::ReadonlyWrites, {
+        "Polaron-0815", "`readonly` is a promise this body does not keep",
+        "`readonly` says the method writes nothing: no field of its own, no field of anything it was "
+        "handed, no static, no output. It is not a hint and not a hope -- it is the declaration that "
+        "makes a method callable from a `requires` or an `ensures`, because a contract that could "
+        "change state would make the check part of the program's behaviour. It is also what lets the "
+        "optimizer drop a repeated call and hoist one out of a loop.\n\n"
+        "Checked through the CALL GRAPH, not just the lines in front of you: a body that writes "
+        "nothing itself but calls something that does, writes.",
+        "Drop the word, or move the write out. A cache IS a write, however invisible it looks from "
+        "outside -- the honest spelling for it is `lazy`, which the compiler knows how to keep and "
+        "can then reason about. Where the write belongs to a different concern, splitting the method "
+        "usually leaves a readonly half worth naming.",
+        "Declare `readonly` where the answer depends only on what was read, and let the compiler "
+        "hold you to it. The word earns its cost the day somebody adds a write and the build says "
+        "so, instead of a contract quietly acquiring a side effect." }},
+
+    {Code::BareValueTypeParameter, {
+        "Polaron-010B", "a value type parameter needs `fixed`, and a bare one is reserved",
+        "`fixed` marks WHEN a parameter binds. `<fixed int R>` binds at stamping: R is part of the "
+        "type, the class is monomorphized per value, and R is a literal in the body -- so `T[R * C]` "
+        "is real storage, a loop over R is a loop the optimizer can see the end of, and two "
+        "differently shaped instances are two different types.\n\n"
+        "A bare `<int a>` is the OTHER thing: a dimension supplied when the object is built, outside "
+        "the type's identity -- what the old runtime-dimension matrix does by hand, and what C++23's "
+        "`mdspan` spells with mixed extents. It arrives in a later version, and the spelling is kept "
+        "for it: a form that silently means the wrong thing today is a form nobody can give the "
+        "right meaning tomorrow.",
+        "Write `fixed int a` if the value belongs to the TYPE -- part of its identity, known at "
+        "every use, foldable. If it is decided when the object is built, take it as a constructor "
+        "parameter and keep it out of the brackets, which is what it is.",
+        "Read the brackets as \"what has to be known to stamp this\". A number that differs per "
+        "instance is not that; a number that makes two instances different types is." }},
+
+    {Code::ChannelSendNeedsMove, {
+        "Polaron-0814", "a channel hands the object over, so `send` transfers it",
+        "A channel slot is 64 bits, which covers integers and object references alike -- so a value "
+        "that is not a number crosses the channel as a REFERENCE, and the sending thread still holds "
+        "it afterwards. Two threads, one object, no lock and nothing on the line that says so. Every "
+        "other way a value moves in this language copies it: assignment deep-copies, a command's "
+        "baggage is copied when the command is built. The channel was the one place where the easy "
+        "spelling was the sharing one.",
+        "Write `move`: `out.send(move job);`. It is a transfer -- one holder before, one holder "
+        "after, no copy made -- and the sender's name is spent afterwards, exactly as it is at every "
+        "other `move`. To send a copy instead, make the copy first and send that; the cost is then "
+        "on the line that pays it.",
+        "Sharing between threads is something a program should have to say. When it is said, the "
+        "type says it -- `atomic<T>`, `Mutex<T>`, or a `shareable` class whose fields sustain the "
+        "claim. A bare `send` said nothing and shared anyway." }},
+
+    {Code::CommandTypeCarries, {
+        "Polaron-0108", "a command type says what will be called, not what it holds",
+        "A command type is a ROLE: `command DogTest(Dog& d) returns boolean;` names the shape an API "
+        "will call, so that `filter(DogTest* test)` can be written without naming any particular "
+        "command, and a command can be written without naming any particular API. What a command "
+        "CARRIES is the other half -- its own state, supplied when one is built -- and it differs "
+        "from command to command playing the same role. Writing it on the role would demand that "
+        "every command satisfying it carry the same things, which is the opposite of what a role is "
+        "for.",
+        "Drop the `carries` clause from the type. Put it on the command itself, where the values are "
+        "supplied at the use: `public command aboveAge(Dog& d) carries (int minAge) into pack "
+        "returns boolean { ... }`, built as `Kennel.aboveAge(21)`.",
+        "The declaration and the construction are different moments, and the grammar keeps them in "
+        "different places for exactly that reason. A role is written where the two are furthest "
+        "apart: the API is compiled without the command, and the command without the API." }},
+
+    {Code::InlineCommandHasNoClass, {
+        "Polaron-0109", "an inline command has no class to belong to",
+        "A command is a member -- the third kind, beside `method` and `procedure` -- so an inline "
+        "one is a member the compiler writes onto the class the expression was written inside. Here "
+        "there is no such class: the expression is not in a class body, so there is nowhere for the "
+        "member to go. This is the same rule that refuses a loose method, arriving at the one place "
+        "an expression could have smuggled one in.",
+        "Move the expression into a method of some class, or declare the command as a named member "
+        "and name it where the value is wanted: `Gate.aboveFloor(10)`.",
+        "Polaron has no free functions, and an inline command is not an exception to that -- it is "
+        "the shorthand for a member, which means there has to be a member." }},
+
+    {Code::InlineCommandCarriesNoValue, {
+        "Polaron-010A", "an inline command carries its values with it",
+        "The declared form writes the baggage in two places on purpose: `carries (int minAge)` at "
+        "the command, and `Kennel.aboveAge(21)` at the use, because the declaration and the use are "
+        "in different files, methods and minds. An inline command is written AT the use -- that is "
+        "the whole of what makes it inline -- so there is no second place for the values to come "
+        "from, and a carried name with nothing behind it is a field that stays empty forever.",
+        "Give each carried value where it is declared: `carries (int floor = 10) into pack`. The "
+        "expression on the right is evaluated once, where it is written, and copied into the "
+        "command.",
+        "A capture list that names variables without saying what happens to them is how every other "
+        "language spells this, and it is why nobody can tell from a lambda's first line what the "
+        "thing holds. Here the values are on the line." }},
+
+    {Code::ArrayPlacementIgnored, {
+        "Polaron-0B54", "an array cannot honour `on stack`, and this one was accepted and ignored",
+        "An object's `new` reads its placement and an array's did not: the clause parsed, nothing "
+        "checked it, and the array went to the heap whatever was written. So a line that says the "
+        "allocator is not involved has been calling the allocator, and the reader who wrote it has "
+        "every reason to believe otherwise. This compiler's own bare-metal failure reporter was "
+        "written `on stack` for the express purpose of keeping the allocator out of a fired guard's "
+        "path, and it called `__polaron_malloc(1032)` from inside one until somebody read the IR.",
+        "Drop the clause if the heap is what was meant -- the array was going there anyway, and the "
+        "line then says so. Where an allocation is what has to be avoided, `on static` is storage "
+        "that is part of the image: `private static mutable byte[] room = new byte[1024]() on "
+        "static;`. It costs no allocation, it exists before the first instruction, and it is one "
+        "buffer for the whole program, which is the trade to make deliberately.",
+        "A placement nothing reads is worse than no placement: it is a claim about where memory "
+        "comes from, in the one kind of code that is written because the answer matters." }},
+
+    {Code::LayoutSpelledImplements, {
+        "Polaron-0B51", "a layout is `arranges`, not `implements`",
+        "`implements` says this type keeps a promise made outward: an interface has methods, callers "
+        "hold it by that type, and the promise survives into the running program. A layout has none "
+        "of that -- no methods, never a type, nothing of it reaches the executable -- and it decides "
+        "something `implements` never decides, which is where the bytes go. The repository's own "
+        "sample used to carry a comment saying the word was not what it looked like; that comment is "
+        "the diagnostic this replaces.",
+        "Write `arranges` in place of `implements` for the layout, keeping `implements` for any real "
+        "interfaces on the same line: `struct Packet implements Sendable arranges WireRecord`.",
+        "The two clauses answer different questions, so a type usually wants both and the order says "
+        "which is which: what it promises, then what decides its bytes." }},
+
+    {Code::LayoutUnsatisfiable, {
+        "Polaron-0813", "no arrangement satisfies this layout",
+        "The type was arranged within what its layout concedes, measured, and the result does not "
+        "meet what the layout asks. A layout concedes nothing by default: naming one does not "
+        "authorise the compiler to permute the fields, because the commonest reason to write a "
+        "layout at all is a format some other program also indexes, and permuting that silently is "
+        "the failure the second design exists to remove.",
+        "The message names the concession that would have solved it and what the type would then "
+        "measure. If the number is acceptable, grant it on the layout -- `layout Compact permits "
+        "reorder` -- and the compiler does the ordering. If it is not, the fields themselves have to "
+        "change: something narrower, something out, or a bit field where a whole `int` was holding a "
+        "flag.",
+        "Decide what the layout is FOR before writing the ceiling. A cache-line budget is a "
+        "statement about this program and can concede everything; a wire format is a statement about "
+        "two programs and can concede nothing. They are written the same way and want opposite "
+        "defaults, which is why the concession is explicit and not inferred from the number." }},
+
     // ---- 0B4D..0B4F: the address discipline and the returned stack object -------------------
     //
     // RENUMBERED ON THE WAY IN, and the reason is worth a line. These three arrived from the PIR
@@ -1757,6 +2059,30 @@ constexpr Row kCatalog[] = {
         "wanted out of an address, mask it first (`a & 255`), which says so and is not flagged.",
         "Let addresses stay addresses all the way to the hardware. Every conversion to a number is a "
         "place where the next reader has to work out whether it was a location or a quantity." }},
+
+    {Code::FieldOutsideGeneratedKey, {
+        "Polaron-0B50", "this field is left out of the generated equality",
+        "`equalsKey`, `hash` and `compareTo` are generated from the fields that HAVE a structural "
+        "value to compare. An array, a pointer, a reference and a class-typed field do not: two "
+        "arrays holding the same bytes are different arrays, and comparing them by identity would "
+        "make `equals` mean \"is the same object\" for some fields and \"holds the same value\" for "
+        "others in the same type.\n"
+        "\n"
+        "So the field is skipped -- and the consequence is that two values differing ONLY in it "
+        "compare equal. That is usually right and occasionally a defect, and it is invisible: the "
+        "type compiles, the comparison runs, and a map keyed on it silently merges two entries.\n"
+        "\n"
+        "IT USED TO HAVE NO CODE, no file and no line -- a bare line on stderr from the driver -- "
+        "which made it the one warning in this compiler that could be neither located nor silenced. "
+        "An author who had decided the field genuinely should not count had no way to say so.",
+        "If the field should count, write `equalsKey`, `hash` and `compareTo` yourself -- all three, "
+        "because a type whose equality and ordering disagree sorts into an order where equal things "
+        "are not adjacent. If it should not count, write `[Allow(code: \"Polaron-0B50\", why: ...)]` "
+        "on the field: the reason is then in the type, where the next reader asking \"does this "
+        "field count?\" is already looking.",
+        "Decide what identity means for a type when you declare it. A field the generated key cannot "
+        "see is a field the type does not consider part of what it IS, and that is a design "
+        "decision worth writing down rather than discovering from a merged map." }},
 
     {Code::StackReturnEscapes, {
         "Polaron-0B4F", "`on stack` cannot be honoured on a returned object",
@@ -1926,6 +2252,27 @@ constexpr Row kCatalog[] = {
         "mnemonic then breaks one method with a name on it, rather than a block in the middle of "
         "something else." }},
 
+    {Code::AsmOperandPlace, {
+        "Polaron-0707", "this operand cannot be put where the block says",
+        "An `asm` operand may name WHERE it must be -- `out (\"ax\": value)`, `in (\"dx\": port)` -- and "
+        "the vocabulary is the ARCHITECTURE'S OWN register names rather than a letter code. The block "
+        "already declares its architecture, so the name is looked up in that architecture's register "
+        "table and one from another machine is caught here rather than by the assembler. A pair is "
+        "written high part first, joined by a colon (`\"edx:eax\"`); the two words that are not "
+        "registers at all are `\"memory\"` and `\"immediate\"`. WHAT THIS USUALLY IS, and it is worth "
+        "saying because it does not read like a mistake: a PORT. A block copied from the x86 side with "
+        "the architecture word changed has every mnemonic checked against the new target, and its "
+        "constraints would be checked against nothing -- so the one line still naming an x86 register "
+        "is the one line nothing looks at.",
+        "Write the register as the block's own architecture names it -- `\"ax\"` or `\"rdx\"` on "
+        "x86_64, `\"x0\"` or `\"w3\"` on aarch64. If the operand does not belong in a register at all, "
+        "say `\"memory\"` or `\"immediate\"`; if it does not matter where it goes, leave the place off "
+        "and it goes wherever the allocator likes, which is what every block written before this "
+        "feature said.",
+        "Port an `asm` block by rewriting it, not by editing the architecture word. The mnemonics and "
+        "the operand places are one piece of work, and the compiler checks both against the same "
+        "declaration -- so changing the word alone now leaves errors rather than silence." }},
+
     {Code::ComptimeConstant, {
         "Polaron-0807", "this must be a compile-time constant",
         "Some positions are evaluated by the compiler, not at run time -- a `comptime` argument, a `fixed` "
@@ -1985,6 +2332,30 @@ struct Rule {
     Code code;
 };
 constexpr Rule kRules[] = {
+    // ...AND THIS ONE BEFORE THEM, because its message names a method and a class and would be taken
+    // by the member-access rules further down, which would then advise the reader to declare a method
+    // that is already declared -- right there, in the class the message names.
+    {"and a static method is called through its class", Code::UnqualifiedStaticCall},
+    // The command rules, before everything that matches on the words "class", "method" or "write":
+    // each of these messages names a class and spells a member, and the generic member-access rules
+    // below would answer them with advice about a member that is not the point.
+    {"a command TYPE says what will be called", Code::CommandTypeCarries},
+    {"a command written inline belongs to the class", Code::InlineCommandHasNoClass},
+    {"an inline command carries its values with it", Code::InlineCommandCarriesNoValue},
+    {"by reference, so `send` transfers it", Code::ChannelSendNeedsMove},
+    {"is declared `readonly`, and it", Code::ReadonlyWrites},
+    {"is a VALUE parameter that binds at run time", Code::BareValueTypeParameter},
+    // THE LAYOUT RULES COME FIRST, and the reason is the phrase they would otherwise lose to. A
+    // budget failure says the word `bytes` and names a type, which the size and the type rules below
+    // both match -- and either one hands the reader advice about a value that is the wrong width,
+    // when what actually happened is that a declaration did not grant a concession.
+    {"which arranges it within", Code::LayoutUnsatisfiable},
+    {"is a layout, and a layout arranges", Code::LayoutUnsatisfiable},
+    {"`arranges` names a layout", Code::LayoutUnsatisfiable},
+    {"`permits` on a layout lists", Code::LayoutUnsatisfiable},
+    {"a layout can only extend another layout", Code::LayoutUnsatisfiable},
+    {"names a layout; write `arranges`", Code::LayoutSpelledImplements},
+
     // Context restriction wins over the specific feature it restricts (async/exceptions/unimport/... ).
     {"not available in freestanding", Code::FreestandingRestriction},
     {"freestanding mode", Code::FreestandingRestriction},
@@ -1995,6 +2366,10 @@ constexpr Rule kRules[] = {
     {"neither is known to outlive the other", Code::RegionIncomparable},
     {"is an extern function", Code::RegionForeignBoundary},
     {"was emptied: it holds references", Code::RegionUseAfterInvalidate},
+    // An object that freed itself and went on reading its own fields. The same fact as any other
+    // use-after-free, and it gets the same code -- what differs is only that the name is `this`,
+    // which is why none of the checks that follow names ever saw it.
+    {"after `delete this`", Code::UseAfterMove},
 
     // Null safety BEFORE the general type rules: every one of these is also "a wrong type", but the
     // remedy is different -- casting cannot turn null into a non-nullable value -- so matching them as
@@ -2024,6 +2399,9 @@ constexpr Rule kRules[] = {
 
     {"has no field", Code::NoSuchField},
     {"has no method", Code::NoSuchMethod},
+    // The same defect said in the words of the generated `toString` that hit it, so it keeps the
+    // code a reader would look up -- and the phrasing that says which of the two files to edit.
+    {"has no `toString` to ask", Code::NoSuchMethod},
     {"no method '", Code::NoSuchMethod},
     {"cannot bind a static method", Code::NoSuchMethod},
 
@@ -2036,6 +2414,7 @@ constexpr Rule kRules[] = {
     {"is a type the compiler provides", Code::ShadowsBuiltinType},
     {"never assigns field", Code::FieldNeverAssigned},
     {"'weak' requires a pointer", Code::WeakNeedsPointer},
+    {"'weak' is not allowed on a field of struct", Code::WeakFieldInStruct},
     {"is wider than a machine word", Code::AtomicTooWide},
     {"is already declared in class", Code::DuplicateField},
     {"cannot return a value of type", Code::ReturnTypeMismatch},
@@ -2075,6 +2454,20 @@ constexpr Rule kRules[] = {
     {"does not fit '", Code::BitFieldRange},
     {"packed into a storage unit", Code::BitFieldAddress},
     {"is not a known x86_64 instruction", Code::AsmUnknownInstruction},
+    // Matched on the clause that names the field, which is the part §6.1 of `ownership.md` requires
+    // and the part that distinguishes this from every other "cannot copy".
+    {"' is 'unique', and a unique value may not be duplicated", Code::UniqueFieldForbidsCopy},
+    {"is `shareable`, but its field", Code::ShareableRacyField},
+    {"each become a COLUMN", Code::EntityColumnHasNoWidth},
+    {"an entity's fields each become a column", Code::EntityColumnHasNoWidth},
+    {"a `reentrant` method must not", Code::ReentrantViolation},
+    {"is mutable state a `reentrant` method reaches", Code::ReentrantViolation},
+    // The three ways an operand's place can be wrong: a name from another architecture, a pair with
+    // an empty part, and a pair naming one register twice. Matched on their distinguishing phrase
+    // rather than on a shared prefix, because the fix differs and the `fix` text has to fit all three.
+    {"is not a register on", Code::AsmOperandPlace},
+    {"has an empty part", Code::AsmOperandPlace},
+    {"names one register twice", Code::AsmOperandPlace},
     {"is being used as an address", Code::IntegerAsAddress},
     {"stops being an address", Code::AddressAsInteger},
     {"`on stack` cannot be honoured here", Code::StackReturnEscapes},
@@ -2159,6 +2552,10 @@ constexpr Rule kRules[] = {
     {"must have a 'default'", Code::MatchNotExhaustive},
 
     {"cannot override final", Code::IllegalOverride},
+    // `surveyed` is inherited, not added on the way down: an override may not widen what the base
+    // promised, because a caller holding a base reference reads the base's promise and would never
+    // see it. Same family as overriding a `final` -- both are an override changing the contract.
+    {"is surveyed but the method it overrides is not", Code::IllegalOverride},
     {"cannot extend", Code::IllegalExtend},
     {"sealed variant", Code::IllegalExtend},
     {"does not satisfy constraint", Code::ConstraintNotMet},

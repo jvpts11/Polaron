@@ -389,7 +389,7 @@
             }
             // The action must throw E: a different exception propagates, and no exception at all is a
             // failure. E is monomorphized, so the catch below is a concrete type.
-            public static method assertThrows<E>(function<void> action) returns void {
+            public static method assertThrows<E>(Action* action) returns void {
                 mutable boolean threw = false;
                 try {
                     action();
@@ -419,7 +419,7 @@
             // Two limits, both deliberate: it measures the CALLING THREAD (work handed to another
             // thread is not covered), and it measures the NET total, so a leak exactly balanced by a
             // matching free inside the same action reads as clean.
-            public static method assertNoLeaks(function<void> action) returns void {
+            public static method assertNoLeaks(Action* action) returns void {
                 long before = Test.__polaron_live_bytes();
                 action();
                 long after = Test.__polaron_live_bytes();
@@ -432,7 +432,7 @@
 
             // The action must NOT throw. Without it a test that swallows an unexpected exception
             // higher up reads as a pass; with it the failure lands where the throw happened.
-            public static method assertDoesNotThrow(function<void> action) returns void {
+            public static method assertDoesNotThrow(Action* action) returns void {
                 try {
                     action();
                 }
@@ -462,7 +462,7 @@
             // Runs the action with everything it prints diverted, and returns that text. For code
             // whose JOB is to produce output -- a report, a formatter, a serializer -- where the
             // thing to assert on is what came out, not a value that was returned.
-            public static method captureOutput(function<void> action) returns String {
+            public static method captureOutput(Action* action) returns String {
                 Test.__polaron_capture_begin();
                 action();
                 Test.__polaron_capture_end();

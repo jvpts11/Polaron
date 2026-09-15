@@ -53,7 +53,14 @@ public:
             ++pos_;
             while (pos_ < text_.size() && text_[pos_] != '"') {
                 if (text_[pos_] == '\\' && pos_ + 1 < text_.size()) {
+                    // `\n`, `\r`, `\t` are the three the printer produces, because a token that
+                    // spans a line would break the reader's *what is left on THIS line* rule -- see
+                    // the note in `print.cpp`'s `quote`. Anything else after a backslash is that
+                    // character itself, which is how `"` and `\` travel.
                     ++pos_;
+                    const char esc = text_[pos_++];
+                    out += esc == 'n' ? '\n' : esc == 'r' ? '\r' : esc == 't' ? '\t' : esc;
+                    continue;
                 }
                 out += text_[pos_++];
             }
@@ -86,6 +93,28 @@ public:
         return t;
     }
 
+    // ONE TOKEN FURTHER, and there is exactly one question that needs it.
+    //
+    // `%` is two things in this grammar: a VALUE (`%3`) and a NOMINAL TYPE (`%ByteSize`). The sigil
+    // never arrives glued to what follows it -- it is not a word character -- so the only thing that
+    // tells them apart is whether the next token is a number, and asking that requires seeing past
+    // the sigil without consuming it.
+    //
+    // A grammar where one character means two things is a grammar that needs lookahead somewhere.
+    // Better here, in one method with the reason written on it, than as a special case at each of
+    // the places a type may begin.
+    std::string peekAfter() {
+        const size_t save = pos_;
+        const int saveLine = line_;
+        const bool saveQ = quoted_;
+        next();
+        std::string t = next();
+        pos_ = save;
+        line_ = saveLine;
+        quoted_ = saveQ;
+        return t;
+    }
+
     // AN INSTRUCTION ENDS AT THE END OF ITS LINE, and this is what says so.
     //
     // Without it the operand loop reads across the newline and swallows the next instruction's
@@ -104,6 +133,22 @@ public:
 
     bool wasQuoted() const { return quoted_; }
 
+    // WHERE THE READER IS, AND HOW TO PUT IT BACK. One caller: the pre-scan that collects a
+    // function's block labels before its instructions are read (see `parseBlocks`). Exposed rather
+    // than hidden behind a lambda because a rewind is a real thing this grammar needs once, and a
+    // named pair of methods says so where a closure would not.
+    struct Mark {
+        size_t pos;
+        int line;
+        bool quoted;
+    };
+    Mark mark() const { return Mark{pos_, line_, quoted_}; }
+    void rewind(const Mark& m) {
+        pos_ = m.pos;
+        line_ = m.line;
+        quoted_ = m.quoted;
+    }
+
     bool eat(const std::string& want) {
         const size_t save = pos_;
         const int saveLine = line_;
@@ -117,8 +162,30 @@ public:
 
 private:
     static bool isWordChar(char c) {
+        // `$` IS A NAME CHARACTER, and leaving it out is what made the round trip a claim.
+        //
+        // The monomorphiser mangles `ArrayList<String>` to `ArrayList$String`, so a dollar appears
+        // in the name of nearly every global and function a real program has. The printer emits
+        // those names; this reader stopped dead at the dollar. `parse(print(m))` is Stage 0's whole
+        // acceptance criterion (polaron-ir.md §1.6), and it held only for modules with no generics
+        // in them -- which is no module anybody compiles, since the standard library instantiates
+        // `Option<String>` before a program has said anything at all.
+        //
+        // IT SURFACED FROM THE `.polb` CARRYING PIR: a bundle wrote seven megabytes of module text
+        // and the consumer could not read line 60 of it. That is the argument for a section having
+        // a reader -- a format nobody reads back is a format that is correct by assumption.
+        // A TYPE NAME COMES THROUGH `TypeTable::spell`, WHICH DOES NOT QUOTE. `%Some$Certificate*`
+        // is one name: the monomorphiser's `$`, and a star because the element is a pointer. The
+        // reader is the tolerant half of the pair -- the printer quotes what it writes after `@`,
+        // and the mangling characters below are what a `%`-spelled type can contain and must be
+        // read back bare. `~` for a destructor's key belongs to the same family.
+        // `+` IS PART OF A NUMBER, not an operator: a float at round-trip precision comes out as
+        // `2.1474836470000000e+09`, and stopping at the plus reads the exponent as an instruction.
+        // PIR has no infix arithmetic in its text form -- `add.wrap` is a word -- so nothing else
+        // wants the character.
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-               c == '_' || c == '.' || c == '-' || c == '<' || c == '>';
+               c == '_' || c == '.' || c == '-' || c == '<' || c == '>' || c == '$' || c == '*' ||
+               c == '~' || c == '+';
     }
 
     const std::string& text_;
@@ -168,11 +235,19 @@ public:
                     return false;
                 }
             } else if (t == "type") {
-                // A named type declaration is printed for readability; the types themselves are
-                // rebuilt from their uses, so nothing needs to be kept here.
-                while (!r_.atEnd() && r_.peek() != "global" && r_.peek() != "fn" &&
-                       r_.peek() != "}" && r_.peek() != "type") {
-                    r_.next();
+                // A NAMED TYPE IS BUILT, NOT SKIPPED.
+                //
+                // What stood here read the declaration and threw it away, on the reasoning that
+                // *the types are rebuilt from their uses*. That is true of a structural type and
+                // false of a nominal one, which is the only kind this line ever sees: `gep ptr
+                // @level of %Mixer imm 1` names the struct and gives an INDEX into fields it does
+                // not describe. Rebuilding from that yields `%Mixer` with nothing in it, and the
+                // index then reads past the end of a type with no fields.
+                //
+                // The reasoning was never tested because the printer emitted no `type` lines at all,
+                // so this branch had never run on anything.
+                if (!parseTypeDecl()) {
+                    return false;
                 }
             } else {
                 return fail("unexpected `" + t + "` at module level");
@@ -201,6 +276,28 @@ private:
     //
     // The spelling `TypeTable::spell` produces, read back into the same interned pointer. Round
     // tripping through the SAME table is what makes `parse(print(m))` compare equal by pointer.
+    // A NOMINAL TYPE BY NAME -- LOOKED UP, NOT MINTED.
+    //
+    // `type %Mixer = {i32, i32}` appears once, at the top; every later `of %Mixer` is a REFERENCE to
+    // it. Interning a fresh `%Mixer` with no fields at each reference does not overwrite the real
+    // entry -- `structType` guards against that -- but it does hand back a DIFFERENT type with the
+    // same name and nothing in it. The `gep` that follows then indexes field 1 of a struct with zero
+    // fields, and the process dies with no diagnostic at all.
+    //
+    // Two things made it hard to see. The function it crashed in parses perfectly on its own, since
+    // in isolation there is no full `%Mixer` to disagree with -- so the smallest reproducer is two
+    // declarations, not one. And nothing had ever read a real module back, so the reference path was
+    // exercised only by hand-written fixtures where the name was never declared either.
+    //
+    // A name that is genuinely not yet declared still gets the placeholder, which is the forward
+    // reference `structType`'s own comment is about.
+    const Type* nominal(const std::string& name) {
+        if (const Type* known = m_.types.structNamed(name); known != nullptr) {
+            return known;
+        }
+        return m_.types.structType(name, {}, true);
+    }
+
     const Type* parseType() {
         const std::string t = r_.next();
         if (t == "void") return m_.types.voidType();
@@ -242,6 +339,30 @@ private:
             r_.eat("}");
             return m_.types.structType("", std::move(fields), false);
         }
+        // `fn(ptr, i32) -> ptr` -- A FUNCTION TYPE, which `spell` has always printed and this has
+        // never read. `call.indirect ptr of fn(ptr) -> ptr` names the shape of what it is calling
+        // through, and without a case here `fn` fell through to the nominal branch and became a
+        // struct called "fn", leaving `(ptr) -> ptr` to be read as instructions.
+        if (t == "fn") {
+            r_.eat("(");
+            std::vector<Field> params;
+            while (!r_.atEnd() && r_.peek() != ")") {
+                Field f;
+                f.type = parseType();
+                params.push_back(f);
+                if (!r_.eat(",")) {
+                    break;
+                }
+            }
+            r_.eat(")");
+            // `-` and `>` are both word characters, so `->` may arrive as one token or as two --
+            // the same accommodation `parseFunction` makes, and for the same reason.
+            if (!r_.eat("->")) {
+                r_.eat("-");
+                r_.eat(">");
+            }
+            return m_.types.fnType(parseType(), std::move(params));
+        }
         if (t.rfind("slice<", 0) == 0) {
             // `slice<i32>` arrives as one word because `<` and `>` are word characters.
             const std::string inner = t.substr(6, t.size() - 7);
@@ -249,11 +370,57 @@ private:
             Parser p(inner, &m_);
             return m_.types.sliceType(p.parseType());
         }
-        if (!t.empty() && t[0] == '%') {
-            return m_.types.structType(t.substr(1), {}, true);
+        // A NOMINAL TYPE, `%Mixer`, IN THE TWO SHAPES THE READER CAN HAND IT OVER IN.
+        //
+        // `%` is not a word character, so whether the sigil arrives glued to the name depends on
+        // what the name starts with -- and for a lone `%` the branch below used to take
+        // `t.substr(1)`, which is the EMPTY STRING. It returned an anonymous struct, consumed
+        // nothing, and left `Mixer` sitting where an opcode was expected: `unknown opcode 'Mixer'`,
+        // reported at a `gep` that is perfectly well formed.
+        //
+        // The comment under it already knew -- *a nominal name arrives bare when it followed a `%`
+        // the reader split off* -- and the case above it swallowed the name before that line could
+        // run. Two branches for one shape, in the wrong order, and the one that fired was the one
+        // that could not work.
+        return nominal(t == "%" ? r_.next() : (!t.empty() && t[0] == '%' ? t.substr(1) : t));
+    }
+
+    // `type %Mixer = {i32, ptr weak, i8 bits 4, i32 align 64}` -- the declaration the printer now
+    // emits, read back into the table so a `gep` into it has fields to index.
+    bool parseTypeDecl() {
+        r_.next();   // type
+        r_.eat("%");
+        const std::string structName = r_.next();
+        if (!expect("=") || !expect("{")) {
+            return false;
         }
-        // A nominal name arrives bare when it followed a `%` that the reader split off.
-        return m_.types.structType(t, {}, true);
+        std::vector<Field> fields;
+        while (!r_.atEnd() && r_.peek() != "}") {
+            Field f;
+            f.type = parseType();
+            // The three properties that decide where the bytes go, each optional and each read by
+            // name so the order they were written in cannot matter.
+            while (true) {
+                if (r_.eat("weak")) {
+                    f.weak = true;
+                } else if (r_.eat("bits")) {
+                    f.bitWidth = static_cast<uint32_t>(std::atoi(r_.next().c_str()));
+                } else if (r_.eat("align")) {
+                    f.alignOverride = static_cast<uint32_t>(std::atoi(r_.next().c_str()));
+                } else {
+                    break;
+                }
+            }
+            fields.push_back(f);
+            if (!r_.eat(",")) {
+                break;
+            }
+        }
+        if (!expect("}")) {
+            return false;
+        }
+        m_.types.structType(structName, std::move(fields), true);
+        return true;
     }
 
     bool parseGlobal() {
@@ -307,6 +474,19 @@ private:
     }
 
     bool parseFunction() {
+        // A BLOCK LABEL IS A FUNCTION'S OWN, and this map was the module's.
+        //
+        // `^entry` names block 0 of whatever function it is written in, and every function has one.
+        // Carried across, the second function's `^entry` resolved to the FIRST function's block id
+        // -- harmless while both were block 0, and an index into another function's block vector as
+        // soon as the two differ. The failure is an access violation with nothing to read, in the
+        // second of two functions that each parse perfectly on their own, which is why the smallest
+        // reproducer for it is two declarations rather than one.
+        //
+        // Never seen because nothing had ever parsed a module with two functions in it: the printer
+        // emitted no type declarations, so no real module could be read back at all, and the
+        // fixtures that could were single-function by hand.
+        blocks_.clear();
         r_.next();  // fn
         r_.eat("@");
         const std::string key = r_.next();
@@ -413,10 +593,58 @@ private:
     bool fillBlocks(Function& fn) { return parseBlocks(fn); }
 
     bool parseBlocks(Function& fn) {
-        // FIRST the labels, so a forward branch resolves. The body text is scanned once for `^name(`
-        // at the start of a line; every label found becomes a block before any instruction is read.
-        const size_t mark = 0;
-        (void)mark;
+        // FIRST THE LABELS, IN THE ORDER THEY ARE DECLARED -- and that order is the whole point.
+        //
+        // `blockFor` creates a block the first time a label is SEEN, and a `br -> ^forstep11` is
+        // seen before `^forstep11:` is reached. So the blocks came out in mention order, which is
+        // not declaration order, and the module printed back had its blocks shuffled: it parsed, it
+        // was a valid module, and it was a DIFFERENT one. A round trip that only checks *did it
+        // parse* would call that a pass.
+        //
+        // Block order is not decoration. The backend lays them out in this order, so a fall-through
+        // edge that was free becomes a jump, and the text form would be quietly rewriting programs
+        // it was asked only to carry.
+        //
+        // The pre-scan tracks brace depth because an inline struct type -- `{i32, ptr}` -- puts a
+        // closing brace inside the body, and stopping at the first one would collect the labels of
+        // only the first few blocks.
+        {
+            const Reader::Mark start = r_.mark();
+            int depth = 0;
+            // THE LINE OF THE TOKEN BEFORE THIS ONE, kept by hand rather than asked of `sameLine()`.
+            //
+            // `atEnd()` skips whitespace and DOES NOT PUT THE LINE COUNTER BACK -- it is a query
+            // with a side effect. So by the time the loop condition has run, the reader is already
+            // standing on the next token, and a `sameLine()` asked afterwards compares that token's
+            // line with itself and answers *yes* every time. Every block header looked mid-line, no
+            // label was collected, and the pre-scan silently did nothing at all: the reprint came
+            // back in mention order exactly as before, which is a fix that reads correct and is not
+            // running.
+            int previousLine = r_.line();
+            while (!r_.atEnd()) {
+                // A DECLARATION STARTS A LINE; A BRANCH DOES NOT. `^forstep11(...)` on its own line
+                // is where the block is declared, and `br -> ^forstep11()` in the middle of one is a
+                // reference to it -- the same three characters, and only the position tells them
+                // apart. Collecting both put the blocks back in MENTION order again, which is the
+                // very thing this pre-scan exists to stop.
+                const bool startsLine = r_.line() != previousLine;
+                previousLine = r_.line();
+                const std::string t = r_.peek();
+                if (t == "}" && depth == 0) {
+                    break;
+                }
+                r_.next();
+                if (t == "{") {
+                    ++depth;
+                } else if (t == "}") {
+                    --depth;
+                } else if (t == "^" && startsLine && !r_.atEnd()) {
+                    blockFor(fn, r_.next());
+                    previousLine = r_.line();
+                }
+            }
+            r_.rewind(start);
+        }
         while (!r_.atEnd() && r_.peek() != "}") {
             if (!r_.eat("^")) {
                 return fail("expected a block label, found `" + r_.peek() + "`");
@@ -431,8 +659,17 @@ private:
                 std::string name;
                 if (r_.eat(":") && r_.peek() != "") {
                     // `%3:name : type` -- the optional name, then the type.
-                    const std::string maybeName = r_.peek();
-                    if (!isTypeWord(maybeName)) {
+                    //
+                    // WHICH ONE THIS IS, DECIDED BY STRUCTURE AND NOT BY APPEARANCE. What stood here
+                    // asked *does this word look like a type* -- and a parameter may be NAMED `ptr`,
+                    // which is a perfectly ordinary thing to call a pointer. `%1:ptr : ptr` then had
+                    // its name read as its type and left the real one behind: *expected `)`, found
+                    // `:`*, in a method that is not wrong, 109 583 lines into a module.
+                    //
+                    // The two forms differ in how many colons they have, and that is a fact about
+                    // the text rather than a guess about the word: a name is followed by a second
+                    // `:`, a type by whatever ends the parameter.
+                    if (r_.peekAfter() == ":") {
                         name = r_.next();
                         r_.eat(":");
                     }
@@ -536,7 +773,22 @@ private:
             else break;
         }
         // Everything below reads only what is left on THIS line -- see `Reader::sameLine`.
-        if (r_.sameLine() && isTypeWord(r_.peek())) {
+        // `%Mixer` IS A TYPE WHERE A TYPE IS EXPECTED, and `%3` is a value -- the same sigil, told
+        // apart by whether a digit follows it. Without this, `alloca %ByteSize @ByteSize` read its
+        // type as absent, took `%ByteSize` for an operand and tried `@` as the next opcode; and
+        // accepting a bare `%` instead would have made `store %0:this, %2:this` read `%0` as a type
+        // named `0`. Both spellings are one character apart and neither can be guessed.
+        // ...AND `[` MEANS TWO THINGS TOO. It opens an array type (`[16 x i32 inline]`) and it opens
+        // an EXTRA (`guard.null [dereference]`), and the extras are read further down this same
+        // method. Read as a type, `[dereference]` gave an extent of zero and then ate whatever was
+        // next looking for the `x` -- so a guard turned into a type nobody wrote and the rest of the
+        // line became instructions. An array type always has a COUNT first; an extra never does.
+        const std::string ahead = r_.peekAfter();
+        const bool aheadIsNumber =
+            !ahead.empty() && isdigit(static_cast<unsigned char>(ahead[0]));
+        if (r_.sameLine() &&
+            ((isTypeWord(r_.peek()) && (r_.peek() != "[" || aheadIsNumber)) ||
+             (r_.peek() == "%" && !ahead.empty() && !aheadIsNumber))) {
             in.type = parseType();
         }
         if (r_.sameLine() && r_.eat("@")) {
@@ -581,10 +833,10 @@ private:
                 }
                 r_.eat(")");
             }
-            in.edges.push_back(std::move(e));
             if (r_.eat("case")) {
-                in.cases.push_back(std::atoll(r_.next().c_str()));
+                e.caseValue = std::atoll(r_.next().c_str());
             }
+            in.edges.push_back(std::move(e));
         }
 
         // LAST, because the printer prints it last. The parser reads the fields in the order they

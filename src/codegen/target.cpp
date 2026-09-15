@@ -63,19 +63,29 @@ bool targetArchIsKnown(const std::string& triple) {
            llvm::Triple(triple).getArch() != llvm::Triple::UnknownArch;
 }
 
+// An unset triple is the hosted default, and an unparseable arch is not a target anything here can
+// reason about -- neither is bare metal.
+//
+// `...-none-elf` parses as no OS. UEFI names one and is bare metal anyway -- see the header: an EFI
+// application runs in ring 0 on the firmware's own IDT, and the firmware's timer interrupt lands on
+// the current stack and overwrites the red zone exactly as a bare-metal one does.
+static bool osIsAbsent(const llvm::Triple& triple) {
+    return triple.getArch() != llvm::Triple::UnknownArch &&
+           (triple.getOS() == llvm::Triple::UnknownOS || triple.getOS() == llvm::Triple::UEFI);
+}
+
+bool targetIsBareMetal(const std::string& triple) {
+    return !triple.empty() && osIsAbsent(llvm::Triple(triple));
+}
+
 void applyBareMetalAttrs(llvm::Module& module) {
 #if LLVM_VERSION_MAJOR >= 21
     const llvm::Triple triple = module.getTargetTriple();
 #else
     const llvm::Triple triple(module.getTargetTriple());
 #endif
-    // An unset triple is the hosted default, and an unparseable arch is not a target we can reason
-    // about -- neither is bare metal, so neither gets the attribute.
-    if (triple.getArch() == llvm::Triple::UnknownArch) {
+    if (!osIsAbsent(triple)) {
         return;
-    }
-    if (triple.getOS() != llvm::Triple::UnknownOS) {
-        return;  // `...-none-elf` parses as no OS
     }
     for (llvm::Function& f : module) {
         if (!f.isDeclaration()) {

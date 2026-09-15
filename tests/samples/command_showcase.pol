@@ -1,0 +1,40 @@
+import System.IO.Console;
+program CommandShowcase;
+
+// Integration: a command used as a value (addTen), as an argument (`run`'s parameter), and stored in
+// a field (this.stage) -- all in one program, because the three appear together in real code and a
+// test per shape never exercises the seams between them.
+//
+// p.run(addTen, 5) = addTen(stage(5)) = addTen(15) = 25.
+
+public bundle Main {
+    public namespace App {
+        public command IntMap(int n) returns int;
+
+        public class Steps {
+            public command times(int n) carries (int factor) into pack returns int {
+                return n * pack.factor;
+            }
+            public command plus(int n) carries (int by) into pack returns int { return n + pack.by; }
+        }
+
+        public class Pipeline {
+            private IntMap* stage;
+            public constructor Pipeline() {
+                this.stage = Steps.times(3);
+            }
+            public method run(IntMap* after, int x) returns int {
+                return after(this.stage(x));
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Pipeline p = new Pipeline();
+                IntMap* addTen = Steps.plus(10);
+                System.IO.Console.printf("r=%d\n", p.run(addTen, 5));
+                return;
+            }
+        }
+    }
+}

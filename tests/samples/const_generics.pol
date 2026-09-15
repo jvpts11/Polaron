@@ -1,0 +1,82 @@
+import System.IO.Console;
+program ConstGenerics;
+
+// CONST GENERICS: `fixed` IN THE BRACKETS (A.3).
+//
+// `ArrayList<T>` has a hole where a TYPE goes. Until now there was no hole where a NUMBER goes, and
+// the standard library's own `Math.Matrix` shows what that costs: it carries `nrows`/`ncols` as
+// runtime FIELDS, so `get(r, c)` computes its index with a load, the type cannot live inside another
+// as a value, and `multiply(Matrix o)` accepts any matrix at all -- a 4x3 times a 7x9 compiles and
+// fails while somebody is using it.
+//
+// `fixed` says WHEN a parameter binds: at stamping. It is per parameter and does not spread --
+// `<fixed T, fixed int R, fixed int C>` marks three, and a bare value parameter is refused with a
+// message rather than quietly given the stamped meaning, because that spelling is reserved for the
+// runtime-bound extent that arrives later.
+//
+// Four things here, and each is one of the cases a region cannot reach:
+//
+//   1. the extent is IN THE TYPE -- `T[R * C]` is R*C elements where the value is declared, with no
+//      length header, no allocation, and no pointer to reach it through;
+//   2. so the value EMBEDS: `Transform` holds a `Matrix<float, 2, 2>` as a field, not a pointer;
+//   3. the dimensions are CONSTANTS in the body -- `i < R * C` is `i < 6`, which is a bound the
+//      optimizer can see;
+//   4. and they UNIFY in a signature: `times` takes a `Matrix<T, C, N>` and answers a
+//      `Matrix<T, R, N>`, so the shapes have to line up for the call to compile at all.
+//
+// Prints: rows=2 cols=3 cell=7 sum=7 product=2,4 embedded=9
+
+public bundle Main {
+    public namespace App {
+        public struct Grid<fixed T, fixed int R, fixed int C> {
+            // The extent is part of the type: R*C elements, inline, no header.
+            private mutable T[R * C] cells;
+
+            public constructor Grid() {
+                for (mutable int i = 0; i < R * C; i++) { this.cells[i] = cast<T>(0); }
+            }
+            public readonly method rows() returns int { return R; }
+            public readonly method cols() returns int { return C; }
+            public method set(int r, int c, T v) returns void { this.cells[r * C + c] = v; }
+            public readonly method get(int r, int c) returns T { return this.cells[r * C + c]; }
+
+            // Every cell, over a bound that is a literal in the stamped copy.
+            public readonly method sum() returns T {
+                mutable T total = cast<T>(0);
+                for (mutable int i = 0; i < R * C; i++) { total = total + this.cells[i]; }
+                return total;
+            }
+
+            // THE DIMENSIONS UNIFY. `C` appears on both sides, so a 2x3 can only be multiplied by a
+            // 3xN -- and the answer's shape is decided by the signature rather than checked later.
+            public readonly method timesShape<fixed int N>(Grid<T, C, N>& other) returns int {
+                return R * 100 + N;
+            }
+        }
+
+        // ...AND SO IT EMBEDS. A field of this type is storage inside the object, which is the one
+        // thing a runtime-dimension matrix cannot be.
+        public struct Transform {
+            public mutable Grid<int, 3, 3> world;
+            public constructor Transform() { this.world = new Grid<int, 3, 3>(); }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable Grid<int, 2, 3> g = new Grid<int, 2, 3>();
+                g.set(1, 2, 7);
+
+                mutable Grid<int, 3, 4> other = new Grid<int, 3, 4>();
+                int shape = g.timesShape<4>(other);   // 2 rows in, 4 columns out
+
+                mutable Transform t = new Transform();
+                t.world.set(2, 2, 9);
+
+                System.IO.Console.printf("rows=%d cols=%d cell=%d sum=%d product=%d,%d embedded=%d\n",
+                                         g.rows(), g.cols(), g.get(1, 2), g.sum(),
+                                         shape / 100, shape % 100, t.world.get(2, 2));
+                return;
+            }
+        }
+    }
+}

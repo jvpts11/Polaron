@@ -1,0 +1,63 @@
+import System.IO.Console;
+program StaticArrayStorage;
+
+// STORAGE THAT EXISTS BEFORE THE PROGRAM DOES -- `new T[N]() on static` (§36).
+//
+// Every other array is allocated, and the bootstrap runtime is the layer with nothing to allocate
+// WITH: the failure reporter a fired guard calls, the region seed's own pool, the free lists the
+// allocator is built out of. Each of those was C++ for exactly this reason -- `u8 bytes_[65536]` in
+// a file scope is storage that costs nothing and needs no allocator -- and Polaron could not say it.
+// `static mutable byte[] b = new byte[N]();` is refused by Polaron-0608, correctly: a value that
+// must be allocated cannot exist before the program runs.
+//
+// It is TWO globals. The field is an ordinary array reference, so it is a pointer, and it is
+// initialised to the storage's address -- a relocation, which is constant, so nothing runs to set
+// it up. The storage is the array itself, laid out `[i64 length | elements]` like every Polaron
+// array, and emitted ALL ZERO so that it lands in `.bss`: measured, the header word written into
+// the initialiser makes the whole thing a `.data` global and puts 65 544 bytes of zeroes in the
+// image. The length is written once instead, at the top of the entry, which is the earliest moment
+// a program has -- bare metal the entry IS the first instruction the machine executes.
+//
+// Prints:
+//   1024 7 9
+//   256 3
+public bundle Main {
+    public namespace App {
+        public class Vault {
+            public fixed int Room = 1024;
+            private static mutable byte[] bytes = new byte[Vault.Room]() on static;
+            // A SECOND ONE, because one would not show that they get separate storage: writing
+            // through the first must not be visible through the second.
+            private static mutable int[] counts = new int[256]() on static;
+
+            public static method line() returns String {
+                Vault.bytes[0] = cast<byte>(7);
+                Vault.bytes[Vault.Room - 1] = cast<byte>(9);
+                return $"{Vault.bytes.length()} {cast<int>(Vault.bytes[0])} " +
+                       $"{cast<int>(Vault.bytes[Vault.Room - 1])}";
+            }
+
+            // NOTHING BUT THE ARRAY, so that a test can ask whether touching one costs an
+            // allocation. The methods either side of it build a String and would answer yes for a
+            // reason that has nothing to do with the storage.
+            public static method poke(int at, int value) returns int {
+                Vault.bytes[at] = cast<byte>(value);
+                return cast<int>(Vault.bytes[at]);
+            }
+
+            public static method second() returns String {
+                Vault.counts[255] = 3;
+                return $"{Vault.counts.length()} {Vault.counts[255]}";
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Vault.poke(1, 5);
+                System.IO.Console.println(Vault.line());
+                System.IO.Console.println(Vault.second());
+                return;
+            }
+        }
+    }
+}

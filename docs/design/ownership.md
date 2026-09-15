@@ -215,6 +215,35 @@ hand-off is the first suspect behind the largest performance target in the ledge
 gap that four AP tests reach from four directions. Generalising `move` is not only ergonomics: it
 feeds exactly the facts that front is waiting for.
 
+### 12.1 …and the second row of that table does not follow yet
+
+Wave 3 went to emit it and found the claim is not true of the language as it stands. **`move` on a
+pointer does not prove non-aliasing**, because nothing stops the source being aliased first:
+
+```polaron
+Conn* a = new Conn(42) on heap;
+Conn* b = a;                    // accepted today, for a `movable class`
+Main.consume(move a);           // `a` is invalidated -- and `b` is not
+System.IO.Console.printf("%d\n", b.id);
+```
+
+`polc` refuses *use after move* (`Polaron-0402`), and it refuses passing a `move` parameter without
+the word (`move_signature_bad`). What it does not do is make the plain copy on line 2 a move. So the
+callee is not the sole holder, and `noalias` on that parameter would be a promise the program can
+break — which at `-O2` is a miscompile, not a missed optimisation.
+
+**What this costs and what was taken instead.** `noalias` reached **3 across 892 sample programs**:
+the three `unique class` declarations in the corpus. The one place it was soundly available and not
+taken was the allocator — `__polaron_malloc` hands back memory nothing else holds, which is what the
+word allocator means — and that is now emitted, asserted by `codegen_allocator_is_noalias`. The
+`move` half stays where it belongs:
+
+> **An entry for Part III's table.** For `move` to imply `noalias`, a `movable` class must have
+> `unique`'s rule and not a weaker one: **every assignment of it is a move**. That is already
+> written above for `unique` values (§6.2), and it is the same sentence. It is a language change and
+> it lands with the rest of Part III. The point of writing it here is that the optimisation is the
+> *reason* for the rule, and this table previously recorded it as if it were already the *effect*.
+
 ---
 
 # Part IV — `shareable`
@@ -337,12 +366,95 @@ time in this round that the answer was a word the language already had — after
 > refuses every `T*`"* and the compiler had the escape hatch, the walk that honours it, and a sample
 > exercising it. **Read the repository, not the record.**
 
-## 20. Still to design
+## 20. Decided (Wave 4.5)
 
-| | |
-|---|---|
-| 20.1 | does `movable` cross to value types as well (§8)? |
-| 20.2 | the escape hatch for an unverifiable `Shared` (§17) — refused for now, not settled |
-| 20.3 | `ArrayList` grows by copying its backing array; over `unique` elements that is a bulk move. Confirm the growth path expresses it as one |
-| 20.4 | `Shared` as a modifier rather than a marker interface (§13a), so it does not buy a dispatch pointer under `dynamic` |
-| 20.5 | `Shared` on a region (§16) — what it means for the region binder, which is otherwise single-threaded |
+### 20.1 `movable` does not cross to value types — because `unique` already did
+
+**Decided: no. And the reason is that the question dissolves once §5 lands.**
+
+`movable class` says *this reference type is moved, not copied*. `unique` over a value (§5, decided)
+says *one live holder, so every assignment is a move* — which is the same sentence for values. Two
+words meaning one thing on two sides of the value/reference line is exactly the arrangement §5
+removed on the other axis.
+
+**And §12.1 has now made this urgent rather than tidy.** `move` → `noalias` does not follow today
+because `Conn* b = a;` before `move a` is accepted for a `movable class`, leaving a second holder.
+The fix is that `movable` must have `unique`'s rule and not a weaker one. That is not `movable`
+crossing to values — it is `movable` **acquiring the rule values already have**, which is the
+opposite direction and the correct one.
+
+So the decision is: **do not extend `movable`; strengthen it, to `unique`'s rule, and let the two
+words converge.** Whether `movable` then survives as a separate spelling is a naming question for the
+day it becomes redundant, not a design one.
+
+### 20.2 The escape hatch stays refused, and the condition for revisiting is written down
+
+**Decided: refused, and it is now a decision rather than a deferral.** §17 said *"refused for now"*,
+which is a state that never resolves because nothing says what would change it. This does:
+
+> The hatch is built when a **measured** case shows a type that (a) is genuinely safe to share, (b)
+> the compiler cannot verify **after** §14's check exists, and (c) cannot be expressed as
+> `atomic<T>`, `Mutex<T>` or `Channel<T>` without a cost that was measured, not assumed.
+
+All three, and the third is what the condition is for. Every case that reaches for `unsafe` in
+another language begins as *the safe way is too slow*, and that sentence is almost always
+unmeasured. `atomic<T>`, `Mutex<T>` and `Channel<T>` are three real answers; a fourth that is a hole
+in the one guarantee AP-33 inverts has to be worth more than all three, on numbers.
+
+**Polaron has no `unsafe` and this is where that is decided rather than assumed.**
+
+### 20.3 The growth path expresses the copy as a bulk move — and it is checked, not confirmed
+
+**Decided.** `ArrayList`'s growth over `unique` elements is a **bulk move**: each element is moved
+into the new backing array and the old array's slots are `forget`ten, never destroyed.
+
+The alternative was already unavailable rather than merely undesirable: copying a `unique` element is
+what `unique` forbids, so a growth path that copies would not compile against its own element type
+once §5 lands. What was open was whether the current path *says* so.
+
+**It becomes a test, because "confirm" is how this document has been wrong before** — §19's own
+warning is that the ledger recorded a thing the compiler already had, and the method that keeps
+failing is trusting the notes. A sample with an `ArrayList` of a `unique` value type, grown past its
+capacity, asserting the elements survive and the allocator's live count moved by the array and not by
+the elements. `stdlib-features-applied.md` records regions blocked by a bug in the same collection,
+which is the second reason to have the sample rather than the sentence.
+
+### 20.4 `Shared` becomes a modifier
+
+**Decided: a modifier on the declaration, not a marker interface.**
+
+Three reasons, and the third is the one that forces it:
+
+1. **It is not a contract with methods.** A marker interface is an interface used as an adjective,
+   which is a workaround for languages that have no adjectives. This one does.
+2. **`implements Shared` reads as *dispatches something*,** and it dispatches nothing — which §10.2
+   of `dynamic.md` had to spend a paragraph on for `Comparable`, a case where the reading is at least
+   sometimes right.
+3. **Under `dynamic` it would buy a dispatch pointer.** `dynamic.md` §6.2: a class that `implements`
+   an interface carries one. So a value type declaring itself shareable would acquire eight bytes and
+   an indirection **for a property that generates no calls** — the exact cost AP-02 is about, arriving
+   through a word chosen for convenience.
+
+The third is decisive because it is a cost the author cannot see at the declaration, which is the one
+thing this language's whole cost story forbids.
+
+### 20.5 `Shared` on a region means the region binder must treat it as multi-threaded, and that is why it is refused for now
+
+**Decided: a region may not be `Shared`.**
+
+The binder's model is one activation at a time: it decides whether a borrow outlives its target by
+reasoning about lifetimes in a single thread of control. `Shared` on a region would mean two threads
+allocating from one bump pointer and holding borrows into one another's allocations — and the binder
+has no vocabulary for *the other thread released this region while you were reading it*. Region
+release is bulk and instantaneous, which makes it the worst possible thing to share: there is no
+per-object lifetime to reason about.
+
+**What to do instead, and it is not a workaround.** Give each thread its own region and move results
+across by `move` (§11), which is the shape §18 already grades as the cheapest crossing there is. A
+thread that owns its region has no synchronisation on allocation at all — the bump pointer is
+private — which is *faster* than a shared region with a lock, not a concession.
+
+**The condition for revisiting** is the same as §20.2's: a measured case where per-thread regions
+plus `move` cost more than a shared one would. Until then, this is the answer that keeps the binder's
+model coherent, and a binder whose model has a hole in it is worth less than the feature the hole
+would buy.

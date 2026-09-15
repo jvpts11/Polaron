@@ -1,0 +1,41 @@
+import System.IO.Console;
+program LoopFreesAtTheEndAndReadsAtTheTopBad;
+
+// THE SECOND TIME ROUND THE LOOP, which the first time round cannot see.
+//
+// A loop body is analysed once, with the state that holds at the TOP -- so a body that frees
+// something at the bottom and reads it at the top was checked in the only order where it is
+// innocent. Everything AFTER the `delete` was refused, and everything after the LOOP was refused;
+// the line above the `delete` was the hole, and it is the line the bug is written on.
+//
+// Nothing here is subtle once you see it: the first pass frees `node`, and the second pass walks
+// straight into `node.weight` with the storage gone. It is the shape a worker loop takes when the
+// author means to reallocate each time and forgets, and the compiler read it as correct.
+//
+// ANSWERED BY RUNNING THE BODY AGAIN with the state the previous iteration left -- which is what a
+// second iteration IS. No new rule, no shape to recognise: every obligation the analyser already
+// tracks crosses the back edge, and the one added next year crosses with them.
+//
+// Refused with Polaron-0402. Its control is `loop_frees_then_leaves_ok.pol`, where the path that
+// frees also leaves the loop -- and that one must stay silent.
+public bundle Main {
+    public namespace App {
+        public class Node {
+            public mutable int weight;
+            public constructor Node() { this.weight = 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Node* node = new Node() on heap;
+                mutable int total = 0;
+                for (mutable int i = 0; i < 3; i++) {
+                    total = total + node.weight;   // <- the second pass reads freed storage
+                    delete node;
+                }
+                System.IO.Console.println($"{total}");
+                return;
+            }
+        }
+    }
+}

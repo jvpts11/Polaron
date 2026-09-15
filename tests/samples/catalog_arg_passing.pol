@@ -84,7 +84,7 @@ public bundle main {
                 this.load = load;
             }
 
-            public method carries() returns int {
+            public method hauls() returns int {
                 return this.load.weight();
             }
         }
@@ -97,8 +97,8 @@ public bundle main {
                     Scale.weigh(Stone.Slate),     // 200 -- NOT 11
                     Scale.weigh(Timber.Pine),     // 20 -- a singleton, packed
                     c.weighs(),                   // 30
-                    Cart.Light.carries(),         // 7
-                    Cart.Heavy.carries());        // 200
+                    Cart.Light.hauls(),         // 7
+                    Cart.Heavy.hauls());        // 200
                 return;
             }
         }

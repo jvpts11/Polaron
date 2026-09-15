@@ -145,6 +145,77 @@ relation between two types rather than to either one — and the bound target is
 constructor run over it yet, which is why the body IS its construction and why every field of it must
 be assigned before the body ends.
 
+#### `command`
+**hard.** The third kind of member, beside `method` (behaviour of the instance) and `procedure`
+(behaviour of the relation): **portable behaviour** — something a class hands out for somebody else
+to run later.
+
+```polaron
+public command aboveFloor(int x) carries (int floor) into pack returns boolean {
+    return x > pack.floor;
+}
+```
+
+Naming it without calling it BUILDS one: `Gate.aboveFloor(10)` is a value carrying `floor = 10`,
+and the value is called by naming it — `test(11)`. At namespace level the same word declares the
+**role** an API takes, which is how a method can accept a command without naming any particular one:
+
+```polaron
+public command IntTest(int x) returns boolean;                    // the role
+public static method count(int[] xs, IntTest* test) returns int;  // the API
+```
+
+A command satisfies a role when the signatures agree — neither side names the other. There is also
+an inline form, written where the value is wanted, with the carried values on the line:
+`command (int x) carries (int floor = 10) into pack returns boolean { return x > pack.floor; }`.
+
+#### `readonly`
+**hard.** On a method: it writes nothing — no field of its own, no field of anything it was handed,
+no static, no output. Declared, and then checked through the whole call graph, so a body that writes
+nothing itself but calls something that does is refused too.
+
+```polaron
+public readonly method area() returns int { return this.w * this.h; }
+```
+
+It is what makes a method callable from a `requires` or an `ensures`: a contract that could change
+state would make the check part of the program's behaviour. It also lets the optimizer drop a
+repeated call and hoist one out of a loop. A cache is a write, however invisible from outside — the
+spelling for that is `lazy`.
+
+#### `cold`
+**hard.** On a method: this path is rarely taken. The body moves off the hot line and stops being
+inlined into one — the inliner costs a method by its SIZE, which is a poor proxy when the bulk of it
+runs once in a thousand calls.
+
+```polaron
+private cold method grow() returns void { ... }
+```
+
+There is no `hot`: hot is what the optimizer already assumes, so the word would spend a token and add
+no fact. The same word also tags an `affinity cold { }` field group, which is about where fields sit
+rather than where code sits.
+
+#### `mustuse`
+**hard.** On a type or a method: the answer is the point, so a statement that drops it is warned
+about (`Polaron-0B19`). `Result` and `Option` carry it — a `Result` whose answer is thrown away is an
+error nobody handled — and any type may.
+
+```polaron
+public mustuse class Ticket { ... }        // once, for every method that returns one
+public static mustuse method reading() returns int { ... }   // or just this one
+```
+
+The valve is **`discard`** (soft): `discard theCall();` says the dropping was deliberate, at the line,
+where a reader sees a decision rather than a missing diagnostic.
+
+#### `carries`
+**hard.** What a command holds: `carries (int minAge) into pack`. The list is the command's state,
+copied when one is built, and reached inside the body through the name `into` gives it
+(`pack.minAge`) — so a read of carried state never looks like a read of anything else. Capture is
+impossible by grammar: a name from the surrounding scope that is not on this list is not in scope
+inside the body.
+
 #### `returns`
 **hard.** Introduces a method's / constructor's return type.
 
@@ -168,7 +239,11 @@ be assigned before the body ends.
 **hard.** Accessible only within the same bundle.
 
 #### `static`
-**hard.** Belongs to the class, not an instance. Called via `ClassName.member`.
+**hard.** Belongs to the class, not an instance. Called via `ClassName.member` — **always**, including
+from inside that very class, and the compiler refuses a bare `member(...)`. An instance method may be
+written bare because `this` is its subject and the language supplies it; a static one has none, and an
+action with no subject is the shape this language refuses. Where two classes share a short name, the
+namespace is what separates them: `Text.Reader.parse(1)`.
 
 #### `abstract`
 **hard.** A class that cannot be instantiated directly; a body-less method that a concrete subclass must implement.
@@ -178,6 +253,18 @@ be assigned before the body ends.
 
 #### `override`
 **hard.** Mandatory when overriding an inherited method (from a class or interface).
+
+#### `surveyed`
+**hard.** On a method: the region binder does not derive this method's lifetime summary from its
+body — a person did, and answers for it. Inside, the one refusal about a value the analysis cannot
+*place* is suspended; every other refusal stays, so anything it can still prove wrong is still
+refused. Outside, the boundary goes to the worst case: every reference parameter is treated as kept
+and a reference result as a borrow of everything in reach.
+
+The freedom is local and the suspicion is exported, which is the opposite of what an `unsafe` does —
+marking a method costs its callers, not nobody. It is inherited: an override may only be `surveyed`
+if the method it overrides is. Not on a destructor, which is where ownership is *declared* and read
+from. See §5b.
 
 #### `mutable`
 **hard.** Allows reassignment/mutation. Everything is immutable by default; use `mutable` only where a value is actually reassigned.
@@ -270,13 +357,23 @@ uint crc = cast<uint>(4294967295);
 ## 6. Memory, ownership & resources
 
 #### `new`
-**hard.** Allocates an instance; the placement is optional (`on stack` / `on heap` / `in region`), with sensible defaults (objects → stack, arrays → heap).
+**hard.** Allocates an instance; the placement is optional (`on stack` / `on heap` / `on static` / `in region`), with sensible defaults (objects → stack, arrays → heap).
 
 #### `delete`
 **hard.** Frees memory allocated with `new`, running the destructor first.
 
 #### `on`
-**hard.** Specifies the allocation site: `on stack` or `on heap`.
+**hard.** Specifies the allocation site: `on stack`, `on heap`, or `on static`.
+
+`on static` is storage that is **part of the image**: an array whose length is known when it is compiled, laid out where every Polaron array is laid out, allocated by nobody. It is legal on a static field's initialiser, which is the only place where "before the program runs" names a moment.
+
+```polaron
+private static mutable byte[] room = new byte[1024]() on static;
+```
+
+It exists for the layer that has nothing to allocate *with* — the failure reporter a fired guard calls, an allocator's own free lists, a region's bootstrap pool. Those were C++ for exactly this reason: a file-scope array costs nothing and asks nobody. The trade is said out loud rather than hidden — **one buffer for the whole program**, so two users at once share it.
+
+`on stack` on an ARRAY is not honoured and never was: the clause parsed, nothing read it, and the array went to the heap whatever was written. That is `Polaron-0B54` now instead of silence.
 
 #### `in`
 **hard.** Two uses: the region target of a `new` (`in region X`) and iteration in `for (x in coll)`.
@@ -311,6 +408,63 @@ Dog* a = new Dog(5) in region pen;   // freed by RAII at scope end
 
 #### `unique`
 **hard.** A class discipline: at most one live reference at a time; assignment is an implicit move, and copying is forbidden.
+
+#### `reentrant`
+**hard.** A member modifier: **this may be entered again while an earlier entry is still running.**
+
+Two things follow from that one sentence, and both are checked: the method reaches **no storage
+another activation could be inside** (the allocator has global mutable state you may have
+interrupted mid-update), and it touches **no shared mutable state**.
+
+`interrupt` is one case of it and is implicitly `reentrant` — the handler's bespoke list of
+prohibitions is now one property with one checker. Naming the *reason* rather than a mechanism is
+what makes it wider than a "does not allocate" marker: **it also catches the lock**, because a
+`reentrant` method that takes a `Mutex` deadlocks against itself. `atomic<T>` stays legal, since a
+single atomic instruction has no half-done state to interrupt.
+
+**Viral.** Everything the method calls carries the obligation, including the destructor that runs at
+the end of a scope — and the diagnostic names the path that reached the violation, because *"Ring
+allocates"* is a fact about Ring while *"this reentrant method reaches it, via refill"* is the bug.
+
+Not a universal prefix: `reentrant field` means nothing.
+
+#### `shareable`
+**hard.** A type safe to reach from **several threads at once**, so the region binder may hand it
+across a thread boundary. A modifier and not a marker interface: it names no methods and dispatches
+nothing, and under `dynamic` an `implements` clause would buy an eight-byte header and an
+indirection for a property that generates no calls.
+
+**It is checked, not trusted**, and the rule is decidable from the declaration alone — which is why
+it needs no whole-program knowledge and travels in a `.polh`:
+
+> legal when every mutable field is `atomic<T>`, or is itself `shareable` — or when the type is
+> entirely immutable.
+
+A bare permission would be a one-word hole in the no-UB principle: written over a type with a plain
+mutable `int`, it is exactly the race the compiler otherwise refuses. This is the house pattern —
+**you declare the intent and the compiler confirms it** — beside `override` declaring and the
+hierarchy checking, and `layout` stating and the arrangement refusing.
+
+#### `dynamic`
+**hard.** *Decided at run time.* On a class it means the instance **carries its type**: a dispatch
+pointer as field zero, eight bytes on every instance, and membership of the `Object` root — so it may
+be held as an `Object`, asked `is`, and dispatched through.
+
+Without it, **a class is its fields.** `class Pair { int a; int b; }` is eight bytes, not sixteen.
+C++ hangs the same cost on a per-method `virtual` and lets the header appear as a side effect the
+declaration never mentions; here one word says both *which bodies are chosen at run time* and *which
+types are known at run time*, and a class that does neither pays for neither.
+
+**Four kinds carry it without the word, because for them it is not a choice:** a class that `extends`
+something (the base already decided), one that `implements` an interface (interface dispatch needs a
+table to dispatch from), an `abstract` class (it exists to be inherited from), and a `region class`
+or `heap class` (their instances are walked, and a run of objects that do not say what they are
+cannot be).
+
+**It is never inferred.** Using a class as an `Object*` without the word is a compile error naming
+the word and the eight bytes, rather than the class being marked `dynamic` because the use was seen —
+inference needs whole-program knowledge, breaks across a bundle boundary, and moves the cost away
+from the declaration, which is the one property the design rests on.
 
 #### `weak`
 **hard.** A field that points at an object without owning it and without keeping it alive: `private weak
@@ -544,7 +698,25 @@ single slot.
 **hard.** Declares a function as a numeric-literal suffix. Must be `comptime`, with exactly one parameter.
 
 #### `fixed`
-**hard.** Declares a **named compile-time constant** (`fixed T NAME = expr;`), at class or namespace level.
+**hard.** Declares a **named compile-time constant** (`fixed T NAME = expr;`), at class or namespace
+level — and, in a type-parameter list, marks a parameter that **binds at stamping**.
+
+```polaron
+public struct Grid<fixed T, fixed int R, fixed int C> {
+    private mutable T[R * C] cells;              // the extent is part of the type
+    public method get(int r, int c) returns T { return this.cells[r * C + c]; }
+}
+Grid<int, 2, 3> g;                                // two shapes are two types
+```
+
+`fixed int R` is a hole where a **number** goes — the thing a generic could not express, and the
+reason a runtime-dimension matrix computes its index with a load, cannot be embedded as a field, and
+accepts any matrix at all in `multiply`. Marked `fixed`, `R` participates in the type, the class is
+monomorphized per value, and `R` is a literal in the body.
+
+It is per parameter and does not spread: `<fixed T, int a>` marks the first only. A **bare** value
+parameter is reserved for the runtime-bound extent that arrives later, and is refused today
+(`Polaron-010B`) rather than quietly given the stamped meaning.
 
 #### `import`
 **hard.** Loads a symbol (class, namespace, bundle) into the program. The stdlib requires explicit imports.
@@ -571,16 +743,16 @@ Persistents, unimport, lifecycle hooks, and the chaos tetrad.
 **hard.** The mandatory block fired when an `expecting` validation fails. **Removed in freestanding.**
 
 #### `methodref`
-**hard.** A bound method reference (spec 22.3).
-
-#### `lambda`
-**hard.** An anonymous function with explicit capture.
+**hard.** A receiver bound to one of its instance methods — a command carrying that receiver, and
+compiled as one, so dispatch through it stays virtual.
 ```polaron
-function<int> f = lambda[captures: byvalue n]() returns int { return n + 1; };
+Animal cat = new Cat() on heap;
+IntMap* sp = methodref cat.speak;    // runs Cat.speak
 ```
 
-#### `function`
-**hard, reserved.** Reserved by the lexer for function/reference types, used in type positions.
+> **`lambda` and `function` are gone.** A command replaces both: the baggage is declared rather than
+> captured, and a callable's type is a role somebody named (`Predicate<T>`, `Comparer<T>`). Neither
+> word is reserved any more — they are ordinary identifiers again. See 14.1 and 14.3.
 
 ---
 
@@ -659,7 +831,7 @@ identifiers elsewhere.
 | `onLastInstanceDestroyed` | class body (hook) | `onLastInstanceDestroyed { teardown(); }` (removed in freestanding) |
 | `onClassUnload` | class body (hook) | `onClassUnload { cleanup(); }` (removed in freestanding) |
 | `asm` | `asm("arch") { ... }` | an inline assembly block; a normal identifier otherwise |
-| `funcptr` | type position | `funcptr<int, int>` — a bare C function-pointer type for dynamic FFI |
+| `methodptr` | type position | `methodptr<int, int>` — the address of code: one machine word, no environment, plain C ABI. `Class.method` without a call is one (static only). |
 | `named` | `requires named` | `requires named` — a parameter that must be passed by name |
 | `explicit` | conversion operator | `explicit operator Foo(...)` — an explicit-only conversion (spec 6.6) |
 | `implicit` | conversion operator | `implicit operator Foo(...)` — an implicit conversion (spec 6.6) |
@@ -689,7 +861,7 @@ for completeness — they do not work today.
 | `const` | compile-time constant | **Replaced by `fixed`** in the implementation; `const` is not reserved. |
 | `module` | future organizational unit | Reserved in the spec only; not implemented. |
 | `package` | future package system | Reserved in the spec only; not implemented. |
-| `delegate` | field prefix: satisfy the interfaces by forwarding to this field | Composition instead of inheritance; a method the class writes wins. Compile-time only, so freestanding too. For a callable VALUE use `methodref` / `function<>` / `funcptr<>`. |
+| `delegate` | field prefix: satisfy the interfaces by forwarding to this field | Composition instead of inheritance; a method the class writes wins. Compile-time only, so freestanding too. For a callable VALUE use a `command`, a `methodref`, or `methodptr<>` at the C border. |
 | `force` | an `unimport` modifier | Contextual in the spec; not recognized. |
 | `timeout` | an `unimport` modifier | Not recognized as an unimport keyword (exists only as a `Channel.select` method). |
 | `serializable` | marks something serializable | Documented; not recognized. |

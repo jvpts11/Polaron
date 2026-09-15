@@ -1,0 +1,55 @@
+import System.IO.Console;
+program MustUse;
+
+// `mustuse` -- THE ANSWER IS THE POINT, so dropping it is a mistake worth a word (B.2).
+//
+// The rule already existed for two type names written into the compiler: a `Result` or an `Option`
+// that a statement drops. The property was never theirs alone -- a handle somebody must close, a
+// builder that answers with a new value instead of changing itself, a ticket -- and now a library
+// can say so. On the TYPE it is said once and covers every method that will ever return one; on a
+// METHOD it covers the occasional answer that matters on a type where answers usually do not.
+//
+// AND IT CAN BE ANSWERED, which is what keeps a rule like this from being switched off. `discard`
+// is a word at the line: the next reader sees a decision rather than a missing diagnostic.
+//
+// This program compiles clean. Its refusals live in `mustuse_dropped_bad.pol`, which is the same
+// three calls without the `discard`.
+//
+// Prints: ticket=1 reading=7
+
+public bundle Main {
+    public namespace App {
+        // Somebody has to hold the ticket. A `Gate.issue(...)` whose result goes nowhere is a
+        // ticket nobody can present, and the type is where that is said once.
+        public mustuse class Ticket {
+            public int id;
+            public constructor Ticket(int id) { this.id = id; }
+            public method number() returns int { return this.id; }
+        }
+
+        public class Gate {
+            public static method issue(int id) returns Ticket* { return new Ticket(id) on heap; }
+
+            // ...and one method whose answer is the point, on a type where `int` usually is not.
+            public static mustuse method reading() returns int { return 7; }
+
+            // An ordinary answer nobody has to want.
+            public static method announce() returns int { return 1; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Ticket* t = Gate.issue(1);
+                int r = Gate.reading();
+
+                // Deliberate, and said so: the ticket is issued for its side effect here.
+                discard Gate.issue(2);
+                // ...and an ordinary answer needs no ceremony at all.
+                Gate.announce();
+
+                System.IO.Console.printf("ticket=%d reading=%d\n", t.number(), r);
+                return;
+            }
+        }
+    }
+}

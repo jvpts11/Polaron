@@ -17,7 +17,18 @@ if(NOT rc EQUAL 0)
 endif()
 
 file(READ "${ll}" _ir)
+# `!DICompositeType` AND `!DIDerivedType` ARE THE PART THAT WAS MISSING, and their absence is what
+# made the rest of this list a check on the wrong thing. Every local was declared to DWARF as a
+# 32-bit signed `int` whatever it held, so the metadata was PRESENT and WRONG: a `double` printed as
+# its low half, an object as whatever four bytes sat at its address. A test that only asked whether
+# there was a `!DILocalVariable` passed on all of it.
+#
+# The composite is a value struct with its fields as derived members; `float64` is the scalar case,
+# and it is here because a basic type that is not `int32` is the cheapest possible evidence that a
+# variable's own type reached the metadata rather than a default.
 foreach(_needle "!DICompileUnit" "!DISubprogram" "!DILocation" "!DILocalVariable"
+                "!DICompositeType" "!DIDerivedType" "DW_TAG_structure_type"
+                "!DIBasicType(name: \"float64\""
                 "\"Debug Info Version\"" "\"Dwarf Version\"" "!llvm.dbg.cu")
     string(FIND "${_ir}" "${_needle}" _at)
     if(_at EQUAL -1)

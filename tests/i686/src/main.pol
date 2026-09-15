@@ -105,8 +105,41 @@ public bundle Main {
                 Serial.hex(sum);   // 338350 = 0x529ae
                 Serial.nl();
 
+                /* A FLAVOURED REGION BELONGS HERE AND CANNOT BE HERE YET, which is a finding this
+                   file made and not a gap it is leaving open on purpose.
+
+                   The region CLASS above proves the arena. A `pool region` would prove the region
+                   CORE -- the 448-byte descriptor, the per-slot header, the free-list a
+                   `delete ... from region` puts a slot back on -- and on THIS target it does not
+                   link: the core is C++ and divides 64-bit numbers, so a 32-bit freestanding link
+                   asks for `__udivdi3` and `__umoddi3`, which no kernel has. So flavoured regions
+                   have never worked on a 32-bit bare-metal target, and nothing said so, because
+                   nothing had ever asked for one. The exercise lives on the AArch64 boot meanwhile
+                   -- see tests/arm64 -- and comes back here when the core stops needing a division. */
+
                 Serial.puts(b"done");
                 Serial.nl();
+
+                /* AND THEN A GUARD FIRES, which is the last thing this machine does.
+
+                   `__polaron_fail` is what a fired guard calls, and its whole reason to exist is the
+                   PAIR OF NUMBERS: without it `index out of bounds` is all a kernel gets, in the code
+                   where a wrong index is least visible by other means. It is Polaron now rather than
+                   a generated C++ translation unit, and nothing was asserting that it still formats
+                   the two numbers -- it linked, which is not the same claim.
+
+                   32 BITS IS WHERE IT EARNS THE ROW. The values are `long`, so the formatter's
+                   divide-and-remainder loop crosses a register boundary on every digit; a 64-bit
+                   machine cannot show that going wrong.
+
+                   The index is the port sum walked back out of the region objects above, for two
+                   reasons. It cannot be decided at compile time -- a bounds check the compiler can
+                   prove is a bounds check the compiler removes -- and it is the SAME walk the line
+                   above prints, so both numbers in the message are known before the machine starts:
+                   2776 and 12. An index read off the wire is unfoldable too, and its value is then
+                   QEMU's UART model rather than this program's arithmetic. */
+                byte[] twelve = new byte[12]();
+                twelve[head.sumPorts()] = cast<byte>(1);
                 return;
             }
         }

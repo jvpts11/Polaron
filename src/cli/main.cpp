@@ -1,4 +1,4 @@
-// polc -- the Polaron compiler driver (CLI entry point).
+﻿// polc -- the Polaron compiler driver (CLI entry point).
 //
 // Release 0.1 / M1 (walking skeleton): the full pipeline is wired up.
 //   polc <in.pol> [-o <out.ll>]   compile to LLVM IR (stdout if no -o)
@@ -7,6 +7,11 @@
 //   polc --check <in.pol>...      lex + parse + semantic only (no codegen), report every diagnostic
 //   polc --version
 
+#include "polaron_fs_fail_src.h"
+#include "polaron_fs_region_src.h"
+#include "polaron_fs_seed_src.h"
+#include "polaron_fs_unload_src.h"
+#include "polaron_region_core_src.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -52,6 +57,8 @@
 #include "pir/text.h"
 #include "pir/verify.h"
 #include "semantic/analyzer.h"
+#include "semantic/comptime.h"  // archCode, for the target a `comptime if` selects on
+#include "codegen/cgutil.h"     // archFamily / archOfTriple, the one reading of a triple
 #include "semantic/semutil.h"  // typeRefStr, for the C header's type mapping
 #include "semantic/implicitthis.h"
 #include "semantic/layouts.h"
@@ -67,7 +74,7 @@
 #include "codegen/optimize.h"     // the middle end, over the module the back end builds
 #include "codegen/target.h"       // ...and whether `--target` names a machine at all
 #include "codegen/testrunner.h"   // `--test`: the synthetic runner over the [Test] methods
-#include "pir/tollvm.h"           // §12: PIR to LLVM, the only back end
+#include "pir/tollvm.h"           // Â§12: PIR to LLVM, the only back end
 
 #include <llvm/Bitcode/BitcodeReader.h>
 #include <llvm/Bitcode/BitcodeWriter.h>   // the `.polb` carries the module this compilation built
@@ -133,7 +140,43 @@ bool g_concise = false;  // --concise: one machine-parseable line per diagnostic
 // the warning loop. On, it is how the prelude gets linted at all.
 bool g_lintPrelude = false;
 
+// HOW MANY PARAMETERS COME BEFORE THE FIRST DECLARED ONE -- one for an instance method, none for a
+// static. The region binder counts the parameters the author wrote; a PIR method's parameter zero is
+// `this`. Asked of the lowering's own record rather than derived from the method's kind, because the
+// lowering is what put `this` there and the two cannot then disagree about whether it did.
+size_t receiverOffset(const polaron::pir::Module& module, const std::string& key) {
+    for (const std::unique_ptr<polaron::pir::Function>& f : module.functions) {
+        if (f->key == key) {
+            return !f->params.empty() && f->params.front().name == "this" ? 1u : 0u;
+        }
+    }
+    return 0;
+}
+
 // The 1-based `line` of `file`'s compiled source, or "" if unavailable (e.g. the embedded prelude).
+// Does this declaration carry `[Allow(code: "...")]` for this code? The driver's own copy of the
+// question the analyzer answers with `allowStack_`: there is no stack here -- one declaration is
+// being looked at -- so the shape is a scan rather than a frame.
+bool allowsCode(const std::vector<polaron::ast::AnnotationUse>& uses, const std::string& code) {
+    for (const polaron::ast::AnnotationUse& use : uses) {
+        if (use.name != "Allow") {
+            continue;
+        }
+        for (const polaron::ast::AnnotationArg& arg : use.args) {
+            if (arg.name != "code") {
+                continue;
+            }
+            if (const auto* lit =
+                    dynamic_cast<const polaron::ast::StringLiteralExpr*>(arg.value.get());
+                lit != nullptr && lit->value == code) {
+                use.honouredEarly = true;   // so the analyser's staleness check knows it worked
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::string sourceLineAt(std::string_view file, int line) {
     const auto it = g_sources.find(std::string(file));
     if (it == g_sources.end() || line < 1) {
@@ -314,15 +357,84 @@ void appendPrelude(polaron::ast::Program& prog) {
 // it polymorphic (a vtable on every object), so Object's equals/hashCode dispatch on it. Excluded:
 // interfaces, value types (struct/record/union), Object itself, and freestanding code -- freestanding
 // needs a predictable layout with no hidden vtable (spec 36).
-void assignObjectRoot(polaron::ast::Program& program) {
+// WHICH CLASSES JOIN THE `Object` ROOT -- and it is the line AP-02 is about.
+//
+// Every hosted class used to get `extends Object` here, and that one assignment is the eight-byte
+// header on every instance in the language: `carriesVtable` asks whether the class has a superclass,
+// and after this pass they all did. `class Tag`, which nothing extends and nothing overrides, was
+// eight bytes wide because of a loop in the driver rather than because of anything in its
+// declaration.
+//
+// Now the word says it. `dynamic class X` means the instance carries its type; without it a class is
+// its fields. C++ hangs the same cost on a per-method `virtual` and lets the header arrive as a side
+// effect the declaration does not mention -- here one word says both which bodies are chosen at run
+// time and which types are known at run time, and a class that does neither pays for neither.
+//
+// THE THREE THINGS THAT STILL GET IT WITHOUT THE WORD, because for them the header is not a choice:
+//
+//   * a class that already `extends` something -- it is in a hierarchy, and the base's decision is
+//     the one that counts;
+//   * a class that `implements` an interface -- interface dispatch needs a table to dispatch from;
+//   * an `abstract` class -- it exists to be inherited from, and a subclass reached through a base
+//     pointer is dispatch by definition.
+//
+// Each of those already made `carriesVtable` true on its own, so naming them here changes nothing
+// about the layout -- what it changes is that they also become `Object`, which is what lets `equals`
+// and `toString` resolve on them as they always have.
+void assignObjectRoot(polaron::ast::Program& program, bool libraryMode) {
     for (auto& bundle : program.bundles) {
         if (program.isFreestanding || bundle.isFreestanding) {
             continue;
         }
         for (auto& ns : bundle.namespaces) {
             for (auto& cls : ns.classes) {
-                if (cls.superclass.empty() && cls.name != "Object" && !cls.isInterface && !cls.isStruct &&
-                    !cls.isRecord && !cls.isUnion) {
+                if (!cls.superclass.empty() || cls.name == "Object" || cls.isInterface ||
+                    cls.isStruct || cls.isRecord || cls.isUnion) {
+                    continue;
+                }
+                // THE PRELUDE KEEPS THE IMPLICIT ROOT, and this line is a debt with a shape rather
+                // than a policy. Removing the header from user code is safe and measured -- a
+                // `class Tag { int id; }` is four bytes, which is AP-02 falling outright. Removing
+                // it from the PRELUDE is not, yet: something in there still depends on the eight
+                // bytes, and the symptom is a heap overrun whose effect changes depending on whether
+                // stdout is a console or a pipe, because the stdio buffer moves under it.
+                //
+                // Two real defects have already come out of chasing it and are fixed on their own
+                // merits: `needsDispatch` emitting a table lookup for a class with no table, and the
+                // weak-list head being the constant 8 -- *"right behind the vtable"* -- for a class
+                // with no vtable in front of it. Both were latent the whole time and neither could
+                // have been found any other way.
+                //
+                // What is owed is the third one. It is written up in `PLAN.md` under Wave 5 with the
+                // reproduction, and this condition is where it is paid off -- one word, deleted.
+                // ...AND TWO CLASS KINDS THAT CARRY THEIR TYPE BY NECESSITY, so the word would be a
+                // restatement rather than a choice. A `region class` is a type whose every instance
+                // comes from one arena and can be walked linearly -- which is what makes `unimport`
+                // able to answer *is any A alive* in O(1), and there is no walking a run of objects
+                // that do not say what they are. A `heap class` is the program's allocator and is
+                // reached through the bridge by name.
+                //
+                // They are named here rather than left to the author because the alternative is a
+                // diagnostic saying *add `dynamic`* to a declaration where there was never an
+                // option -- and a compiler that demands a word it could have written itself is
+                // charging for its own bookkeeping.
+                // AND A `--lib`'s PUBLIC CLASS, on the same condition `carriesVtable` uses, because
+                // the two must agree or the two SIDES of the boundary lay the class out differently.
+                //
+                // `carriesVtable` gives a public, non-`final`, non-`sealed` class in a `--lib` a
+                // vtable pointer whether or not this compilation dispatches on it -- a consumer
+                // compiled later may extend it. Without the matching clause here the library put
+                // the pointer in the layout and the consumer, which is not a `--lib`, did not: every
+                // field was eight bytes out. `bundle_field_offset_runs` read a field declared 7 and
+                // printed 42, which is the neighbouring field, and it linked without a word.
+                //
+                // The two conditions are written twice because they live in two programs' worth of
+                // code apart; that they are the same condition is the thing to keep true, and this
+                // comment and `carriesVtable`'s both say so.
+                const bool openInALibrary =
+                    libraryMode && cls.visibility == "public" && !cls.isFinal && !cls.isSealed;
+                if (cls.isDynamic || cls.isAbstract || !cls.interfaces.empty() ||
+                    cls.isRegionClass || cls.isHeap || openInALibrary) {
                     cls.superclass = "Object";
                 }
             }
@@ -348,12 +460,20 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
         "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
         "float32", "float64", "usize", "isize"};
     std::set<std::string> valueTypeNames = {"String"};
+    // EVERY ENUM THAT STILL EXISTS AS ONE. A sum was turned into a sealed hierarchy before this
+    // point, so anything left in `ns.enums` is an ordinal -- a java-style enum included, which keeps
+    // its constants and materialises them by name. Its ordinal decides which constant it is, and a
+    // constant's arguments are fixed per constant, so ordinal equality IS value equality.
+    std::set<std::string> ordinalEnumNames;
     for (auto& bundle : program.bundles) {
         for (auto& ns : bundle.namespaces) {
             for (auto& cls : ns.classes) {
                 if ((cls.isStruct || cls.isRecord) && !cls.isUnion) {
                     valueTypeNames.insert(cls.name);
                 }
+            }
+            for (auto& en : ns.enums) {
+                ordinalEnumNames.insert(en.name);
             }
         }
     }
@@ -393,7 +513,7 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                 // Classified by `ast::keyFieldKind`, which codegen also calls to serialise a keyed
                 // persistent -- so what makes up a type's identity is decided in exactly one place.
                 auto keyPart = [&](const FieldDecl* f) -> int {
-                    switch (polaron::ast::keyFieldKind(f->type, valueTypeNames)) {
+                    switch (polaron::ast::keyFieldKind(f->type, valueTypeNames, ordinalEnumNames)) {
                         case polaron::ast::KeyFieldKind::None:   return 0;
                         case polaron::ast::KeyFieldKind::Scalar: return 1;
                         case polaron::ast::KeyFieldKind::Text:
@@ -435,18 +555,49 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                         if (keyPart(f) != 0) {
                             continue;
                         }
-                        std::fprintf(stderr,
-                                     "warning: field '%s' of '%s' is not part of the generated key: %s "
-                                     "has no structural value to compare, so it is left out of %s. "
-                                     "%s Write your own %s if it should count, or make the field a "
-                                     "value type (a struct, record or String).\n",
-                                     f->name.c_str(), cls.name.c_str(),
-                                     f->type.isArray      ? "an array"
-                                     : f->type.isPointer  ? "a pointer"
-                                     : f->type.isRef      ? "a reference"
-                                     : f->type.isNullable ? "a nullable field"
-                                                          : "a class or enum reference",
-                                     hooks.c_str(), effect.c_str(), hooks.c_str());
+                        // THROUGH THE DIAGNOSTIC SYSTEM, with a code and the field's own line.
+                        //
+                        // This was a bare `fprintf(stderr, "warning: ...")`: no code, no file, no
+                        // line. That made it the one warning in this compiler that could be neither
+                        // LOCATED -- a type with forty fields got a sentence naming one and no way
+                        // to find it -- nor SILENCED, because `[Allow]` names a code and there was
+                        // none. An author who had decided the field genuinely should not count had
+                        // nothing to write.
+                        //
+                        // The field's own `[Allow]` is honoured, and only the field's: a decision
+                        // about one field must not switch the rule off for the others.
+                        //
+                        // A RECORD HAS NO FIELD TO WRITE IT ON. Its fields are its primary
+                        // constructor's parameter list -- `record Slot(Entry entry, byte[] stored)`
+                        // -- and a parameter takes no annotation, so for the one type shape whose
+                        // whole point is generated equality the rule was back to being unsilenceable,
+                        // which is the exact defect the paragraph above says was fixed. The record's
+                        // own declaration is the smallest one that exists, so it is the one honoured.
+                        // It necessarily covers every field, and for a record that is a small,
+                        // visible set sitting on the line the warning already points at.
+                        const std::string keyCode = polaron::diag::codeString(
+                            polaron::diag::Code::FieldOutsideGeneratedKey);
+                        if (allowsCode(f->annotations, keyCode) ||
+                            (cls.isRecord && allowsCode(cls.annotations, keyCode))) {
+                            continue;
+                        }
+                        const std::string kind =
+                            f->type.isArray      ? "an array"
+                            : f->type.isPointer  ? "a pointer"
+                            : f->type.isRef      ? "a reference"
+                            : f->type.isNullable ? "a nullable field"
+                                                 : "a class reference";
+                        std::fputs(
+                            polaron::diag::render(
+                                "warning", std::string(f->loc.file), f->loc.line, f->loc.col,
+                                "field '" + f->name + "' of '" + cls.name +
+                                    "' is not part of the generated key: " + kind +
+                                    " has no structural value to compare, so it is left out of " +
+                                    hooks + ". " + effect,
+                                polaron::diag::Code::FieldOutsideGeneratedKey,
+                                sourceLineAt(f->loc.file, f->loc.line), false)
+                                .c_str(),
+                            stderr);
                     }
                 }
                 // --- small AST builders (capture loc) ---
@@ -489,7 +640,17 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                 if (!hasEq) {
                     auto method = std::make_unique<MethodDecl>();
                     method->loc = loc; method->visibility = "public"; method->name = "equalsKey";
-                    Param p; p.loc = loc; p.type.name = cls.name; p.name = "other";
+                    /* ...OF ITS OWN TYPE, TYPE ARGUMENTS INCLUDED.
+                       Written as the bare name, a generic value type's synthesized comparator kept
+                       the TEMPLATE's name through monomorphization: `Pair$int.equalsKey` declared a
+                       parameter of type `Pair`, and the moment another value type held a
+                       `Pair<int>` by value -- which is what makes it a value type worth having --
+                       its own generated comparator called that method and was told the argument had
+                       "type 'Pair$int' but the parameter type is 'Pair'". Naming the parameters
+                       here makes the type `Pair$T`, which the stamping substitutes like any other.
+                       Empty for a non-generic, where this is exactly what it was. */
+                    Param p; p.loc = loc; p.type.name = cls.name;
+                    p.type.typeArgs = cls.typeParams; p.name = "other";
                     method->params.push_back(std::move(p));
                     method->returnType.name = "boolean";
                     ExprPtr expr;
@@ -555,7 +716,17 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                 if (!hasCmp) {
                     auto method = std::make_unique<MethodDecl>();
                     method->loc = loc; method->visibility = "public"; method->name = "compareTo";
-                    Param p; p.loc = loc; p.type.name = cls.name; p.name = "other";
+                    /* ...OF ITS OWN TYPE, TYPE ARGUMENTS INCLUDED.
+                       Written as the bare name, a generic value type's synthesized comparator kept
+                       the TEMPLATE's name through monomorphization: `Pair$int.equalsKey` declared a
+                       parameter of type `Pair`, and the moment another value type held a
+                       `Pair<int>` by value -- which is what makes it a value type worth having --
+                       its own generated comparator called that method and was told the argument had
+                       "type 'Pair$int' but the parameter type is 'Pair'". Naming the parameters
+                       here makes the type `Pair$T`, which the stamping substitutes like any other.
+                       Empty for a non-generic, where this is exactly what it was. */
+                    Param p; p.loc = loc; p.type.name = cls.name;
+                    p.type.typeArgs = cls.typeParams; p.name = "other";
                     method->params.push_back(std::move(p));
                     method->returnType.name = "int";
                     for (const FieldDecl* f : fields) {
@@ -578,6 +749,22 @@ void synthesizeValueKeyHooks(polaron::ast::Program& program) {
                             method->body.statements.push_back(std::move(ltIf));
                             auto gtIf = std::make_unique<IfStmt>(); gtIf->loc = loc;
                             gtIf->cond = binary(">", field("this", f->name), field("other", f->name));
+                            gtIf->thenBlock.statements.push_back(ret(intLit("1")));
+                            method->body.statements.push_back(std::move(gtIf));
+                        } else if (ordinalEnumNames.count(ft) > 0) {
+                            // AN ENUM ORDERS BY ITS ORDINAL, through the cast. `<` on an enum is
+                            // refused outright, which is why booleans sit out -- but an enum CAN be
+                            // cast, so it does not have to, and an ordering that ignored a field the
+                            // identity compares would call two unequal values equally ordered.
+                            // Declaration order is the order, which is the one the author wrote down.
+                            auto ltIf = std::make_unique<IfStmt>(); ltIf->loc = loc;
+                            ltIf->cond = binary("<", cast("int", field("this", f->name)),
+                                                cast("int", field("other", f->name)));
+                            ltIf->thenBlock.statements.push_back(ret(intLit("-1")));
+                            method->body.statements.push_back(std::move(ltIf));
+                            auto gtIf = std::make_unique<IfStmt>(); gtIf->loc = loc;
+                            gtIf->cond = binary(">", cast("int", field("this", f->name)),
+                                                cast("int", field("other", f->name)));
                             gtIf->thenBlock.statements.push_back(ret(intLit("1")));
                             method->body.statements.push_back(std::move(gtIf));
                         }
@@ -635,8 +822,20 @@ bool reportParseErrors(const std::string& path, const polaron::Parser& parser, b
         return false;
     }
     for (const polaron::ParseError& e : parser.errors()) {
-        std::fputs(polaron::diag::render("error", path, e.loc.line, e.loc.col, e.message,
-                                      polaron::diag::Code::SyntaxError, sourceLineAt(path, e.loc.line), concise)
+        /* THE PARSER'S MESSAGES GET TO CARRY THEIR OWN CODES TOO.
+
+           Every parse error was `Polaron-0001` -- "unexpected syntax here" -- whatever it actually
+           said, so a message written to teach one specific thing arrived with the generic write-up
+           behind it, and no amount of care at the call site could change that. The whole point of
+           `classify` is that a call site need not pass a code; this was the one place that took the
+           decision away from it. An unmatched message still lands on `SyntaxError`, which is what
+           every one of them was getting before. */
+        polaron::diag::Code code = polaron::diag::classify(e.message);
+        if (code == polaron::diag::Code::None) {
+            code = polaron::diag::Code::SyntaxError;
+        }
+        std::fputs(polaron::diag::render("error", path, e.loc.line, e.loc.col, e.message, code,
+                                      sourceLineAt(path, e.loc.line), concise)
                        .c_str(),
                    stderr);
     }
@@ -798,6 +997,29 @@ int dumpPolb(const std::string& path) {
         std::printf("%02x", c);
     }
     std::printf("\ncode: %llu bytes of bitcode\n", static_cast<unsigned long long>(b.code.size()));
+    // THE PIR SECTION, AND IT IS PARSED RATHER THAN COUNTED.
+    //
+    // A byte count would say the section is present, which is not the question anybody asks of it.
+    // What a consumer needs to know is whether it can be READ BACK -- the section exists so the
+    // consumer's own passes can see through a call into this bundle, and a blob that prints a size
+    // and fails to parse is worse than an absent one, because the absent one is handled.
+    //
+    // The round trip is PIR's own acceptance criterion (`polaron-ir.md` §1.6: parse(print(m)) prints
+    // identically), so asking it here is asking the format the one thing it promises. `--dump-polb`
+    // is where somebody looks when a bundle behaves oddly, which is exactly where the answer belongs.
+    if (b.pir.empty()) {
+        std::printf("pir: absent -- a consumer links this bundle and does not inline through it\n");
+    } else {
+        polaron::pir::Module round;
+        std::string parseError;
+        if (!polaron::pir::parse(b.pir, &round, &parseError)) {
+            std::printf("pir: %llu bytes, WILL NOT PARSE (%s)\n",
+                        static_cast<unsigned long long>(b.pir.size()), parseError.c_str());
+        } else {
+            std::printf("pir: %llu bytes, %zu functions\n",
+                        static_cast<unsigned long long>(b.pir.size()), round.functions.size());
+        }
+    }
     for (const polaron::PolbDep& d : b.deps) {
         std::printf("dep: %s %s\n", d.name.c_str(), d.versionConstraint.c_str());
     }
@@ -1083,6 +1305,61 @@ std::string emitCHeader(const polaron::ast::Program& program, const std::string&
     return out;
 }
 
+// Runtime support is Polaron source compiled in the same freestanding module.
+// It therefore uses the target's ABI, safety checks and optimization pipeline,
+// and never introduces a C/C++ translation unit into the resulting OS image.
+// THE PATH OUTLIVES THIS CALL, which is why it is interned rather than taken by reference. A
+// location keeps the path it was given and diagnostics are printed long after the parse, so passing
+// a temporary put a dangling string under every `-->` the injected runtime can produce: the one that
+// found it read `--> 8u0`.
+bool appendFreestandingRuntime(polaron::ast::Program& program, const char* source,
+                               const std::string& name, bool internalToTheModule = false) {
+    static std::vector<std::unique_ptr<std::string>> kept;
+    kept.push_back(std::make_unique<std::string>(name));
+    const std::string& path = *kept.back();
+    g_sources[path] = std::string(source);
+    polaron::Lexer lexer(source, path);
+    polaron::Parser parser(lexer.tokenize(), path);
+    if (reportLexErrors(path, lexer)) { return false; }
+    polaron::ast::Program runtime = parser.parse();
+    if (reportParseErrors(path, parser)) { return false; }
+    for (auto& bundle : runtime.bundles) {
+        bundle.isAppendedRuntime = internalToTheModule;
+        program.bundles.push_back(std::move(bundle));
+    }
+    return true;
+}
+
+/**
+ * Whether the program itself exports `name` to the linker.
+ *
+ * WHAT WEAK LINKAGE USED TO DO, done where it can be seen. The reporter below was C++ marked
+ * `__attribute__((weak))` so a program with a better answer -- a stack trace, its own console --
+ * could define `__polaron_fail` and have the linker prefer it. In Polaron it is source appended to
+ * the SAME module, and two definitions of one symbol in one module is an error rather than a
+ * choice, so the question has to be asked before the append instead of after the link.
+ *
+ * Asking it here is also the stricter reading: the linker silently picks a winner, and this
+ * refuses to add a second definition at all.
+ */
+bool programExports(const polaron::ast::Program& program, const std::string& name) {
+    for (const polaron::ast::Bundle& b : program.bundles) {
+        if (b.isPrelude || b.isImported) { continue; }
+        for (const polaron::ast::Namespace& ns : b.namespaces) {
+            for (const polaron::ast::ClassDecl& c : ns.classes) {
+                for (const polaron::ast::MemberPtr& mem : c.members) {
+                    const auto* m = dynamic_cast<const polaron::ast::MethodDecl*>(mem.get());
+                    if (m == nullptr || m->externConvention.rfind("unknown:", 0) != 0) { continue; }
+                    // `symbol("...")` renames it; without one the method's own name is the symbol.
+                    const std::string& symbol = m->externSymbol.empty() ? m->name : m->externSymbol;
+                    if (symbol == name) { return true; }
+                }
+            }
+        }
+    }
+    return false;
+}
+
 int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             const std::string& target = "", int optLevel = 0, bool libraryMode = false,
             const std::vector<std::string>& deps = {},
@@ -1147,6 +1424,9 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             program.imports.push_back(std::move(imp));  // file-level (spec 2.7)
         }
         program.hasQualifiedTypeRef |= prog.hasQualifiedTypeRef;
+        // ...and the `methodref` names, which are per FILE and have to become per PROGRAM: the class
+        // a binding needs is generated from whatever class declares the method, wherever that is.
+        program.methodRefNames.insert(prog.methodRefNames.begin(), prog.methodRefNames.end());
         // spec 2.8: a program that serves its types over IPC needs a dispatcher for them. Spotting the
         // call in the source is enough -- a false positive only synthesizes a dispatcher nobody calls.
         if (source->find("Program.serve") != std::string::npos) {
@@ -1341,8 +1621,69 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         phaseClock = now;
     };
     phase("(parse+read)");
+    // THE TRIPLE DECIDES THIS, NOT THE KEYWORD. `freestanding` says what the source may use; the
+    // target says whether anything is underneath it. A freestanding program built for a hosted
+    // triple links the hosted runtime, which already supplies these -- see `targetIsBareMetal`.
+    if (program.isFreestanding && !libraryMode && polaron::targetIsBareMetal(target)) {
+        if (!appendFreestandingRuntime(program, polaron::kFreestandingSeedSource,
+                                       "<runtime:polaron_fs_seed.pol>")) {
+            return 1;
+        }
+        // The reporter a fired guard calls. Skipped when the program writes its own -- see
+        // `programExports`; a bare-metal program with a console the compiler knows nothing about is
+        // exactly who does that.
+        if (!programExports(program, "__polaron_fail") &&
+            !appendFreestandingRuntime(program, polaron::kFreestandingFailSource,
+                                       "<runtime:polaron_fs_fail.pol>")) {
+            return 1;
+        }
+        // What `unimport` and `reimport` mean here: a vault of saved machine code, since there is
+        // no executable on a disk to re-read the original bytes out of. Skipped the same way when
+        // the program says what they mean itself.
+        if (!programExports(program, "__polaron_unload_fn") &&
+            !appendFreestandingRuntime(program, polaron::kFreestandingUnloadSource,
+                                       "<runtime:polaron_fs_unload.pol>")) {
+            return 1;
+        }
+        // Where a region's bytes come from with no heap underneath: static arenas that grow out of
+        // whatever the kernel seeded. The shared region core still sits on top of these.
+        if (!programExports(program, "__polaron_region_acquire") &&
+            !appendFreestandingRuntime(program, polaron::kFreestandingRegionSource,
+                                       "<runtime:polaron_fs_region.pol>")) {
+            return 1;
+        }
+    }
     appendPrelude(program);
     phase("appendPrelude");
+    /* THE REGION CORE, FOR EVERY TARGET -- which is what makes it ONE implementation.
+     *
+     * It used to be a C++ header compiled twice: included by `polaron_rt.cpp` for a hosted program,
+     * and written out beside the objects and handed to clang for a bare-metal one. That existed to
+     * stop the allocator having two bodies, and it cost the language the ability to read its own
+     * allocator. Appending the Polaron source here does the same job with one compilation, and puts
+     * the core in the SAME MODULE as the code that calls it -- which the C++ arrangement managed on
+     * the hosted side only, by including the header, and never on the other.
+     *
+     * Not gated on `isFreestanding` or on the triple, because neither says anything about it: what
+     * the two worlds differ in is where a block's bytes come from, and that is the four `extern`
+     * symbols the core calls. A library is the one exception -- its program will bring its own, and
+     * two definitions of one symbol in one module is an error rather than a choice.
+     *
+     * AFTER THE PRELUDE, AND THAT ORDER IS NOT COSMETIC. Where a name cannot be pinned to a class the
+     * lowering falls back to the first declaration it walked, and appended before, this file's own
+     * structs were the first of everything. `ArrayList<int[]>.indexOf` came out calling
+     * `RegionTrackEntry.equalsKey` to compare two arrays -- which answered by comparing the region
+     * registry's fields, so `contains` found a "twin" array that was a different object. The
+     * standard library has to be declared first; a runtime the compiler appends is not entitled to
+     * outrank it. (The fallback itself is a fragility this merely stood on.)
+     *
+     * `programExports` for the same reason it is asked above: a program that implements the region
+     * ABI itself keeps its own. */
+    if (!libraryMode && !programExports(program, "__polaron_region_new") &&
+        !appendFreestandingRuntime(program, polaron::kRegionCoreSource,
+                                   "<runtime:polaron_region_core.pol>", true)) {
+        return 1;
+    }
     // In a library the prelude is emitted into the .polb with weak (linkonce_odr) linkage (handled in
     // codegen): static linking deduplicates it against the program's own prelude, and a dynamically
     // built DLL is self-contained (every class extends the prelude's Object). This matters now that
@@ -1377,8 +1718,11 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     phase("expandTransformers");
     polaron::qualifyNamespaces(program);            // make same-named types in different namespaces distinct
     phase("qualifyNamespaces");
-    assignObjectRoot(program);                   // a class with no `extends` implicitly extends Object
+    assignObjectRoot(program, libraryMode);      // `dynamic` and the four kinds that imply it
     phase("assignObjectRoot");
+    // ...AND THE CLASSES IT DID NOT PUT IN THE ROOT GET THE ROOT'S THREE METHODS ANYWAY. Immediately
+    // after, and not later, because everything downstream -- monomorphisation, the analyzer's method
+    // table, the lowering's dispatch decision -- has to see a class that is complete.
     synthesizeValueKeyHooks(program);            // value types get structural equalsKey/hash/compareTo (collection keying)
     phase("synthesizeValueKeyHooks");
     // Before monomorphize: a generic class is delegated ONCE, on the template, and the forwarding
@@ -1387,6 +1731,12 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         return 1;
     }
     phase("expandDelegates");
+    // AND EVERY `command` BECOMES A CLASS, on the same terms and for the same reason: expanded on the
+    // template, copied per instantiation. From here on there are no commands in the tree -- only
+    // classes with one method and static factories that build them -- so nothing after this point
+    // needs to know the word.
+    polaron::expandCommands(program);
+    phase("expandCommands");
     // AFTER delegation, so a synthesized forwarder is walked like any other method, and BEFORE
     // everything that reads the tree: from here on a member reference IS a member access, so nothing
     // downstream needs to know the prefix was ever optional.
@@ -1434,6 +1784,19 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     }
     polaron::SemanticAnalyzer sema;
     sema.setRegionBinder(regionBinder);
+    // WHICH MACHINE THIS BUILD IS FOR, so a `comptime if` over `__target_arch` folds in the analyzer
+    // as it does in the lowering. Both stages must reach the same answer, or the analyzer checks one
+    // arm and the backend emits the other -- which is not a diagnostic, it is a different program.
+    //
+    // Read from `--target` when it was given and from the host triple otherwise, which is the same
+    // rule `effectiveTriple` uses further down. A hosted build with no `--target` is x86 on this
+    // machine, and that is true rather than a default.
+    {
+        const std::string family = polaron::cgutil::archFamily(
+            polaron::cgutil::archOfTriple(target.empty() ? std::string("x86_64") : target));
+        sema.setTargetArch(polaron::comptime::archCode(family));
+        sema.setTargetBits(polaron::comptime::archBits(family));
+    }
     const bool semaOk = sema.analyze(program, libraryMode, testMode);
     phase("sema.analyze");
     // `--check` (used by the editor's live check) and `--concise` want one machine-parseable line per
@@ -1461,7 +1824,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         return 1;
     }
 
-    // `--emit-pir`: Stage 1 of the PIR migration (docs/design/polaron-ir.md §14).
+    // `--emit-pir`: Stage 1 of the PIR migration (docs/design/polaron-ir.md Â§14).
     //
     // IN PARALLEL WITH THE REAL PIPELINE, and nothing below depends on it. That is the whole design
     // of the stage: the compiler cannot break because of it, and what it buys immediately is every
@@ -1470,11 +1833,11 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // program.
     //
     // The module is VERIFIED here too, because a lowering that produces a malformed module and is
-    // never told so is one nobody can trust. §9's rules are the contract; this is the first place
+    // never told so is one nobody can trust. Â§9's rules are the contract; this is the first place
     // they meet real programs rather than a hand-built module.
-    // HOW THE PROGRAM IS BUILT: the AST is lowered to Polaron's own IR, the passes of §11 run on it,
-    // and §12 hands the result to LLVM. There is no second back end and no switch to select one --
-    // `polaron-ir.md` §14 Stage 3, completed 2026-08-25.
+    // HOW THE PROGRAM IS BUILT: the AST is lowered to Polaron's own IR, the passes of Â§11 run on it,
+    // and Â§12 hands the result to LLVM. There is no second back end and no switch to select one --
+    // `polaron-ir.md` Â§14 Stage 3, completed 2026-08-25.
     //
     // What is written below is the history of getting here, kept because every line of it is a
     // lesson about what a second implementation of the same thing costs and buys.
@@ -1549,6 +1912,15 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     // consumers seed themselves with the same order. It used to be asked of the other back end,
     // which is one of the three facts that had to move before that back end could go.
     std::vector<std::string> pirVtableSlots;
+    // ...AND THE MODULE ITSELF, in text, for the same reason and one more.
+    //
+    // A `--lib`'s `.polb` carries it as the `pir` section so a consumer can inline across the
+    // boundary and still REASON about what it inlined -- devirtualisation needs the classes, the
+    // slot map and the replaceable set, and none of those survive the drop to bitcode. It is taken
+    // AFTER the passes have run, which is the version a consumer should get: the whole point is
+    // that the consumer does not repeat work, and re-running the passes on the raw lowering is
+    // exactly the work.
+    std::string pirText;
 #endif
 
     // THE TARGET, decided before either backend is handed anything. Both need it and both need the
@@ -1579,7 +1951,7 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
     }
     // ...AND NOT WHEN NOTHING IS BEING BUILT. `--check` says, in its own help line, "type-check the
     // project, print diagnostics, emit nothing" -- and it is what an editor runs on every pause in
-    // typing. It was falling through to the whole backend: lower, run §11's passes, verify, and only
+    // typing. It was falling through to the whole backend: lower, run Â§11's passes, verify, and only
     // then return at the `checkOnly` exit below.
     //
     // MEASURED on `hello_world`, five checks each: 1074 ms a check through here against 303 ms
@@ -1632,14 +2004,54 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
                 program, [](const std::string& name) { return name; }, testErrors);
             lowered.module.extraRoots = polaron::testrunner::rootsOf(testPlan);
         }
-        // Stage 4: the §11 passes, on the graph. Run BEFORE the module is printed or handed to the
+        // Stage 4: the Â§11 passes, on the graph. Run BEFORE the module is printed or handed to the
         // backend, because what the backend should receive is the optimised form -- and because the
         // contract lowering has to consume a `fact.*` the guard eliminator has already read.
         const polaron::pir::PassReport passes = polaron::pir::runPasses(&lowered.module);
         if (passes.didSomething()) {
             std::fputs(polaron::pir::renderPassReport(passes).c_str(), stderr);
         }
+        // Â§11.7: THE REGION BINDER'S ANSWER, HELD AGAINST THE GRAPH'S.
+        //
+        // *"Region binding -- a dataflow question over the graph, not an AST pattern match."* The
+        // binder reads `this.field = param` off the tree, to a fixpoint, and decides from it which
+        // parameters a method keeps. Â§11.5 needed the same fact for a different reason -- whether
+        // handing an object to its own constructor loses it -- and computed it from the
+        // INSTRUCTIONS: what is stored, what is returned, what is passed on.
+        //
+        // Two answers to one question is the arrangement that catches a wrong one, and it is the
+        // same arrangement Â§11.9 already has (reachability, validated against `GlobalDCE`). The
+        // implication runs one way only: stored into the receiver IMPLIES escapes. A parameter the
+        // graph proved never leaves the body cannot be one the binder saw stored into a field, and
+        // if both are said at once then either the pattern matched something that is not a store or
+        // the dataflow missed one -- and the second would be a wrong program, not a slow one.
+        //
+        // Reported and not fatal, because a disagreement is a compiler defect rather than a defect
+        // in the program being compiled, and stopping the build would punish the wrong person.
+        for (const auto& [key, kept] : sema.escapesToReceiver()) {
+            const auto graph = lowered.module.paramStaysInside.find(key);
+            if (graph == lowered.module.paramStaysInside.end()) {
+                continue;   // no function of that key here: no claim, not a disagreement
+            }
+            // THE TWO COUNT PARAMETERS DIFFERENTLY. The binder lists the DECLARED parameters; a PIR
+            // method's parameter zero is `this`. Lining them up by position without asking would
+            // compare every parameter against its neighbour and report a program's worth of
+            // disagreements that are all one off-by-one.
+            const size_t shift = receiverOffset(lowered.module, key);
+            for (size_t i = 0; i < kept.size(); ++i) {
+                const size_t at = i + shift;
+                if (!kept[i] || at >= graph->second.size() || !graph->second[at]) {
+                    continue;
+                }
+                std::fprintf(stderr,
+                             "pir Â§11.7: the region binder says parameter %zu of `%s` is stored "
+                             "into the receiver, and the graph proves it never leaves the body -- "
+                             "one of the two is wrong\n",
+                             i, key.c_str());
+            }
+        }
         const std::string text = polaron::pir::print(lowered.module);
+        pirText = text;   // out of this scope, for the `.polb` a `--lib` writes
         const std::vector<polaron::pir::VerifyError> bad = polaron::pir::verify(lowered.module);
         if (!bad.empty()) {
             std::fputs(polaron::pir::renderVerifyErrors(bad).c_str(), stderr);
@@ -1857,6 +2269,11 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
             bundle.code = std::move(bits);
         }
         bundle.vtableSlots = pirVtableSlots;   // so consumers seed the same slot layout
+        // ...AND THE MODULE, so a consumer can inline across the boundary rather than only call in.
+        // `code` is still what gets linked; this is what gets reasoned about. Both, because shipping
+        // only the PIR would make every consumer re-run the backend over the whole bundle -- turning
+        // a link into a compile, which is the toll this section exists to remove, paid twice.
+        bundle.pir = pirText;
         bundle.foreignLibs = foreignLibMap;               // ...and can link it without its manifest
         const std::string polbPath = outPath.empty() ? program.name + ".polb" : outPath;
         const std::string polhPath = polhPathFor(polbPath);
@@ -2109,6 +2526,80 @@ int main(int argc, char** argv) {
             return printUsage(argv[0]);
         }
         return dumpPolb(std::string(args[1]));
+    }
+
+    // `--check-pir <file.pir>` -- READ A MODULE BACK, and say so.
+    //
+    // `parse(print(m))` is PIR's own acceptance criterion, and until a `.polb` started carrying a
+    // module there was no way to run it on anything but a hand-written file. That is how it came to
+    // hold for modules with no generics in them and for nothing else: the printer gained mangled
+    // names, the reader did not, and no real module was ever fed back in for either to notice.
+    //
+    // A flag rather than an internal assertion, because the input to a round-trip failure is a FILE.
+    // `--emit-pir` writes one, this reads it, and a bug report is those two commands instead of a
+    // description of a program that produced them.
+    if (args[0] == "--check-pir") {
+        if (args.size() < 2) {
+            std::fprintf(stderr, "error: --check-pir requires a .pir file\n");
+            return printUsage(argv[0]);
+        }
+        auto text = readFile(std::string(args[1]));
+        if (!text) {
+            std::fprintf(stderr, "error: cannot open '%s'\n", std::string(args[1]).c_str());
+            return 1;
+        }
+        polaron::pir::Module back;
+        std::string why;
+        if (!polaron::pir::parse(*text, &back, &why)) {
+            std::fprintf(stderr, "pir: %s\n", why.c_str());
+            return 1;
+        }
+        // AND THE ACCEPTANCE CRITERION IS NOT *DID IT PARSE*, IT IS *IS IT THE SAME MODULE*.
+        //
+        // A parse that succeeds and loses something is the worse failure of the two: it hands back a
+        // module that compiles and is not the one that was written down. Printing what came back and
+        // comparing the two texts is the whole check -- `polaron-ir.md` §1.6 states it exactly that
+        // way, and it costs one more print.
+        //
+        // The line number of the first difference is reported rather than the whole diff, because a
+        // 175 000-line module differing in one place should say which place.
+        const std::string again = polaron::pir::print(back);
+        if (again != *text) {
+            std::size_t line = 1;
+            std::size_t at = 0;
+            while (at < again.size() && at < text->size() && again[at] == (*text)[at]) {
+                if ((*text)[at] == '\n') {
+                    ++line;
+                }
+                ++at;
+            }
+            // BOTH LINES, because *they differ at line N* is half a bug report. The two texts are in
+            // hand; showing what each one says at the point they part is the difference between a
+            // message somebody has to reproduce and one they can act on.
+            auto lineAt = [](const std::string& s, std::size_t upTo) {
+                const std::size_t from = s.rfind('\n', upTo == 0 ? 0 : upTo - 1);
+                const std::size_t start = from == std::string::npos ? 0 : from + 1;
+                const std::size_t end = s.find('\n', start);
+                return s.substr(start, (end == std::string::npos ? s.size() : end) - start);
+            };
+            // ...AND THE WHOLE REPRINT IS WRITTEN OUT, because two 175 000-line modules that differ
+            // somewhere are a job for `diff` and not for a message. The file is the bug report.
+            const std::string roundPath = std::string(args[1]) + ".roundtrip";
+            std::ofstream round(roundPath, std::ios::binary);
+            if (round) {
+                round << again;
+            }
+            std::fprintf(stderr,
+                         "pir: parsed, but printing it back gives a different module -- first "
+                         "difference at line %zu\n  printed:   %s\n  read back: %s\n"
+                         "  the whole reprint is in %s\n",
+                         line, lineAt(*text, at).c_str(), lineAt(again, at).c_str(),
+                         roundPath.c_str());
+            return 1;
+        }
+        std::printf("pir: %zu functions, %zu globals, round trip identical\n",
+                    back.functions.size(), back.globals.size());
+        return 0;
     }
 
     // Compile mode: <input...> [-o <output>] [--lib] [--use <dep.polb> ...]. May span several files.

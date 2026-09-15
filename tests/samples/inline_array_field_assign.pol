@@ -1,0 +1,39 @@
+import System.IO.Console;
+program InlineArrayFieldAssign;
+
+// AN INLINE ARRAY ASSIGNED TO AN INLINE ARRAY FIELD IS A COPY OF ITS ELEMENTS.
+//
+// `this.text = blank;` is the one way a constructor can satisfy Polaron-0612 for an inline array
+// field -- the storage is whatever was there, and filling it element by element is not provably
+// complete. It was lowered as a store of the local array's ADDRESS into the first eight bytes of the
+// field, so the field held a stack pointer and nothing the author wrote.
+//
+// Must print `7 8 9 0 | 1 2 3 4`.
+public bundle Main {
+    public namespace App {
+        public struct Four {
+            private mutable byte[4] cells;
+            public constructor Four(int a, int b, int c) {
+                byte[4] start;
+                start[0] = cast<byte>(a);
+                start[1] = cast<byte>(b);
+                start[2] = cast<byte>(c);
+                this.cells = start;
+            }
+            public method at(int i) returns int { return cast<int>(this.cells[i]) & 255; }
+            public method replaceWith(Four other) returns void { this.cells = other.cells; return; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                Four f = new Four(7, 8, 9);
+                Four g = new Four(1, 2, 3);
+                mutable Four h = new Four(0, 0, 0);
+                h.replaceWith(g);
+                byte[4] four;
+                four[0] = cast<byte>(1); four[1] = cast<byte>(2); four[2] = cast<byte>(3); four[3] = cast<byte>(4);
+                System.IO.Console.println($"{f.at(0)} {f.at(1)} {f.at(2)} {f.at(3)} | {h.at(0)} {h.at(1)} {h.at(2)} {cast<int>(four[3])}");
+                return;
+            }
+        }
+    }
+}

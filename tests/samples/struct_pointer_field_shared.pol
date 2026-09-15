@@ -1,0 +1,46 @@
+import System.IO.Console;
+program StructPointerFieldShared;
+
+// A POINTER FIELD IN A COPIED STRUCT IS SHARED, NOT CLONED. Assignment is a deep copy (spec 5), and
+// deep means OWNED storage -- a string, an array, a value object held inline. A `Box*` is none of
+// those: it names an object somebody else owns, and the copy must name the same one.
+//
+// The copy looked the field's type up by name, and the name is kept without its stars -- `Box*` is
+// filed as `Box`, depth one -- so the test that refuses a pointer (a name ending in `*`) never saw
+// one. `this.kept = r` allocated a fresh Box and pointed the copy at it: the holder then watched a
+// clone, `same` said false, and a write through the original never reached it. In the kernel it was
+// a place in the file tree -- a mount and a dentry -- cloned on every open, down into the superblock.
+// Prints `true 9`.
+public bundle Main {
+    public namespace App {
+        public class Box {
+            public mutable int n;
+            public constructor Box(int n) { this.n = n; }
+        }
+
+        public struct Ref {
+            private mutable Box* at;
+            public constructor Ref(Box* at) { this.at = at; }
+            public method box() returns Box* { return this.at; }
+        }
+
+        public class Holder {
+            private mutable Ref kept;
+            public constructor Holder(Ref r) { this.kept = r; }
+            public method same(Box* b) returns boolean { return this.kept.box() == b; }
+            public method seen() returns int { return this.kept.box().n; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Box* b = new Box(5) on heap;
+                Holder* h = new Holder(new Ref(b)) on heap;
+                b.n = 9;
+                System.IO.Console.println($"{h.same(b)} {h.seen()}");
+                delete h;
+                delete b;
+                return;
+            }
+        }
+    }
+}

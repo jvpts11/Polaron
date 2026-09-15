@@ -1,0 +1,49 @@
+import System.IO.Console;
+program SelfDeleteIsNotAFrameSlot;
+
+// A METHOD THAT FREES WHAT IT WAS GIVEN, AND THE OPTIMISATION THAT DID NOT ASK.
+//
+// §11.5 gives a frame slot to any heap allocation that does not outlive the frame, and decides that
+// through a summary: "which parameters does this method not let out". `run` does not let `this` out
+// -- nothing keeps the pointer, and the escape walk is right -- so `w` was proved frame-local, given
+// a stack slot, and `run` then handed a STACK ADDRESS to `__polaron_free`.
+//
+// The program below corrupted the heap and exited 0xC0000374 having printed nothing at all. Not the
+// `3`, which is computed before the `delete`: the crash was in the allocator, after main had already
+// buffered its output.
+//
+// NOT AN ESCAPE, WHICH IS WHY IT WAS MISSED. Every rule in that pass asks where a pointer GOES, and
+// this pointer goes nowhere -- it is freed where it stands. Whose object it is turns out to be a
+// different question from where it went, and for a parameter it is the one that decides.
+//
+// The pass's own note, four screens above the bug, says a stack address in the allocator "is the
+// failure this pass is one line away from at every moment". It was that line.
+//
+// Prints:
+//   3 after
+public bundle Main {
+    public namespace App {
+        public class Worker {
+            public mutable int done;
+            public constructor Worker() { this.done = 0; }
+
+            // The shape: an object that decides its own work is over and frees itself. Legal, and
+            // the last thing this method does.
+            public method run() returns void {
+                this.done = 3;
+                System.IO.Console.print($"{this.done} ");
+                delete this;
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Worker* w = new Worker() on heap;
+                w.run();
+                System.IO.Console.println("after");
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,147 @@
+    // ---- Machine.Port: the x86 I/O address space ----
+    //
+    // Everything else on x86 goes through this, which is why it is first (freestanding-prelude.md
+    // S4). A driver's first instruction is `in` or `out`; a kernel's first page of work is `lgdt`,
+    // `cpuid`, `wrmsr`. Before this existed, every bare-metal Polaron program wrote these six
+    // methods again.
+    //
+    // A PORT IS A `short address`, NOT AN `int`, and that is the whole reason this is a type rather
+    // than six free methods. Written `int`, a port is indistinguishable from the byte written to
+    // it: `Io.out8(0x3F8, 0x03)` and `Io.out8(0x03, 0x3F8)` are the same call to a type checker
+    // that thinks both arguments are numbers, and the second writes to whatever device lives at
+    // port 3. `address` says it is a location; `short` says the I/O space is sixteen bits wide, so
+    // a port that does not fit is a build error rather than an `out` to wherever it truncated to.
+    //
+    // The operands NAME THEIR REGISTERS. `out` wants the port in `dx` and the value in `al`, and
+    // saying so lets the allocator put them there -- the alternative is the block moving them
+    // itself, which is four setup instructions where two will do.
+    //
+    // ---- AND IT IS PARTITIONED BY TARGET ----
+    //
+    // `in` and `out` are instructions aarch64 does not have, and an `asm` block declaring one
+    // architecture inside a build for another is a compile error -- correctly, since assembly
+    // cannot be ported by a compiler. So each body is a `comptime if` over `__target_arch`, and it
+    // works because of the rule half of `comptime` rests on: **the untaken branch parses and is not
+    // analysed** (layout.md S10.1a). That rule was written with this case named as its motivation.
+    //
+    // The non-x86 arm is EMPTY, and the refusal lives at the import (S7) rather than here. A
+    // `demand` in the body would fire on the DECLARATION, so merely having `Machine.Port` in the
+    // prelude would break every non-x86 build -- including the ones that never name it. The gate
+    // that already tells a freestanding program it may not have `Console` tells a non-x86 program
+    // it may not have `Io`, in one line, where the programmer said they wanted it.
+    public namespace Port {
+
+        public class Io {
+            // ---- 8-bit: the width nearly every control register speaks ----
+            public static method out8(short address port, int value) returns void {
+                comptime if (__target_arch == 1) {
+                    comptime if (__target_bits == 64) {
+                        asm("x86_64") { out dx, al } in ("dx": port, "al": value);
+                    } else {
+                        // THE SAME INSTRUCTION, and a different register file to declare it against. in`r
+                        // and out do not change on i686 -- the I/O space is sixteen bits wide on both --
+                        // but the block names the architecture its mnemonics are checked against, and 32-
+                        // bit x86 is not x86_64. That is rchFamily being right, not being fussy.
+                        asm("i686") { out dx, al } in ("dx": port, "al": value);
+                    }
+                } else {
+                    // Not x86: a device register is memory here. See the note above.
+                }
+                return;
+            }
+            public static method in8(short address port) returns int {
+                mutable int v = 0;
+                comptime if (__target_arch == 1) {
+                    comptime if (__target_bits == 64) {
+                        asm("x86_64") { in al, dx } out ("al": v) in ("dx": port);
+                    } else {
+                        // THE SAME INSTRUCTION, and a different register file to declare it against. in`r
+                        // and out do not change on i686 -- the I/O space is sixteen bits wide on both --
+                        // but the block names the architecture its mnemonics are checked against, and 32-
+                        // bit x86 is not x86_64. That is rchFamily being right, not being fussy.
+                        asm("i686") { in al, dx } out ("al": v) in ("dx": port);
+                    }
+                } else {
+                }
+                return v;
+            }
+
+            // ---- 16-bit: ATA PIO moves a sector through the data port a word at a time ----
+            public static method out16(short address port, int value) returns void {
+                comptime if (__target_arch == 1) {
+                    comptime if (__target_bits == 64) {
+                        asm("x86_64") { out dx, ax } in ("dx": port, "ax": value);
+                    } else {
+                        // THE SAME INSTRUCTION, and a different register file to declare it against. in`r
+                        // and out do not change on i686 -- the I/O space is sixteen bits wide on both --
+                        // but the block names the architecture its mnemonics are checked against, and 32-
+                        // bit x86 is not x86_64. That is rchFamily being right, not being fussy.
+                        asm("i686") { out dx, ax } in ("dx": port, "ax": value);
+                    }
+                } else {
+                }
+                return;
+            }
+            public static method in16(short address port) returns int {
+                mutable int v = 0;
+                comptime if (__target_arch == 1) {
+                    comptime if (__target_bits == 64) {
+                        asm("x86_64") { in ax, dx } out ("ax": v) in ("dx": port);
+                    } else {
+                        // THE SAME INSTRUCTION, and a different register file to declare it against. in`r
+                        // and out do not change on i686 -- the I/O space is sixteen bits wide on both --
+                        // but the block names the architecture its mnemonics are checked against, and 32-
+                        // bit x86 is not x86_64. That is rchFamily being right, not being fussy.
+                        asm("i686") { in ax, dx } out ("ax": v) in ("dx": port);
+                    }
+                } else {
+                }
+                return v;
+            }
+
+            // ---- 32-bit: PCI configuration space has no narrower door ----
+            //
+            // The address register at 0xCF8 is ONE 32-bit word -- enable bit, bus, device, function
+            // and a dword-aligned offset packed together -- and writing it in halves would address
+            // two different things in turn.
+            public static method out32(short address port, int value) returns void {
+                comptime if (__target_arch == 1) {
+                    comptime if (__target_bits == 64) {
+                        asm("x86_64") { out dx, eax } in ("dx": port, "eax": value);
+                    } else {
+                        // THE SAME INSTRUCTION, and a different register file to declare it against. in`r
+                        // and out do not change on i686 -- the I/O space is sixteen bits wide on both --
+                        // but the block names the architecture its mnemonics are checked against, and 32-
+                        // bit x86 is not x86_64. That is rchFamily being right, not being fussy.
+                        asm("i686") { out dx, eax } in ("dx": port, "eax": value);
+                    }
+                } else {
+                }
+                return;
+            }
+            public static method in32(short address port) returns int {
+                mutable int v = 0;
+                comptime if (__target_arch == 1) {
+                    comptime if (__target_bits == 64) {
+                        asm("x86_64") { in eax, dx } out ("eax": v) in ("dx": port);
+                    } else {
+                        // THE SAME INSTRUCTION, and a different register file to declare it against. in`r
+                        // and out do not change on i686 -- the I/O space is sixteen bits wide on both --
+                        // but the block names the architecture its mnemonics are checked against, and 32-
+                        // bit x86 is not x86_64. That is rchFamily being right, not being fussy.
+                        asm("i686") { in eax, dx } out ("eax": v) in ("dx": port);
+                    }
+                } else {
+                }
+                return v;
+            }
+
+            // A PORT WRITE TO A DEVICE THAT IS NOT READY YET. The canonical delay on x86 is a write
+            // to port 0x80, which is unused on every machine anyone still has and takes roughly one
+            // bus cycle -- the shape every kernel writes as `outb %al, $0x80` and nobody explains.
+            public static method settle() returns void {
+                Io.out8(cast<short address>(0x80), 0);
+                return;
+            }
+        }
+    }

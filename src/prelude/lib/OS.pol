@@ -356,22 +356,25 @@
             private constructor Subprocess(long h) {
                 this.handle = h;
             }
-            // Spawn `command` (run through the system shell). Check isValid() before use.
-            public static method start(String command) returns Subprocess {
-                return new Subprocess(Subproc.spawn(command)) on heap;
+            // Spawn `commandLine` (run through the system shell). Check isValid() before use.
+            //
+            // The parameter was called `command`, which is now the word for the third kind of member
+            // -- a renaming this file pays for and nothing else does.
+            public static method start(String commandLine) returns Subprocess {
+                return new Subprocess(Subproc.spawn(commandLine)) on heap;
             }
             // Same, but the child's stderr is merged into its stdout: one stream carries everything it
             // prints. That is what you want from a tool that reports on stderr (a compiler), and exactly
             // what you must NOT do to a child speaking a framed protocol -- a stray log line would be read
             // as part of a message. Hence two spawns, and a caller that says which one it means.
-            public static method startCombined(String command) returns Subprocess {
-                return new Subprocess(Subproc.spawnCombined(command)) on heap;
+            public static method startCombined(String commandLine) returns Subprocess {
+                return new Subprocess(Subproc.spawnCombined(commandLine)) on heap;
             }
             // Same as start(), but the child gets its OWN console window (Windows). start()/startCombined()
             // are windowless -- a background tool piped to us. startVisible() is for launching an interactive
             // console tool the user is meant to see and drive; its stdio is still piped, so you can read it too.
-            public static method startVisible(String command) returns Subprocess {
-                return new Subprocess(Subproc.spawnVisible(command)) on heap;
+            public static method startVisible(String commandLine) returns Subprocess {
+                return new Subprocess(Subproc.spawnVisible(commandLine)) on heap;
             }
             public method isValid() returns boolean {
                 return this.handle != cast<long>(0);
@@ -646,8 +649,8 @@
             private constructor Pty(long h) {
                 this.handle = h;
             }
-            public static method start(String command, int cols, int rows) returns Pty {
-                return new Pty(Conpty.spawn(command, cols, rows)) on heap;
+            public static method start(String commandLine, int cols, int rows) returns Pty {
+                return new Pty(Conpty.spawn(commandLine, cols, rows)) on heap;
             }
             public method isValid() returns boolean {
                 return this.handle != cast<long>(0);

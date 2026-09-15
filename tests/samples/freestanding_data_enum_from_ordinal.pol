@@ -1,0 +1,29 @@
+// A NUMBER CAST TO AN ENUM WITH DATA, ON BARE METAL. A number outside the declared set is refused, and
+// in a hosted program that is a ClassCastException; freestanding has no unwinder, so it must be the
+// failure report and never `__cxa_throw` -- which a kernel's link names as undefined, from a method
+// that only listed its devices.
+program FreestandingDataEnumFromOrdinal freestanding;
+
+public bundle Kernel {
+    public namespace Boot {
+        public sealed enum Node {
+            first(1, 3), second(1, 5);
+            private int major;
+            private int minor;
+            public constructor Node(int major, int minor) {
+                this.major = major;
+                this.minor = minor;
+            }
+            public method device() returns int { return (this.major << 8) | this.minor; }
+        }
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int sum = 0;
+                for (mutable int i = 0; i < Node.count(); i = i + 1) {
+                    sum = sum + cast<Node>(i).device();
+                }
+                return;
+            }
+        }
+    }
+}

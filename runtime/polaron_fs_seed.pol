@@ -1,0 +1,68 @@
+program PolaronRegionSeed freestanding;
+
+public bundle Runtime {
+    public namespace Memory {
+        // Bootstrap storage lent by the host kernel. This layer cannot allocate a
+        // region itself: it is the provider used when a region needs to grow.
+        /* THE THREE ADDRESSES ARE THE POINT, not an oversight the rule caught.
+           `Polaron-0B3C` asks for a raw address to be wrapped in a type that owns and frees it, and
+           this is the one layer with nothing to do that with: the storage is LENT by the kernel
+           above, it is what every region is later cut out of, and a type that freed it would be
+           freeing its host's memory. The allocator cannot allocate its own bootstrap. */
+        public class RegionSeed {
+            private fixed address Alignment = 16;
+            [Allow(code: "Polaron-0B3C", why: "the storage the host kernel lends the runtime to build regions out of; owning it is exactly what this layer must not do")]
+            private static mutable address base;
+            [Allow(code: "Polaron-0B3C", why: "the extent of that lent storage, held for the same reason as `base`")]
+            private static mutable address capacity;
+            [Allow(code: "Polaron-0B3C", why: "how far into that lent storage the bump has reached, held for the same reason as `base`")]
+            private static mutable address used;
+
+            public unknown c static method __polaron_region_seed(address base, address size)
+                returns void {
+                RegionSeed.base = 0;
+                RegionSeed.capacity = 0;
+                RegionSeed.used = 0;
+                if (base == 0) { return; }
+                address padding = (RegionSeed.Alignment - base % RegionSeed.Alignment)
+                                  % RegionSeed.Alignment;
+                if (padding > size) { return; }
+                address aligned = base + padding;
+                if (aligned < base) { return; }
+                address available = size - padding;
+                if (aligned + available < aligned) { return; }
+                RegionSeed.base = aligned;
+                RegionSeed.capacity = available;
+                return;
+            }
+
+            public unknown c static method __polaron_region_take(address bytes) returns address {
+                if (RegionSeed.base == 0 || bytes == 0) { return 0; }
+                address padding = (RegionSeed.Alignment - bytes % RegionSeed.Alignment)
+                                  % RegionSeed.Alignment;
+                address need = bytes + padding;
+                if (need < bytes) { return 0; }
+                // Subtraction avoids wrapping used + need near the address limit.
+                if (need > RegionSeed.capacity - RegionSeed.used) { return 0; }
+                address result = RegionSeed.base + RegionSeed.used;
+                RegionSeed.used = RegionSeed.used + need;
+                return result;
+            }
+
+            /* THE ALLOCATION PROFILER'S TWO HOOKS, ANSWERED WITH NOTHING.
+
+               The region core calls these on every slot it hands out or takes back. A hosted program
+               resolves them in `polaron_rt.cpp`, where they are two counters behind a switch that is
+               a compile-time `false` unless the runtime was built with -DPOLARON_PROFILING. Bare
+               metal has no environment to switch a profiler on with, so the honest answer is an
+               empty body -- and because this file is appended to the same module as the core, an
+               empty body is also what it COSTS, which is what the macros they replaced cost.
+
+               They live here, in the seed, and not beside the four backing methods in
+               `polaron_fs_region.pol`: that file is skipped whole when a program supplies its own
+               region backing, and a program that does so still needs these two to resolve. */
+            public unknown c static method __polaron_profile_alloc() returns void { return; }
+            public unknown c static method __polaron_profile_free() returns void { return; }
+        }
+    }
+}

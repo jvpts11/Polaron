@@ -3,12 +3,15 @@ program ItselfPronoun;
 
 // `itself` is the pronoun for "the entity being declared" -- the definition the keyword reference
 // always gave it. Bare, it is that entity; followed by a '.', it is that entity's TYPE. It used to
-// be honoured in only two places (the region initializer and lambda self-recursion); those are not
-// special cases but instances of the same rule, and both still hold below.
+// be honoured in only two places (the region initializer and self-recursion in a body with no name
+// of its own); those are not special cases but instances of the same rule, and both still hold
+// below.
 
 public bundle main {
 
     public namespace app {
+
+        public command IntStep(int n) returns int;
 
         public class Tally {
             public mutable int total;
@@ -42,10 +45,11 @@ public bundle main {
                 t.add(3);
                 System.IO.Console.println($"total = {t.total}");
 
-                // 3. The long-standing use, unchanged: a lambda calling itself. The pronoun means
-                // the lambda here because a lambda body is the one place this rewrite does not
-                // reach -- and inside one, the entity being declared IS the lambda.
-                function<int, int> fact = lambda(int n) returns int {
+                // 3. The long-standing use, unchanged in meaning: a body with no name of its own
+                // calling itself. It used to be a lambda; it is a command now, and the pronoun still
+                // means the same thing -- inside one, the entity being declared IS the command, and
+                // the method the compiler gave it is not a name the author can write.
+                IntStep* fact = command (int n) returns int {
                     if (n <= 1) {
                         return 1;
                     }

@@ -1,0 +1,35 @@
+import System.Concurrency.Channel;
+program ChannelSendNeedsMoveBad;
+
+// A channel slot is 64 bits, "which covers integers and object references alike" -- so an object
+// crosses the channel as a REFERENCE and the sender still holds it afterwards. Two threads, one
+// object, and nothing on the line that says so.
+//
+// Everywhere else in this language a value that travels is copied: assignment deep-copies, a
+// command's baggage is copied when the command is built. The channel was the one place where the
+// easy spelling was the sharing one, which inverts the principle the rest of the model is built on.
+// So `send` transfers: `out.send(move job)` -- one holder before, one after, no copy made.
+//
+// Refused with Polaron-0814. A number needs no `move`, because a number in a slot IS the value:
+// there is nothing on the other side to alias, and `ints.send(1)` below stays legal.
+
+public bundle Main {
+    public namespace App {
+        public class Job {
+            public mutable int id;
+            public constructor Job(int id) { this.id = id; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Channel<int> ints = new Channel<int>(4) on heap;
+                ints.send(1);                       // fine: a number is the value
+
+                Channel<Job*> work = new Channel<Job*>(4) on heap;
+                Job* j = new Job(7) on heap;
+                work.send(j);                       // refused: this hands `j` to another thread
+                return;
+            }
+        }
+    }
+}

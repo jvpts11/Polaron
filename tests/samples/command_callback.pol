@@ -1,0 +1,29 @@
+import System.IO.Console;
+program CommandCallback;
+
+// A command passed as an argument: `apply` takes the ROLE and calls it. This is the shape every
+// callback in the language now has, and the reason the role exists -- `apply` is compiled without
+// knowing that `square` was ever written, and `square` without knowing about `apply`.
+//
+// Prints: r=49
+
+public bundle Main {
+    public namespace App {
+        public command IntMap(int n) returns int;
+
+        public class Arithmetic {
+            public command square(int n) returns int { return n * n; }
+        }
+
+        public class Main {
+            public static method apply(IntMap* f, int x) returns int {
+                return f(x);
+            }
+            public static method main(string[] args) returns void {
+                IntMap* sq = Arithmetic.square();
+                System.IO.Console.printf("r=%d\n", Main.apply(sq, 7));
+                return;
+            }
+        }
+    }
+}

@@ -1,0 +1,44 @@
+import System.IO.Console;
+program LintWeakLinkIsNotKept;
+
+// A `weak` BACK-LINK DOES NOT KEEP WHAT IT POINTS AT. `child.hangFrom(parent)` stores the parent in a
+// weak field, which is emptied when the parent dies -- so the parent has not been handed over, and 0B4B
+// ("'hangFrom' keeps 'parent' ... move it into the call") was advice to give it away. Must not fire.
+public bundle Main {
+    public namespace App {
+        public class Parent {
+            private mutable int id;
+            public constructor Parent(int id) { this.id = id; }
+            public method number() returns int { return this.id; }
+        }
+        public class Child {
+            private mutable weak nullable Parent* up;
+            public constructor Child() { this.up = null; }
+            public method hangFrom(Parent* p) returns void { this.up = p; return; }
+            public method parentNumber() returns int {
+                nullable Parent* p = this.up;
+                if (p == null) { return 0; }
+                return p.number();
+            }
+        }
+        public class Main {
+            public static method report(Child* c) returns void {
+                System.IO.Console.println($"{c.parentNumber()}");
+                return;
+            }
+            public static method link(Child* c, Parent* parent) returns void {
+                c.hangFrom(parent);
+                Main.report(c);
+                return;
+            }
+            public static method main(string[] args) returns void {
+                Parent* p = new Parent(4) on heap;
+                Child* c = new Child() on heap;
+                Main.link(c, p);
+                delete c;
+                delete p;
+                return;
+            }
+        }
+    }
+}

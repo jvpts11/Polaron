@@ -1,0 +1,128 @@
+    // ---- Machine.Format: numbers into a caller's buffer ----
+    //
+    // THE ONE ENTRY OF THE FIRST CUT THAT IS WRITTEN RATHER THAN LIFTED, and that is not a
+    // coincidence: it is also the one every kernel re-writes as a digit loop by hand
+    // (freestanding-prelude.md ?S10.3). **What nobody could share is what nobody had.**
+    //
+    // Formatting is where `snprintf` enters, which is the one thing in a hosted library with no
+    // bare-metal answer short of writing a formatter. So this is the formatter ??" and it is written
+    // the only way a bare-metal one can be: **into a buffer the caller owns**, returning how many
+    // bytes it wrote. Nothing here returns an object it allocated, nothing takes a `String`, and
+    // nothing needs a heap (?S5).
+    //
+    // ...AND THE BUFFER IS A `Machine.Raw.Extent`, WHICH IS THE FIX FOR THE ONE THING THAT WAS WRONG
+    // WITH THIS FILE. It said `byte[] into`, and a `T[]` in this ABI is one pointer to a HEAP block
+    // whose first eight bytes are its length -- so the only way to produce one is to allocate. In
+    // the tier whose stated premises are no heap and no `String`, the parameter could not be
+    // satisfied: an inline `byte[16]`, which is what a kernel actually has, is bare storage with no
+    // header and does not convert to it. The entry written for kernels was unreachable from one.
+    //
+    // It went unseen because this file's own demonstration sample wrote `new byte[64]()` and passed.
+    // A library that is only ever exercised by a program with an allocator has not been exercised in
+    // the tier it is for.
+    //
+    // Every method is `reentrant`, because a fault handler formats an address and a driver formats a
+    // count from interrupt context. They touch no state at all, so the property costs nothing and
+    // the compiler now holds them to it.
+    public namespace Format {
+
+        [Allow(code: "Polaron-0B10", why: "the rule is right that these are a transformer's shape -- four static methods over a subject they all take first. What it cannot see is the LAYER: `Machine.Raw` is about bytes and addresses, and a base-16 digit loop is not that. Putting `unsigned` on `Extent` would make the raw-bytes type know about number bases, and a formatter that owned its buffer would stop being usable on somebody else's. The separation is what lets a driver hand its own storage to a formatter that has never heard of it")]
+        [Allow(code: "Polaron-0B24", why: "`unsigned(into, at, value, base, width)` is the shape of every formatter written for a caller's buffer, and the two ints that could be swapped -- `base` and `width` -- are the two a wrong answer names immediately: a hex number in decimal, or padded to sixteen places")]
+        [Allow(code: "Polaron-0B40", why: "a digit loop is bounded by the COUNT OF DIGITS, not by the buffer: `scratch` is sixteen bytes and `n` cannot pass it, and `into` is checked against its own capacity once, before the first write, rather than per byte. Counting to the capacity would write the whole buffer to produce a three-digit number")]
+        public class Digits {
+            public fixed byte Zero  = 48;    // '0'
+            public fixed byte LowerA = 97;   // 'a'
+            public fixed byte Minus = 45;    // '-'
+
+            // ---- unsigned, any base from 2 to 16 ----
+            //
+            // Written BACKWARDS INTO A SCRATCH and then reversed, which is how every correct digit
+            // loop works and why writing one by hand is worth doing once rather than per kernel: the
+            // digits come out least-significant first and the number is read most-significant first.
+            //
+            // Returns the count written, or 0 when the buffer is too small -- never a partial number,
+            // because half of `4096` is `40` and that is worse than nothing.
+            public static reentrant method unsigned(Extent into, int at, address value, int base,
+                                             int width) returns int {
+                if (base < 2 || base > 16) {
+                    return 0;
+                }
+                byte[16] scratch;
+                mutable int n = 0;
+                mutable address v = value;
+                if (v == cast<address>(0)) {
+                    scratch[0] = cast<byte>(Digits.Zero);
+                    n = 1;
+                }
+                while (v != cast<address>(0) && n < 16) {
+                    int digit = cast<int>(v % cast<address>(base));
+                    scratch[n] = digit < 10 ? cast<byte>(Digits.Zero + digit)
+                                            : cast<byte>(Digits.LowerA + digit - 10);
+                    v = v / cast<address>(base);
+                    n = n + 1;
+                }
+                // Left-padded with zeros to `width`, which is what an address wants: `0x0000B8000`
+                // lines up in a column and `0xB8000` does not.
+                mutable int pad = width > n ? width - n : 0;
+                if (at + pad + n > into.capacity) {
+                    return 0;
+                }
+                mutable int w = at;
+                while (pad > 0) {
+                    into.put(w, cast<int>(Digits.Zero));
+                    w = w + 1;
+                    pad = pad - 1;
+                }
+                mutable int i = n - 1;
+                while (i >= 0) {
+                    into.put(w, cast<int>(scratch[i]) & 255);
+                    w = w + 1;
+                    i = i - 1;
+                }
+                return w - at;
+            }
+
+            // ---- signed decimal ----
+            public static reentrant method signed(Extent into, int at, long value) returns int {
+                if (value >= cast<long>(0)) {
+                    return Digits.unsigned(into, at, cast<address>(value), 10, 0);
+                }
+                if (at >= into.capacity) {
+                    return 0;
+                }
+                into.put(at, cast<int>(Digits.Minus));
+                // NEGATED AS AN UNSIGNED WIDENING, not as `0 - value`. The most negative long has no
+                // positive counterpart, so negating it in signed arithmetic is the one input that
+                // wraps back to itself and prints as positive.
+                address magnitude = cast<address>(cast<long>(0) - value);
+                int n = Digits.unsigned(into, at + 1, magnitude, 10, 0);
+                return n == 0 ? 0 : n + 1;
+            }
+
+            // ---- hex, with the `0x` a reader expects ----
+            public static reentrant method hex(Extent into, int at, address value, int width) returns int {
+                if (at + 2 > into.capacity) {
+                    return 0;
+                }
+                into.put(at, 48);        // '0'
+                into.put(at + 1, 120);   // 'x'
+                int n = Digits.unsigned(into, at + 2, value, 16, width);
+                return n == 0 ? 0 : n + 2;
+            }
+
+            // ---- and raw text, so a caller can build a whole line in one buffer ----
+            public static reentrant method text(Extent into, int at, byte* s) returns int {
+                mutable int i = 0;
+                mutable int ch = cast<int>(s[0]) & 255;
+                while (ch != 0) {
+                    if (at + i >= into.capacity) {
+                        return 0;
+                    }
+                    into.put(at + i, ch);
+                    i = i + 1;
+                    ch = cast<int>(s[i]) & 255;
+                }
+                return i;
+            }
+        }
+    }
