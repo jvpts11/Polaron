@@ -17,7 +17,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.173")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.174")
 
 # ---- PIR (docs/design/polaron-ir.md) ----
 #
