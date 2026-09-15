@@ -3252,7 +3252,13 @@ private:
     // catchable by the same runtime and a throw that describes itself differently is not caught,
     // it terminates.
     bool msvcEh() const {
-        const std::string t = mod_.getTargetTriple();
+        // THE TRIPLE AS A STRING, THROUGH `llvm::Triple` -- because WHAT `Module::getTargetTriple`
+        // RETURNS CHANGED. LLVM 18 hands back a `std::string`, LLVM 21 a `Triple`, and the
+        // assignment that compiles against one is the whole project's only error against the other:
+        // `no viable conversion from 'const Triple' to 'const std::string'`, one translation unit,
+        // and with it every binary. Constructed here, both versions answer -- a `Triple` copies, a
+        // string parses -- and `llty`'s copy a few hundred lines up has said it this way all along.
+        const std::string t = llvm::Triple(mod_.getTargetTriple()).str();
         if (!t.empty()) {
             return t.find("windows") != std::string::npos || t.find("msvc") != std::string::npos;
         }
