@@ -17,7 +17,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.172")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.173")
 
 # ---- PIR (docs/design/polaron-ir.md) ----
 #
@@ -312,7 +312,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 90)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.172")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.173")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
