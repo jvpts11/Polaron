@@ -11,7 +11,11 @@
 # here: a Linux syscall sequence, an ARM instruction selection. Compiling for another target and
 # reading the IR is the only verification available on this machine, and it is a real one -- it is how
 # the port work checks that a target emits what it should rather than merely that it compiles.
-string(MD5 _tag "${INPUT}|${NEEDLE}|${TARGET}")
+# The work file is named after everything that decides its contents -- including the TRIPLE, which
+# this hashed under a name the script never sets (`TARGET`, while the option read below is
+# `TARGET_TRIPLE`). Two tests over one input and needle for two targets would have shared one `.ll`,
+# and under `ctest -j` one would have read the other's module.
+string(MD5 _tag "${INPUT}|${NEEDLE}|${TARGET_TRIPLE}")
 set(ll "${WORKDIR}/ir_${_tag}.ll")
 
 set(_targetArg)

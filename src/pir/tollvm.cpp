@@ -2825,11 +2825,36 @@ private:
                 // the one program that is not hosted -- a kernel for `x86_64-unknown-none-elf`.
                 auto* resumeBB = llvm::BasicBlock::Create(ctx_, "catch.chain", here);
                 if (!msvcEh()) {
-                    // Itanium: a landing pad, and the object comes straight out of it.
+                    // Itanium: catch `void*` -- the one type everything Polaron throws -- and take
+                    // the object out of the exception with `__cxa_begin_catch`.
+                    //
+                    // FIELD 0 OF A LANDING PAD IS NOT THE OBJECT. It is the `_Unwind_Exception*`
+                    // header, and storing it as the caught object meant every `catch` compared a
+                    // vtable against the unwinder's own bookkeeping: no clause ever matched, the
+                    // exception was re-raised out of the function, and the program died with
+                    // `terminate called without an active exception`. Forty-five tests said that
+                    // one sentence, and the clause was `null` -- catch-everything -- which cannot
+                    // hand the object back on this model even when it does match.
+                    //
+                    // THE CATCH IS ENDED AT ONCE, with as little inside the handler as the MSVC
+                    // funclet has, and for the same reason. The object is a Polaron heap object with
+                    // a life of its own, so it outlives the exception the runtime frees here;
+                    // everything after this -- the clause chain, the handler bodies, the `finally`,
+                    // the re-raise -- is then ORDINARY code, with no handled exception for anything
+                    // to have to unwind out of. A re-raise is a fresh throw of the same object,
+                    // which is what `Op::Resume` already emits and what the trusted path chose over
+                    // `__cxa_rethrow`'s begin/end bookkeeping.
                     auto* pad = b_.CreateLandingPad(
                         llvm::StructType::get(ctx_, {ptrTy, llvm::Type::getInt32Ty(ctx_)}), 1);
-                    pad->addClause(llvm::Constant::getNullValue(ptrTy));
-                    b_.CreateStore(b_.CreateExtractValue(pad, 0), caught);
+                    pad->addClause(itaniumTypeInfo());
+                    llvm::FunctionCallee begin = mod_.getOrInsertFunction(
+                        "__cxa_begin_catch", llvm::FunctionType::get(ptrTy, {ptrTy}, false));
+                    llvm::FunctionCallee end = mod_.getOrInsertFunction(
+                        "__cxa_end_catch",
+                        llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), false));
+                    llvm::Value* header = b_.CreateExtractValue(pad, 0, "exc.header");
+                    b_.CreateStore(b_.CreateCall(begin, {header}, "exc.obj"), caught);
+                    b_.CreateCall(end, {});
                     b_.CreateBr(resumeBB);
                 } else {
                     auto* padBB = llvm::BasicBlock::Create(ctx_, "catch.dispatch", here);
@@ -3358,10 +3383,28 @@ private:
                 "_CxxThrowException", llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false));
             args = {slot, throwInfo()};
         } else {
+            // AN ITANIUM THROW DOES NOT OWN THE OBJECT IT CARRIES. `__cxa_throw` takes memory the
+            // RUNTIME allocated, and writes a `__cxa_refcounted_exception` header in the bytes
+            // immediately BEFORE the pointer it is handed -- so giving it the Polaron object wrote
+            // that header over whatever the allocator keeps in front of the object. The program did
+            // not even reach a handler to be wrong in: `double free or corruption (out)`, out of the
+            // allocator, on the first `throw` in the process. Five `file_control` tests were that,
+            // and they looked like a file defect rather than an exception one.
+            //
+            // What is thrown is a pointer-sized CARRIER holding the object pointer, typed `void*`,
+            // which is what lets `__cxa_begin_catch` in the landing hand the object straight back.
+            // The trusted path built exactly this shape, and the two have to agree: a throw that
+            // describes itself differently is not caught, it terminates.
+            llvm::Type* i64 = llvm::Type::getInt64Ty(ctx_);
+            llvm::FunctionCallee room = mod_.getOrInsertFunction(
+                "__cxa_allocate_exception", llvm::FunctionType::get(ptrTy, {i64}, false));
+            llvm::Value* carrier = b_.CreateCall(
+                room, {llvm::ConstantInt::get(i64, mod_.getDataLayout().getPointerSize())},
+                "exc.carrier");
+            b_.CreateStore(obj, carrier);
             raiser = mod_.getOrInsertFunction(
                 "__cxa_throw", llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, ptrTy}, false));
-            args = {obj, llvm::ConstantPointerNull::get(ptrTy),
-                    llvm::ConstantPointerNull::get(ptrTy)};
+            args = {carrier, itaniumTypeInfo(), llvm::ConstantPointerNull::get(ptrTy)};
         }
         if (unwindTo != nullptr) {
             llvm::Function* here = b_.GetInsertBlock()->getParent();
@@ -3380,6 +3423,23 @@ private:
     // rather than by the personality -- one place decides, and it is the one that can see the
     // source. `throwInfo` builds the same descriptor for the throwing side; this hands back just
     // the descriptor, which is what a catch clause takes.
+    // The ITANIUM descriptor, which is the same decision as `ehTypeDescriptor` on the other model:
+    // `typeinfo for void*`, supplied by the C++ runtime (libstdc++ / libc++abi). Everything the
+    // language throws is a pointer to an object, and WHICH class it is gets decided by the vtable
+    // comparisons the lowering emitted -- so the personality routes every Polaron exception into our
+    // handler and the choice of clause stays in the one place that can see the source.
+    //
+    // It has to be this exact type on BOTH sides. For a pointer-typed clause the personality
+    // dereferences the carrier before saving it, which is what makes `__cxa_begin_catch` hand back
+    // the object pointer itself rather than the bytes holding it.
+    llvm::Constant* itaniumTypeInfo() {
+        if (llvm::GlobalVariable* g = mod_.getNamedGlobal("_ZTIPv")) {
+            return g;
+        }
+        return new llvm::GlobalVariable(mod_, llvm::PointerType::get(ctx_, 0), true,
+                                        llvm::GlobalValue::ExternalLinkage, nullptr, "_ZTIPv");
+    }
+
     llvm::Constant* ehTypeDescriptor() {
         throwInfo();   // builds `??_R0PEAX@8` on first use
         if (llvm::GlobalVariable* td = mod_.getNamedGlobal("??_R0PEAX@8")) {

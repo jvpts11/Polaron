@@ -10391,6 +10391,45 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # WHAT THE ITANIUM MODEL HAS TO EMIT, read off the IR rather than by running it -- because
+        # this machine is Windows and the model under test is the other one. Four needles, one test
+        # each, so a failure says WHICH half is missing: the exception the runtime allocated, the
+        # clause that routes a Polaron throw into our handler, and the pair that takes the object out
+        # and ends the catch.
+        #
+        # Before these existed, the Itanium `Op::Landing` stored field 0 of the landing pad -- the
+        # `_Unwind_Exception*` header -- as the caught object. No clause ever matched, every
+        # exception was re-raised out of its own function, and forty-five tests on Linux died with
+        # `terminate called without an active exception` while the Windows corpus stayed green: the
+        # back end had only ever been validated against one of the two models it claims to support.
+        foreach(_probe "allocates|__cxa_allocate_exception"
+                       "names_void_ptr|catch ptr @_ZTIPv"
+                       "begins_catch|__cxa_begin_catch"
+                       "ends_catch|__cxa_end_catch")
+            string(REPLACE "|" ";" _parts "${_probe}")
+            list(GET _parts 0 _name)
+            list(GET _parts 1 _needle)
+            add_test(NAME codegen_exceptions_itanium_${_name} COMMAND "${CMAKE_COMMAND}"
+                "-DPOLC=$<TARGET_FILE:polc>"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/exceptions.pol"
+                "-DNEEDLE=${_needle}"
+                "-DTARGET_TRIPLE=x86_64-unknown-linux-gnu"
+                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
+        endforeach()
+
+        # ...AND THE OTHER MODEL MUST NOT GAIN ANY OF IT. Which model is used is decided by the
+        # triple, and the Windows corpus is the one that has always worked: an `__cxa_begin_catch`
+        # appearing in a module built for `windows-msvc` would mean that choice broke, which is the
+        # one way this work could damage what already passes.
+        add_test(NAME codegen_exceptions_msvc_has_no_itanium_catch COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/exceptions.pol"
+            "-DNEEDLE=__cxa_begin_catch"
+            "-DPOLARONFLAGS=--target=x86_64-pc-windows-msvc"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+
         # F6: Result<T,E>/Option<T> built-in sealed sum types matched exhaustively (no default).
         add_test(NAME codegen_result_option_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"
