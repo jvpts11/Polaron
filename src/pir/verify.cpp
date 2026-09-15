@@ -697,10 +697,29 @@ private:
         }
     }
 
+    // WHICH SUCCESSOR OF AN INSTRUCTION IS A LANDING -- for EVERY instruction that can unwind, not
+    // just `call.unwind`. A `raise` inside a `try` names the handler it unwinds to, and so do
+    // `resume`, the two guards that throw (`guard.null`, `guard.divisor`) and checked arithmetic;
+    // the backend turns each of them into an `invoke`, which is precisely what makes the landing
+    // reachable.
+    //
+    // Counting only `call.unwind` made rule 19 refuse a correct module: `@Risky.guarded ^landing0
+    // has a landing and is nobody's landing successor`, where the one thing inside the `try` was
+    // `100 / n` -- a division guard, whose edge is the handler.
+    static BlockId landingSuccessorOf(const Inst& in) {
+        if (in.op == Op::CallUnwind) {
+            return in.edges.size() == 2 ? in.edges[1].target : kNoBlock;
+        }
+        const bool unwinds = in.op == Op::Raise || in.op == Op::Resume || in.op == Op::GuardNull ||
+                             in.op == Op::GuardDivisor || in.op == Op::AddChecked ||
+                             in.op == Op::SubChecked || in.op == Op::MulChecked;
+        return unwinds && !in.edges.empty() ? in.edges[0].target : kNoBlock;
+    }
+
     bool isLandingPad(const Function& fn, BlockId id) const {
         for (const Block& b : fn.blocks) {
             for (const Inst& in : b.insts) {
-                if (in.op == Op::CallUnwind && in.edges.size() == 2 && in.edges[1].target == id) {
+                if (landingSuccessorOf(in) == id) {
                     return true;
                 }
             }

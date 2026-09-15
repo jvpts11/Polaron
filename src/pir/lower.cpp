@@ -2314,7 +2314,7 @@ private:
             call.operands.push_back(a);
         }
         call.loc = loc;
-        const ValueId got = emit(std::move(call));
+        const ValueId got = emitMayUnwind(std::move(call));
         Inst back;
         back.op = Op::Ret;
         if (ret != nullptr && ret->kind != TypeKind::Void && got != kNoValue) {
@@ -4759,6 +4759,13 @@ private:
                        "syscall ABI at all, and another architecture numbers and passes them "
                        "differently",
                    m.loc);
+            // A FUNCTION WITH NO BODY IS A DECLARATION (verifier rule 2), and a refused stub has no
+            // body. `declareMethodOn` leaves a syscall method its visibility linkage -- `private`
+            // here -- precisely BECAUSE a syscall method normally gets one, so the refusal left a
+            // private function with no blocks behind it. `ffi_syscall` is the sample whose whole
+            // point is that this target refuses, and it complained about its own IR while refusing
+            // correctly.
+            fn.linkage = Linkage::External;
             return;
         }
         const int64_t number = std::strtoll(m.externConvention.c_str() + 8, nullptr, 10);
@@ -4766,6 +4773,7 @@ private:
             gap("extern syscall(" + std::to_string(number) + ") takes at most six arguments; '" +
                     m.name + "' declares " + std::to_string(m.params.size()),
                 m.loc);
+            fn.linkage = Linkage::External;   // no body emitted: a declaration, as rule 2 requires
             return;
         }
         BodyState outer = saveBody();
@@ -5049,7 +5057,7 @@ private:
                 call.operands.push_back(a);
             }
             call.loc = c.loc;
-            const ValueId got = emit(std::move(call));
+            const ValueId got = emitMayUnwind(std::move(call));
             Inst back;
             back.op = Op::Ret;
             if (body->signature->element != nullptr &&
@@ -5747,45 +5755,60 @@ private:
             handlers_.pop_back();
 
             here_ = guard;
-            const ValueId caught = fn_->addValue(ptr, ValueOrigin::Instruction, guard, 0, "exc");
-            Inst land;
-            land.op = Op::Landing;
-            land.result = caught;
-            land.type = ptr;
-            land.loc = m.loc;
-            fn_->block(guard)->insts.push_back(std::move(land));
-            // ...AND EACH ONE GUARDED, which is the difference between running the teardown and
-            // running it twice. The `throw` that got here already ran the defers it had passed --
-            // that is what a `throw` does on the way out -- so an unguarded copy here printed
-            // `defer ran` a second time. The flag each site carries is what makes the two paths
-            // agree: whichever arrives first does the work, the other finds it done. The `try`
-            // lowering says the same thing in the same words a few hundred lines below.
-            {
-                const std::vector<ScopedObject> unwound(unwindObjects_.begin() + outerUnwindObjects,
-                                                        unwindObjects_.end());
-                const std::vector<DeferSite> deferredHere(unwindDefers_.begin() + outerUnwindDefers,
-                                                          unwindDefers_.end());
-                for (auto it = deferredHere.rbegin(); it != deferredHere.rend(); ++it) {
-                    runOneDefer(*it, /*guarded=*/true, m.loc);
+            // ...AND IF NOTHING IN THE BODY CAN THROW, THE GUARD IS NOT A HANDLER AT ALL.
+            //
+            // `Main.val` is `return n;`: nothing in it unwinds, so no instruction names this block,
+            // and a `landing` nobody names is what verifier rule 19 refuses. Every `$resume` of an
+            // async method whose body cannot throw carried one -- ten samples of the thousand -- and
+            // the module Windows ran by luck segfaulted on Linux. What the block still needs is an
+            // end, which `unreachable` is: nothing can arrive here to be surprised by it.
+            if (!anythingUnwindsTo(guard)) {
+                Inst stop;
+                stop.op = Op::Unreachable;
+                stop.loc = m.loc;
+                emit(std::move(stop));
+            } else {
+                const ValueId caught =
+                    fn_->addValue(ptr, ValueOrigin::Instruction, guard, 0, "exc");
+                Inst land;
+                land.op = Op::Landing;
+                land.result = caught;
+                land.type = ptr;
+                land.loc = m.loc;
+                fn_->block(guard)->insts.push_back(std::move(land));
+                // ...AND EACH ONE GUARDED, which is the difference between running the teardown and
+                // running it twice. The `throw` that got here already ran the defers it had passed
+                // -- that is what a `throw` does on the way out -- so an unguarded copy here printed
+                // `defer ran` a second time. The flag each site carries is what makes the two paths
+                // agree: whichever arrives first does the work, the other finds it done. The `try`
+                // lowering says the same thing in the same words a few hundred lines below.
+                {
+                    const std::vector<ScopedObject> unwound(
+                        unwindObjects_.begin() + outerUnwindObjects, unwindObjects_.end());
+                    const std::vector<DeferSite> deferredHere(
+                        unwindDefers_.begin() + outerUnwindDefers, unwindDefers_.end());
+                    for (auto it = deferredHere.rbegin(); it != deferredHere.rend(); ++it) {
+                        runOneDefer(*it, /*guarded=*/true, m.loc);
+                    }
+                    destroyEach(unwound, m.loc);
                 }
-                destroyEach(unwound, m.loc);
+                Inst asAddr;
+                asAddr.op = Op::PtrToAddr;
+                asAddr.type = i64;
+                asAddr.operands.push_back(asyncTask_);
+                asAddr.loc = m.loc;
+                Inst carrier;
+                carrier.op = Op::PtrToAddr;
+                carrier.type = i64;
+                carrier.operands.push_back(caught);
+                carrier.loc = m.loc;
+                callExternal("__polaron_task_complete_error", tt.voidType(), {i64, i64},
+                             {emit(std::move(asAddr)), emit(std::move(carrier))}, m.loc);
+                Inst leave;
+                leave.op = Op::Ret;
+                leave.loc = m.loc;
+                emit(std::move(leave));
             }
-            Inst asAddr;
-            asAddr.op = Op::PtrToAddr;
-            asAddr.type = i64;
-            asAddr.operands.push_back(asyncTask_);
-            asAddr.loc = m.loc;
-            Inst carrier;
-            carrier.op = Op::PtrToAddr;
-            carrier.type = i64;
-            carrier.operands.push_back(caught);
-            carrier.loc = m.loc;
-            callExternal("__polaron_task_complete_error", tt.voidType(), {i64, i64},
-                         {emit(std::move(asAddr)), emit(std::move(carrier))}, m.loc);
-            Inst leave;
-            leave.op = Op::Ret;
-            leave.loc = m.loc;
-            emit(std::move(leave));
 
             // THE ENTRY'S DISPATCH, now that every `await` has a resume block. A chain of
             // `step == k` tests in front of the jump the entry already makes to the body, so an
@@ -11522,28 +11545,10 @@ private:
             }
         }
         call.loc = c.loc;
-        // INSIDE A `try`, A CLOSURE CALL UNWINDS LIKE ANY OTHER.
-        //
-        // Nothing here knows what the closure will reach, so the safe answer is that it may throw --
-        // and `Test.assertDoesNotThrow(action)` is a method whose ENTIRE PURPOSE is calling one
-        // inside a `try`. Emitted as a plain `call.indirect` the handler had no edge into it, the
-        // landing block became an orphan, and the backend built its funclet blocks with nothing to
-        // terminate them: "Basic Block in function 'Test.assertDoesNotThrow' does not have
-        // terminator!", and with it the whole module.
-        //
-        // The direct-call path a few hundred lines below reasons this out for itself and says so at
-        // length; this one is the same rule and did not have it.
-        ValueId out;
-        if (!handlers_.empty()) {
-            call.op = Op::CallUnwind;
-            const BlockId normal = fn_->addBlock(fresh("resumed"));
-            call.edges.push_back(Edge{normal, {}});
-            call.edges.push_back(Edge{handlers_.back().landing, {}});
-            out = emit(std::move(call));
-            here_ = normal;
-        } else {
-            out = emit(std::move(call));
-        }
+        // INSIDE A `try`, A CLOSURE CALL UNWINDS LIKE ANY OTHER -- see `emitMayUnwind`, which is now
+        // the one place that says so. Nothing here knows what the closure will reach, so the safe
+        // answer is that it may throw.
+        const ValueId out = emitMayUnwind(std::move(call));
         noteName(out, firstTypeArgOf(written));
         return out;
     }
@@ -11574,17 +11579,7 @@ private:
             }
         }
         call.loc = c.loc;
-        ValueId out;
-        if (!handlers_.empty()) {
-            call.op = Op::CallUnwind;
-            const BlockId normal = fn_->addBlock(fresh("resumed"));
-            call.edges.push_back(Edge{normal, {}});
-            call.edges.push_back(Edge{handlers_.back().landing, {}});
-            out = emit(std::move(call));
-            here_ = normal;
-        } else {
-            out = emit(std::move(call));
-        }
+        const ValueId out = emitMayUnwind(std::move(call));
         // THE RESULT'S TYPE NAME, so that a call whose answer is itself a methodptr can be called
         // again. `methodptrBody` strips the `$unknown:<world>` element a foreign-world pointer
         // carries, which is not a type argument and would otherwise be read as the return type.
@@ -15021,7 +15016,6 @@ private:
         pointee_[src] = shape;
 
         const BlockId live = fn_->addBlock(fresh("cln.live"));
-        const BlockId again = fn_->addBlock(fresh("cln.again"));
         const BlockId fresh1 = fn_->addBlock(fresh("cln.new"));
         const BlockId out = fn_->addBlock(fresh("cln.out"));
         const ValueId answer = fn_->addValue(ptr, ValueOrigin::BlockParam, out, 0, "");
@@ -15062,7 +15056,6 @@ private:
             pick.edges.push_back(Edge{fresh1, {}});
             emit(std::move(pick));
         }
-        (void)again;
 
         // THE BYTES FIRST, then the owned edges repointed at their clones. Copying the bytes is
         // what carries the primitives, and recording the clone BEFORE recursing is what lets a
@@ -16651,7 +16644,9 @@ private:
             call.operands.push_back(emit(std::move(load)));
             call.operands.push_back(receiver);
             call.loc = loc;
-            const ValueId answer = emit(std::move(call));
+            // Through the table, and INSIDE A `try` it unwinds -- see `emitMayUnwind`. Whatever the
+            // slot points at can throw, which is the whole premise of `assertDoesNotThrow(action)`.
+            const ValueId answer = emitMayUnwind(std::move(call));
             noteStringResult(target, answer);
             return answer;
         }
@@ -17375,8 +17370,21 @@ private:
         }
         gotoIfOpen(after);
 
-        // ^landing(%exc): the handlers, in source order.
+        // ^landing(%exc): the handlers, in source order -- WHEN ANYTHING UNWINDS HERE AT ALL.
+        //
+        // Nothing in the body of `try { seen = 1; } catch (Exception e) { }` can throw, so no
+        // instruction names this block and there is no handler to emit: only a block that has to end
+        // somewhere. Emitted anyway it was a `landing` nobody names, which verifier rule 19 refuses,
+        // and `lint_shapes` carried two of them -- one in a `try` that swallows and one that handles.
         here_ = landing;
+        if (!anythingUnwindsTo(landing)) {
+            Inst stop;
+            stop.op = Op::Unreachable;
+            stop.loc = s.loc;
+            emit(std::move(stop));
+            here_ = after;
+            return;
+        }
         const ValueId exc = fn_->addValue(out_.module.types.ptrType(), ValueOrigin::Instruction,
                                           landing, 0, "exc");
         Inst land;
@@ -21957,7 +21965,9 @@ private:
             in.operands.push_back(a);
         }
         in.loc = loc;
-        return emit(std::move(in));
+        // A call through an address knows less than any other about what it will reach, so inside a
+        // `try` it unwinds -- see `emitMayUnwind`.
+        return emitMayUnwind(std::move(in));
     }
 
     // `Some(ordinal)` or `None`, from the index a parse landed on -- negative for "no constant of
@@ -22995,7 +23005,11 @@ private:
             }
             call.loc = c.loc;
             const Type* produced = call.type;
-            const ValueId raw = emit(std::move(call));
+            // VIRTUAL WHEN THE OBJECT DECIDES, AND UNWINDING WHEN A `try` IS OPEN. This was the
+            // site that had the first half and not the second: an exception thrown through a vtable
+            // slot inside a `try` had no edge to the handler and left the function on both exception
+            // models, which `virtual_call_in_try.pol` is the sample for.
+            const ValueId raw = emitMayUnwind(std::move(call));
             noteStringResult(target, raw);
             // A VALUE STRUCT COMES BACK AS BYTES and is given a home here, exactly as a direct call's
             // is in `finishCall`. Without it the bytes were stored straight into the pointer-sized
@@ -24520,6 +24534,49 @@ private:
         }
     }
 
+    // DOES ANYTHING UNWIND TO THIS BLOCK? A handler is only a handler if something names it, and a
+    // `landing` nothing names is what verifier rule 19 refuses -- rightly: `try { seen = 1; }` has
+    // nothing in it that can throw, so its `catch` is code no edge arrives at, and the backend was
+    // left building a funclet dispatch for a handler nothing enters.
+    bool anythingUnwindsTo(BlockId landing) const {
+        for (const Block& b : fn_->blocks) {
+            for (const Inst& in : b.insts) {
+                for (const Edge& e : in.edges) {
+                    if (e.target == landing) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    // ONE PLACE THAT SAYS "THIS CALL MAY UNWIND", because the rule kept being stated in some of the
+    // places that needed it and not the others. Inside a `try` a call gets two successors -- the
+    // normal path and the enclosing handler -- and that second edge is the only thing that makes a
+    // `catch` reachable at all.
+    //
+    // Eight sites emit a call and three of them reasoned this out at length while five did not, so a
+    // call through a VTABLE inside a `try` had no edge to the handler: the exception walked past it
+    // and left the function, on BOTH exception models. `Test.assertDoesNotThrow(action)` is the
+    // standard library's own instance of the shape, and the orphaned landing it left behind is what
+    // rule 19 had been reporting all along.
+    //
+    // Outside a `try` there is nothing to unwind to and an ordinary call is right -- which is why
+    // this costs nothing everywhere else in the program.
+    ValueId emitMayUnwind(Inst&& call) {
+        if (handlers_.empty()) {
+            return emit(std::move(call));
+        }
+        call.op = Op::CallUnwind;
+        const BlockId normal = fn_->addBlock(fresh("resumed"));
+        call.edges.push_back(Edge{normal, {}});
+        call.edges.push_back(Edge{handlers_.back().landing, {}});
+        const ValueId got = emit(std::move(call));
+        here_ = normal;
+        return got;
+    }
+
     ValueId finishCall(const Function* target, std::vector<ValueId>&& args, SourceLocation loc) {
         Inst in;
         in.loc = loc;
@@ -24548,21 +24605,9 @@ private:
         // INSIDE A `try`, EVERY CALL MAY UNWIND. Whether the callee DECLARES `throws` is not the
         // question: `risky()` declares nothing, throws, and its exception has to reach the `catch`
         // around the call. Asking the declaration left the call an ordinary one, so the throw
-        // walked straight past a handler written to stop it. Outside a `try` there is nothing to
-        // unwind to and an ordinary call is right -- which is also why this costs nothing anywhere
-        // else in the program.
-        const bool canUnwind = true;
-        ValueId got;
-        if (!handlers_.empty() && canUnwind) {
-            in.op = Op::CallUnwind;
-            const BlockId normal = fn_->addBlock(fresh("resumed"));
-            in.edges.push_back(Edge{normal, {}});
-            in.edges.push_back(Edge{handlers_.back().landing, {}});
-            got = emit(std::move(in));
-            here_ = normal;
-        } else {
-            got = emit(std::move(in));
-        }
+        // walked straight past a handler written to stop it. Said once, in `emitMayUnwind`, because
+        // this reasoning used to be repeated at three call sites and absent from five.
+        const ValueId got = emitMayUnwind(std::move(in));
         // A SMALL STRUCT COMES BACK IN A REGISTER TOO. The declaration says the callee returns an
         // integer -- see `ffiWord` -- and what the program declared it returns is a struct, so the
         // bytes are put into storage of that shape and the address of it is what travels on, which

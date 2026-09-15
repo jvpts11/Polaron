@@ -1,0 +1,57 @@
+import System.IO.Console;
+program VirtualCallInTry;
+
+// A THROW OUT OF A VIRTUAL CALL INSIDE A `try` (spec 21.1). The call goes through the object's own
+// table -- there are two implementations, so it cannot be a direct call -- and the `catch` around it
+// must still see the exception.
+//
+// Emitted as a plain indirect call it had no edge to the handler, so on BOTH exception models the
+// throw walked straight past the `catch` written to stop it and left the program. It was visible all
+// along as the verifier's rule 19 on `Test.assertDoesNotThrow` -- a method whose entire purpose is
+// calling something inside a `try` -- and nothing in a corpus of a thousand programs ran the shape.
+//
+// Prints: quiet / caught code=9 / done.
+public bundle Demo {
+    public namespace App {
+        public interface Throwable { }
+
+        public class MyError implements Throwable {
+            public mutable int code;
+            public constructor MyError() { this.code = 9; }
+        }
+
+        public interface Step {
+            method run() returns void;
+        }
+
+        public class Quiet implements Step {
+            public override method run() returns void {
+                System.IO.Console.printf("quiet\n");
+                return;
+            }
+        }
+
+        public class Failing implements Step {
+            public override method run() returns void {
+                throw new MyError() on heap;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                Step* quiet = new Quiet() on heap;
+                Step* bad = new Failing() on heap;
+                try {
+                    quiet.run();
+                    bad.run();
+                } catch (MyError e) {
+                    System.IO.Console.printf("caught code=%d\n", e.code);
+                }
+                System.IO.Console.printf("done\n");
+                delete bad;
+                delete quiet;
+                return;
+            }
+        }
+    }
+}

@@ -3343,7 +3343,15 @@ private:
     // catchable and could not have caught.
     //
     // Wasm WITH wasi has a runtime and keeps its exceptions.
-    bool hasUnwinder() const { return hasCRuntime(); }
+    //
+    // AND A FREESTANDING PROGRAM HAS NO UNWINDER, WHATEVER TRIPLE IT IS BUILT FOR. The word in the
+    // source is the claim -- the language refuses `try` and `throw` under it -- and this asked only
+    // the triple. The suite builds several freestanding programs for THIS machine so that it can run
+    // them (see `Lowering::run`, which keeps "what the target is" and "what the program says" apart
+    // on purpose), and every one of them got `_CxxThrowException` out of a division guard: an
+    // unwinder inside an image whose whole premise is that there is none, and a link failure in
+    // anybody's kernel. `unimport_freestanding` is the sample that reads it.
+    bool hasUnwinder() const { return hasCRuntime() && !pir_.freestanding; }
 
     // ONE EXCEPTION OBJECT, built where it is thrown: allocate it and run its constructor. The
     // class is one the prelude declares, so its constructor is in the module under the usual key.
@@ -3995,7 +4003,11 @@ private:
         // -- the one construct the language offers for trapping on overflow -- produced the
         // wrapped value and no trap at all. In a hosted program the trap is an exception a caller
         // can handle; freestanding has no machinery for that and panics instead (spec 36.3).
-        if (in.text.empty() || in.aggregate == nullptr || freestanding()) {
+        // ...and WHETHER THERE IS AN UNWINDER is the question, not whether the triple says "none".
+        // Asked the narrow way, a `freestanding` program built for a hosted triple -- which is how
+        // this suite runs them -- still got a throw here, from the one construct in the language
+        // whose whole purpose is to be catchable.
+        if (in.text.empty() || in.aggregate == nullptr || !hasUnwinder()) {
             return value;
         }
         llvm::Value* overflowed = b_.CreateExtractValue(pair, 1, "arith.over");

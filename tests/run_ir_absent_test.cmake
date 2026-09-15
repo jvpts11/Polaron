@@ -20,8 +20,17 @@ if(NOT EXISTS "${ll}")
 endif()
 
 file(READ "${ll}" _ir)
-string(FIND "${_ir}" "${NEEDLE}" _found)
-if(NOT _found EQUAL -1)
-    message(FATAL_ERROR "the emitted IR contains '${NEEDLE}', and must not\n  input: ${INPUT}\n  ir:    ${ll}")
-endif()
+
+# NEEDLE MAY NAME SEVERAL THINGS, separated by `|`. A claim like "no unwinder reaches this image" is
+# not one symbol, and a test that checks one of them passes while the others are emitted: the
+# freestanding test looked for `__cxa_throw` alone, so on Windows -- where the unwinder is
+# `_CxxThrowException` -- it verified nothing at all, and the sample it guards emitted the Windows
+# unwinder twice, in a program whose whole premise is that there is no unwinder under it.
+string(REPLACE "|" ";" _needles "${NEEDLE}")
+foreach(_n IN LISTS _needles)
+    string(FIND "${_ir}" "${_n}" _found)
+    if(NOT _found EQUAL -1)
+        message(FATAL_ERROR "the emitted IR contains '${_n}', and must not\n  input: ${INPUT}\n  ir:    ${ll}")
+    endif()
+endforeach()
 message(STATUS "OK: IR does not contain '${NEEDLE}'")

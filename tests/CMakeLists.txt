@@ -28,13 +28,35 @@ set_tests_properties(cli_version PROPERTIES
 # happen quietly.
 #
 # Gaps are expected here and are not failures: they are the work queue, printed and counted.
-foreach(sample fixed_array type_queries collections_basic abstain_raii)
+# ...and the four shapes that were found producing a module which does NOT verify: rule 19 on an
+# `async` guard nothing unwinds to, on a `try` whose body cannot throw, and on a landing reached only
+# by a division guard's edge; rule 2 on an empty block the deep-clone lowering left behind. Every one
+# of them was silent -- `polc` prints the complaint and exits 0, and nothing in the suite read that
+# stream, so eighteen complaints sat in the corpus while one of them segfaulted on Linux.
+foreach(sample fixed_array type_queries collections_basic abstain_raii
+               async_try lint_shapes try_all_catches_return cascade_clone)
     add_test(NAME pir_lowers_${sample} COMMAND "${CMAKE_COMMAND}"
         "-DPOLC=$<TARGET_FILE:polc>"
         "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/${sample}.pol"
         "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/pir_${sample}.ll"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_verify_test.cmake")
 endforeach()
+
+# The two the list above cannot express: a compilation that is REFUSED (and must still not complain
+# about its own IR while refusing), and a LIBRARY build, which is the only thing that emits the
+# prelude's own `try` blocks -- `Test.assertDoesNotThrow` among them.
+add_test(NAME pir_lowers_ffi_syscall_refusal COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/ffi_syscall.pol"
+    "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/pir_ffi_syscall.ll"
+    "-DREFUSAL_OK=ON"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_verify_test.cmake")
+add_test(NAME pir_lowers_library_prelude COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/bundle_calc_lib.pol"
+    "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/pir_library_prelude.polb"
+    "-DLIB=ON"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_verify_test.cmake")
 
 # Stage 2: the second backend emits a module LLVM accepts, and §12's facts actually arrive.
 if(POLARON_WITH_LLVM)
@@ -312,7 +334,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 90)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.173")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.174")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -5789,15 +5811,25 @@ if(POLARON_WITH_LLVM)
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_contains_test.cmake")
 
-        # ...and the negative half of the same claim: no C++ unwinder reaches a bare-metal image.
-        # The guard used to throw, and that one branch was the ONLY thing tying `unimport` to
-        # `__cxa_throw` -- everything else it needs is ours.
-        add_test(NAME codegen_unimport_freestanding_has_no_unwinder COMMAND "${CMAKE_COMMAND}"
-            "-DPOLC=$<TARGET_FILE:polc>"
-            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/unimport_freestanding.pol"
-            "-DNEEDLE=__cxa_throw"
-            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+        # ...and the negative half of the same claim: NO unwinder reaches a bare-metal image -- on
+        # either exception model, and whatever machine builds it.
+        #
+        # This asked for `__cxa_throw` and nothing else, so on Windows it verified NOTHING: the model
+        # here starts a throw with `_CxxThrowException`, and the sample emitted two of them out of a
+        # division guard in `RegionCore.entriesIn`. The backend read only the TRIPLE, and this suite
+        # builds freestanding programs for the host triple on purpose -- that is how it runs them --
+        # so `program ... freestanding` looked hosted to it. Both personalities are named too: a
+        # frame that declares one carries a relocation to a runtime the target does not have.
+        foreach(_model "x86_64-pc-windows-msvc" "x86_64-unknown-linux-gnu")
+            string(REGEX REPLACE "[^a-z0-9]+" "_" _slug "${_model}")
+            add_test(NAME codegen_unimport_freestanding_has_no_unwinder_${_slug} COMMAND "${CMAKE_COMMAND}"
+                "-DPOLC=$<TARGET_FILE:polc>"
+                "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/unimport_freestanding.pol"
+                "-DNEEDLE=__cxa_throw|_CxxThrowException|__gxx_personality_v0|__CxxFrameHandler3"
+                "-DPOLARONFLAGS=--target=${_model}"
+                "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+        endforeach()
 
         # REFLECTION BARE METAL. The gate that barred it came from spec 36.3's list rather than from
         # a measurement: against an empty program it needs `__polaron_malloc` (the kernel's own, via the
@@ -10429,6 +10461,21 @@ if(POLARON_WITH_LLVM)
             "-DPOLARONFLAGS=--target=x86_64-pc-windows-msvc"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_ir_absent_test.cmake")
+
+        # THE SHAPE THE VERIFIER HAD BEEN POINTING AT ALL ALONG: a virtual call inside a `try`,
+        # whose callee throws. The handler must run, and on BOTH models it did not -- the call went
+        # through the object's table as an ordinary call, with no edge to the handler, so the throw
+        # left the function past a `catch` written to stop it.
+        #
+        # `Test.assertDoesNotThrow` is the standard library's own instance of this, which is why no
+        # program's own code ever ran the shape: it is only emitted in a `--lib` build.
+        add_test(NAME codegen_virtual_call_in_try_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/virtual_call_in_try.pol"
+            "-DEXPECTED=quiet caught code=9 done"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
         # F6: Result<T,E>/Option<T> built-in sealed sum types matched exhaustively (no default).
         add_test(NAME codegen_result_option_runs COMMAND "${CMAKE_COMMAND}"

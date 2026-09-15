@@ -576,7 +576,9 @@ checked, and a check not here does not exist.
 **Control**
 18. A `switch` marked `total` names every case of its variant and has no default edge.
 19. Every `call.unwind` has both a normal and a landing successor; a `landing` appears only as the
-    first instruction of a block that is some `call.unwind`'s landing successor.
+    first instruction of a block that some UNWINDING instruction names as its landing successor --
+    `call.unwind`'s second edge, or the single edge of a `raise`, a `resume`, a `guard.null`, a
+    `guard.divisor` or a checked arithmetic instruction written inside a `try`.
 20. Every value live across a `suspend` is in the coroutine frame's type.
 
 **Facts**
