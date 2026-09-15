@@ -119,6 +119,8 @@ public:
         // AFTER EVERY BODY EXISTS, because it walks instructions rather than lowering them.
         attachTBAA();
         dropUnusedDeclarations();
+        // ...AND WHAT THE ALLOCATOR PROMISES, once the declarations left are the ones that stay.
+        stateAllocatorFacts();
         // LAST, because it marks every function that EXISTS: a bare-metal target gets no red zone,
         // and the entry emitted just above is a function like any other. See `target.h` -- without
         // this the kernel booted its drivers, its network and its desktop and then span for ever
@@ -137,6 +139,34 @@ public:
     }
 
 private:
+    // ---- §12: the allocator hands back memory nothing else holds ----
+    //
+    // `noalias` on the return of `__polaron_malloc` is the single strongest fact an alias analysis
+    // can be given: a load through the fresh block may assume that no other pointer in the caller
+    // wrote to it. It was missing for the most ordinary of reasons. The symbol is asked for in more
+    // than one place -- an `on heap` allocation, the `argv` array, an exception object -- and none of
+    // them owned the fact about it. So it is stated once, here, over the finished module, and it no
+    // longer matters which of them happened to declare the function first.
+    //
+    // IT IS TRUE, which is the only reason it may be said. The runtime's allocator keeps counters and
+    // nothing else -- no table of live blocks, no list that another runtime call walks and writes
+    // through -- so the block it returns is reachable only by the pointer it returns.
+    //
+    // ONLY ON A DECLARATION. A freestanding program may write `__polaron_malloc` itself, in Polaron,
+    // and a body this compiler is compiling is not one it can vouch for: what that allocator keeps is
+    // the program's business, and a promise made about it would be a guess. The runtime's allocator
+    // is the one whose behaviour is known.
+    void stateAllocatorFacts() {
+        llvm::Function* alloc = mod_.getFunction("__polaron_malloc");
+        if (alloc == nullptr || !alloc->isDeclaration() || !alloc->getReturnType()->isPointerTy()) {
+            return;
+        }
+        if (!alloc->hasRetAttribute(llvm::Attribute::NoAlias)) {
+            alloc->addRetAttr(llvm::Attribute::NoAlias);
+            ++r_.noalias;
+        }
+    }
+
     // ---- what a program PUBLISHES ----
     //
     // Exactly one symbol: its entry. Everything else is an implementation detail of the executable,
