@@ -35,8 +35,22 @@ execute_process(COMMAND "${POLC}" "${INPUT}" -o "${ll}" RESULT_VARIABLE rc OUTPU
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "polc failed (exit ${rc}) on ${INPUT}")
 endif()
+# PLATFORM LINK LIBRARIES, BY HOST -- the same list `run_exe_test.cmake` builds, for the same
+# reasons. On Windows, `legacy_stdio_definitions.lib` resolves the bare `printf`/`scanf` symbols the
+# UCRT only defines inline; on Linux those live in libc, and what the runtime needs instead is
+# pthreads for `Thread`/async, `dl` for `dl_iterate_phdr` (reimport), `m`, and `stdc++` for the
+# Itanium EH runtime (`__cxa_*`, `__gxx_personality_v0`, `_ZTIPv`).
+#
+# Named unconditionally, the Windows-only flag made all twenty-one `live_*` tests fail at LINK on
+# Linux -- `cannot find -llegacy_stdio_definitions` -- so the one instrument that measures what a
+# program still holds when it ends could not run at all on the platform being ported to.
+if(CMAKE_HOST_WIN32)
+    set(_platlibs -llegacy_stdio_definitions)
+else()
+    set(_platlibs -lpthread -ldl -lm -lstdc++)
+endif()
 execute_process(COMMAND "${CLANG}" -Wno-override-module "${ll}" "${RT}"
-                -llegacy_stdio_definitions -o "${exe}" RESULT_VARIABLE rc ERROR_VARIABLE lk)
+                ${_platlibs} -o "${exe}" RESULT_VARIABLE rc ERROR_VARIABLE lk)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "clang link failed (exit ${rc})\n${lk}")
 endif()

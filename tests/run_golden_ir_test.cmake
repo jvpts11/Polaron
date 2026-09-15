@@ -18,8 +18,13 @@
 get_filename_component(tag "${INPUT}" NAME_WE)
 set(ll "${WORKDIR}/golden_${tag}.ll")
 
+# THE RECORDED SHAPE IS THE RULE, AND THE HOST IS NOT PART OF IT. Compiled for whatever machine
+# happens to run the suite, the same function reads differently -- and the arm64 runner the CI adds
+# would rewrite every recording. The target is pinned to the one the recordings were made for, so a
+# Linux or an arm64 run compares like with like.
 separate_arguments(_pf UNIX_COMMAND "${POLARONFLAGS}")
-execute_process(COMMAND "${POLC}" ${_pf} "${INPUT}" -o "${ll}" RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
+execute_process(COMMAND "${POLC}" ${_pf} --target=x86_64-pc-windows-msvc "${INPUT}" -o "${ll}"
+                RESULT_VARIABLE rc OUTPUT_QUIET ERROR_QUIET)
 if(NOT rc EQUAL 0)
     message(FATAL_ERROR "polc failed (exit ${rc}) on ${INPUT}")
 endif()
@@ -43,6 +48,12 @@ foreach(line IN LISTS lines)
     # emitted, in what order, with what operands named structurally.
     string(REGEX REPLACE "%[0-9]+" "%_" line "${line}")
     string(REGEX REPLACE "[ \t]+" " " line "${line}")
+    # LLVM'S OWN SPELLING IS NOT THIS COMPILER'S DECISION. LLVM 19 gave `getelementptr` a `nuw` flag
+    # and its printer emits `inbounds nuw` where 18 printed `inbounds`, so recordings made against 18
+    # failed against 21 on every struct field access -- a difference in the library's text, not in
+    # what this compiler chose to emit. Folded to the one spelling both print, so a recording
+    # outlives an LLVM upgrade instead of being re-blessed by whoever upgrades first.
+    string(REPLACE "getelementptr inbounds nuw " "getelementptr inbounds " line "${line}")
     set(body "${body}${line}\n")
     if(line STREQUAL "}")
         break()
