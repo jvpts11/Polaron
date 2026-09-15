@@ -100,6 +100,11 @@ public:
                 define(*f);
             }
         }
+        // NO FUNCTION IS OPEN ANY MORE, and the debug state says so. What is emitted from here on --
+        // the C entry, the bridges -- has no subprogram of its own, and must not be filed under the
+        // last function that happened to be defined. See `beginDebugFunction`.
+        diScope_ = nullptr;
+        clearDebugLoc();
         // THE MESSAGE, not just the verdict. `verifyModule(m, nullptr)` answers yes or no and
         // discards what is wrong, which is the least useful half.
         std::string why;
@@ -1434,6 +1439,17 @@ private:
 
     void beginDebugFunction(const Function& f, llvm::Function* fn) {
         diScope_ = nullptr;
+        // A FUNCTION STARTS WITH NO LOCATION -- not with whichever one the builder last held.
+        //
+        // The builder's current location is state that outlives a function. `SetInsertPoint` on an
+        // INSTRUCTION copies that instruction's location into the builder, and the phi wiring at the
+        // end of `define` does exactly that on the previous function's terminators. This function's
+        // block arguments are then created as phis before any instruction has said where it is, so
+        // each one carried a location scoped to the function defined before it -- and LLVM refused
+        // the module: "!dbg attachment points at wrong subprogram for function", naming
+        // `ArrayList$int.set` and a phi located in `ArrayList$int.get`. 148 of the 1,022 samples
+        // could not be compiled with `-g` at all, and the suite compiled exactly one program with it.
+        clearDebugLoc();
         if (!dib_) {
             return;
         }

@@ -2855,6 +2855,16 @@ add_test(NAME codegen_debuginfo_runs COMMAND "${CMAKE_COMMAND}"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_debuginfo_test.cmake")
 
+# A FUNCTION'S DEBUG LOCATIONS ARE ITS OWN. The builder kept the last location of the function defined
+# before, and the block-argument phis of the next one were created before anything reset it -- so they
+# were filed under the wrong subprogram, and LLVM refused the module. 148 of the 1,022 samples could not
+# be compiled with `-g` at all; the test above compiles one program with it, and that program was never
+# one of them. Any function with a merge point, defined after another, shows it. This sample is one of
+# the 148, and a compile is the whole check: the refusal is an exit code.
+add_test(NAME codegen_debuginfo_phi_stays_in_its_function
+    COMMAND polc -g "${CMAKE_CURRENT_SOURCE_DIR}/samples/args_range.pol"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/dbg_args_range.ll")
+
 # Persistent subprocess (debugger/LSP): spawn `sort`, write lines, send EOF, read the sorted output back
 # over the live pipe. Proves bidirectional stdio, unlike the one-shot Process.run.
 add_test(NAME codegen_subprocess_runs COMMAND "${CMAKE_COMMAND}"
