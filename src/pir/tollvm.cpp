@@ -1208,11 +1208,168 @@ private:
     // is LLVM's vocabulary, not the language's -- the same reason the calling convention and the
     // exception model are decided at this end.
     //
-    // MINIMAL TYPES, deliberately, and the trusted path does the same: every subprogram gets the
-    // same one-element signature and every local the same `int`. A debugger that can stop on a line
-    // and name the variable in scope is most of what `-g` is for, and inventing a full DWARF type
-    // graph for a language with generics, regions and value classes is a project of its own that
-    // neither backend has done. What is here is honest about being a line table.
+    // EVERY LOCAL USED TO BE AN `int`, and that was worse than no type at all. A debugger stopped on
+    // the right line, with the right name in scope, printed a `double` as its low half read as an
+    // integer, a pointer as a small negative number, and an object as whatever four bytes sat at its
+    // address. An absent variable is a question; a wrongly typed one is an answer, and a plausible
+    // one. The test could not see it either: it asked whether `!DILocalVariable` was present, and it
+    // was, for every variable, with every type wrong.
+    //
+    // So a local's type is read off the PIR type table now -- see `diTypeOf`. The subprogram keeps
+    // its one-element placeholder signature, which is not something a debugger prints.
+
+    // One DWARF description per PIR type entry. TRACKED rather than held as plain pointers, because
+    // a struct's node is replaced once its members exist, and an entry already pointing at it -- a
+    // pointer to that struct, an array of it -- has to follow the replacement. See `diCompositeOf`.
+    std::unordered_map<const Type*, llvm::TypedTrackingMDRef<llvm::DIType>> diTypes_;
+
+    // WHAT A VALUE OF THIS TYPE LOOKS LIKE TO A DEBUGGER, or null when nothing honest can be said --
+    // in which case the variable is left out rather than described as something it is not.
+    //
+    // Every size is read off the data layout for the SAME `llvm::Type` the code was emitted with.
+    //
+    // THE HONEST LIMIT IS A POINTER'S POINTEE. PIR's `ptr` is opaque, as LLVM's is, so most pointer
+    // entries carry no `element`; such a pointer is described as a pointer to nothing, and a debugger
+    // prints the address and stops there. Incomplete, and not wrong. Making it complete means the
+    // lowering keeping the pointee on every pointer entry it makes, which is a change to the type
+    // table rather than to this function.
+    llvm::DIType* diTypeOf(const Type* t) {
+        if (t == nullptr || !dib_) {
+            return nullptr;
+        }
+        if (auto found = diTypes_.find(t); found != diTypes_.end()) {
+            return found->second.get();
+        }
+        llvm::Type* lt = llty(t);
+        if (lt == nullptr || !lt->isSized()) {
+            return nullptr;   // `void`, a function type: nothing a slot holds
+        }
+        const llvm::DataLayout& dl = mod_.getDataLayout();
+        const uint64_t bits = dl.getTypeAllocSizeInBits(lt).getFixedValue();
+        const uint32_t alignBits = static_cast<uint32_t>(dl.getABITypeAlign(lt).value() * 8);
+        const uint64_t pointerBits = dl.getPointerSizeInBits();
+        llvm::DIType* made = nullptr;
+        switch (t->kind) {
+            case TypeKind::Bool:
+                made = dib_->createBasicType("boolean", bits, llvm::dwarf::DW_ATE_boolean);
+                break;
+            case TypeKind::Int:
+                made = dib_->createBasicType("int" + std::to_string(t->bits), t->bits,
+                                             llvm::dwarf::DW_ATE_signed);
+                break;
+            case TypeKind::Float:
+                made = dib_->createBasicType("float" + std::to_string(t->bits), t->bits,
+                                             llvm::dwarf::DW_ATE_float);
+                break;
+            case TypeKind::Addr:
+                // A NUMBER THE PROGRAM DOES ARITHMETIC ON, not a pointer to follow -- which is the
+                // whole of what `address` means, so it prints as one.
+                made = dib_->createBasicType("address", t->bits, llvm::dwarf::DW_ATE_unsigned);
+                break;
+            case TypeKind::Ptr:
+            case TypeKind::Slice:
+                made = dib_->createPointerType(diTypeOf(t->element), pointerBits);
+                break;
+            case TypeKind::Region:
+            case TypeKind::Closure:
+                made = dib_->createPointerType(nullptr, pointerBits);
+                break;
+            case TypeKind::Array: {
+                if (t->storage != ArrayStorage::Inline) {
+                    // A HEAP ARRAY IS A POINTER, to a length header and then the elements.
+                    made = dib_->createPointerType(nullptr, pointerBits);
+                    break;
+                }
+                llvm::DIType* element = diTypeOf(t->element);
+                if (element == nullptr) {
+                    return nullptr;
+                }
+                llvm::Metadata* range = dib_->getOrCreateSubrange(0, static_cast<int64_t>(t->extent));
+                made = dib_->createArrayType(bits, alignBits, element, dib_->getOrCreateArray(range));
+                break;
+            }
+            case TypeKind::Vector: {
+                llvm::DIType* element = diTypeOf(t->element);
+                if (element == nullptr) {
+                    return nullptr;
+                }
+                llvm::Metadata* range = dib_->getOrCreateSubrange(0, static_cast<int64_t>(t->extent));
+                made = dib_->createVectorType(bits, alignBits, element, dib_->getOrCreateArray(range));
+                break;
+            }
+            case TypeKind::Struct:
+            case TypeKind::Variant:
+                if (auto* st = llvm::dyn_cast<llvm::StructType>(lt)) {
+                    return diCompositeOf(t, st);
+                }
+                return nullptr;
+            case TypeKind::Void:
+            case TypeKind::Fn:
+                return nullptr;
+        }
+        if (made != nullptr) {
+            diTypes_[t].reset(made);
+        }
+        return made;
+    }
+
+    // A STRUCT, WITH ITS FIELDS AS MEMBERS AT THE OFFSETS THE CODE READS.
+    //
+    // The offsets come from the layout of the `llvm::StructType` that `llty` built, because that is
+    // the struct every `getelementptr` indexes: a member's offset here is the byte the program
+    // actually reads. A `layout`'s stated offsets are a second opinion, and where the two disagreed
+    // the debugger would be the one telling the truth about a program that does something else.
+    //
+    // REGISTERED BEFORE ITS MEMBERS ARE BUILT, for the reason `llty` registers its shell first: a
+    // class holding a pointer to its own kind recurses for ever otherwise. It starts as a replaceable
+    // node and becomes distinct once its members exist -- the shape LLVM provides for exactly this --
+    // and the memo, being tracked, follows it through the replacement.
+    llvm::DIType* diCompositeOf(const Type* t, llvm::StructType* st) {
+        const llvm::DataLayout& dl = mod_.getDataLayout();
+        const llvm::StructLayout* sl = dl.getStructLayout(st);
+        llvm::DIFile* file = diCu_->getFile();
+        const std::string name = !t->name.empty() ? t->name
+                                 : st->hasName()  ? st->getName().str()
+                                                  : std::string("struct");
+        llvm::DICompositeType* shell = dib_->createReplaceableCompositeType(
+            llvm::dwarf::DW_TAG_structure_type, name, diCu_, file, /*Line=*/0, /*RuntimeLang=*/0,
+            sl->getSizeInBits().getFixedValue(),
+            t->packed ? 0 : static_cast<uint32_t>(dl.getABITypeAlign(st).value() * 8),
+            llvm::DINode::FlagZero);
+        diTypes_[t].reset(shell);
+        llvm::SmallVector<llvm::Metadata*, 8> members;
+        for (unsigned i = 0; i < st->getNumElements(); ++i) {
+            llvm::Type* et = st->getElementType(i);
+            std::string field;
+            llvm::DIType* type = nullptr;
+            if (t->kind == TypeKind::Variant) {
+                // A VALUE VARIANT'S FIELDS ARE ITS CASES, not its bytes. What its storage holds is a
+                // tag and one word of payload, and that is what a debugger reading memory can name.
+                if (et->isIntegerTy()) {
+                    field = i == 0 ? "tag" : "payload";
+                    type = dib_->createBasicType("int" + std::to_string(et->getIntegerBitWidth()),
+                                                 et->getIntegerBitWidth(),
+                                                 llvm::dwarf::DW_ATE_signed);
+                }
+            } else if (i < t->fields.size()) {
+                field = t->fields[i].name.empty() ? "field" + std::to_string(i) : t->fields[i].name;
+                type = diTypeOf(t->fields[i].type);
+            }
+            if (type == nullptr) {
+                continue;   // a member nothing honest can describe is left out, not guessed at
+            }
+            members.push_back(dib_->createMemberType(
+                shell, field, file, /*LineNo=*/0, dl.getTypeAllocSizeInBits(et).getFixedValue(),
+                static_cast<uint32_t>(dl.getABITypeAlign(et).value() * 8),
+                sl->getElementOffsetInBits(i).getFixedValue(), llvm::DINode::FlagZero, type));
+        }
+        dib_->replaceArrays(shell, dib_->getOrCreateArray(members));
+        llvm::DICompositeType* done =
+            llvm::MDNode::replaceWithDistinct(llvm::TempDICompositeType(shell));
+        diTypes_[t].reset(done);
+        return done;
+    }
+
     void beginDebug() {
         if (!pir_.debugInfo) {
             return;
@@ -1321,7 +1478,13 @@ private:
         llvm::DIFile* file = diScope_->getFile();
         const unsigned line =
             in.loc.line > 0 ? static_cast<unsigned>(in.loc.line) : diScope_->getLine();
-        llvm::DILocalVariable* var = dib_->createAutoVariable(diScope_, in.text, file, line, diInt_);
+        // THE VARIABLE'S OWN TYPE, or no variable at all -- see `diTypeOf` for why a guess is worse
+        // than an absence.
+        llvm::DIType* type = diTypeOf(in.type);
+        if (type == nullptr) {
+            return;
+        }
+        llvm::DILocalVariable* var = dib_->createAutoVariable(diScope_, in.text, file, line, type);
         dib_->insertDeclare(slot, var, dib_->createExpression(),
                             llvm::DILocation::get(ctx_, line, 1, diScope_),
                             b_.GetInsertBlock());
