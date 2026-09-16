@@ -2,8 +2,12 @@
 # Assemble the Polaron language reference (docs/reference/*.md) into one styled HTML document, ready to
 # print to PDF with a headless browser. Regenerate the PDF with:
 #   python docs/reference/make-pdf.py
-#   msedge --headless --print-to-pdf=docs/reference/Polaron-Language-Reference-1.0.134.pdf \
+#   msedge --headless --print-to-pdf=docs/reference/Polaron-Language-Reference-<VERSION>.pdf \
 #          --no-pdf-header-footer docs/reference/_reference.html
+#
+# <VERSION> is the one below, which the `version_sites` test keeps equal to polc's. It used to be
+# written out here as a number, and the number in this line went stale forty-five patches before
+# anyone looked at it -- which is the same failure the reference itself had.
 import datetime
 import html as _html
 import os
