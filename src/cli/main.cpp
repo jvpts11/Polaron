@@ -2055,6 +2055,18 @@ int compile(const std::vector<std::string>& inputs, const std::string& outPath,
         const std::vector<polaron::pir::VerifyError> bad = polaron::pir::verify(lowered.module);
         if (!bad.empty()) {
             std::fputs(polaron::pir::renderVerifyErrors(bad).c_str(), stderr);
+            // ...AND IT STOPS HERE.
+            //
+            // Printing the complaint and carrying on handed LLVM a module this compiler had just
+            // declared malformed, and what happened next was the HOST's choice: the `async` + `try`
+            // module that Windows ran by luck segfaulted on Linux. Nothing read this stream either,
+            // so eighteen complaints sat in the corpus, seen by nobody, for as long as it existed.
+            //
+            // No dial and no environment variable to get past it: a module that does not verify is
+            // not an output. Turned on only after measuring the whole corpus -- 1022 samples across
+            // four targets plus a library build, every one of them verifying -- because a gate whose
+            // first act is to refuse work people were already doing teaches them to route around it.
+            return 1;
         }
         if (!lowered.gaps.empty()) {
             std::fputs(polaron::pir::renderGaps(lowered.gaps).c_str(), stderr);
@@ -2552,6 +2564,18 @@ int main(int argc, char** argv) {
         std::string why;
         if (!polaron::pir::parse(*text, &back, &why)) {
             std::fprintf(stderr, "pir: %s\n", why.c_str());
+            return 1;
+        }
+        // AND IS IT A MODULE THIS COMPILER WOULD ACCEPT? Asked BEFORE the round trip, because a
+        // module that does not verify is not worth comparing to itself -- and because the verifier
+        // names the RULE that was broken, where a round-trip difference can only name a line.
+        //
+        // It is also the only way to test that verification is fatal: every program in the corpus
+        // verifies, so the input that proves a bad module is refused has to be a module written by
+        // hand. `tests/pir/orphan_landing.pir` is that input.
+        if (const std::vector<polaron::pir::VerifyError> refused = polaron::pir::verify(back);
+            !refused.empty()) {
+            std::fputs(polaron::pir::renderVerifyErrors(refused).c_str(), stderr);
             return 1;
         }
         // AND THE ACCEPTANCE CRITERION IS NOT *DID IT PARSE*, IT IS *IS IT THE SAME MODULE*.

@@ -58,6 +58,28 @@ add_test(NAME pir_lowers_library_prelude COMMAND "${CMAKE_COMMAND}"
     "-DLIB=ON"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_pir_verify_test.cmake")
 
+# ...AND A MODULE THAT DOES NOT VERIFY IS REFUSED -- the half the corpus cannot show. Every program in
+# it verifies, so nothing above would notice the day verification stopped being fatal, which is the
+# state this repository was in: `polc` printed the complaint and exited 0, and the module went to LLVM
+# anyway. The input is therefore a PIR module written BY HAND, with a `landing` that no instruction
+# unwinds to (rule 19), read back through `--check-pir`.
+#
+# TWO tests, because there are two properties and one of them is easy to lose.
+# `PASS_REGULAR_EXPRESSION` decides the verdict from the OUTPUT and ignores the exit code, so on its
+# own it would happily pass a compiler that named the rule and carried on -- exactly the behaviour
+# being fixed here. The second test is the one that says the compiler must STOP.
+#
+# Copied into the build directory: `--check-pir` writes `<input>.roundtrip` beside its input when the
+# round trip differs, and the source tree is not a scratch directory.
+configure_file(pir/orphan_landing.pir "${CMAKE_CURRENT_BINARY_DIR}/orphan_landing.pir" COPYONLY)
+add_test(NAME pir_refuses_an_invalid_module
+    COMMAND polc --check-pir "${CMAKE_CURRENT_BINARY_DIR}/orphan_landing.pir")
+set_tests_properties(pir_refuses_an_invalid_module PROPERTIES
+    PASS_REGULAR_EXPRESSION "rule 19")
+add_test(NAME pir_refusal_is_fatal
+    COMMAND polc --check-pir "${CMAKE_CURRENT_BINARY_DIR}/orphan_landing.pir")
+set_tests_properties(pir_refusal_is_fatal PROPERTIES WILL_FAIL TRUE)
+
 # Stage 2: the second backend emits a module LLVM accepts, and §12's facts actually arrive.
 if(POLARON_WITH_LLVM)
     foreach(sample fixed_array collections_basic)
