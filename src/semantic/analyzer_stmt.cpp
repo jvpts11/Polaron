@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -100,6 +101,43 @@ void collectDeclaredNames(const ast::Block& body, std::unordered_set<std::string
             collectFromStmt(*st, out);
         }
     }
+}
+
+// The family a local's declaration names, with the generic arguments and the pointer mark taken off:
+// `HashSet<String>`, `HashSet$String` and `HashSet*` are one answer to the only question asked of it.
+//
+// Read from the DECLARATION rather than from `typeOf`, which reports an undeclared name once the
+// scope it lived in has been popped -- the trap written up on `warnCopyHoistableOutOfLoop`, which
+// three rules in this file fell into before anyone wrote it down.
+std::string declaredFamily(const ast::VarDeclStmt& vd) {
+    std::string name = vd.type.name;
+    if (vd.isVar) {
+        // `var seen = new HashSet<String>() on heap;` -- the declaration does not name the type, but
+        // the thing being made does.
+        name.clear();
+        if (const auto* made = dynamic_cast<const ast::NewExpr*>(vd.init.get()); made != nullptr) {
+            name = made->className;
+        }
+    }
+    const std::size_t cut = name.find_first_of("<$*&");
+    return cut == std::string::npos ? name : name.substr(0, cut);
+}
+
+// COLLECTIONS THAT ANSWER BY KEY -- a hash probe or a tree descent, never a walk.
+//
+// The linear-search rule used to fire on the member NAME alone, so it accused the very structure its
+// own fix tells the author to reach for: `HashSet<String> seen` asked `seen.contains(key)` in a loop
+// and was told to use a `HashSet`. That is the worst way for advice to be wrong, because the only
+// move it leaves is to change code that was already right.
+//
+// The list is the prelude's, because the prelude is the set of types the compiler knows the inside
+// of. A name it has never seen still fires: `contains` on a hand-written class is a scan far more
+// often than it is not, and the rule would rather ask about a scan than stay quiet about one.
+bool answersByKey(const std::string& family) {
+    static const std::unordered_set<std::string> keyed = {
+        "HashSet", "HashMap", "LinkedHashMap", "TreeMap", "TreeSet", "Bitset", "Trie", "EnumMap",
+        "EnumSet"};
+    return keyed.count(family) > 0;
 }
 
 }  // namespace
@@ -1601,6 +1639,16 @@ void SemanticAnalyzer::warnLinearSearchInLoop(const ast::Block& body) {
     // A SCAN INSIDE A LOOP IS THE OTHER LOOP NOBODY WROTE. `contains` and `indexOf` walk the whole
     // collection, so a loop around them is quadratic in something that usually grows -- and it is
     // invisible, because the inner loop is a method call one word long.
+    //
+    // WHAT THE RECEIVER IS decides whether the claim is even true. Collected once for the whole
+    // method, from the declarations themselves -- see `declaredFamily` for why this must not ask
+    // `typeOf`.
+    std::unordered_map<std::string, std::string> declaredAs;
+    eachStmt(body, [&](const ast::Stmt& st) {
+        if (const auto* vd = dynamic_cast<const ast::VarDeclStmt*>(&st)) {
+            declaredAs[vd->name] = declaredFamily(*vd);
+        }
+    });
     auto scanLoop = [&](const ast::Block& blk) {
         // WHAT THE LOOP ITSELF MAKES is not the same collection scanned again. The rule is about one
         // collection walked once per iteration -- n scans of n elements of the SAME thing. A receiver
@@ -1621,8 +1669,14 @@ void SemanticAnalyzer::warnLinearSearchInLoop(const ast::Block& body) {
                 }
                 if (const auto* recv =
                         dynamic_cast<const ast::IdentifierExpr*>(mem->object.get());
-                    recv != nullptr && madeHere.count(recv->name) > 0) {
-                    return;
+                    recv != nullptr) {
+                    if (madeHere.count(recv->name) > 0) {
+                        return;
+                    }
+                    if (const auto found = declaredAs.find(recv->name);
+                        found != declaredAs.end() && answersByKey(found->second)) {
+                        return;
+                    }
                 }
                 if (mem->member == "contains" || mem->member == "indexOf" ||
                     mem->member == "lastIndexOf") {

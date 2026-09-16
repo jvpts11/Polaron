@@ -17,7 +17,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.174")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.175")
 
 # ---- PIR (docs/design/polaron-ir.md) ----
 #
@@ -356,7 +356,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 90)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.174")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.175")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -2038,6 +2038,14 @@ add_test(NAME lint_linear_search_in_loop
 set_tests_properties(lint_linear_search_in_loop PROPERTIES
     PASS_REGULAR_EXPRESSION "0B2D.*'contains' walks the whole collection")
 
+# ...and the other side of the same rule. `known` is a `HashSet`, so `contains` is a probe and the
+# claim would be false; the rule pointed at it anyway, and told the author to use a `HashSet`. The
+# check is the rendered source line, because the message itself never names the receiver.
+add_test(NAME lint_linear_search_spares_a_keyed_lookup
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
+set_tests_properties(lint_linear_search_spares_a_keyed_lookup PROPERTIES
+    FAIL_REGULAR_EXPRESSION "known\\.contains")
+
 # ...and the near-misses, plus the proof that none of it invents an error: one allocation is one
 # allocation, a condition on an argument is a real check, and nothing is copied per iteration.
 add_test(NAME lint_scale_shapes_are_narrow
@@ -2049,7 +2057,7 @@ add_test(NAME lint_scale_runs COMMAND "${CMAKE_COMMAND}"
     "-DPOLC=$<TARGET_FILE:polc>"
     "-DCLANG=${POLARON_CLANG}"
     "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol"
-    "-DCONTAINS=6 8 7 20 1 18"
+    "-DCONTAINS=6 8 7 20 1 1 18"
     "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

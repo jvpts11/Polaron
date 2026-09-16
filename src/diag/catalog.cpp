@@ -1609,8 +1609,8 @@ constexpr Row kCatalog[] = {
         "Growing from nothing reallocates and copies as it goes -- log-many times, each one copying "
         "everything already in it. The count is usually right there in the loop's bound, so the "
         "whole sequence is being paid to discover a number the code already has.",
-        "Give it the capacity when it is made: `new ArrayList<T>(n)`. One allocation, no copies, and "
-        "the loop does only the work it looks like it is doing.",
+        "Say the size before the fill: `out.ensureCapacity(n);`, with `n` the bound the loop already "
+        "has. One allocation, no copies, and the loop does only the work it looks like it is doing.",
         "When the loop that fills a collection has a bound, that bound is the capacity. They are "
         "written three lines apart and belong on the same line." }},
 

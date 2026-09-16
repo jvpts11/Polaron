@@ -1,6 +1,7 @@
 import System.IO.Console;
 import System.Memory.Units.kilobytes;
 import System.Collections.ArrayList;
+import System.Collections.HashSet;
 import System.Runtime.OverflowException;
 
 program LintScale;
@@ -80,6 +81,21 @@ public bundle Main {
                 return hits;
             }
 
+            // QUIET (0B2D): the same question, asked of a structure that answers by key. A hash probe
+            // is not a walk -- and the rule used to say it was, while telling the author to reach for
+            // exactly the type they had already reached for.
+            public static method keyed(int n) returns int {
+                HashSet<int> known = new HashSet<int>() on stack;
+                known.add(3);
+                mutable int hits = 0;
+                for (int i in 0..n) {
+                    if (known.contains(i)) {
+                        hits = hits + 1;
+                    }
+                }
+                return hits;
+            }
+
             // QUIET: one allocation is one allocation, the condition depends on the argument, and
             // nothing is copied per iteration.
             public static method plain(int n) returns int {
@@ -98,7 +114,7 @@ public bundle Main {
 
         public class Main {
             public static method main(string[] args) returns void {
-                System.IO.Console.println($"{Scale.three()} {Scale.guard()} {Scale.lonely()} {Scale.copies(4)} {Scale.scans(5)} {Scale.plain(2)}");
+                System.IO.Console.println($"{Scale.three()} {Scale.guard()} {Scale.lonely()} {Scale.copies(4)} {Scale.scans(5)} {Scale.keyed(5)} {Scale.plain(2)}");
                 return;
             }
         }
