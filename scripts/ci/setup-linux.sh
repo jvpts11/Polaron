@@ -72,4 +72,14 @@ if [ "$missing" -ne 0 ]; then
     echo "setup-linux: $missing tool(s) missing; the suite would be smaller than it looks"
     exit 1
 fi
-clang --version | head -1
+# WHICH clang, not just that one exists. The check above passed on a runner where `/usr/bin/clang` was
+# the 18 Ubuntu ships and the 21 we installed sat unused beside it -- `update-alternatives` does not
+# displace a binary the distribution owns. The build names the versioned path explicitly for that
+# reason; this prints both so the difference is visible instead of surprising.
+echo "  clang on PATH:        $(clang --version | head -1)"
+if [ -x "/usr/lib/llvm-${LLVM_VERSION}/bin/clang" ]; then
+    echo "  clang ${LLVM_VERSION} installed:    $(/usr/lib/llvm-${LLVM_VERSION}/bin/clang --version | head -1)"
+else
+    echo "  clang ${LLVM_VERSION} installed:    MISSING at /usr/lib/llvm-${LLVM_VERSION}/bin/clang"
+    exit 1
+fi

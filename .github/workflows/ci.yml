@@ -53,9 +53,13 @@ jobs:
       # like a compiler regression and is not one. The tell is the asymmetry: tests that only read IR
       # keep passing while every linking test fails.
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
-      - run: scripts/ci/setup-windows.ps1
+      # `./` IS NOT DECORATION IN POWERSHELL. It does not run a script from the current directory
+      # without it: `scripts/ci/setup-windows.ps1` comes back as "The term ... is not recognized as a
+      # name of a cmdlet, function, script file, or executable program", which reads like the file is
+      # missing when it is right there. Written like a bash line, it died on the first real run.
+      - run: ./scripts/ci/setup-windows.ps1
         shell: pwsh
-      - run: scripts/ci/build-and-test.ps1 build
+      - run: ./scripts/ci/build-and-test.ps1 build
         shell: pwsh
       - name: Network tests (not a gate)
         continue-on-error: true

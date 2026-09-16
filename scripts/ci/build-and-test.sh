@@ -12,8 +12,31 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LLVM_VERSION="${LLVM_VERSION:-21}"
 JOBS="$(nproc)"
 
+# THE COMPILER IS NAMED, NOT INHERITED -- three defects in one line, all found by the first CI run.
+#
+# Left to CMake's default, the runner picked GNU 13.3 and the GENERATE step died before a line was
+# compiled: "The target named polaron_driver has C++ sources that may use modules, but the compiler
+# does not provide a way to discover the import graph dependencies." Naming clang avoids it, and it is
+# the compiler this project is built with anyway.
+#
+# It also settles which clang. `update-alternatives` does not win against the `clang` Ubuntu already
+# ships, so `/usr/bin/clang` was 18 while LLVM 21 sat installed beside it -- and the driver looks for
+# `ld.lld` in `dirname(clang)`, so naming the versioned path puts the linker where it will be found.
+LLVM_BIN="${LLVM_BIN:-/usr/lib/llvm-${LLVM_VERSION}/bin}"
+if [ ! -x "$LLVM_BIN/clang" ]; then
+    # Not where Debian and Ubuntu put it -- Arch, Fedora and a hand-built LLVM all differ. Fall back
+    # to whatever `clang` the PATH offers, and say so rather than failing here.
+    fallback="$(command -v clang || true)"
+    [ -n "$fallback" ] || { echo "build-and-test: no clang at $LLVM_BIN and none on PATH"; exit 1; }
+    LLVM_BIN="$(dirname "$fallback")"
+    echo "build-and-test: using the PATH's clang at $LLVM_BIN"
+fi
+
 cmake -G Ninja -S "$ROOT" -B "$BUILD" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER="$LLVM_BIN/clang" \
+    -DCMAKE_CXX_COMPILER="$LLVM_BIN/clang++" \
+    -DPOLARON_CLANG="$LLVM_BIN/clang" \
     -DPOLARON_WITH_LLVM=ON \
     -DLLVM_DIR="${LLVM_DIR:-/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/llvm}"
 cmake --build "$BUILD" -j "$JOBS"
