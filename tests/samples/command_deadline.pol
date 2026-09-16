@@ -1,0 +1,64 @@
+import System.IO.Console;
+import System.OS.Command;
+import System.OS.ProcessResult;
+import System.OS.Workspace;
+import System.Time.Time;
+
+program CommandDeadline;
+
+// A DEADLINE A TALKATIVE CHILD CANNOT POSTPONE.
+//
+// `Command.timeout` counted down a budget that only decreased when the child had nothing to say. A
+// child with something to read on every pass therefore spent none of it, and the deadline never
+// arrived -- the mirror image of the bug that shape was written to fix, where the parent drained the
+// output first and started counting afterwards. One covered the silent hang, the other the noisy
+// one, and until now no version covered both.
+//
+// Found on a guide example that prints one line forever: 362 million lines in fifteen seconds,
+// against a 120-second deadline that had not fired after nineteen minutes.
+//
+// The program is its own child, which is how the test stays one file and one platform's shell stays
+// out of it.
+public bundle Main {
+    public namespace App {
+
+        public class Main {
+            // Enough lines to outlast any deadline this test sets by a wide margin, and still a
+            // number rather than `while (true)`: if the kill ever stopped working, an orphan that
+            // ends by itself is a slow test and not a machine to reboot.
+            public static fixed int FOREVER = 1000000000;
+
+            public static method main(string[] args) returns void {
+                if (args.length() > 0 && args[0].equals("spew")) {
+                    for (mutable int i = 0; i < Main.FOREVER; i = i + 1) {
+                        System.IO.Console.println("X");
+                    }
+                    return;
+                }
+                if (args.length() > 0 && args[0].equals("quiet")) {
+                    System.IO.Console.println("done");
+                    return;
+                }
+
+                // A child that finishes says so, and its output comes back whole.
+                Command quiet = new Command(Workspace.executable()) on stack;
+                ProcessResult said = quiet.arg("quiet").timeout(20000).mergeStderr().run();
+
+                // A child that will not stop is stopped, and within the deadline rather than whenever
+                // it happens to draw breath.
+                long startNs = Time.nanos();
+                Command loud = new Command(Workspace.executable()) on stack;
+                ProcessResult cut = loud.arg("spew").timeout(3000).mergeStderr().run();
+                long spentMs = (Time.nanos() - startNs) / 1000000;
+
+                // THE GATE IS THE MARGIN, not the millisecond. Measured on this machine at a
+                // 3-second deadline: 46,681 ms before the fix and 3,017 ms after, so ten seconds
+                // separates them by a factor of four either way and does not fail on a slow day.
+                System.IO.Console.printf("quiet=%d talkative=%d within=%d\n",
+                                         said.exitCode, cut.exitCode, spentMs < 10000 ? 1 : 0);
+                System.IO.Console.printf("deadline 3000ms, spent %dms\n", spentMs);
+                return;
+            }
+        }
+    }
+}

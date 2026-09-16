@@ -17,7 +17,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.177")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.178")
 
 # ---- PIR (docs/design/polaron-ir.md) ----
 #
@@ -356,7 +356,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 90)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.177")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.178")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -2037,6 +2037,17 @@ add_test(NAME lint_linear_search_in_loop
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
 set_tests_properties(lint_linear_search_in_loop PROPERTIES
     PASS_REGULAR_EXPRESSION "0B2D.*'contains' walks the whole collection")
+
+# A DEADLINE A TALKATIVE CHILD CANNOT POSTPONE. `Command.timeout` counted down a budget that only
+# decreased on the passes where the child had nothing to say, so a child that always did spent none
+# of it. Measured on this machine at a 3-second deadline: 46,681 ms before, 3,017 ms after.
+add_test(NAME command_deadline_holds COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/command_deadline.pol"
+    "-DCONTAINS=quiet=0 talkative=-2 within=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # A POINTER PARAMETER THAT IS REALLY A BORROW, and the shape that only looks like one. The rule used
 # to search the parameter's spelling for a `*`, and a generic mangles its type arguments into its

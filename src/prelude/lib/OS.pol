@@ -618,9 +618,23 @@
                 //
                 // So the loop asks `canRead` first, which answers immediately, and only reads when
                 // there is something there. A child that is neither readable nor alive is finished.
-                mutable int left = this.deadlineMillis;
+                //
+                // AND THE DEADLINE IS WALL CLOCK, which the version that fixed the above was not: it
+                // counted down a `left` that only decreased in the idle branch, so a child with
+                // something to read on every pass never spent any of it. That left the mirror image
+                // of the bug it replaced -- the silent hang was covered and the TALKATIVE hang was
+                // not, and a child printing in a loop held the parent for as long as it cared to.
+                // Measured on a guide example that prints one line forever: 362 million lines in
+                // fifteen seconds, and a 120-second deadline that had not fired after nineteen
+                // minutes.
+                //
+                // `Time.nanos` is monotonic, so this is not affected by the clock being set, and it
+                // advances whichever branch the loop took.
+                long startNs = Time.nanos();
+                long deadlineNs = cast<long>(this.deadlineMillis) * 1000000;
                 mutable boolean finished = false;
-                while (left > 0 && !finished) {
+                mutable long spentNs = 0;
+                while (spentNs < deadlineNs && !finished) {
                     if (child.canRead()) {
                         String chunk = child.read();
                         if (chunk.length() == 0) {
@@ -632,10 +646,11 @@
                         finished = true;
                     } else {
                         Time.sleep(1);
-                        left = left - 1;
                     }
+                    spentNs = Time.nanos() - startNs;
                 }
-                int code = finished ? child.waitFor(left > 0 ? left : 1) : 0 - 2;
+                int leftMillis = cast<int>((deadlineNs - spentNs) / 1000000);
+                int code = finished ? child.waitFor(leftMillis > 0 ? leftMillis : 1) : 0 - 2;
                 child.close();
                 return new ProcessResult(output.toString(), code) on heap;
             }
