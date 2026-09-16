@@ -1,0 +1,36 @@
+program CheckedFreestandingPanics freestanding;
+
+// `checked(expr)` ON BARE METAL PANICS (spec 36.3). There is no unwinder under a kernel -- the
+// language refuses `try`/`throw` in freestanding for the same reason -- so the trap cannot be an
+// exception here.
+//
+// It used to be NOTHING AT ALL. The back end asked whether the TRIPLE said "none"; a freestanding
+// program built for a hosted triple, which is how this suite runs them, answered no, and the
+// overflow bit was extracted and dropped. So the one arithmetic safety opt-in the language has did
+// exactly nothing in the place where a silent wrap is least recoverable.
+//
+// `checked_unsigned_bad` already stated the intended behaviour in its own comment -- "a panic in
+// freestanding, which has no exception machinery" -- and this is that half, run rather than written.
+//
+// Prints `A`, then panics: `arithmetic overflow`, exit code 72.
+
+public bundle main freestanding {
+    public namespace boot {
+        public class Sys {
+            public extern cdecl static method putchar(int c) returns int;
+        }
+
+        public class Main {
+            public static method main(string[] args) returns int {
+                Sys.putchar(65);   // 'A' -- the program reached the arithmetic
+
+                // `mutable` so the subtraction is not folded at compile time: a constant answer
+                // would have no guard to fire, which is the same trap `checked_unsigned_bad` avoids.
+                mutable uint small = 3;
+                uint big = 10;
+                Sys.putchar(cast<int>(checked(small - big)));   // borrows past zero -> panics
+                return 0;
+            }
+        }
+    }
+}

@@ -13155,6 +13155,21 @@ add_test(NAME codegen_partial_across_files_runs COMMAND "${CMAKE_COMMAND}"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
+        # `checked(...)` ON BARE METAL PANICS, and used to do nothing whatsoever: the overflow bit
+        # was extracted and dropped, because the back end asked the triple instead of asking whether
+        # anything could be thrown. The exit code IS the test -- 72 is what a guard leaves the
+        # process with -- and `A` proves the program reached the arithmetic rather than dying before
+        # it.
+        add_test(NAME codegen_checked_freestanding_panics COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/checked_freestanding_panics.pol"
+            "-DCONTAINS=A"
+            "-DERRCONTAINS=arithmetic overflow"
+            "-DEXPECT_EXIT=72"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
         # F9 freestanding: FFI -- `extern cdecl method` declares + calls external C functions.
         add_test(NAME codegen_ffi_extern_runs COMMAND "${CMAKE_COMMAND}"
             "-DPOLC=$<TARGET_FILE:polc>"

@@ -441,6 +441,15 @@ none, so anything that could log, mutate or allocate simply goes unquoted.
 The no-UB guards — an index off the end, a division by zero, a full region — report
 in the same shape, with their own two numbers (`index = 9, length = 6`).
 
+A guard that fires ends the run with an **exit code**, which is the only part of the
+report a script outside the program can read:
+
+| Code | What fired |
+|------|------------|
+| `70` | an index off the end of an array |
+| `71` | integer division by zero, including the `INT_MIN / -1` corner |
+| `72` | `checked(...)` left the range of its type |
+
 **All of it holds in `freestanding` too**, including the values, which a kernel
 formats without stdio. There it arrives through `__polaron_panic`, which a kernel may
 override to route reports to its own console; overriding it keeps the whole message,

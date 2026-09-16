@@ -3044,7 +3044,8 @@ private:
                 // UNSIGNED, which catches a negative index in the same comparison: as an unsigned
                 // quantity -1 is larger than any length there has ever been.
                 emitGuard(b_.CreateICmpULT(coerce(idx, i64), len, "arr.inb"),
-                          "array index out of bounds", "index", coerce(idx, i64), "length", len, 70,
+                          "array index out of bounds", "index", coerce(idx, i64), "length", len,
+                          kExitBounds,
                           /*tagged=*/true, in.loc);
                 break;
             }
@@ -3071,7 +3072,8 @@ private:
                     tail_[b.id] = cont;
                     break;
                 }
-                emitGuard(ok, "division by zero", nullptr, nullptr, nullptr, nullptr, 71,
+                emitGuard(ok, "division by zero", nullptr, nullptr, nullptr, nullptr,
+                          kExitDivideByZero,
                           /*tagged=*/true, in.loc);
                 break;
             }
@@ -3820,6 +3822,16 @@ private:
         return out + "\n";
     }
 
+    // THE EXIT CODE A GUARD LEAVES THE PROCESS WITH, named once instead of spelled as a literal in
+    // the middle of an argument list. `__polaron_fail` ends the run with this number, so it is the
+    // only part of the report a script outside the program can read -- and two of them lived as a
+    // bare `70` and `71` between two other arguments, which is exactly how a third gets invented
+    // instead of reused. Documented beside the shape of the report, in
+    // `docs/reference/guide/08-errors-and-contracts.md`.
+    static constexpr int kExitBounds = 70;         // an index off the end of an array
+    static constexpr int kExitDivideByZero = 71;   // integer division by zero, and INT_MIN / -1
+    static constexpr int kExitOverflow = 72;       // `checked(...)` left the range of its type
+
     void emitGuard(llvm::Value* ok, const char* headline, const char* aLabel, llvm::Value* aVal,
                    const char* bLabel, llvm::Value* bVal, int code, bool tagged = true,
                    // LINE ZERO MEANS "NO LOCATION", and it has to be written out: a default-built
@@ -4007,10 +4019,25 @@ private:
         // Asked the narrow way, a `freestanding` program built for a hosted triple -- which is how
         // this suite runs them -- still got a throw here, from the one construct in the language
         // whose whole purpose is to be catchable.
-        if (in.text.empty() || in.aggregate == nullptr || !hasUnwinder()) {
-            return value;
+        if (in.text.empty()) {
+            return value;   // nobody asked for `checked`
         }
         llvm::Value* overflowed = b_.CreateExtractValue(pair, 1, "arith.over");
+        // NO UNWINDER MEANS A PANIC, NOT SILENCE (spec 36.3).
+        //
+        // This returned the WRAPPED VALUE with no report at all, so `checked(...)` -- the one
+        // arithmetic safety opt-in the language has -- did exactly nothing on bare metal, which is
+        // where a silent wrap is least recoverable. `checked_unsigned_bad` states the intended
+        // behaviour in its own comment: "a panic in freestanding, which has no exception machinery".
+        //
+        // The same answer covers a module that does not carry the exception class: that was the
+        // OTHER way to reach this silently, and asking for the class before asking whether anything
+        // can be thrown is what hid it.
+        if (!hasUnwinder() || in.aggregate == nullptr) {
+            emitGuard(b_.CreateNot(overflowed, "arith.ok"), "arithmetic overflow", nullptr, nullptr,
+                      nullptr, nullptr, kExitOverflow, /*tagged=*/true, in.loc);
+            return value;
+        }
         llvm::Function* fn = b_.GetInsertBlock()->getParent();
         auto* bad = llvm::BasicBlock::Create(ctx_, "arith.bad", fn);
         auto* cont = llvm::BasicBlock::Create(ctx_, "arith.ok", fn);
