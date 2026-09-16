@@ -2079,6 +2079,15 @@ struct LdpSubproc {
     pid_t pid;
     int fdIn;      // our write end -> child's stdin
     int fdOut;     // our read end  <- child's stdout
+    // WHAT `waitpid` ALREADY TOOK. On POSIX a child's exit status is delivered exactly once: the
+    // call that reaps it gets the status and every later call gets ECHILD. `isAlive` reaps -- that
+    // is how it knows -- so asking whether a child is alive and then asking what it returned used
+    // to give -1, "cannot be determined", for every child that finished normally. Since `run` with
+    // a deadline asks both, that was every successful child on Linux.
+    //
+    // Windows has no such rule: a process handle answers `GetExitCodeProcess` as often as asked.
+    bool reaped;
+    int status;
 #endif
 };
 
@@ -2437,6 +2446,8 @@ long long __polaron_subproc_spawn_ex(const char* cmdline, long long mergeErr, lo
     s->pid = pid;
     s->fdIn = inPipe[1];
     s->fdOut = outPipe[0];
+    s->reaped = false;
+    s->status = 0;
     return static_cast<long long>(reinterpret_cast<std::intptr_t>(s));
 }
 
@@ -2536,20 +2547,31 @@ long long __polaron_subproc_spawn_argv(const char* argvBlob, long long argvLen, 
     s->pid = pid;
     s->fdIn = inPipe[1];
     s->fdOut = outPipe[0];
+    s->reaped = false;
+    s->status = 0;
     return static_cast<long long>(reinterpret_cast<std::intptr_t>(s));
 }
 
 // Wait and answer the exit code; -1 when it cannot be determined, and 128+N for a child killed by
 // signal N -- the convention every shell already reports, so a caller reading the number gets the
 // same answer it would from the command line.
-long long __polaron_subproc_wait(long long h) {
-    if (h == 0) return -1;
-    LdpSubproc* s = reinterpret_cast<LdpSubproc*>(static_cast<std::intptr_t>(h));
-    int status = 0;
-    if (waitpid(s->pid, &status, 0) < 0) return -1;
+// The status as a Polaron exit code: the number for a normal exit, 128+N for a signal, which is
+// what every shell reports.
+static long long ldpExitCodeOf(int status) {
     if (WIFEXITED(status)) return static_cast<long long>(WEXITSTATUS(status));
     if (WIFSIGNALED(status)) return static_cast<long long>(128 + WTERMSIG(status));
     return -1;
+}
+
+long long __polaron_subproc_wait(long long h) {
+    if (h == 0) return -1;
+    LdpSubproc* s = reinterpret_cast<LdpSubproc*>(static_cast<std::intptr_t>(h));
+    if (s->reaped) return ldpExitCodeOf(s->status);
+    int status = 0;
+    if (waitpid(s->pid, &status, 0) < 0) return -1;
+    s->reaped = true;
+    s->status = status;
+    return ldpExitCodeOf(status);
 }
 
 // ...with a deadline; -2 when it runs out with the child still going. See the Windows half for why
@@ -2562,15 +2584,16 @@ long long __polaron_subproc_wait(long long h) {
 long long __polaron_subproc_wait_for(long long h, long long millis) {
     if (h == 0) return -1;
     LdpSubproc* s = reinterpret_cast<LdpSubproc*>(static_cast<std::intptr_t>(h));
+    if (s->reaped) return ldpExitCodeOf(s->status);
     long long left = millis < 0 ? 0 : millis;
     for (;;) {
         int status = 0;
         const pid_t r = waitpid(s->pid, &status, WNOHANG);
         if (r < 0) return -1;
         if (r > 0) {
-            if (WIFEXITED(status)) return static_cast<long long>(WEXITSTATUS(status));
-            if (WIFSIGNALED(status)) return static_cast<long long>(128 + WTERMSIG(status));
-            return -1;
+            s->reaped = true;
+            s->status = status;
+            return ldpExitCodeOf(status);
         }
         if (left <= 0) return -2;
         struct timespec ts;
@@ -2603,9 +2626,13 @@ char* __polaron_subproc_read(long long h, long long* outLen) {
 int __polaron_subproc_alive(long long h) {
     if (h == 0) return 0;
     LdpSubproc* s = reinterpret_cast<LdpSubproc*>(static_cast<std::intptr_t>(h));
-    int status;
+    if (s->reaped) return 0;
+    int status = 0;
     pid_t r = waitpid(s->pid, &status, WNOHANG);
-    return r == 0 ? 1 : 0;
+    if (r == 0) return 1;
+    // It ended, and this call is the one that collected the status. Keep it: nobody else can.
+    if (r > 0) { s->reaped = true; s->status = status; }
+    return 0;
 }
 
 int __polaron_subproc_can_read(long long h) {
@@ -2631,7 +2658,10 @@ void __polaron_subproc_close(long long h) {
     // Signal the whole process group (the /bin/sh wrapper AND the program it launched); killing only
     // s->pid can leave a spawned server (e.g. an IPC engine) orphaned and holding pipes it inherited,
     // which would keep a capturing parent (a build tool reading our output) blocked until it times out.
-    if (waitpid(s->pid, &status, WNOHANG) == 0) { kill(-s->pid, SIGTERM); waitpid(s->pid, &status, 0); }
+    if (!s->reaped && waitpid(s->pid, &status, WNOHANG) == 0) {
+        kill(-s->pid, SIGTERM);
+        waitpid(s->pid, &status, 0);
+    }
     std::free(s);
 }
 #endif
