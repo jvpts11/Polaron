@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # `bash <script>` and not `./<script>`: a `.sh` added from a Windows checkout can arrive without
       # its execute bit, and the job then dies with "Permission denied" (exit 126) for a reason that
       # has nothing to do with the code. The bit is set in the index as well -- both, not either.
@@ -47,7 +47,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # EVERY TEST THAT LINKS NEEDS THIS. Without the developer environment they all fail at once
       # with `lld-link: error: could not open 'legacy_stdio_definitions.lib'`, which reads exactly
       # like a compiler regression and is not one. The tell is the asymmetry: tests that only read IR
@@ -76,7 +76,7 @@ jobs:
     timeout-minutes: 120
     continue-on-error: true
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: bash scripts/ci/setup-linux.sh
       - run: bash scripts/ci/build-and-test.sh build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
