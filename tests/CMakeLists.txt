@@ -8927,6 +8927,18 @@ if(POLARON_WITH_LLVM)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
         set_tests_properties(codegen_tls_alert_named PROPERTIES TIMEOUT 120)
 
+        # THE ONLY THREE TESTS THAT LEAVE THE MACHINE. `https_client.pol` opens a connection to
+        # `https://example.com/`; every other TLS test here -- the trust store, the certificate
+        # refusals, the parser -- works on bytes it already has, which is why they are not labelled.
+        # (Checked rather than assumed: those samples contain no URL and no socket call at all.)
+        #
+        # CI runs the labelled ones in a separate step that does not gate. A suite that goes red
+        # because somebody else's server had a bad minute teaches people to ignore red, and these
+        # three are the only tests here whose result depends on a third party being up -- which is
+        # also why one of them already carries a timeout of its own, above.
+        set_tests_properties(codegen_https_fetch codegen_https_refuses_untrusted
+                             codegen_tls_alert_named PROPERTIES LABELS network)
+
         # SIGNATURE VERIFICATION, against signatures this project did not produce. Both vectors were
         # made by .NET's own ECDSA and RSA-PSS and verified there before being written down — a
         # verifier tested against a signer we also wrote is a verifier tested against its own
