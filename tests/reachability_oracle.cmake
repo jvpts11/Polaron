@@ -1,3 +1,8 @@
+cmake_minimum_required(VERSION 3.20)   # `cmake -P` inherits no policies; without this, `IN_LIST` below
+                                       # is not an operator and the script dies naming three plain
+                                       # words. See the note in cmake/embed_prelude.cmake, where the
+                                       # same omission stopped the first CI run on a CMake 3.28 runner.
+
 # THE ORACLE FOR REACHABILITY-DRIVEN EMISSION.
 #
 # `emitFunctions` produces a body for every method in the program, including all ~320 classes of the

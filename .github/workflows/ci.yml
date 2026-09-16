@@ -40,7 +40,13 @@ jobs:
         if: failure()
         with:
           name: linux-x64-logs
-          path: build/Testing/Temporary/LastTest.log
+          # A BUILD THAT FAILS LEAVES NO TEST LOG. The first failing run uploaded nothing at all --
+          # "No files were found with the provided path" -- because it died in CMake's generate step
+          # and `LastTest.log` is only written by ctest. The configure log is what explains that kind
+          # of failure, so both are collected and whichever exists is kept.
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/CMakeFiles/CMakeConfigureLog.yaml
           retention-days: 7
 
   windows-x64:

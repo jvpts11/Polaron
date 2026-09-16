@@ -37,6 +37,17 @@ set(PRELUDE_ORDER
     IO OS Net Concurrency Ipc Json Formats Compress Science Spatial Units Serialize Validate
     Inject Arena Compare Persist Terminal Security Tls Events Ecs App Test)
 
+# A SCRIPT RUN WITH `cmake -P` INHERITS NO POLICIES FROM THE PROJECT, and without this line they sit
+# at their OLD behaviour. `if(... IN_LIST ...)` then stops being an operator: CMake reads three plain
+# words and refuses with `if given arguments: "Runtime" "IN_LIST" "PRELUDE_OMIT" -- Unknown arguments
+# specified`, which names everything except the cause.
+#
+# It went unseen because it depends on the CMake VERSION, not on the platform: 4.x already treats
+# CMP0057 as NEW, and both machines here run 4.x. The first Ubuntu 24.04 runner, with CMake 3.28,
+# failed on it immediately -- in the generate step, before a line of the prelude was embedded.
+# 3.20 is what the project itself declares, so the two agree.
+cmake_minimum_required(VERSION 3.20)
+
 # Required -D args: PRELUDE_DIR, PRELUDE_OUT
 # TWELVE THOUSAND, AND THE 65 535 ABOVE IS THE WRONG NUMBER FOR A RAW STRING.
 #
