@@ -1,0 +1,35 @@
+import System.IO.Console;
+
+program ComefromOrders;
+
+// THE TWO ORDERINGS OF `comefrom`, AND WHICH OF THEM LOOPS.
+//
+// `comefrom X` is a no-op on the way down and the landing on the way back; `label X` is where
+// control is stolen (spec 7.9). Everything about this construct follows from which of the two comes
+// first, and the cycle warning had it backwards -- it flagged the form that terminates and said
+// nothing about the form that does not.
+//
+// `skipsWhatIsBetween` is the whole point of the keyword and must stay quiet. The looping order
+// lives in `comefrom_loop_bad`, because a sample that never returns cannot also be run.
+public bundle Main {
+    public namespace App {
+
+        public class Main {
+            // The label steals forward to the landing, so what sits between them never runs. One
+            // pass, then out.
+            public static method skipsWhatIsBetween() returns int {
+                mutable int reached = 0;
+                label skip;
+                reached = reached + 100;      // between the steal and the landing: never runs
+                comefrom skip;
+                reached = reached + 7;
+                return reached;
+            }
+
+            public static method main(string[] args) returns void {
+                System.IO.Console.printf("reached=%d\n", Main.skipsWhatIsBetween());
+                return;
+            }
+        }
+    }
+}

@@ -1962,6 +1962,21 @@ constexpr Row kCatalog[] = {
         "language spells this, and it is why nobody can tell from a lambda's first line what the "
         "thing holds. Here the values are on the line." }},
 
+    {Code::ComefromLoopsForever, {
+        "Polaron-0B55", "this comefrom loops back with no way out between its label and itself",
+        "`comefrom X` is the LANDING and `label X` is where control is taken (spec 7.9), so the two "
+        "written in that order are a loop: control passes the comefrom, reaches the label, is sent "
+        "back to the landing, and goes round again. Written the other way -- label first, comefrom "
+        "below it -- the same pair runs once and skips what sits between them, which is what the "
+        "keyword is for. Nothing in the two lines says which of those you wrote; only their order "
+        "does, and one of the two orders never comes back.",
+        "If the statements between were meant to be skipped, put the `label` above them and the "
+        "`comefrom` below: `label skip; doSkipped(); comefrom skip;`. If a loop is what was meant, "
+        "give it a way out -- a `return`, a `break` or a `throw` between the landing and the label -- "
+        "or write the loop as a loop, which says so on its first line.",
+        "Read the pair as landing-then-steal rather than as two statements. The order is the whole "
+        "of the construct: one way round it skips, the other way round it never stops." }},
+
     {Code::ArrayPlacementIgnored, {
         "Polaron-0B54", "an array cannot honour `on stack`, and this one was accepted and ignored",
         "An object's `new` reads its placement and an array's did not: the clause parsed, nothing "
@@ -2335,6 +2350,7 @@ constexpr Rule kRules[] = {
     // ...AND THIS ONE BEFORE THEM, because its message names a method and a class and would be taken
     // by the member-access rules further down, which would then advise the reader to declare a method
     // that is already declared -- right there, in the class the message names.
+    {"loops back with no exit between its label and itself", Code::ComefromLoopsForever},
     {"and a static method is called through its class", Code::UnqualifiedStaticCall},
     // The command rules, before everything that matches on the words "class", "method" or "write":
     // each of these messages names a class and spells a member, and the generic member-access rules

@@ -1,0 +1,41 @@
+import System.IO.Console;
+
+program ComefromLoopBad;
+
+// THE ORDER THAT REALLY LOOPS, and the one the cycle warning used to miss.
+//
+// The `comefrom` is the landing and comes first; the `label` below steals control back to it, with
+// nothing in between that can leave. Control goes round forever.
+//
+// This is not a hypothetical shape: it is how `docs/reference/guide/07-control-flow.md` wrote its
+// `comefrom` example, which printed the line its own comment calls "skipped" 362 million times in
+// fifteen seconds while the compiler said nothing at all.
+//
+// Never run -- only checked. It warns (spec 7.10).
+public bundle Main {
+    public namespace App {
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                mutable int n = 0;
+                comefrom round;
+                n = n + 1;
+                System.IO.Console.printf("n=%d\n", n);
+                label round;
+                System.IO.Console.println("unreachable");
+                return;
+            }
+
+            // THE SAME CYCLE ONE BLOCK DOWN, which is how the guide wrote it. The landing sits where
+            // the `comefrom` stands whether or not the condition was ever true, so nesting it changes
+            // nothing about the loop -- and scanning a block at a time was why nothing was said.
+            public static method nestedIsTheSameCycle(int a) returns void {
+                if (a == 1) { comefrom nested; }
+                System.IO.Console.println("X");
+                label nested;
+                System.IO.Console.println("unreachable");
+                return;
+            }
+        }
+    }
+}

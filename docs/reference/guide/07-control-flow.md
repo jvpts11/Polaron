@@ -739,31 +739,54 @@ redirected to the point where the `comefrom` sits. It reads as a declarative sta
 about a label elsewhere in the method, which is what makes it interesting — and what makes
 it demand tooling support to read comfortably.
 
-Because a `comefrom` can reference a label that appears either earlier or later in the
-method, it serves as both a forward skip and a backward retry. On a backward jump, local
-variables keep their values — there is no implicit reset — which is exactly what a retry
-loop wants.
+**The order of the two lines is the whole construct.** The `comefrom` is the *landing* and
+the `label` is where control is *taken*, so which of them you write first decides whether
+you have a skip or a loop:
+
+- **`label` above, `comefrom` below** — control reaches the label, is sent forward to the
+  landing, and carries on. What sits between the two never runs: that is the forward skip.
+- **`comefrom` above, `label` below** — control passes the landing, runs on, reaches the
+  label and is sent *back*. That is the backward retry, and it needs a way out between the
+  two or it never returns. Local variables keep their values across the jump — there is no
+  implicit reset — which is exactly what a retry wants.
+
+Get the order the wrong way round and the code does the opposite of what it reads like;
+the compiler warns about the case it can see (`Polaron-0B55`).
 
 ```polaron
 import System.IO.Console;
 program Comefrom;
 
-public bundle main {
-    public namespace app {
+public bundle Main {
+    public namespace App {
         public class Main {
-            public static method main(string[] args) returns void {
-                mutable int a = 1;
-                if (a == 1) { comefrom skip; }     // forward: intercept at `label skip`
-                System.IO.Console.println("X");            // skipped
+            // FORWARD: the label steals, so what sits between it and the `comefrom` never runs.
+            public static method forward() returns void {
                 label skip;
+                System.IO.Console.println("X");            // between the two: skipped
+                comefrom skip;
                 System.IO.Console.println("forward ok");
+                return;
+            }
 
+            // BACKWARD: the `comefrom` is the landing and comes first, so the label below sends
+            // control back to it. The `if` is the way out.
+            public static method backward() returns void {
                 mutable int n = 0;
-                label loop;
+                comefrom again;
                 n = n + 1;
                 System.IO.Console.println($"n={n}");
-                if (n < 3) { comefrom loop; }       // backward: retry; n keeps its value
-                System.IO.Console.println("done");
+                if (n >= 3) {
+                    System.IO.Console.println("done");
+                    return;
+                }
+                label again;
+                return;
+            }
+
+            public static method main(string[] args) returns void {
+                Main.forward();       // forward ok
+                Main.backward();      // n=1  n=2  n=3  done
                 return;
             }
         }

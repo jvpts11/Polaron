@@ -245,6 +245,7 @@ two copies come to disagree.
 | `Polaron-0B52` | this hand-allocates and hand-frees several things: a region written longhand |
 | `Polaron-0B53` | two objects now own one object, and both destructors free it |
 | `Polaron-0B54` | an array cannot honour `on stack`, and this one was accepted and ignored |
+| `Polaron-0B55` | this comefrom loops back with no way out between its label and itself |
 | `Polaron-1710` | a region has exactly one flavor |
 | `Polaron-1711` | a fixedslot/ring region needs its single element type |
 | `Polaron-1712` | growable does not apply here |

@@ -17,7 +17,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.178")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.179")
 
 # ---- PIR (docs/design/polaron-ir.md) ----
 #
@@ -356,7 +356,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 90)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.178")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.179")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -2037,6 +2037,37 @@ add_test(NAME lint_linear_search_in_loop
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
 set_tests_properties(lint_linear_search_in_loop PROPERTIES
     PASS_REGULAR_EXPRESSION "0B2D.*'contains' walks the whole collection")
+
+# WHICH ORDER OF `comefrom` LOOPS. The cycle warning searched backwards from the comefrom for its
+# label, which finds the forward skip -- the form that runs once and is the whole point of the
+# keyword -- and never finds the form that really goes round forever. It warned about every correct
+# use and stayed silent on the guide's own example, which printed 362 million lines in fifteen
+# seconds. These two pin the sides.
+add_test(NAME sema_warns_on_a_comefrom_that_loops
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/comefrom_loop_bad.pol")
+set_tests_properties(sema_warns_on_a_comefrom_that_loops PROPERTIES
+    PASS_REGULAR_EXPRESSION "comefrom 'round' loops back with no exit")
+
+# ...and one block down, which is where the guide's example put it and where a block-at-a-time scan
+# could not see it.
+add_test(NAME sema_sees_a_nested_comefrom_cycle
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/comefrom_loop_bad.pol")
+set_tests_properties(sema_sees_a_nested_comefrom_cycle PROPERTIES
+    PASS_REGULAR_EXPRESSION "comefrom 'nested' loops back with no exit")
+
+add_test(NAME sema_spares_a_comefrom_that_skips
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/comefrom_orders.pol")
+set_tests_properties(sema_spares_a_comefrom_that_skips PROPERTIES
+    FAIL_REGULAR_EXPRESSION "loops back with no exit|: error")
+
+# ...and it does what the keyword exists for: what sits between the steal and the landing never runs.
+add_test(NAME codegen_comefrom_orders_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/comefrom_orders.pol"
+    "-DEXPECTED=reached=7"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # A DEADLINE A TALKATIVE CHILD CANNOT POSTPONE. `Command.timeout` counted down a budget that only
 # decreased on the passes where the child had nothing to say, so a child that always did spent none

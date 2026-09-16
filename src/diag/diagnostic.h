@@ -240,6 +240,10 @@ enum class Code {
     // `new T[n]() on stack` -- a placement an array cannot honour. Read by nothing at all until
     // `on static` arrived and the check that lets one placement through had to look at the others.
     ArrayPlacementIgnored,
+    // `comefrom X` written above its `label X` with no way out between them: the label steals control
+    // back to the landing, forever. The rule existed and had no code, because no sample had ever made
+    // it fire -- it was searching for the two in the order that TERMINATES.
+    ComefromLoopsForever,
     // A static method called without its class. It belongs to the class, so the class is its
     // subject, and a bare call is an action about nothing.
     UnqualifiedStaticCall,

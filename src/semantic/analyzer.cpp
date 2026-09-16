@@ -14,6 +14,7 @@
 #include <functional>
 #include <string>
 #include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -225,32 +226,125 @@ static bool stmtCanExit(const ast::Stmt* st) {
            dynamic_cast<const ast::TryStmt*>(st) != nullptr;
 }
 
-// Best-effort warning for an obvious infinite loop via comefrom (spec 7.10 rule 7): a `comefrom X`
-// preceded in the SAME block by `label X` with nothing that can exit between them branches back
-// forever. (The retry pattern -- label at one level, comefrom inside a try/catch -- spans blocks
-// and is not flagged.) Recurses into nested blocks to catch loops contained within them.
+// Every `comefrom` this statement contains, itself included, at any depth. The block shapes are the
+// same ones `detectComefromLoops` walks into, so the two cannot drift apart about what "inside"
+// means.
+static void collectComefroms(const ast::Stmt* st, std::vector<const ast::ComefromStmt*>& out) {
+    if (st == nullptr) {
+        return;
+    }
+    if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(st)) {
+        out.push_back(cf);
+        return;
+    }
+    auto walk = [&](const ast::Block& b) {
+        for (const ast::StmtPtr& inner : b.statements) {
+            collectComefroms(inner.get(), out);
+        }
+    };
+    if (const auto* iff = dynamic_cast<const ast::IfStmt*>(st)) {
+        walk(iff->thenBlock);
+        if (iff->elseBlock) {
+            walk(*iff->elseBlock);
+        }
+    } else if (const auto* w = dynamic_cast<const ast::WhileStmt*>(st)) {
+        walk(w->body);
+    } else if (const auto* d = dynamic_cast<const ast::DoWhileStmt*>(st)) {
+        walk(d->body);
+    } else if (const auto* f = dynamic_cast<const ast::ForStmt*>(st)) {
+        walk(f->body);
+    } else if (const auto* fe = dynamic_cast<const ast::ForeachStmt*>(st)) {
+        walk(fe->body);
+    } else if (const auto* sw = dynamic_cast<const ast::SwitchStmt*>(st)) {
+        for (const auto& c : sw->cases) {
+            walk(c.body);
+        }
+        if (sw->defaultBody) {
+            walk(*sw->defaultBody);
+        }
+    } else if (const auto* ms = dynamic_cast<const ast::MatchStmt*>(st)) {
+        for (const auto& c : ms->cases) {
+            walk(c.body);
+        }
+        if (ms->defaultBody) {
+            walk(*ms->defaultBody);
+        }
+    } else if (const auto* tr = dynamic_cast<const ast::TryStmt*>(st)) {
+        walk(tr->body);
+        for (const auto& c : tr->catches) {
+            walk(c.body);
+        }
+        if (tr->finallyBlock) {
+            walk(*tr->finallyBlock);
+        }
+    } else if (const auto* df = dynamic_cast<const ast::DeferStmt*>(st)) {
+        walk(df->body);
+    } else if (const auto* us = dynamic_cast<const ast::UsingStmt*>(st)) {
+        walk(us->body);
+    }
+}
+
+// Best-effort warning for an obvious infinite loop via comefrom (spec 7.10 rule 7).
+//
+// WHICH ORDER LOOPS, because this rule had it backwards and therefore said the opposite of the
+// truth twice over. `comefrom X` is a no-op on the way down and the LANDING on the way back, and
+// `label X` is where control is stolen (§7.9). So:
+//
+//     comefrom skip;      // landing
+//     println("X");
+//     label skip;         // steals -> back to the landing, and round again: INFINITE
+//
+//     label skip;         // steals -> forward to the landing
+//     println("X");       // between the two, so it never runs
+//     comefrom skip;      // landing
+//     println("ok");      // and on it goes: TERMINATES
+//
+// The rule searched BACKWARDS from the comefrom for its label, which finds the second shape -- the
+// forward skip, whose whole purpose is to run once -- and never the first. It warned about every
+// correct use of the construct and stayed silent on the one program in the reference guide that
+// really does print forever. Found by running that guide's own examples: 362 million lines in
+// fifteen seconds, and not a word from the compiler.
+//
+// (The retry pattern -- label at one level, comefrom inside a try/catch -- spans blocks and is not
+// flagged either way.) Recurses into nested blocks to catch loops contained within them.
 void SemanticAnalyzer::detectComefromLoops(const ast::Block& block) {
+    // WHERE EACH `comefrom` LANDED, at any depth, and where it was written.
+    //
+    // The landing is placed where the comefrom stands whether or not control ever reached it -- a
+    // `comefrom X` under an `if` is still the landing when the condition was false -- so a comefrom
+    // nested one block down is the same cycle as one written here. That is not a corner: it is how
+    // the reference guide wrote its example, `if (a == 1) { comefrom skip; }` with `label skip`
+    // below it in the enclosing block, and scanning one block at a time is why nothing was said
+    // about it.
+    std::unordered_map<std::string, std::pair<std::size_t, SourceLocation>> landed;
     for (std::size_t i = 0; i < block.statements.size(); ++i) {
         const ast::Stmt* st = block.statements[i].get();
-        if (const auto* cf = dynamic_cast<const ast::ComefromStmt*>(st)) {
-            for (std::size_t j = i; j-- > 0;) {
-                const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(block.statements[j].get());
-                if (lm == nullptr || lm->name != cf->name) {
-                    continue;
-                }
+        std::vector<const ast::ComefromStmt*> here;
+        collectComefroms(st, here);
+        for (const ast::ComefromStmt* cf : here) {
+            if (landed.count(cf->name) == 0) {
+                landed.emplace(cf->name, std::make_pair(i, cf->loc));
+            }
+        }
+        if (const auto* lm = dynamic_cast<const ast::LabelMarkStmt*>(st)) {
+            const auto found = landed.find(lm->name);
+            if (found != landed.end()) {
+                // What sits between the landing and the steal is the loop's body, and anything in
+                // it that can leave is the exit this warning is about not having.
+                const std::size_t from = found->second.first;
                 bool clear = true;
-                for (std::size_t k = j + 1; k < i && clear; ++k) {
+                for (std::size_t k = from + 1; k < i && clear; ++k) {
                     if (stmtCanExit(block.statements[k].get())) {
                         clear = false;
                     }
                 }
                 if (clear) {
-                    warn("comefrom '" + cf->name +
+                    warn(diag::Code::ComefromLoopsForever,
+                         "comefrom '" + lm->name +
                              "' loops back with no exit between its label and itself: infinite loop "
                              "(spec 7.10)",
-                         cf->loc);
+                         found->second.second);
                 }
-                break;
             }
         }
         auto rec = [&](const ast::Block& b) { detectComefromLoops(b); };
