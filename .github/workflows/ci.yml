@@ -1,0 +1,87 @@
+name: CI
+
+# Every push, every branch, and pull requests. The whole suite each time: this project's suite takes
+# about six minutes per platform, so splitting it into "quick" and "full" would buy nothing and cost
+# the one property that makes a gate useful -- that green means the same thing every time.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push on the same ref makes the older run pointless, and a queue of pointless runs is how CI
+# becomes something people wait for instead of something that tells them things.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Third-party actions are pinned by COMMIT, with the tag beside them for readers. A tag is a moving
+# pointer: `v4` is whatever its owner last pushed it to, and "the build broke and nobody changed
+# anything" is what that looks like from in here. dependabot moves these deliberately.
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # `bash <script>` and not `./<script>`: a `.sh` added from a Windows checkout can arrive without
+      # its execute bit, and the job then dies with "Permission denied" (exit 126) for a reason that
+      # has nothing to do with the code. The bit is set in the index as well -- both, not either.
+      - run: bash scripts/ci/setup-linux.sh
+      - run: bash scripts/ci/build-and-test.sh build
+      # The three tests that leave the machine, run apart and not gating: their result depends on a
+      # third party being up, and a suite that goes red for that teaches people to ignore red. One
+      # retry, because a single failed connection is not information.
+      - name: Network tests (not a gate)
+        continue-on-error: true
+        run: |
+          ctest --test-dir build --output-on-failure -L network \
+            || ctest --test-dir build --output-on-failure -L network
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: linux-x64-logs
+          path: build/Testing/Temporary/LastTest.log
+          retention-days: 7
+
+  windows-x64:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # EVERY TEST THAT LINKS NEEDS THIS. Without the developer environment they all fail at once
+      # with `lld-link: error: could not open 'legacy_stdio_definitions.lib'`, which reads exactly
+      # like a compiler regression and is not one. The tell is the asymmetry: tests that only read IR
+      # keep passing while every linking test fails.
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+      - run: scripts/ci/setup-windows.ps1
+        shell: pwsh
+      - run: scripts/ci/build-and-test.ps1 build
+        shell: pwsh
+      - name: Network tests (not a gate)
+        continue-on-error: true
+        shell: pwsh
+        run: ctest --test-dir build --output-on-failure -L network
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: windows-x64-logs
+          path: build/Testing/Temporary/LastTest.log
+          retention-days: 7
+
+  # Informational until its first green run, then it becomes a gate like the other two. It is the one
+  # platform nothing in this project has ever been measured on: no arm64 machine exists here, and the
+  # cross tests that do run under QEMU are not the same thing as building and testing natively.
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: bash scripts/ci/setup-linux.sh
+      - run: bash scripts/ci/build-and-test.sh build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: linux-arm64-logs
+          path: build/Testing/Temporary/LastTest.log
+          retention-days: 7

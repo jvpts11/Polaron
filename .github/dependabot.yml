@@ -1,0 +1,9 @@
+# The actions in ci.yml are pinned by commit, which is the safe way to depend on somebody else's
+# code and also the way that silently rots: a pin nobody moves is a pin that never gets a fix.
+# Weekly pull requests are how the pins move deliberately instead of never.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
