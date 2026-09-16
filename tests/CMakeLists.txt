@@ -17,7 +17,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.176")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.177")
 
 # ---- PIR (docs/design/polaron-ir.md) ----
 #
@@ -356,7 +356,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 90)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.176")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.177")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -2037,6 +2037,28 @@ add_test(NAME lint_linear_search_in_loop
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_scale.pol")
 set_tests_properties(lint_linear_search_in_loop PROPERTIES
     PASS_REGULAR_EXPRESSION "0B2D.*'contains' walks the whole collection")
+
+# A POINTER PARAMETER THAT IS REALLY A BORROW, and the shape that only looks like one. The rule used
+# to search the parameter's spelling for a `*`, and a generic mangles its type arguments into its
+# name -- so `ArrayList<Leaf*>& out` was called a pointer and its author was told to write the
+# reference already written there.
+add_test(NAME lint_pointer_that_is_a_borrow
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_borrow_parameter.pol")
+set_tests_properties(lint_pointer_that_is_a_borrow PROPERTIES
+    PASS_REGULAR_EXPRESSION "0B3E.*'heightOf' takes 'leaf' as a pointer")
+
+add_test(NAME lint_borrow_rule_spares_a_reference
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_borrow_parameter.pol")
+set_tests_properties(lint_borrow_rule_spares_a_reference PROPERTIES
+    FAIL_REGULAR_EXPRESSION "'collect' takes 'out'|: error")
+
+add_test(NAME codegen_lint_borrow_parameter_runs COMMAND "${CMAKE_COMMAND}"
+    "-DPOLC=$<TARGET_FILE:polc>"
+    "-DCLANG=${POLARON_CLANG}"
+    "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/lint_borrow_parameter.pol"
+    "-DEXPECTED=height=6 held=1"
+    "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 
 # ...and the other side of the same rule. `known` is a `HashSet`, so `contains` is a probe and the
 # claim would be false; the rule pointed at it anyway, and told the author to use a `HashSet`. The

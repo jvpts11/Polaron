@@ -1,0 +1,50 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+
+program LintBorrowParameter;
+
+// A POINTER PARAMETER THAT IS REALLY A BORROW, and the shape that only looks like one.
+//
+// `T&` cannot be null, rebound or stored, so it says in the signature what a `T*` the body never
+// rebinds only says by inspection. The rule asks for the stronger declaration.
+//
+// It used to ask by searching the parameter's spelling for a `*`, and a generic mangles its type
+// arguments into its name -- so `ArrayList<Leaf*>& out` carried the ELEMENT's star, was called a
+// pointer, and its author was advised to write the reference they had already written. Advice that
+// describes the code in front of it is the one kind nobody can act on.
+public bundle Main {
+    public namespace App {
+
+        public class Leaf {
+            public mutable int n;
+            public constructor Leaf(int n) { this.n = n; }
+        }
+
+        internal class Borrow {
+            // FIRES (0B3E): a pointer the body only reads through, and never rebinds or stores.
+            public static method heightOf(Leaf* leaf) returns int {
+                return leaf.n;
+            }
+
+            // QUIET: already a reference. The `*` in its spelling belongs to the element type.
+            public static method collect(ArrayList<Leaf*>& out, Leaf* leaf) returns void {
+                out.add(leaf);
+                return;
+            }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // The list owns what it holds, so the elements go down the way `foreach_frees_each`
+                // takes a collection down, and nothing is allocated and freed in this block by hand.
+                ArrayList<Leaf*> all = new ArrayList<Leaf*>() on stack;
+                Borrow.collect(all, new Leaf(6) on heap);
+                System.IO.Console.printf("height=%d held=%d\n", Borrow.heightOf(all.get(0)), all.size());
+                foreach (Leaf* each in all) {
+                    delete each;
+                }
+                return;
+            }
+        }
+    }
+}

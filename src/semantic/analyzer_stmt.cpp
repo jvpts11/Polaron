@@ -2034,8 +2034,16 @@ void SemanticAnalyzer::warnPointerThatIsABorrow(const ast::MethodDecl& m) {
         return;
     }
     for (const ast::Param& p : m.params) {
+        // THE PARAMETER'S OWN STAR, not any star in its spelling. A generic mangles its type
+        // arguments into its name, so `ArrayList<Leaf*>& out` canonicalises to something carrying a
+        // `*` that belongs to the ELEMENT -- and a search of the string found it, called a reference
+        // a pointer, and advised the author to write the reference they had already written. The
+        // TypeRef knows both facts outright, which is the only place they are not ambiguous.
+        if (!p.type.isPointer || p.type.isRef) {
+            continue;
+        }
         const std::string t = typeRefStr(p.type);
-        if (t.find('*') == std::string::npos || isNullableType(t) || isArrayType(t)) {
+        if (isNullableType(t) || isArrayType(t)) {
             continue;
         }
         const ClassInfo* pt = lookupClass(baseType(t));
