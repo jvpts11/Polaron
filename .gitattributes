@@ -1,0 +1,31 @@
+# A SHELL SCRIPT WITH CRLF IS NOT A SHELL SCRIPT.
+#
+# `bash` reads the carriage return as part of the last word on the line, so `set -euo pipefail`
+# becomes `set -euo pipefail\r` and the shell answers `pipefail\r: invalid option name` before a
+# single line of the script has run. Four of our own scripts were checked in that way --
+# `installer/package-linux.sh` among them, which is the one that builds the Linux release tarball.
+# So the tarball could not be built from a clean Linux checkout at all, and the failure does not
+# name line endings anywhere in its message.
+#
+# It happens without anyone choosing it: a file written by a Windows editor gets CRLF, and with no
+# rule here git stores exactly what it is handed.
+*.sh text eol=lf
+*.bash text eol=lf
+configure text eol=lf
+
+# ...and the other direction, for the files a Windows shell reads. `cmd.exe` is the one that really
+# minds: a `.bat` with bare LF can run the wrong line after a `goto`.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary, so git never looks inside them for line endings to convert.
+*.png binary
+*.ico binary
+*.pdf binary
+*.vsix binary
+*.msi binary
+*.polb binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
