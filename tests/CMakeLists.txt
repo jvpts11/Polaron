@@ -17,7 +17,7 @@ add_test(NAME version_sites COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/run_version_sites_test.cmake")
 add_test(NAME cli_version COMMAND polc --version)
 set_tests_properties(cli_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.175")
+    PASS_REGULAR_EXPRESSION "polc 1\\.0\\.176")
 
 # ---- PIR (docs/design/polaron-ir.md) ----
 #
@@ -356,7 +356,7 @@ set_tests_properties(examples_run PROPERTIES TIMEOUT 90)
 # ---- polaron driver (unified toolchain) integration tests ----
 add_test(NAME polaron_version COMMAND polaron --version)
 set_tests_properties(polaron_version PROPERTIES
-    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.175")
+    PASS_REGULAR_EXPRESSION "polaron 1\\.0\\.176")
 
 # polaron-studio (the TUI): renders one frame of the shell non-interactively (no clang needed).
 add_test(NAME polaron_studio_shell COMMAND "${CMAKE_COMMAND}"
@@ -3811,6 +3811,12 @@ add_test(NAME sema_rejects_borrow_out_of_a_region_field
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_out_of_a_region_field_bad.pol")
 set_tests_properties(sema_rejects_borrow_out_of_a_region_field PROPERTIES
     PASS_REGULAR_EXPRESSION "Polaron-1724")
+
+# Excusing the `foreach` variable across the back edge must not excuse it WITHIN one iteration.
+add_test(NAME sema_rejects_a_double_free_in_one_iteration
+    COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/foreach_double_free_bad.pol")
+set_tests_properties(sema_rejects_a_double_free_in_one_iteration PROPERTIES
+    PASS_REGULAR_EXPRESSION "Polaron-0402.*'each' after it was deleted")
 
 add_test(NAME sema_rejects_borrow_taken_in_one_branch
     COMMAND polc --check "${CMAKE_CURRENT_SOURCE_DIR}/samples/borrow_taken_in_one_branch_bad.pol")
@@ -11567,6 +11573,17 @@ if(POLARON_WITH_LLVM)
             "-DCLANG=${POLARON_CLANG}"
             "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/foreach.pol"
             "-DEXPECTED=sum of squares = 30"
+            "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
+
+        # TAKING DOWN A COLLECTION OF OWNED POINTERS -- the only way the language has to do it, and
+        # for a long time the one the loop-carried obligation check refused. The pair below fixes
+        # both sides: this frees each element and runs, and `foreach_double_free_bad` still cannot.
+        add_test(NAME codegen_foreach_frees_each_runs COMMAND "${CMAKE_COMMAND}"
+            "-DPOLC=$<TARGET_FILE:polc>"
+            "-DCLANG=${POLARON_CLANG}"
+            "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/samples/foreach_frees_each.pol"
+            "-DEXPECTED=sum=7"
             "-DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/run_exe_test.cmake")
 

@@ -1,0 +1,32 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+
+program ForeachDoubleFreeBad;
+
+// THE OTHER HALF OF `foreach_frees_each`. Excusing the loop variable across the back edge must not
+// excuse it WITHIN one iteration: here the same element is freed twice with nothing in between, which
+// is a plain use after the object was given up and has nothing to do with the next iteration.
+//
+// Refused with Polaron-0402.
+public bundle Main {
+    public namespace App {
+
+        public class Leaf {
+            public int n;
+            public constructor Leaf(int n) { this.n = n; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                ArrayList<Leaf*> all = new ArrayList<Leaf*>() on stack;
+                all.add(new Leaf(1) on heap);
+                foreach (Leaf* each in all) {
+                    delete each;
+                    delete each;
+                }
+                System.IO.Console.println("unreachable");
+                return;
+            }
+        }
+    }
+}

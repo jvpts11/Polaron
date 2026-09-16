@@ -1,0 +1,45 @@
+import System.IO.Console;
+import System.Collections.ArrayList;
+
+program ForeachFreesEach;
+
+// TAKING DOWN A COLLECTION OF OWNED POINTERS, which is the only way the language has to do it.
+//
+// `foreach` binds its variable to the next element at the top of every iteration, so `delete each`
+// frees THIS element and says nothing about the next one. The loop-carried obligation check used to
+// replay the body with the body's own effects already in force and read the fresh element as the
+// emptied one, so this program -- the ordinary way to free what a program built -- was refused with
+// Polaron-0402, advising the author to redeclare a name a `foreach` variable cannot redeclare.
+//
+// A double free inside ONE iteration is a different fact and is still an error; `foreach_double_free_bad`
+// is the other half of this pair.
+public bundle Main {
+    public namespace App {
+
+        public class Leaf {
+            public int n;
+            public constructor Leaf(int n) { this.n = n; }
+        }
+
+        public class Main {
+            public static method main(string[] args) returns void {
+                // The list itself lives and dies with the scope; what it HOLDS is owned by hand,
+                // which is the whole point of the loop below.
+                ArrayList<Leaf*> all = new ArrayList<Leaf*>() on stack;
+                all.add(new Leaf(1) on heap);
+                all.add(new Leaf(2) on heap);
+                all.add(new Leaf(4) on heap);
+
+                mutable int sum = 0;
+                foreach (Leaf* each in all) {
+                    sum = sum + each.n;
+                }
+                foreach (Leaf* each in all) {
+                    delete each;
+                }
+                System.IO.Console.printf("sum=%d\n", sum);
+                return;
+            }
+        }
+    }
+}

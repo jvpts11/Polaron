@@ -900,7 +900,8 @@ void SemanticAnalyzer::warnAllocationsWantARegion(const ast::Block& body) {
 //     nothing is reported. That idiom is correct and stays silent -- which is why this is a replay of
 //     the flow rather than a search for a shape.
 void SemanticAnalyzer::checkLoopCarriedObligations(const ast::Block& body, const FlowFacts& entry,
-                                                   const FlowFacts& bodyEnd) {
+                                                   const FlowFacts& bodyEnd,
+                                                   const std::string& reboundEachIteration) {
     if (inLoopReplay_) {
         return;   // a nested loop's replay is already running inside one; twice is enough
     }
@@ -914,8 +915,24 @@ void SemanticAnalyzer::checkLoopCarriedObligations(const ast::Block& body, const
         }
         return out;
     };
-    const std::unordered_set<std::string> freedInBody = gained(bodyEnd.freed, entry.freed);
-    const std::unordered_set<std::string> movedInBody = gained(bodyEnd.moved, entry.moved);
+    std::unordered_set<std::string> freedInBody = gained(bodyEnd.freed, entry.freed);
+    std::unordered_set<std::string> movedInBody = gained(bodyEnd.moved, entry.moved);
+    // A `foreach` VARIABLE IS NOT CARRIED ACROSS THE BACK EDGE. It is assigned from the collection at
+    // the top of every iteration, so what the body did to the previous element says nothing about the
+    // next one -- and the replay, which re-analyses the body with the body's own effects already in
+    // force, would otherwise read the fresh element as the emptied one.
+    //
+    // What it cost while it was missing: `foreach (Leaf* each in all) { delete each; }` was REFUSED.
+    // That is the only way the language has to free a collection of owned pointers, so a program
+    // could build one and then had no supported way to take it down -- and the error told the author
+    // to redeclare the name, which is not a thing a `foreach` variable can do.
+    //
+    // Only the rebinding is excused. A double free inside ONE iteration is still a use after a move
+    // and is still caught, by the ordinary pass rather than by this replay.
+    if (!reboundEachIteration.empty()) {
+        freedInBody.erase(reboundEachIteration);
+        movedInBody.erase(reboundEachIteration);
+    }
     if (freedInBody.empty() && movedInBody.empty()) {
         return;
     }
@@ -928,10 +945,16 @@ void SemanticAnalyzer::checkLoopCarriedObligations(const ast::Block& body, const
         freed_.insert(freedInBody.begin(), freedInBody.end());
         moved_.insert(movedInBody.begin(), movedInBody.end());
         deleted_.insert(bodyEnd.deleted.begin(), bodyEnd.deleted.end());
+        if (!reboundEachIteration.empty()) {
+            deleted_.erase(reboundEachIteration);
+        }
         // What the body emptied strands what was borrowed from it BEFORE the loop -- those borrows
         // are still the same ones on the second pass. A borrow the body takes is taken again, from
         // what the source holds then, so the body's own stranded set is not carried over.
         for (const std::string& who : bodyEnd.invalidated) {
+            if (who == reboundEachIteration) {
+                continue;
+            }
             invalidateSource(who);
         }
         Collect into(*this, found);
@@ -3082,7 +3105,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
             killProofsAssignedIn(fe->body);
             const FlowFacts entry = snapshotFlow();
             analyzeBlock(fe->body);
-            checkLoopCarriedObligations(fe->body, entry, snapshotFlow());
+            checkLoopCarriedObligations(fe->body, entry, snapshotFlow(), fe->varName);
             warnStringBuildingInLoop(fe->body);
             warnCopyHoistableOutOfLoop(fe->body);
             warnVirtualCallInLoop(fe->body);
@@ -3180,7 +3203,7 @@ void SemanticAnalyzer::analyzeStatement(const ast::Stmt& stmt) {
         killProofsAssignedIn(fe->body);
         const FlowFacts entry = snapshotFlow();
         analyzeBlock(fe->body);
-        checkLoopCarriedObligations(fe->body, entry, snapshotFlow());
+        checkLoopCarriedObligations(fe->body, entry, snapshotFlow(), fe->varName);
         warnStringBuildingInLoop(fe->body);
         warnCopyHoistableOutOfLoop(fe->body);
         warnVirtualCallInLoop(fe->body);

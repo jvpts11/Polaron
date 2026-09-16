@@ -1165,8 +1165,12 @@ private:
             : a(an), was(an.errorSink_) { a.errorSink_ = &into; }
         ~Collect() { a.errorSink_ = was; }
     };
+    // `reboundEachIteration` names the one local a `foreach` assigns at the top of every iteration,
+    // and which therefore carries nothing across the back edge. Empty for every other loop: a `for`
+    // loop's init runs once, so what its variable holds IS carried.
     void checkLoopCarriedObligations(const ast::Block& body, const FlowFacts& entry,
-                                     const FlowFacts& bodyEnd);
+                                     const FlowFacts& bodyEnd,
+                                     const std::string& reboundEachIteration = "");
     void checkLambdaBodyAgainstFlowHere(const std::string& name, SourceLocation at);
     /* THE SAME QUESTION ASKED OF A COMMAND, AND THE GRAMMAR ANSWERS IT.
 
