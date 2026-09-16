@@ -65,6 +65,10 @@ MUDANCAS.md
 PENDENTE.md
 polaron_analise.md
 ctest_*.log*
+# What a build writes down on its way past. `build-linux-ci.log` and its siblings are produced by
+# running the CI script or the packager by hand, land in the repository root because that is where
+# the script is run from, and are a measurement of one run rather than anything to keep.
+build-*.log
 # A scratch file keeps its .tmp and gains an extension: `forge_todo_test.tmp.pol`. `*.tmp` alone does
 # not match that, so two of them from a Forge run sat committed in the repository root -- five lines of
 # nothing, on the front page of a public repository.
